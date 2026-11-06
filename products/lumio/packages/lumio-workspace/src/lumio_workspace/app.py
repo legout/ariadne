@@ -342,6 +342,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             external_url=config.external_url,
             authoring_path=config.authoring_path,
             profile_path=config.private_profile_path,
+            destination=config.published_path,
         )
 
     def enrichment_service() -> EnrichmentService:

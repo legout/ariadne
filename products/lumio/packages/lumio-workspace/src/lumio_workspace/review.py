@@ -63,6 +63,7 @@ class ReviewContext:
     resources: ResolvedPrivateSources
     source_availability: dict[tuple[str, str], bool | None]
     binding: dict
+    source_inspection_permitted: bool
     action_digest: str
 
 
@@ -261,6 +262,7 @@ class ReviewService:
             resources,
             availability,
             binding,
+            self.state.permits(self.workspace_id, actor, "inspect_source"),
             "",
         )
 
@@ -550,9 +552,11 @@ def _anchor_quote(page: Any, anchor: Any) -> str:
     return "Anchor text unavailable."
 
 
-def _claim_sources(context: ReviewContext, page: Any) -> str:
+def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
     items = []
     registry = context.resources.source_registry
+    store = context.resources.artifact_store
+    may_inspect = context.source_inspection_permitted
     for source in page.sources:
         digest = context.captured.manifest.bindings.get(page.id, {}).get(source.id)
         version = registry.find_version(source.id, digest) if digest and registry else None
@@ -569,34 +573,89 @@ def _claim_sources(context: ReviewContext, page: Any) -> str:
             f"filename: {version.filename if version and version.filename else 'unknown'}",
             availability,
         ]
-        items.append(f"<li>{html.escape('; '.join(facts))}</li>")
+        passage_html = ""
+        if available is True and not may_inspect:
+            passage_html = "<p>Source-backed passage requires Source Inspection permission.</p>"
+        elif available is True and digest is not None and store is not None and registry:
+            try:
+                binding = resolve_source_reference_binding(
+                    registry,
+                    context.captured.manifest,
+                    source.id,
+                    entity_id=page.id,
+                )
+                original = fetch_verified_artifact(store, binding).decode("utf-8")
+            except (SourceInspectionError, UnicodeDecodeError) as exc:
+                passage_html = f"<p>Original passage unavailable: {html.escape(str(exc))}</p>"
+            else:
+                candidates = [
+                    *quotes,
+                    *[
+                        line.strip()
+                        for quote in quotes
+                        for line in quote.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")
+                    ],
+                ]
+                passage = next((text for text in candidates if text and text in original), None)
+                if passage is None:
+                    passage_html = (
+                        "<p>The retained original has no exact published-quote match; "
+                        "use separate Source Inspection. No raw-source Claim lineage "
+                        "is inferred.</p>"
+                    )
+                else:
+                    passage_html = (
+                        "<p>Source-backed passage (exact text match; not persisted Claim-lineage "
+                        "and not semantic verification):</p><blockquote><pre>"
+                        + html.escape(passage)
+                        + "</pre></blockquote>"
+                    )
+        items.append(
+            f"<li>{html.escape('; '.join(facts))}{passage_html}</li>"
+        )
     return "<ul>" + "".join(items) + "</ul>" if items else "<p>No source attribution.</p>"
 
 
-def _claim_conflicts(base: Any, subject_id: str, claim: Any) -> list[str]:
+def _claim_conflicts(
+    base: Any,
+    candidate: Any,
+    subject_id: str,
+    claim: Any,
+    proposed_ids: set[str],
+) -> list[str]:
     conflicts = []
-    for page in base.kb.pages:
-        for existing in page.claims:
-            if existing.id == claim.id:
-                continue
-            if (
-                claim.object is not None
-                and existing.predicate == claim.predicate
-                and existing.object == claim.object
-                and page.id != subject_id
-            ):
-                conflicts.append(
-                    f"potential conflict: {page.id} also has {existing.predicate} "
-                    f"{existing.object} in {existing.id}"
-                )
-            if (
-                page.id == subject_id
-                and existing.predicate == claim.predicate
-                and existing.object != claim.object
-            ):
-                conflicts.append(
-                    f"predicate-cardinality review: {existing.id} has a different object"
-                )
+    seen = set()
+    for origin, graph in (("candidate", candidate), ("admitted", base)):
+        for page in graph.kb.pages:
+            for existing in page.claims:
+                if existing.id == claim.id or (page.id, existing.id) in seen:
+                    continue
+                conflict = None
+                if (
+                    claim.object is not None
+                    and existing.predicate == claim.predicate
+                    and existing.object == claim.object
+                    and page.id != subject_id
+                ):
+                    label = (
+                        "potential intra-candidate conflict"
+                        if origin == "candidate" and existing.id in proposed_ids
+                        else "potential conflict"
+                    )
+                    conflict = (
+                        f"{label}: {page.id} also has {existing.predicate} "
+                        f"{existing.object} in {existing.id}"
+                    )
+                elif (
+                    page.id == subject_id
+                    and existing.predicate == claim.predicate
+                    and existing.object != claim.object
+                ):
+                    conflict = f"predicate-cardinality review: {existing.id} has a different object"
+                if conflict is not None:
+                    seen.add((page.id, existing.id))
+                    conflicts.append(conflict)
     return conflicts
 
 
@@ -609,6 +668,11 @@ def _render_enrichment_claims(
     if context.operation.response.get("kind") != "enrichment":
         return ""
     base_pages = {page.id: page for page in base.kb.pages}
+    proposed_ids = {
+        change.claim_id
+        for changed_page in context.authoring.knowledge.pages
+        for change in changed_page.claims
+    }
     claims = {claim.id: claim for claim in captured.claims}
     base_page = base_pages.get(captured.id)
     removed_claims = {claim.id: claim for claim in base_page.claims} if base_page else {}
@@ -617,6 +681,7 @@ def _render_enrichment_claims(
         claim = claims.get(change.claim_id) or removed_claims.get(change.claim_id)
         if claim is None:
             continue
+        quotes = [_anchor_quote(captured, anchor) for anchor in claim.evidence]
         anchors = "".join(
             "<li>section "
             + html.escape(str(anchor.section or "unspecified"))
@@ -625,9 +690,9 @@ def _render_enrichment_claims(
             + "-"
             + html.escape(str(anchor.line_end or "unspecified"))
             + "<blockquote><pre>"
-            + html.escape(_anchor_quote(captured, anchor))
+            + html.escape(quote)
             + "</pre></blockquote></li>"
-            for anchor in claim.evidence
+            for anchor, quote in zip(claim.evidence, quotes, strict=True)
         )
         subject_implication = (
             "reuses the selected existing Entity"
@@ -639,7 +704,9 @@ def _render_enrichment_claims(
             if claim.object is not None
             else "literal Claim; no Entity merge implication"
         )
-        conflicts = _claim_conflicts(base, captured.id, claim)
+        conflicts = _claim_conflicts(
+            base, context.captured, captured.id, claim, proposed_ids
+        )
         conflict_html = (
             _items(conflicts)
             if conflicts
@@ -653,7 +720,7 @@ def _render_enrichment_claims(
             "<h6>Exact published-page quote and anchor</h6>"
             f"<ul>{anchors}</ul>"
             "<h6>Attribution, source version and availability</h6>"
-            f"{_claim_sources(context, captured)}"
+            f"{_claim_sources(context, captured, quotes)}"
             "<h6>Conflicts</h6>"
             f"{conflict_html}"
             "<h6>Identity and merge implications</h6>"

@@ -51,6 +51,12 @@ ontology:
       subject_types: ["service"]
       literal_kind: number
       description: "A source-attributed proposal, not an adopted retention Policy."
+    runbook-note:
+      subject_types: ["knowledge-artifact"]
+      literal_kind: string
+    team-note:
+      subject_types: ["team"]
+      literal_kind: string
   redirects: {}
 """
 
@@ -126,6 +132,28 @@ RETENTION_PROPOSAL_CLAIM = """  - id: "claim:service-b-proposed-log-retention"
     evidence:
       - section: "Meeting notes"
 """
+TEAM_C_OPERATES_DISPUTED_CLAIM = """  - id: "claim:team-c-operates-service-b"
+    predicate: "operates"
+    object: "entity:service-b"
+    status: "disputed"
+    evidence:
+      - section: "Ownership"
+"""
+BASE_RUNBOOK_CLAIMS = """  - id: "claim:runbook-note-one"
+    predicate: "runbook-note"
+    value: "original-one"
+    value_type: "string"
+    status: "accepted"
+    evidence:
+      - section: "Ownership"
+  - id: "claim:runbook-note-two"
+    predicate: "runbook-note"
+    value: "original-two"
+    value_type: "string"
+    status: "accepted"
+    evidence:
+      - section: "Meeting notes"
+"""
 
 
 def _call_tool(client: TestClient, token: str, name: str, arguments: dict, request_id: int):
@@ -182,16 +210,15 @@ def _fixture(tmp_path: Path) -> tuple[WorkspaceConfig, WorkspaceState, dict[str,
     kb.mkdir(parents=True)
     (kb / "lumio.yaml").write_text(CONTROL, encoding="utf-8")
     pages = {
-        "procedures/operations_runbook.md": _page(
+        "procedures/operations_runbook.md": _claim_page(
             "Operations Runbook",
             "entity:operations-runbook",
             "knowledge-artifact",
             source=True,
+            claim_block=BASE_RUNBOOK_CLAIMS,
         ),
         "entities/team_a.md": _page("Team A", "entity:team-a", "team", source=True),
-        "entities/service_b.md": _page(
-            "Service B", "entity:service-b", "service", source=True
-        ),
+        "entities/service_b.md": _page("Service B", "entity:service-b", "service", source=True),
         "entities/team_c.md": _page("Team C", "entity:team-c", "team", source=True),
     }
     for relative, markdown in pages.items():
@@ -299,21 +326,19 @@ def _fixture(tmp_path: Path) -> tuple[WorkspaceConfig, WorkspaceState, dict[str,
     state.grant(config.workspace_id, reviewer, "review")
     expires = int(time.time()) + 3600
     tokens = {
-        "owner_browser": state.issue_local_credential(
-            "owner", "browser", expires_at=expires
-        )[1],
-        "contributor_api": state.issue_local_credential(
-            "contributor", "api", expires_at=expires
-        )[1],
-        "reviewer_browser": state.issue_local_credential(
-            "reviewer", "browser", expires_at=expires
-        )[1],
+        "owner_browser": state.issue_local_credential("owner", "browser", expires_at=expires)[1],
+        "contributor_api": state.issue_local_credential("contributor", "api", expires_at=expires)[
+            1
+        ],
+        "reviewer_browser": state.issue_local_credential("reviewer", "browser", expires_at=expires)[
+            1
+        ],
     }
     return config, state, tokens, revision
 
 
 def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Path) -> None:
-    config, _state, tokens, base = _fixture(tmp_path)
+    config, state, tokens, base = _fixture(tmp_path)
     selected_ids = [
         "entity:operations-runbook",
         "entity:team-a",
@@ -339,9 +364,7 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
             "expected_version": base,
             "request_key": "bounded-enrichment-request",
         }
-        prepared = _tool(
-            contributor, tokens["contributor_api"], "prepare_enrichment", request, 1
-        )
+        prepared = _tool(contributor, tokens["contributor_api"], "prepare_enrichment", request, 1)
         task_id = prepared["task_id"]
         assert prepared["status"] == "pending"
         assert prepared["published"] is False
@@ -354,9 +377,7 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert [page["id"] for page in prepared["pages"]] == selected_ids
         assert prepared["sources"][0]["content_hash"] == SOURCE_DIGEST
         assert prepared["sources"][0]["original_available"] is True
-        retried = _tool(
-            contributor, tokens["contributor_api"], "prepare_enrichment", request, 2
-        )
+        retried = _tool(contributor, tokens["contributor_api"], "prepare_enrichment", request, 2)
         assert retried["task_id"] == task_id
 
         original_answer = _tool(
@@ -370,6 +391,67 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert before.lookup_by_title("Team A")[0].claims == []
         assert before.lookup_by_title("Service B")[0].claims == []
         assert before.lookup_by_title("Team C")[0].claims == []
+
+        over_limit_team_notes = "".join(
+            f'  - id: "claim:team-a-note-{index}"\n'
+            '    predicate: "team-note"\n'
+            f'    value: "note-{index}"\n'
+            '    value_type: "string"\n'
+            '    status: "accepted"\n'
+            '    evidence:\n      - section: "Ownership"\n'
+            for index in range(39)
+        )
+        changed_runbook_claims = BASE_RUNBOOK_CLAIMS.replace(
+            'value: "original-one"', 'value: "edited-one"', 1
+        ).replace(
+            '  - id: "claim:runbook-note-two"\n'
+            '    predicate: "runbook-note"\n'
+            '    value: "original-two"\n'
+            '    value_type: "string"\n'
+            '    status: "accepted"',
+            '  - id: "claim:runbook-note-two"\n'
+            '    predicate: "runbook-note"\n'
+            '    value: "original-two"\n'
+            '    value_type: "string"\n'
+            '    status: "disputed"',
+            1,
+        )
+        over_limit = _call_tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "enrichment-over-limit",
+                "enrichment_task_id": task_id,
+                "sources": [],
+                "pages": [
+                    {
+                        "filename": "team-a.md",
+                        "markdown": _claim_page(
+                            "Team A",
+                            "entity:team-a",
+                            "team",
+                            source=True,
+                            claim_block=over_limit_team_notes,
+                        ),
+                    },
+                    {
+                        "filename": "operations-runbook.md",
+                        "markdown": _claim_page(
+                            "Operations Runbook",
+                            "entity:operations-runbook",
+                            "knowledge-artifact",
+                            source=True,
+                            claim_block=changed_runbook_claims,
+                        ),
+                    },
+                ],
+            },
+            40,
+        ).json()["result"]
+        assert over_limit["isError"] is True, over_limit
+        assert "more than 40 Claims" in over_limit["content"][0]["text"]
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == base
 
         whole_pages = [
             {
@@ -392,6 +474,16 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
                     claim_block=RETENTION_PROPOSAL_CLAIM,
                 ),
             },
+            {
+                "filename": "team-c.md",
+                "markdown": _claim_page(
+                    "Team C",
+                    "entity:team-c",
+                    "team",
+                    source=True,
+                    claim_block=TEAM_C_OPERATES_DISPUTED_CLAIM,
+                ),
+            },
         ]
         whole = _tool(
             contributor,
@@ -412,6 +504,11 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         pending = PublishedFilesystemLocation(config.published_path).resolve()
         assert pending.lookup_by_title("Team A")[0].claims == []
 
+        state.grant(
+            config.workspace_id,
+            Actor(tenant_id="local", object_id="reviewer"),
+            "inspect_source",
+        )
         _login(reviewer, tokens["reviewer_browser"])
         whole_review = reviewer.get(f"/review/{task_id}")
         assert whole_review.status_code == 200, whole_review.text
@@ -421,6 +518,9 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert "not semantic verification" in whole_review.text
         assert "claim:team-a-operates-service-b" in whole_review.text
         assert "claim:service-b-proposed-log-retention" in whole_review.text
+        assert "claim:team-c-operates-service-b" in whole_review.text
+        assert "potential intra-candidate conflict" in whole_review.text
+        assert "Source-backed passage (exact text match" in whole_review.text
         whole_action = _digest(whole_review.text)
 
         rejected = _decision(reviewer, task_id, whole_action, "reject")
@@ -437,6 +537,21 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert rejected_answer == original_answer
         assert _decision(reviewer, task_id, whole_action, "approve").status_code == 409
 
+        changed_input = _call_tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "enrichment-whole-draft",
+                "enrichment_task_id": task_id,
+                "sources": [],
+                "pages": whole_pages[:1],
+            },
+            50,
+        ).json()["result"]
+        assert changed_input["isError"] is True, changed_input
+        assert "different enrichment input" in changed_input["content"][0]["text"]
+
         subset = _tool(
             contributor,
             tokens["contributor_api"],
@@ -452,6 +567,25 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         assert subset["task_id"] == task_id
         assert subset["status"] == "pending_review"
         assert subset["native_candidate"] != whole["native_candidate"]
+        obsolete = _call_tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "enrichment-whole-draft",
+                "enrichment_task_id": task_id,
+                "sources": [],
+                "pages": whole_pages,
+            },
+            51,
+        ).json()["result"]
+        assert obsolete["isError"] is True, obsolete
+        assert "superseded" in obsolete["content"][0]["text"]
+        current = _tool(
+            contributor, tokens["contributor_api"], "get_task", {"task_id": task_id}, 52
+        )
+        assert current["native_candidate"] == subset["native_candidate"]
+        assert current["status"] == "pending_review"
         stale_subset = _decision(reviewer, task_id, whole_action, "approve")
         assert stale_subset.status_code == 409, stale_subset.text
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == base
@@ -507,3 +641,117 @@ def test_enrichment_stays_pending_and_subset_requires_fresh_review(tmp_path: Pat
         )
         assert repeated_subset["native_candidate"] == subset["native_candidate"]
         assert repeated_subset["status"] == "published"
+
+
+def test_enrichment_pending_recovery_precedes_correction(tmp_path: Path, monkeypatch) -> None:
+    config, _state, tokens, base = _fixture(tmp_path)
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+    ):
+        _login(owner, tokens["owner_browser"])
+        setup = owner.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(owner.get("/setup").text)},
+        )
+        assert setup.status_code == 200, setup.text
+        prepared = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_enrichment",
+            {
+                "workspace_id": config.workspace_id,
+                "page_ids": [
+                    "entity:operations-runbook",
+                    "entity:team-a",
+                    "entity:service-b",
+                    "entity:team-c",
+                ],
+                "expected_version": base,
+                "request_key": "recovery-enrichment-request",
+            },
+            1,
+        )
+        task_id = prepared["task_id"]
+        whole = _tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "recovery-whole-draft",
+                "enrichment_task_id": task_id,
+                "sources": [],
+                "pages": [
+                    {
+                        "filename": "team-a.md",
+                        "markdown": _claim_page(
+                            "Team A",
+                            "entity:team-a",
+                            "team",
+                            source=True,
+                            claim_block=OPERATES_CLAIM,
+                        ),
+                    }
+                ],
+            },
+            2,
+        )
+        _login(reviewer, tokens["reviewer_browser"])
+        action = _digest(reviewer.get(f"/review/{task_id}").text)
+
+        original_finish = WorkspaceState.finish_review_task
+
+        def fail_task_bookkeeping(*args, **kwargs):
+            raise RuntimeError("injected SQLite failure after native activation")
+
+        monkeypatch.setattr(WorkspaceState, "finish_review_task", fail_task_bookkeeping)
+        interrupted = _decision(reviewer, task_id, action, "approve")
+        assert interrupted.status_code == 409, interrupted.text
+        monkeypatch.setattr(WorkspaceState, "finish_review_task", original_finish)
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == whole["native_candidate"]
+        )
+
+        correction = _call_tool(
+            contributor,
+            tokens["contributor_api"],
+            "prepare_contribution",
+            {
+                "retry_key": "recovery-correction",
+                "enrichment_task_id": task_id,
+                "sources": [],
+                "pages": [
+                    {
+                        "filename": "service-b.md",
+                        "markdown": _claim_page(
+                            "Service B",
+                            "entity:service-b",
+                            "service",
+                            source=True,
+                            claim_block=RETENTION_PROPOSAL_CLAIM,
+                        ),
+                    }
+                ],
+            },
+            3,
+        ).json()["result"]
+        assert correction["isError"] is True, correction
+        assert "published enrichment cannot be replaced" in correction["content"][0]["text"]
+        recovered = _tool(
+            contributor, tokens["contributor_api"], "get_task", {"task_id": task_id}, 4
+        )
+        assert recovered["status"] == "published"
+        assert recovered["native_candidate"] == whole["native_candidate"]
+        assert (
+            PublishedFilesystemLocation(config.published_path).read_pointer()
+            == whole["native_candidate"]
+        )
+        admitted = PublishedFilesystemLocation(config.published_path).resolve()
+        assert [
+            (claim.predicate, claim.object)
+            for claim in admitted.lookup_by_title("Team A")[0].claims
+        ] == [("operates", "entity:service-b")]
+        assert admitted.lookup_by_title("Service B")[0].claims == []

@@ -122,6 +122,7 @@ class ContributionService:
         external_url: str,
         authoring_path: Path,
         profile_path: Path,
+        destination: Path | None = None,
     ) -> None:
         self.state = state
         self.intake = intake
@@ -130,6 +131,7 @@ class ContributionService:
         self.authoring_path = authoring_path.resolve()
         self.profile_path = profile_path
         self.private_root = intake.private_root
+        self.destination = destination
 
     def _resources(self):
         try:
@@ -389,16 +391,6 @@ class ContributionService:
             raise ContributionError(
                 "enrichment task is not available", code="invalid_enrichment_task"
             )
-        recorded = operation.response.get("author_input_digest")
-        if recorded is not None and operation.response.get("author_retry_key") == retry_key:
-            if recorded != input_digest:
-                raise RetryConflict("retry key is already bound to different enrichment input")
-            if operation.status in {"pending_review", "rejected", "published"}:
-                return operation.response
-        if operation.status not in {"pending", "pending_review", "rejected", "failed"}:
-            raise ContributionError(
-                "a published enrichment cannot be replaced", code="invalid_enrichment_task"
-            )
 
         with (
             self.state.operation_lock(operation) as acquired,
@@ -416,22 +408,46 @@ class ContributionService:
             )
             if current is None:
                 raise ContributionError("task is not available", code="task_not_found")
-            recorded = current.response.get("author_input_digest")
-            if recorded is not None and current.response.get("author_retry_key") == retry_key:
-                if recorded != input_digest:
+            self._reconcile_enrichment(current)
+            current = self.state.get_operation(
+                self.workspace_id, actor, "prepare_contribution", task_id
+            )
+            if current is None:
+                raise ContributionError("task is not available", code="task_not_found")
+
+            drafts = current.response.get("drafts", {})
+            generation = current.response.get("draft_generation", 0)
+            binding = drafts.get(retry_key)
+            if binding is not None:
+                if binding["input_digest"] != input_digest:
                     raise RetryConflict("retry key is already bound to different enrichment input")
+                if binding["generation"] != generation:
+                    raise ContributionError(
+                        "this draft was superseded; retry the latest draft or author "
+                        "a new correction",
+                        code="obsolete_draft",
+                    )
                 if current.status in {"pending_review", "rejected", "published"}:
                     return current.response
+            elif current.status not in {"pending", "pending_review", "rejected", "failed"}:
+                raise ContributionError(
+                    "a published enrichment cannot be replaced", code="invalid_enrichment_task"
+                )
             if current.status not in {"pending", "pending_review", "rejected", "failed"}:
                 raise ContributionError(
                     "a published enrichment cannot be replaced", code="invalid_enrichment_task"
                 )
+            if binding is None:
+                generation += 1
             working = {
                 **current.response,
                 "task_id": task_id,
                 "status": "pending",
-                "author_retry_key": retry_key,
-                "author_input_digest": input_digest,
+                "draft_generation": generation,
+                "drafts": {
+                    **drafts,
+                    retry_key: {"input_digest": input_digest, "generation": generation},
+                },
                 "published": False,
             }
             for stale_key in (
@@ -503,6 +519,32 @@ class ContributionService:
                 self.workspace_id, actor, current, "pending_review", response
             )
             return response
+
+    def _reconcile_enrichment(self, operation: Operation) -> None:
+        """Recover a prior native approval before any candidate/worktree replacement."""
+        if operation.status != "pending_review" or not operation.response.get("native_candidate"):
+            return
+        if self.destination is None:
+            raise ContributionError(
+                "enrichment recovery requires the configured publication destination",
+                code="recovery_unavailable",
+            )
+        from .review import ReviewService
+
+        recovery = ReviewService(
+            self.state,
+            workspace_id=self.workspace_id,
+            authoring_path=self.authoring_path,
+            profile_path=self.profile_path,
+            private_root=self.private_root,
+            destination=self.destination,
+        ).reconcile_task(operation.operation_id)
+        if recovery is not None and recovery.get("publication_outcome") == "indeterminate":
+            raise ContributionError(
+                "the prior native publication outcome is indeterminate; recover it before "
+                "correction",
+                code="recovery_required",
+            )
 
     def _enrichment_sources(
         self, operation: Operation, pages: list[tuple[str, str, dict]]
@@ -643,7 +685,7 @@ class ContributionService:
                 1
                 for page in review.knowledge.pages
                 for claim in page.claims
-                if claim.change == "added"
+                if claim.change in {"added", "edited", "status"}
             )
             if enrichment and proposed_claims > 40:
                 raise ContributionError(
