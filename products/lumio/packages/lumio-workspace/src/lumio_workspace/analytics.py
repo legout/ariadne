@@ -118,7 +118,12 @@ class AnalyticsService:
         storages = bindings.get("storages", {}) if isinstance(bindings, dict) else {}
         if not isinstance(storages, dict):
             raise AnalyticsError("operator source binding 'storages' must be a mapping")
-        return entries, storages
+        referenced = {
+            entry.get("storage")
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("storage"), str)
+        }
+        return entries, {name: storages[name] for name in referenced if name in storages}
 
     def _declarations_present(
         self, revision: str, entries: list[dict], storages: dict | None = None
@@ -129,13 +134,13 @@ class AnalyticsService:
         except (subprocess.CalledProcessError, msgspec.DecodeError):
             return False
         existing = document.get("sources") if isinstance(document, dict) else None
-        declared = document.get("storages") or {} if isinstance(document, dict) else {}
+        declared = document.get("storages") if isinstance(document, dict) else {}
         profiles = native_sources.validate_storages(storages, "operator source bindings")
+        existing_profiles = native_sources.validate_storages(declared, "candidate registry")
         return (
             isinstance(existing, list)
             and all(entry in existing for entry in entries)
-            and isinstance(declared, dict)
-            and all(declared.get(name) == profile.identity() for name, profile in profiles.items())
+            and all(existing_profiles.get(name) == profile for name, profile in profiles.items())
         )
 
     def _resources(self):
@@ -410,9 +415,7 @@ class AnalyticsService:
                         )
                 else:
                     started = self.api.start_proposal()
-                    if self._declarations_present(
-                        started["candidate_revision"], entries, storages
-                    ):
+                    if self._declarations_present(started["candidate_revision"], entries, storages):
                         _resolved, source_digest = authoring_sources.candidate_sources(
                             self.project, started["candidate_revision"]
                         )
@@ -443,11 +446,7 @@ class AnalyticsService:
                     "review_url": f"{self.external_url}/review/{current.operation_id}",
                     "review_generation": 0,
                     "published": False,
-                    **(
-                        {"approval_digest": approval["approval_digest"]}
-                        if reused
-                        else {}
-                    ),
+                    **({"approval_digest": approval["approval_digest"]} if reused else {}),
                     **(
                         {"upload_id": upload_id, "native_entries": entries}
                         if upload_id is not None
@@ -631,9 +630,7 @@ class AnalyticsService:
     def _publication_recovery(self, response: dict) -> PublicationReceipt | None:
         candidate = response["native_candidate"]
         destination = self.config.published_path.resolve()
-        receipt_path = (
-            destination / PRIVATE_OPERATIONS_DIR / "receipts" / f"{candidate}.json"
-        )
+        receipt_path = destination / PRIVATE_OPERATIONS_DIR / "receipts" / f"{candidate}.json"
         try:
             raw = receipt_path.read_bytes()
         except FileNotFoundError:
@@ -810,9 +807,7 @@ class AnalyticsService:
                 review["head_revision"],
                 candidate,
             )
-            submitter = self.state.review_task_submitter(
-                self.workspace_id, operation.operation_id
-            )
+            submitter = self.state.review_task_submitter(self.workspace_id, operation.operation_id)
             if submitter is None or not self.state.permits(
                 self.workspace_id, submitter, "contribute"
             ):

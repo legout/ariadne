@@ -375,16 +375,6 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     bindings.write_text(
         json.dumps(
             {
-                "storages": {
-                    "operator_s3": {
-                        "type": "s3",
-                        "access_key_id_env": "OPERATOR_S3_ACCESS_KEY_ID",
-                        "secret_access_key_env": "OPERATOR_S3_SECRET_ACCESS_KEY",
-                        "endpoint_url_env": "OPERATOR_S3_ENDPOINT",
-                        "url_style": "path",
-                        "scopes": ["s3://retail/"],
-                    }
-                },
                 "orders_sqlite": [
                     {"name": "orders_sqlite", "type": "sqlite", "path": "data/orders.sqlite"}
                 ],
@@ -467,11 +457,6 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     )
     source_task = prepared["task_id"]
     assert prepared["status"] == "pending_source_approval"
-    candidate_registry = _git(
-        project, "show", f"{prepared['native_candidate']}:ariadne.yaml"
-    )
-    assert "operator_s3:" in candidate_registry
-    assert "endpoint_url_env: OPERATOR_S3_ENDPOINT" in candidate_registry
     assert str(project) not in json.dumps(prepared)
     with pytest.raises(AnalyticsError, match="Source Approval"):
         analytics.profile_data_source(contributor, source_task)

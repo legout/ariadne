@@ -83,12 +83,8 @@ def _endpoint_pair(root: Path):
         a.stop()
         raise
     try:
-        a.put_parquet(
-            "retail/orders/events.parquet", fx.ORACLE_A_ROWS, ("id", "amount", "region")
-        )
-        b.put_parquet(
-            "retail/orders/events.parquet", fx.ORACLE_B_ROWS, ("id", "amount", "region")
-        )
+        a.put_parquet("retail/orders/events.parquet", fx.ORACLE_A_ROWS, ("id", "amount", "region"))
+        b.put_parquet("retail/orders/events.parquet", fx.ORACLE_B_ROWS, ("id", "amount", "region"))
     except BaseException:
         fx.stop_pair(a, b)
         raise
@@ -261,9 +257,7 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         assert not any(value in rendered_a for value in credential_values if value)
         approved_a = review.decide(reviewer, task_id, context_a.action_digest, "approve")
         grant_context_a = review.get(reviewer, task_id)
-        granted_a = review.decide(
-            reviewer, task_id, grant_context_a.action_digest, "approve"
-        )
+        granted_a = review.decide(reviewer, task_id, grant_context_a.action_digest, "approve")
         assert granted_a["status"] == "data_granted"
         assert admission.load_current(project) is None
         assert opened == []
@@ -289,9 +283,7 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         approved_b = review.decide(reviewer, task_id, context_b.action_digest, "approve")
         assert approved_b["approval_digest"] != approved_a["approval_digest"]
         grant_context_b = review.get(reviewer, task_id)
-        granted_b = review.decide(
-            reviewer, task_id, grant_context_b.action_digest, "approve"
-        )
+        granted_b = review.decide(reviewer, task_id, grant_context_b.action_digest, "approve")
         assert granted_b["approval_digest"] == approved_b["approval_digest"]
         profiled = analytics.profile_data_source(contributor, task_id)
         source_profile = next(
@@ -304,9 +296,7 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         # A second valid identity at the unchanged endpoint retains the exact
         # native approval while validation, admission, and query use B's rows.
         _set_endpoint(monkeypatch, b, rotated=True)
-        validated = api.validate_proposal(
-            prepared["native_proposal"], prepared["native_candidate"]
-        )
+        validated = api.validate_proposal(prepared["native_proposal"], prepared["native_candidate"])
         assert validated["ok"] is True, validated["errors"]
         assert validated["approval_digest"] == approved_b["approval_digest"]
         native_review = api.review_proposal(prepared["native_proposal"])
@@ -337,5 +327,43 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         assert result["governed"] is False  # every native bounded record query
         assert result["pinned"]["source_digest"] == approved_b["approval_digest"]
         assert not any(value in json.dumps(result) for value in credential_values if value)
+
+        # Unrelated operator profiles are outside this selection and cannot
+        # invalidate or duplicate-reject the admitted source's exact reuse.
+        binding_document = json.loads(bindings.read_text(encoding="utf-8"))
+        binding_document["storages"]["unrelated"] = {
+            "type": "s3",
+            "access_key_id_env": "UNRELATED_ACCESS_KEY_ID",
+            "secret_access_key_env": "UNRELATED_SECRET_ACCESS_KEY",
+            "endpoint_url_env": "UNRELATED_ENDPOINT",
+            "scopes": ["s3://unrelated/"],
+        }
+        bindings.write_text(json.dumps(binding_document), encoding="utf-8")
+        reused_unrelated = analytics.prepare_data_source(
+            contributor,
+            retry_key="request-managed-s3-reuse-unrelated",
+            project="retail",
+            source="events_s3",
+            table="events",
+            business_questions=["Reuse the admitted selection, not an unrelated profile."],
+        )
+        assert reused_unrelated["status"] == "pending_data_grant"
+        assert reused_unrelated["reused_source_declaration"] is True
+        assert reused_unrelated["native_candidate"] == native_review["revision"]
+
+        # Omitted url_style is the same canonical declaration as default path.
+        binding_document["storages"]["local"].pop("url_style")
+        bindings.write_text(json.dumps(binding_document), encoding="utf-8")
+        reused_default = analytics.prepare_data_source(
+            contributor,
+            retry_key="request-managed-s3-reuse-default",
+            project="retail",
+            source="events_s3",
+            table="events",
+            business_questions=["Reuse the canonical default-path declaration."],
+        )
+        assert reused_default["status"] == "pending_data_grant"
+        assert reused_default["reused_source_declaration"] is True
+        assert reused_default["native_candidate"] == native_review["revision"]
     finally:
         fx.stop_pair(a, b)
