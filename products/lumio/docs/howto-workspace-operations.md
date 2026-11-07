@@ -87,10 +87,34 @@ python -m lumio_workspace.operations restore --backup-root /private/backups/work
 ```
 
 The command prints the rebased launch paths; put them into the environment
-file, then start the service against the new root. When analytics is
-configured, the printed paths also include `analytics_project_path=` and
-`analytics_source_bindings_path=`; update them in the environment file
-together with the other rebased paths. Restore performs, in order:
+file, then start the service against the new root. The printed paths map to
+exactly these environment variables:
+
+| Printed path | Environment variable |
+| --- | --- |
+| `state_path=` | `LUMIO_WORKSPACE_STATE_PATH` |
+| `authoring_path=` | `LUMIO_WORKSPACE_AUTHORING_PATH` |
+| `published_path=` | `LUMIO_WORKSPACE_PUBLISHED_PATH` |
+| `private_profile_path=` | `LUMIO_WORKSPACE_PRIVATE_PROFILE` |
+| `private_root=` | `LUMIO_WORKSPACE_PRIVATE_ROOT` |
+| `export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=` | `LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH` |
+| `export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS=` | `LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS` |
+
+When analytics is configured, the two analytics lines are printed as
+ready-to-paste `export` assignments for the new data root. An owner
+following this recipe literally copies every mapped variable into the
+environment file and restarts the service against the restored copies.
+
+**Disclosed restore boundary (analytics proposals):** restored Ariadne
+proposal records retain their old absolute project identity, so native
+proposal loading rejects the new project path even after the Git worktree
+relinking below succeeds. Relinking keeps the copied worktrees valid Git
+worktrees; it does not — and is not intended to — make pre-existing proposal
+records loadable from the moved project. This is an honest boundary of the
+restore recipe, not a data-loss claim: the project's Git history and
+worktrees are intact, and new proposals at the restored root work normally.
+
+Restore performs, in order:
 
 1. Copies every role into the target root under the §2 convention.
 2. Relinks moved task worktrees (the pending candidate worktrees stay

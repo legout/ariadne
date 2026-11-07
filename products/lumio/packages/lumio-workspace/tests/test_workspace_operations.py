@@ -211,9 +211,7 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     assert analytics_restored.analytics_source_bindings_path == (
         analytics_second / "analytics-bindings.json"
     )
-    relinked = (
-        analytics_second / "analytics-project" / ".ariadne" / "worktrees" / proposal_id
-    )
+    relinked = analytics_second / "analytics-project" / ".ariadne" / "worktrees" / proposal_id
     assert _git(relinked, "rev-parse", "--abbrev-ref", "HEAD") == (
         f"ariadne/proposal/{proposal_id}"
     )
@@ -222,12 +220,8 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     monkeypatch.setenv("LUMIO_WORKSPACE_EXTERNAL_URL", "https://workspace.test")
     monkeypatch.setenv("LUMIO_WORKSPACE_PUBLISHED_PATH", str(config.published_path))
     monkeypatch.setenv("LUMIO_WORKSPACE_ANALYTICS_PROJECT_ID", "fixture-project")
-    monkeypatch.setenv(
-        "LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH", str(analytics_project)
-    )
-    monkeypatch.setenv(
-        "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS", str(analytics_bindings)
-    )
+    monkeypatch.setenv("LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH", str(analytics_project))
+    monkeypatch.setenv("LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS", str(analytics_bindings))
     analytics_cli_root = tmp_path / "analytics-cli-root"
     arguments = [
         "restore",
@@ -238,8 +232,11 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     ]
     assert operations_main(arguments) == 0
     output = capsys.readouterr().out
-    assert f"analytics_project_path={analytics_cli_root / 'analytics-project'}" in output
     assert (
-        f"analytics_source_bindings_path={analytics_cli_root / 'analytics-bindings.json'}"
+        f"export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH={analytics_cli_root / 'analytics-project'}"
         in output
+    )
+    assert (
+        f"export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
+        f"{analytics_cli_root / 'analytics-bindings.json'}" in output
     )

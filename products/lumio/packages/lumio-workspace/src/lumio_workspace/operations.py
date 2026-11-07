@@ -267,9 +267,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"private_profile_path={restored.private_profile_path}")
         print(f"private_root={restored.private_root}")
         if restored.analytics_project_path is not None:
-            print(f"analytics_project_path={restored.analytics_project_path}")
+            print(
+                "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="
+                f"{restored.analytics_project_path}"
+            )
         if restored.analytics_source_bindings_path is not None:
-            print(f"analytics_source_bindings_path={restored.analytics_source_bindings_path}")
+            print(
+                "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
+                f"{restored.analytics_source_bindings_path}"
+            )
     return 0
 
 
