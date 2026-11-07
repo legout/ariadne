@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-analytics = ["ariadne-data[spreadsheets]>=0.7.0,<0.8.0"]
+analytics = ["ariadne-data[spreadsheets]>=0.8.0,<0.9.0"]
 
 [project.scripts]
 lumio-workspace = "lumio_workspace.__main__:main"
