@@ -104,9 +104,7 @@ class IntakeService:
             "sha256": digest,
             "size": len(raw),
             "kind": (
-                "structured"
-                if Path(filename).suffix.lower() in _STRUCTURED_TYPES
-                else "document"
+                "structured" if Path(filename).suffix.lower() in _STRUCTURED_TYPES else "document"
             ),
             "document_stored": True,
             "data_query_ready": False,

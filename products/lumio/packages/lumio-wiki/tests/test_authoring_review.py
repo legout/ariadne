@@ -1597,7 +1597,7 @@ def test_review_distinguishes_native_verified_date_from_string(tmp_path, capsys)
         loaded, report = load_knowledge_base(kb)
         assert report.is_valid, report
         page = next(p for p in loaded.pages if p.path == "concepts/hydraulic-press.md")
-        entry, = page.ariadne_profile.native["verified"]
+        (entry,) = page.ariadne_profile.native["verified"]
         assert type(entry[True]) is expected_type
         assert entry == {"by": "human:alice", True: expected_on, "evidence": evidence}
 

@@ -120,18 +120,21 @@ def _call_tool(client: TestClient, token: str, title: str = "Team Runbook"):
 
 
 def _issue(capsys, user_id: str, purpose: str, expires_at: int) -> tuple[str, str]:
-    assert main(
-        [
-            "local-token",
-            "issue",
-            "--user-id",
-            user_id,
-            "--purpose",
-            purpose,
-            "--expires-at",
-            str(expires_at),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "local-token",
+                "issue",
+                "--user-id",
+                user_id,
+                "--purpose",
+                purpose,
+                "--expires-at",
+                str(expires_at),
+            ]
+        )
+        == 0
+    )
     output = dict(line.split("=", 1) for line in capsys.readouterr().out.splitlines())
     return output["credential_id"], output["token"]
 
@@ -174,12 +177,8 @@ def test_revoke_legacy_leading_minus_credential_id(
     )
     state = WorkspaceState(state_path)
     state.create_local_user("alice")
-    credential_id, token = state.issue_local_credential(
-        "alice", "browser", expires_at=now + 3600
-    )
-    expected_id = (
-        base64.urlsafe_b64encode(b"\xfb" + bytes(11)).rstrip(b"=").decode("ascii")
-    )
+    credential_id, token = state.issue_local_credential("alice", "browser", expires_at=now + 3600)
+    expected_id = base64.urlsafe_b64encode(b"\xfb" + bytes(11)).rstrip(b"=").decode("ascii")
     assert expected_id.startswith("-")
     assert credential_id == expected_id
     assert state.authenticate_local_credential(token, purpose="browser") is not None
@@ -232,9 +231,7 @@ def test_local_credential_and_browser_session_lifecycle(
     clock = {"now": int(time.time())}
     monkeypatch.setattr("lumio_workspace.state.time.time", lambda: clock["now"])
     alice_api_id, alice_api = _issue(capsys, "alice", "api", clock["now"] + 3600)
-    alice_browser_id, alice_browser = _issue(
-        capsys, "alice", "browser", clock["now"] + 3600
-    )
+    alice_browser_id, alice_browser = _issue(capsys, "alice", "browser", clock["now"] + 3600)
     _, bob_api = _issue(capsys, "bob", "api", clock["now"] + 3600)
     with state._connect() as connection:
         stored_hash = connection.execute(
@@ -423,9 +420,7 @@ def test_delayed_local_login_cannot_replace_newer_browser_session(
     asyncio.run(scenario())
 
 
-def test_browser_sessions_follow_selected_authentication_mode(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_browser_sessions_follow_selected_authentication_mode(tmp_path: Path, monkeypatch) -> None:
     state_path = tmp_path / "state.sqlite3"
     local_config = WorkspaceConfig(
         workspace_id="workspace-fixture",
@@ -503,9 +498,7 @@ def test_browser_sessions_follow_selected_authentication_mode(
             local_cookie_after_refusal = browser.cookies.get("lumio_workspace_session")
             local_session_after_refusal = state.load_browser_session(local_cookie) is not None
             assert (await browser.get("/auth/login", follow_redirects=False)).status_code == 303
-            entra_callback_response = await browser.get(
-                "/auth/callback", follow_redirects=False
-            )
+            entra_callback_response = await browser.get("/auth/callback", follow_redirects=False)
             assert entra_callback_response.status_code == 303
             entra_cookie = browser.cookies.get("lumio_workspace_session")
             assert entra_cookie and entra_cookie != local_cookie
@@ -532,12 +525,8 @@ def test_browser_sessions_follow_selected_authentication_mode(
                 "entra_cookie_unchanged": entra_cookie_after_refusal == entra_cookie,
                 "local_session_preserved": local_session_after_refusal,
                 "entra_session_preserved": entra_session_after_refusal,
-                "local_membership": state.capabilities(
-                    local_config.workspace_id, local_actor
-                ),
-                "entra_membership": state.capabilities(
-                    local_config.workspace_id, entra_actor
-                ),
+                "local_membership": state.capabilities(local_config.workspace_id, local_actor),
+                "entra_membership": state.capabilities(local_config.workspace_id, entra_actor),
             } == {
                 "local_under_entra": "refused",
                 "entra_under_local": "refused",
