@@ -137,3 +137,70 @@ exact-revision preview and explicitly authorized confirmation flow in
 [`quickstart.md`](quickstart.md). A later enrichment may add separately
 reviewed business Entities and Claims; it must not silently retype this
 artifact Entity.
+
+## 3. Optional bounded enrichment in a managed workspace
+
+After the document is admitted, an explicit request can select its artifact
+page and relevant existing business-Entity pages for enrichment. The managed
+workspace exposes this MCP call:
+
+```text
+prepare_enrichment(
+  workspace_id=<configured workspace>,
+  page_ids=<1–20 exact admitted Entity IDs>,
+  expected_version=<current full admitted Git commit>,
+  request_key=<stable request key>,
+)
+```
+
+The result identifies the exact pages, Source Versions, retention availability,
+existing identities, and complete Control File. It also reports the disclosed
+character count and the limits: 20 pages, 200,000 characters, and 40 proposed
+Claims. An oversized selection fails with a request to narrow or split it; the
+service never truncates the corpus silently. Retrying the identical request
+resumes the same task. No original passages are added to the selection, and the
+service performs no external ontology lookup by default.
+
+The host agent authors a complete candidate through `prepare_contribution`,
+passing `enrichment_task_id`, `sources: []`, complete page Markdown, and a
+separate stable `retry_key`. Pass a complete modified `control` only when the
+candidate changes the ontology. Existing pages outside the selection and
+unselected Source IDs are refused. Native candidate ingestion still resolves
+identities and validates ontology, Claims, source bindings, and Evidence
+coordinates. Coordinate validation is not semantic verification: the browser
+review shows the exact quote, attribution, Source Version/availability,
+potential conflicts, identity implications, and complete diff for a human to
+judge.
+
+Rejection leaves the admitted document and graph unchanged. To correct a draft
+or accept only a subset, author another complete candidate with a new draft
+`retry_key`; the service creates a fresh exact review. The discarded candidate's
+browser action cannot admit the subset. Only the matching browser decision can
+publish the corrected candidate. Preserve attributed proposals as proposals,
+not adopted Policy, and do not infer a relationship from a mere co-mention.
+Enrichment grants no source access, automatic merge, external lookup, Ariadne
+join, metric, or publication authority.
+
+## 4. Refresh a supporting source without rewriting accepted meaning
+
+Upload the changed original under the same stable Source ID and prepare a
+complete source-update candidate with `intent: "update"`. This registers a new
+immutable Source Version; it does not switch admitted page bindings or publish
+the update. The ordinary native review and admission path owns that decision.
+
+A source-update or enrichment review prepared against the earlier version now
+shows **Source refresh impact** to users with review permission. It lists the exact bound and
+registry-latest hashes and the admitted pages and Claims/Evidence that may need
+review. This is conservative page-level dependence only: it cannot determine
+Claim-level or raw-passage impact, prove a Claim false, or retire missing
+material. Old originals, published Claims, citations, and historical source
+anchors remain unchanged. The browser action issued before the refresh is
+stale and refuses with a conflict; do not reuse it.
+
+First obtain the matching native review for the source-update candidate when
+the new source version itself should be admitted. Then, at the user's request,
+select the affected pages with `prepare_enrichment` at the current admitted
+version and author a bounded correction through `prepare_contribution` with a
+new draft `retry_key`. Shared native review owns the new admission as well.
+There is no automatic redrafting, Claim-to-raw lineage graph, historical-anchor
+redirect, or background publication workflow.

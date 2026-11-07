@@ -143,6 +143,7 @@ jobs:
       - name: Run onboarding and public S3-compatible suites
         run: |
           uv run --locked pytest -q integration/tests/lumio_s3_context.py \
+            integration/tests/workspace_data_sources.py \
             products/lumio/tests/test_onboarding_journey.py \
             products/lumio/packages/lumio-wiki/tests/*s3_compat.py \
             products/lumio/packages/lumio-lancedb/tests/*s3_compat.py

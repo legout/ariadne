@@ -72,6 +72,51 @@ class PublicationService:
             retention_required=resources.retention_required,
         )
 
+    def overall_preview(
+        self,
+        project: Path,
+        proposal: str,
+        revision: str,
+        reviewed_digest: str,
+        *,
+        expected_current: str,
+    ) -> dict:
+        from ariadne import admission
+
+        return admission.overall_review(
+            project,
+            proposal,
+            revision,
+            reviewed_digest,
+            destination=self.destination,
+            expected_current=expected_current,
+            private_profile=self.profile_path,
+            scope=("internal",),
+        )
+
+    def publish_overall(
+        self,
+        project: Path,
+        proposal: str,
+        revision: str,
+        reviewed_digest: str,
+        overall_preview: dict,
+        *,
+        confirmed_by: str,
+    ) -> dict:
+        from ariadne import admission
+
+        return admission.admit_revision(
+            project,
+            proposal,
+            revision,
+            reviewed_digest,
+            confirmed_by=confirmed_by,
+            overall_preview=overall_preview,
+            confirmed_overall_digest=overall_preview["digest"],
+            private_profile=self.profile_path,
+        )
+
     def recover(
         self,
         task_kb: Path,
@@ -81,10 +126,7 @@ class PublicationService:
         resources: ResolvedPrivateSources,
     ) -> PublicationReceipt | None:
         receipt_path = (
-            self.destination.resolve()
-            / PRIVATE_OPERATIONS_DIR
-            / "receipts"
-            / f"{revision}.json"
+            self.destination.resolve() / PRIVATE_OPERATIONS_DIR / "receipts" / f"{revision}.json"
         )
         try:
             raw = receipt_path.read_bytes()

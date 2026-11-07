@@ -37,6 +37,9 @@ ariadne-admit = "ariadne.admission:main"  # HUMAN-ONLY Git Review Admission (iss
 mcp = [
     "mcp==2.2.0",  # spec 0026 §2: the exact official SDK of the Lumio 93951f8 baseline (mcp-types==2.2.0 rides along)
 ]
+spreadsheets = [
+    "openpyxl>=3.1,<4",  # stored XLSX cells/formula presence only; never Excel execution
+]
 # ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
 # so the base install stays lightweight; ariadne-ingest fails with install guidance
 # when a converter is missing. dev gains the same deps so the test suite covers them.

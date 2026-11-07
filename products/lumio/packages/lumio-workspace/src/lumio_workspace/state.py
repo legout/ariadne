@@ -101,9 +101,7 @@ class WorkspaceState:
                 row[1] for row in connection.execute("PRAGMA table_info(browser_sessions)")
             }
             if "rotated_at" not in session_columns:
-                connection.execute(
-                    "ALTER TABLE browser_sessions ADD COLUMN rotated_at INTEGER"
-                )
+                connection.execute("ALTER TABLE browser_sessions ADD COLUMN rotated_at INTEGER")
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS local_users (
@@ -179,9 +177,7 @@ class WorkspaceState:
                 row[1] for row in connection.execute("PRAGMA table_info(setup_records)")
             }
             if "attachment_digest" not in setup_columns:
-                connection.execute(
-                    "ALTER TABLE setup_records ADD COLUMN attachment_digest TEXT"
-                )
+                connection.execute("ALTER TABLE setup_records ADD COLUMN attachment_digest TEXT")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -229,9 +225,7 @@ class WorkspaceState:
                     return None
         return data
 
-    def save_browser_session(
-        self, session_id: str, data: dict, *, expires_at: int
-    ) -> None:
+    def save_browser_session(self, session_id: str, data: dict, *, expires_at: int) -> None:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO browser_sessions (session_id, data, expires_at) VALUES (?, ?, ?) "
@@ -240,9 +234,7 @@ class WorkspaceState:
                 (session_id, json.dumps(data), expires_at),
             )
 
-    def update_browser_session(
-        self, session_id: str, data: dict, *, expires_at: int
-    ) -> bool:
+    def update_browser_session(self, session_id: str, data: dict, *, expires_at: int) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE browser_sessions SET data = ?, expires_at = ? "
@@ -272,17 +264,14 @@ class WorkspaceState:
         with self._connect() as connection:
             # Obsolete responses can arrive after the old session's expiry.
             row = connection.execute(
-                "SELECT 1 FROM browser_sessions "
-                "WHERE session_id = ? AND rotated_at IS NOT NULL",
+                "SELECT 1 FROM browser_sessions WHERE session_id = ? AND rotated_at IS NOT NULL",
                 (session_id,),
             ).fetchone()
         return row is not None
 
     def delete_browser_session(self, session_id: str) -> None:
         with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM browser_sessions WHERE session_id = ?", (session_id,)
-            )
+            connection.execute("DELETE FROM browser_sessions WHERE session_id = ?", (session_id,))
 
     def create_local_user(self, user_id: str) -> None:
         if not user_id or user_id.strip() != user_id:
@@ -329,9 +318,7 @@ class WorkspaceState:
             if cursor.rowcount != 1:
                 raise ValueError("unknown local credential")
 
-    def authenticate_local_credential(
-        self, token: str, *, purpose: str
-    ) -> LocalCredential | None:
+    def authenticate_local_credential(self, token: str, *, purpose: str) -> LocalCredential | None:
         credential_id, separator, secret = token.partition(".")
         if not separator or not credential_id or not secret:
             return None
@@ -366,9 +353,7 @@ class WorkspaceState:
                 (workspace_id, actor.tenant_id, actor.object_id, capability),
             )
 
-    def revoke(
-        self, workspace_id: str, actor: Actor, capability: str = "read"
-    ) -> None:
+    def revoke(self, workspace_id: str, actor: Actor, capability: str = "read") -> None:
         if capability not in CAPABILITIES:
             raise ValueError(f"capability must be one of: {', '.join(sorted(CAPABILITIES))}")
         with self._connect() as connection:
@@ -400,8 +385,7 @@ class WorkspaceState:
             ).fetchone()
             if row is not None:
                 recorded = connection.execute(
-                    "SELECT input_digest, source_id FROM operations "
-                    "WHERE operation_id = ?",
+                    "SELECT input_digest, source_id FROM operations WHERE operation_id = ?",
                     (row[0],),
                 ).fetchone()
                 if recorded != (input_digest, source_id):
@@ -504,8 +488,9 @@ class WorkspaceState:
         """Locate a candidate only after the caller establishes reviewer authority."""
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT retry_key, input_digest, source_id, status, response_json "
-                "FROM operations WHERE workspace_id = ? AND action = 'prepare_contribution' "
+                "SELECT action, retry_key, input_digest, source_id, status, response_json "
+                "FROM operations WHERE workspace_id = ? "
+                "AND action IN ('prepare_contribution', 'prepare_data_source') "
                 "AND operation_id = ?",
                 (workspace_id, task_id),
             ).fetchone()
@@ -513,12 +498,12 @@ class WorkspaceState:
             return None
         return Operation(
             task_id,
-            "prepare_contribution",
             row[0],
             row[1],
             row[2],
             row[3],
-            _stored_response(row[4]),
+            row[4],
+            _stored_response(row[5]),
         )
 
     def finish_review_task(
@@ -545,7 +530,8 @@ class WorkspaceState:
             cursor = connection.execute(
                 "UPDATE operations SET status = ?, response_json = ?, updated_at = ? "
                 "WHERE workspace_id = ? AND operation_id = ? "
-                "AND action = 'prepare_contribution' AND status = 'pending_review'" + expected,
+                "AND action IN ('prepare_contribution', 'prepare_data_source') "
+                "AND status = 'pending_review'" + expected,
                 parameters,
             )
         if cursor.rowcount != 1:
@@ -628,7 +614,7 @@ class WorkspaceState:
             row = connection.execute(
                 "SELECT tenant_id, object_id FROM operations "
                 "WHERE workspace_id = ? AND operation_id = ? "
-                "AND action = 'prepare_contribution'",
+                "AND action IN ('prepare_contribution', 'prepare_data_source')",
                 (workspace_id, task_id),
             ).fetchone()
         return Actor(row[0], row[1]) if row is not None else None

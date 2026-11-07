@@ -93,6 +93,31 @@ live catalog, returns actual columns and retains ordinary admission/approval
 refusals. Its matching contract annotation comes from the pinned snapshot and
 adds no source read or second contract inspection; it is not a health check.
 
+## Imported XLSX is a derived DuckDB source
+
+XLSX is not a native runtime `type` and has no workbook query adapter. The optional
+`ariadne-data[spreadsheets]` extra imports explicitly selected sheets into a private,
+immutable DuckDB artifact; the resulting registry entry has `type: duckdb` and uses the
+native read-only attachment path. CSV, JSON, and Parquet uploads continue to use their
+existing native `csv`, `json`, and `parquet` handlers.
+
+The importer reads stored cells and formula presence without executing macros, fetching
+external links, or recalculating formulas. Formula and cached-value views are compared;
+missing/error caches, external links, unsupported stored types, and incomplete conversion
+are refused before activation. Cache freshness is **unknown**. Sheet, row, cell, header,
+column-type, date-format, source-digest, and derived-artifact provenance is retained with
+the private source state, not committed as workbook or DuckDB bytes in authored Git.
+
+Input and conversion bounds are 25 MiB compressed input, 64 MiB expanded archive, 200,000
+selected nonempty cells, and a 20-second worker deadline. Header/column normalization is
+reported in conversion provenance. Units, currencies, row meanings, and joins are not
+inferred. Excluding a problem cell or sheet requires a new explicit reviewed selection.
+
+Source version plus sheet selection determines import idempotency. Explicit refresh creates
+a new immutable derived artifact and native approval/admission candidate; it never overwrites
+the currently admitted source. A failed refresh leaves prior data and knowledge active.
+Conversion alone grants neither source/data access nor business approval.
+
 ## Document inputs are different
 
 Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters. The `ariadne-ingest` command stages document-derived drafts; it does not serve them automatically. See the [CLI reference](cli.md#document-ingestion-and-static-validation).

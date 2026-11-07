@@ -159,6 +159,25 @@ Git is needed for authoring/admission, not ordinary reads, queries or validation
 The source-reference manifest is authoring input, excluded from public exports
 and Reader retrieval; only safe IDs/digests belong in it.
 
+## Optional document-first enrichment
+
+After a document is admitted, an explicit user request may ask for a small,
+source-supported semantic enrichment. Start with relevant existing identities
+and ontology, select at most 20 pages and 200,000 characters, and propose at
+most 40 Claims. Reuse exact established Entity and Source Version IDs; preserve
+attribution and distinguish a proposal from an adopted Policy. A mere mention
+is not a relationship, and valid Evidence coordinates are not semantic proof.
+
+Author the complete candidate through the existing native `ingest-candidate`
+route above, including any required ontology addition, then inspect the actual
+full diff and supporting quotes. External lookup is off unless separately
+permitted; it never supplies local authority or permission. A rejected or
+corrected subset requires a newly complete candidate and fresh exact review,
+never replay of a whole-batch approval. No Entity merge or publication happens
+automatically. These steps use the independent-host SDK path already described;
+this skill does not assume a managed workspace, source-read capability, or
+publication capability from agent-hood.
+
 ## Workflow: ingest (you are the Distiller)
 
 The managed host-Distiller mode binds the ORIGINAL raw Knowledge Source and

@@ -14,7 +14,9 @@ from lumio_wiki.source_registry import SourceRegistryError, _validate_source_id
 
 from .state import Actor, Operation, WorkspaceState
 
-_SUPPORTED_EXTENSIONS = frozenset({".docx", ".md", ".markdown", ".pdf", ".txt"})
+_DOCUMENT_EXTENSIONS = frozenset({".docx", ".md", ".markdown", ".pdf", ".txt"})
+_STRUCTURED_TYPES = {".csv": "csv", ".json": "json", ".parquet": "parquet", ".xlsx": "xlsx"}
+_SUPPORTED_EXTENSIONS = _DOCUMENT_EXTENSIONS | _STRUCTURED_TYPES.keys()
 
 
 class UploadError(ValueError):
@@ -48,7 +50,8 @@ def validate_upload_metadata(source_id: str, filename: str, retry_key: str) -> N
         raise UploadError("filename must be a safe basename", code="unsafe_path")
     if Path(filename).suffix.lower() not in _SUPPORTED_EXTENSIONS:
         raise UploadError(
-            "unsupported original; supported inputs are .txt, .md, .markdown, .pdf, and .docx",
+            "unsupported original; supported inputs are .txt, .md, .markdown, .pdf, .docx, "
+            ".csv, .json, .parquet, and .xlsx",
             code="unsupported_original",
         )
     if not 1 <= len(retry_key) <= 200 or not retry_key.isprintable():
@@ -100,6 +103,13 @@ class IntakeService:
             "filename": filename,
             "sha256": digest,
             "size": len(raw),
+            "kind": (
+                "structured"
+                if Path(filename).suffix.lower() in _STRUCTURED_TYPES
+                else "document"
+            ),
+            "document_stored": True,
+            "data_query_ready": False,
         }
         if operation.status == "ready" and path.is_file():
             try:
@@ -122,8 +132,33 @@ class IntakeService:
             raise UploadError("uploaded original is unavailable", code="upload_not_found")
         return operation, path
 
+    def structured(
+        self, workspace_id: str, actor: Actor, upload_id: str
+    ) -> tuple[Operation, Path, dict]:
+        operation, path = self.load(workspace_id, actor, upload_id)
+        source_type = _STRUCTURED_TYPES.get(Path(operation.response["filename"]).suffix.lower())
+        if source_type is None:
+            raise UploadError("upload is not structured data", code="structured_required")
+        facts = {
+            "kind": "structured",
+            "source_id": operation.source_id,
+            "filename": operation.response["filename"],
+            "sha256": operation.response["sha256"],
+            "size": operation.response["size"],
+            "source_type": source_type,
+            "document_stored": True,
+            "data_query_ready": False,
+        }
+        return operation, path, facts
+
     def extract(self, workspace_id: str, actor: Actor, upload_id: str) -> tuple[dict, dict]:
         operation, path = self.load(workspace_id, actor, upload_id)
+        if Path(operation.response["filename"]).suffix.lower() in _STRUCTURED_TYPES:
+            raise UploadError(
+                "structured uploads are privately stored, not document text; use "
+                "prepare_data_source with the upload_id and explicit sheet selection for XLSX",
+                code="structured_requires_analytics",
+            )
         try:
             extracted = extract_source(
                 path,

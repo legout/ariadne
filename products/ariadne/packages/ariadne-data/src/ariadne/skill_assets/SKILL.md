@@ -646,6 +646,17 @@ separate store, never inside the Context Routing Map or table measurements.
   from it, ask the owner where it does not establish a rule, and stop at
   `review` with the exact digest. A `review_needed` proposal or an interrupted
   transition needs human resolution, never an agent reset or replacement.
+  The narrow managed shared-workspace exception is different: an explicitly
+  configured service may execute only the exact `prepare_data_source` or
+  `prepare_contribution` stage displayed in a separately authenticated,
+  one-use browser review. Source Approval and the requester's data grant are
+  separate source stages; complete submission review and overall admission
+  are separate contribution stages. The agent only prepares requests and
+  candidates. It never supplies the browser decision, and neither prompt
+  assent nor a bare API token is publication authority. This exception does
+  not permit the agent to run the local human-only commands above, approve a
+  knowledge-only view of a Core change, or bypass complete source-set grants,
+  native overall admission, or the pinned result context.
 - **Operator setup is not agent authority.** `ariadne setup` is
   operator-facing; agents do not initialize/configure Git, approve sources or
   admit revisions through setup. Pass exact operator commands and blockers to

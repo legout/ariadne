@@ -56,7 +56,8 @@ export default function (pi: ExtensionAPI) {
   if (!missing && url && authMode === "local-token") {
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
+      description:
+        "Read admitted knowledge, query authorized pinned data, and prepare contributions/enrichment",
       exposure: "direct",
       headers: { Authorization: "Bearer ${LUMIO_WORKSPACE_API_TOKEN}" },
     });
@@ -69,7 +70,8 @@ export default function (pi: ExtensionAPI) {
     }
     pi.registerMcpServer(SERVER, {
       url: `${url}/mcp`,
-      description: "Read admitted knowledge and prepare pending Lumio workspace contributions",
+      description:
+        "Read admitted knowledge, query authorized pinned data, and prepare contributions/enrichment",
       exposure: "direct",
       oauth: {
         clientId,
@@ -191,10 +193,15 @@ export default function (pi: ExtensionAPI) {
             `Retain retry=${retryKey} plus the exact source ID, filename, and bytes. After an ` +
             "interrupted upload, repeat the same upload with that key and those exact inputs to " +
             "recover the same upload_id; do not call get_task(upload_id). Use read_source_material " +
-            "to inspect normalized text and conversion facts. For prepare_contribution, retain a " +
+            "only for document text. CSV/JSON/Parquet/XLSX upload is storage, not query readiness: " +
+            "call prepare_data_source with the upload_id, plus explicit sheets for XLSX, and use the " +
+            "returned normalized table mapping. Ask about unresolved dates, units, row meaning, or " +
+            "joins; never infer them. Refresh means a new upload/task and reviewed selection, never " +
+            "recalculation or silent replacement. For prepare_contribution, retain a " +
             "separate stable retry_key and the exact request. Repeat that preparation to recover " +
-            "its task_id if interruption hid it, then call get_task with the actual task_id. Old " +
-            "browser approvals must not be replayed, and lost keys or inputs are not recoverable.",
+            "its task_id if interruption hid it, then call get_task with the actual task_id. " +
+            "Analytics contributions also require the exact granted source_task_id. Old browser " +
+            "approvals must not be replayed, and lost keys or inputs are not recoverable.",
         );
       } catch (error) {
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
@@ -218,13 +225,31 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const policy = modelAllowed ? "allowed" : "blocked";
-      const guidance =
+      const connectionGuidance =
         authMode === "local-token"
           ? "Use /mcp to inspect the token-authenticated connection. " +
             "Use /workspace-upload <source-id> <path> [retry=<key>] for exact bytes. " +
             "Browser sign-in is separate."
           : "Use /mcp to inspect the connection and sign in with the pre-registered public client. " +
             "No client secret is configured in Pi.";
+      const guidance =
+        connectionGuidance +
+        " When analytics is enabled: prepare_data_source, complete its separate source/data " +
+        "browser decisions, then profile_data_source. Existing SQLite/DuckDB/PostgreSQL and " +
+        "named-S3 CSV/JSON/Parquet/Delta/Iceberg/DuckLake connections use owner-provisioned " +
+        "opaque handles with explicit tables/prefixes; changed endpoints/scopes need fresh " +
+        "review, while unchanged-target credential rotation keeps the native grant. Suggestions, " +
+        "paths, and identifier matches never grant a source, catalog, or join. Structured uploads " +
+        "pass upload_id; XLSX also requires explicit sheets and uses stored caches without " +
+        "recalculation. Document " +
+        "storage and query readiness are separate outcomes. prepare_contribution needs the granted " +
+        "source_task_id, and query_data rechecks the caller's complete source-set grant. " +
+        "For bounded enrichment, call prepare_enrichment with explicit page IDs, the current " +
+        "admitted version, and a stable request_key. Author the complete returned selection " +
+        "through prepare_contribution with enrichment_task_id, sources: [], and a separate stable " +
+        "retry_key. Repeat the identical selection/draft to resume after interruption. A correction " +
+        "or subset needs a new draft retry_key and its fresh exact browser review; never replay an " +
+        "old whole-batch action. External lookup is disabled by default.";
       ctx.ui.notify(
         `Workspace: ${url}/mcp\nModel ${modelName(ctx)}: ${policy}\n${guidance}`,
         modelAllowed ? "info" : "warning",

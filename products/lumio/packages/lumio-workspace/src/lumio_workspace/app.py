@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import secrets
 import time
@@ -31,14 +32,20 @@ from .auth import (
     LocalTokenVerifier,
 )
 from .contributions import ContributionError, ContributionService
+from .enrichment import EnrichmentService
 from .intake import IntakeService, UploadError
 from .review import ReviewError, ReviewService, render_review, render_source
 from .setup import SetupError, apply_setup, preview_setup, render_setup
-from .state import Actor, RetryConflict, WorkspaceState
+from .state import LOCAL_TENANT_ID, Actor, RetryConflict, WorkspaceState, local_actor
 
 
 class WorkspaceError(ToolError):
     pass
+
+
+# The owner browser surface assigns only membership and reviewer work;
+# inspect_source and setup stay separate explicit operator grants.
+_MEMBERSHIP_CAPABILITIES = ("read", "contribute", "review")
 
 
 class _BrowserSession(dict):
@@ -143,6 +150,9 @@ class WorkspaceConfig:
     private_profile_path: Path | None = None
     private_root: Path | None = None
     namespace: str | None = None
+    analytics_project_id: str | None = None
+    analytics_project_path: Path | None = None
+    analytics_source_bindings_path: Path | None = None
 
     @property
     def operational_root(self) -> Path:
@@ -163,6 +173,11 @@ class WorkspaceConfig:
             private_profile_path=_optional_path("LUMIO_WORKSPACE_PRIVATE_PROFILE"),
             private_root=_optional_path("LUMIO_WORKSPACE_PRIVATE_ROOT"),
             namespace=os.environ.get("LUMIO_WORKSPACE_NAMESPACE") or None,
+            analytics_project_id=os.environ.get("LUMIO_WORKSPACE_ANALYTICS_PROJECT_ID") or None,
+            analytics_project_path=_optional_path("LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH"),
+            analytics_source_bindings_path=_optional_path(
+                "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS"
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -201,6 +216,60 @@ def _browser_actor(request: Request) -> Actor | None:
     return Actor(
         tenant_id=str(raw.get("tenant_id", "")),
         object_id=str(raw.get("object_id", "")),
+    )
+
+
+def _membership_rows(
+    state: WorkspaceState, config: WorkspaceConfig
+) -> list[tuple[str, bool, tuple[str, ...]]]:
+    # Read-only listing through the state's own connection; state.py is not
+    # part of this surface's owned files.
+    with state._connect() as connection:
+        users = connection.execute(
+            "SELECT user_id, enabled FROM local_users ORDER BY user_id"
+        ).fetchall()
+        grants = connection.execute(
+            "SELECT object_id, capability FROM memberships "
+            "WHERE workspace_id = ? AND tenant_id = ? ORDER BY object_id, capability",
+            (config.workspace_id, LOCAL_TENANT_ID),
+        ).fetchall()
+    capabilities: dict[str, list[str]] = {user: [] for user, _enabled in users}
+    for object_id, capability in grants:
+        capabilities.setdefault(object_id, []).append(capability)
+    return [(user, bool(enabled), tuple(capabilities.get(user, ()))) for user, enabled in users]
+
+
+def _render_membership(workspace: str, rows: list[tuple[str, bool, tuple[str, ...]]]) -> str:
+    body_rows = "\n".join(
+        "<tr>"
+        f"<td><code>{html.escape(user)}</code></td>"
+        f"<td>{'enabled' if enabled else 'disabled'}</td>"
+        f"<td>{html.escape(', '.join(capabilities) or 'none')}</td>"
+        "</tr>"
+        for user, enabled, capabilities in rows
+    )
+    options = "\n".join(
+        f'<option value="{capability}">{capability}</option>'
+        for capability in _MEMBERSHIP_CAPABILITIES
+    )
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Workspace membership</title></head><body><main>"
+        "<h1>Workspace membership</h1>"
+        f"<p>Owner surface for {html.escape(workspace)}: assign or revoke member, "
+        "contributor, and reviewer capabilities. Original/source/data inspection "
+        "(<code>inspect_source</code>) and owner setup remain separate explicit "
+        "operator grants outside this page.</p>"
+        "<table><thead><tr><th>User</th><th>State</th><th>Capabilities</th></tr>"
+        f"</thead><tbody>\n{body_rows}\n</tbody></table>"
+        '<form method="post" action="/membership">'
+        '<label>Local user <input name="user_id" required autocomplete="off"></label> '
+        f'<select name="capability">\n{options}\n</select> '
+        '<select name="action"><option value="grant">grant</option>'
+        '<option value="revoke">revoke</option></select> '
+        '<button type="submit">Apply</button></form>'
+        "</main></body></html>"
     )
 
 
@@ -292,11 +361,39 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             ],
         }
 
-    def contribution_service() -> ContributionService:
+    def analytics_service(*, required: bool = True) -> Any:
+        selected = (
+            config.analytics_project_id,
+            config.analytics_project_path,
+            config.analytics_source_bindings_path,
+        )
+        if not any(selected):
+            if required:
+                raise WorkspaceError(
+                    "analytics is not enabled; the owner must configure the exact project "
+                    "and operator source bindings"
+                )
+            return None
         if (
-            config.authoring_path is None
+            not all(selected)
+            or config.authoring_path is None
             or config.private_profile_path is None
         ):
+            raise WorkspaceError(
+                "analytics configuration is incomplete; the owner must set the project handle, "
+                "project path, source bindings, authoring path, and private profile"
+            )
+        try:
+            from .analytics import AnalyticsService
+        except ImportError as exc:
+            raise WorkspaceError(
+                "analytics Core is unavailable or incompatible; install the same-candidate "
+                "analytics producer rather than using the base service as a query fallback"
+            ) from exc
+        return AnalyticsService(config, state, intake)
+
+    def contribution_service() -> ContributionService:
+        if config.authoring_path is None or config.private_profile_path is None:
             raise WorkspaceError("workspace contribution is not configured")
         return ContributionService(
             state,
@@ -305,7 +402,11 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             external_url=config.external_url,
             authoring_path=config.authoring_path,
             profile_path=config.private_profile_path,
+            destination=config.published_path,
         )
+
+    def enrichment_service() -> EnrichmentService:
+        return EnrichmentService(contribution_service(), destination=config.published_path)
 
     def review_service() -> ReviewService:
         if config.authoring_path is None or config.private_profile_path is None:
@@ -317,6 +418,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             profile_path=config.private_profile_path,
             private_root=config.operational_root,
             destination=config.published_path,
+            analytics=analytics_service(required=False),
         )
 
     @server.tool()
@@ -332,18 +434,141 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         return material
 
     @server.tool()
+    def prepare_data_source(
+        retry_key: str,
+        project: str,
+        source: str,
+        table: str,
+        business_questions: list[str],
+        upload_id: str | None = None,
+        sheets: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Stage an operator-bound or privately uploaded source without opening data."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor, "contribute"):
+            raise WorkspaceError("workspace contribution is not available")
+        try:
+            return analytics_service().prepare_data_source(
+                actor,
+                retry_key=retry_key,
+                project=project,
+                source=source,
+                table=table,
+                business_questions=business_questions,
+                upload_id=upload_id,
+                sheets=sheets,
+            )
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def profile_data_source(task_id: str) -> dict[str, Any]:
+        """Profile only a currently source-approved and caller-authorized exact source set."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor):
+            raise WorkspaceError("workspace access is not available")
+        try:
+            return analytics_service().profile_data_source(actor, task_id)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def query_data(
+        project: str,
+        source_task_id: str,
+        operation: str,
+        request: dict,
+    ) -> dict[str, Any]:
+        """Query a pinned native release after checking the caller's complete source-set grant."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor):
+            raise WorkspaceError("workspace access is not available")
+        try:
+            return analytics_service().query_data(
+                actor, project, source_task_id, operation, request
+            )
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
+    def prepare_enrichment(
+        workspace_id: str,
+        page_ids: list[str],
+        expected_version: str,
+        request_key: str,
+    ) -> dict[str, Any]:
+        """Select exact admitted input for bounded agent-authored enrichment."""
+        actor = _actor()
+        if not state.permits(config.workspace_id, actor) or not state.permits(
+            config.workspace_id, actor, "contribute"
+        ):
+            raise WorkspaceError("workspace enrichment is not available")
+        try:
+            return enrichment_service().prepare(
+                actor,
+                workspace_id=workspace_id,
+                page_ids=page_ids,
+                expected_version=expected_version,
+                request_key=request_key,
+            )
+        except (ContributionError, RetryConflict, ValueError) as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    @server.tool()
     def prepare_contribution(
         retry_key: str,
         sources: list[dict],
         pages: list[dict],
         base_revision: str | None = None,
         continuation_task_id: str | None = None,
+        source_task_id: str | None = None,
+        core_edits: list[dict] | None = None,
+        enrichment_task_id: str | None = None,
+        control: str | None = None,
     ) -> dict[str, Any]:
         """Prepare a native candidate from a server-selected base or task continuation."""
         actor = _actor()
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
+            if enrichment_task_id is not None:
+                if (
+                    sources
+                    or base_revision is not None
+                    or continuation_task_id is not None
+                    or source_task_id is not None
+                    or core_edits
+                ):
+                    raise WorkspaceError(
+                        "enrichment uses only its persisted selection, complete pages, and control"
+                    )
+                return contribution_service().prepare_enrichment(
+                    actor,
+                    task_id=enrichment_task_id,
+                    retry_key=retry_key,
+                    pages=pages,
+                    control=control,
+                )
+            if control is not None:
+                raise WorkspaceError("a complete control candidate requires enrichment_task_id")
+            analytics = analytics_service(required=False)
+            if analytics is not None:
+                if source_task_id is None:
+                    raise WorkspaceError(
+                        "integrated analytics contribution requires an exact source-task grant"
+                    )
+                return analytics.prepare_contribution(
+                    actor,
+                    retry_key=retry_key,
+                    source_task_id=source_task_id,
+                    sources=sources,
+                    pages=pages,
+                    core_edits=core_edits or [],
+                )
+            if source_task_id is not None or core_edits:
+                raise WorkspaceError(
+                    "analytics source tasks and Core edits require explicit analytics enablement"
+                )
             return contribution_service().prepare(
                 actor,
                 retry_key=retry_key,
@@ -352,7 +577,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 sources=sources,
                 pages=pages,
             )
-        except (ContributionError, RetryConflict) as exc:
+        except (ContributionError, RetryConflict, ValueError) as exc:
             raise WorkspaceError(str(exc)) from exc
 
     @server.tool()
@@ -362,6 +587,13 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         if not state.permits(config.workspace_id, actor, "contribute"):
             raise WorkspaceError("workspace contribution is not available")
         try:
+            source = state.get_operation(config.workspace_id, actor, "prepare_data_source", task_id)
+            if source is not None:
+                if source.status == "pending_review":
+                    recovered = review_service().reconcile_task(task_id)
+                    if recovered is not None:
+                        return {"task_id": task_id, **recovered}
+                return analytics_service().get(actor, task_id)
             current = contribution_service().get(actor, task_id)
             if current["status"] == "pending_review":
                 recovered = review_service().reconcile_task(task_id)
@@ -383,9 +615,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             return JSONResponse(
                 {"error": "workspace contribution is not available"}, status_code=403
             )
-        if request.headers.get("content-type", "").split(";", 1)[0] != (
-            "application/octet-stream"
-        ):
+        if request.headers.get("content-type", "").split(";", 1)[0] != ("application/octet-stream"):
             return JSONResponse({"error": "exact-byte stream required"}, status_code=415)
         try:
             raw = await intake.read_bounded(request.stream())
@@ -489,9 +719,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             try:
                 context = review_service().get(actor, task_id)
             except ReviewError as exc:
-                return JSONResponse(
-                    {"error": str(exc), "code": exc.code}, status_code=exc.status
-                )
+                return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
             return HTMLResponse(render_review(context, config.published_version))
         if request.headers.get("origin") != config.external_url:
             return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
@@ -544,6 +772,76 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         except ReviewError as exc:
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
         return HTMLResponse(render_source(request.path_params["task_id"], filename, text))
+
+    @server.custom_route("/membership", methods=["GET", "POST"], include_in_schema=False)
+    async def membership(request: Request) -> Response:
+        actor = _browser_actor(request)
+        if actor is None:
+            if request.method == "GET":
+                return RedirectResponse("/auth/login", status_code=303)
+            return JSONResponse({"error": "browser authentication required"}, status_code=401)
+        if not state.permits(config.workspace_id, actor, "setup"):
+            return JSONResponse(
+                {"error": "workspace membership management is not available"}, status_code=403
+            )
+        if request.method == "GET":
+            return HTMLResponse(
+                _render_membership(config.workspace_id, _membership_rows(state, config))
+            )
+        if request.url.scheme != "https" or request.headers.get("origin") != config.external_url:
+            return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0] != (
+            "application/x-www-form-urlencoded"
+        ):
+            return JSONResponse({"error": "form POST required"}, status_code=415)
+        try:
+            body = await request.body()
+            if len(body) > 8192:
+                raise ValueError("membership form too large")
+            fields = parse_qs(
+                body.decode(),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=3,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid membership form"}, status_code=400)
+        users = fields.get("user_id", [])
+        capabilities = fields.get("capability", [])
+        actions = fields.get("action", [])
+        if len(fields) != 3 or len(users) != 1 or len(capabilities) != 1 or len(actions) != 1:
+            return JSONResponse(
+                {"error": "one user, capability, and action are required"}, status_code=400
+            )
+        user_id, capability, action = users[0], capabilities[0], actions[0]
+        if user_id.strip() != user_id or not user_id:
+            return JSONResponse({"error": "invalid local user ID"}, status_code=400)
+        if capability not in _MEMBERSHIP_CAPABILITIES:
+            return JSONResponse(
+                {
+                    "error": "this page assigns only read, contribute, and review; "
+                    "original/source/data access stays a separate explicit operator grant"
+                },
+                status_code=400,
+            )
+        target_actor = local_actor(user_id)
+        try:
+            if action == "grant":
+                state.grant(config.workspace_id, target_actor, capability)
+            elif action == "revoke":
+                state.revoke(config.workspace_id, target_actor, capability)
+            else:
+                return JSONResponse({"error": "unknown membership action"}, status_code=400)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "user_id": user_id,
+                "capability": capability,
+                "action": action,
+                "capabilities": list(state.capabilities(config.workspace_id, target_actor)),
+            }
+        )
 
     @server.custom_route("/auth/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request: Request) -> Response:

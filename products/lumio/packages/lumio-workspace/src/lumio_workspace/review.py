@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from importlib import resources as package_resources
 from pathlib import Path
 from string import Template
+from typing import Any
 from urllib.parse import quote
 
 import msgspec
@@ -22,6 +23,7 @@ from lumio_wiki.authoring_review import (
     check_authoring_commit,
     review_knowledge_changes,
 )
+from lumio_wiki.evidence import body_sections
 from lumio_wiki.git_authoring import (
     CapturedRevision,
     GitAuthoringError,
@@ -38,6 +40,7 @@ from lumio_wiki.source_inspection import (
     fetch_verified_artifact,
     resolve_source_reference_binding,
 )
+from lumio_wiki.source_registry import SourceRegistryError
 
 from .publication import PublicationService
 from .setup import SetupError, current_attachment_digest
@@ -60,8 +63,22 @@ class ReviewContext:
     publication: PublicationReview
     resources: ResolvedPrivateSources
     source_availability: dict[tuple[str, str], bool | None]
+    source_impact: list[dict]
+    binding: dict
+    source_inspection_permitted: bool
+    action_digest: str
+
+
+@dataclass(frozen=True)
+class AnalyticsReviewContext:
+    operation: Operation
+    display: dict
     binding: dict
     action_digest: str
+
+
+def _analytics_task(operation: Operation) -> bool:
+    return operation.action == "prepare_data_source" or "native_proposal" in operation.response
 
 
 def _json(value: object) -> str:
@@ -90,12 +107,14 @@ class ReviewService:
         profile_path: Path,
         private_root: Path,
         destination: Path,
+        analytics: Any = None,
     ) -> None:
         self.state = state
         self.workspace_id = workspace_id
         self.authoring_path = authoring_path
         self.private_root = private_root
         self.destination = destination
+        self.analytics = analytics
         self.publication = PublicationService(
             authoring_path=authoring_path,
             profile_path=profile_path,
@@ -149,7 +168,7 @@ class ReviewService:
             )
         return authoring
 
-    def _context(self, actor: Actor, task_id: str) -> ReviewContext:
+    def _context(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
@@ -159,6 +178,13 @@ class ReviewService:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
         if operation.status != "pending_review":
             raise ReviewError("the candidate is not pending review", code="review_not_pending")
+        if _analytics_task(operation):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.review_context(actor, operation)
         submission_base = operation.response.get("native_base", "")
         candidate = operation.response.get("native_candidate", "")
         try:
@@ -190,6 +216,32 @@ class ReviewService:
             captured = capture_revision(task_kb, candidate)
             publication = self.publication.preview(task_kb, candidate, admitted, resources)
             availability = self._source_availability(captured, resources)
+            source_impact: list[dict] = []
+            proposed_sources: dict[str, str] = {}
+            if operation.response.get("kind") == "enrichment" or operation.response.get(
+                "conversion"
+            ):
+                if resources.source_registry is None:
+                    raise ReviewError(
+                        "native source registry is required for source review",
+                        code="invalid_profile",
+                    )
+                from .enrichment import source_refresh_binding, source_refresh_impact
+
+                impact_base = (
+                    submission_base
+                    if operation.response.get("kind") != "enrichment"
+                    and operation.response.get("conversion")
+                    else base
+                )
+                source_impact = source_refresh_impact(
+                    operation.response,
+                    capture_revision(task_kb, impact_base),
+                    resources.source_registry,
+                )
+                proposed_sources = source_refresh_binding(
+                    operation.response, resources.source_registry
+                )
         except ReviewError:
             raise
         except (
@@ -199,6 +251,7 @@ class ReviewService:
             OSError,
             PrivateProfileError,
             SetupError,
+            SourceRegistryError,
         ) as exc:
             raise ReviewError(str(exc), code="stale_review") from exc
 
@@ -228,6 +281,8 @@ class ReviewService:
             "retention": publication.retention,
             "destination_identity": publication.destination_identity,
             "expected_current": publication.expected_current,
+            "source_refresh": source_impact,
+            "task_proposed_sources": proposed_sources,
         }
         return ReviewContext(
             operation,
@@ -237,7 +292,9 @@ class ReviewService:
             publication,
             resources,
             availability,
+            source_impact,
             binding,
+            self.state.permits(self.workspace_id, actor, "inspect_source"),
             "",
         )
 
@@ -261,16 +318,14 @@ class ReviewService:
                     available[(page.id, source.id)] = False
         return available
 
-    def get(self, actor: Actor, task_id: str) -> ReviewContext:
+    def get(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
             )
         self.reconcile_task(task_id)
         context = self._context(actor, task_id)
-        action = self.state.issue_review_action(
-            self.workspace_id, actor, task_id, context.binding
-        )
+        action = self.state.issue_review_action(self.workspace_id, actor, task_id, context.binding)
         return replace(context, action_digest=action)
 
     def inspect_source(
@@ -283,6 +338,12 @@ class ReviewService:
                 status=403,
             )
         context = self._context(actor, task_id)
+        if isinstance(context, AnalyticsReviewContext):
+            raise ReviewError(
+                "analytics source inspection requires its own exact data grant",
+                code="source_inspection_forbidden",
+                status=403,
+            )
         registry = context.resources.source_registry
         artifact_store = context.resources.artifact_store
         if registry is None or artifact_store is None:
@@ -368,6 +429,13 @@ class ReviewService:
         operation = self.state.get_review_task(self.workspace_id, task_id)
         if operation is None or operation.status != "pending_review":
             return None
+        if _analytics_task(operation):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.reconcile(operation)
         candidate = operation.response.get("native_candidate", "")
         approval = self.state.get_review_approval(self.workspace_id, task_id, candidate)
         if approval is None:
@@ -440,11 +508,20 @@ class ReviewService:
             self.state.finish_review_action(approval.action_digest, "completed")
         return response
 
-    def _apply_decision(self, actor: Actor, context: ReviewContext, decision: str) -> dict:
+    def _apply_decision(
+        self, actor: Actor, context: ReviewContext | AnalyticsReviewContext, decision: str
+    ) -> dict:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
                 "workspace review is not available", code="review_forbidden", status=403
             )
+        if isinstance(context, AnalyticsReviewContext):
+            if self.analytics is None:
+                raise ReviewError(
+                    "analytics is disabled or its compatible Core producer is unavailable",
+                    code="analytics_unavailable",
+                )
+            return self.analytics.apply_decision(actor, context, decision)
         operation = context.operation
         review_generation = operation.response.get("review_generation", 0) + 1
         if decision == "approve":
@@ -491,17 +568,345 @@ class ReviewService:
         return response
 
 
+def _anchor_quote(page: Any, anchor: Any) -> str:
+    lines = page.body.splitlines()
+    if anchor.line_start is not None:
+        start = anchor.line_start
+        end = anchor.line_end or start
+        return "\n".join(lines[start - 1 : end]).strip()
+    if anchor.section is not None:
+        matches = [
+            text
+            for title, _start, _end, text in body_sections(page.body, page.body_start_line)
+            if title == anchor.section
+        ]
+        return matches[0] if matches else "Anchor text unavailable."
+    return "Anchor text unavailable."
+
+
+def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
+    items = []
+    registry = context.resources.source_registry
+    store = context.resources.artifact_store
+    may_inspect = context.source_inspection_permitted
+    for source in page.sources:
+        digest = context.captured.manifest.bindings.get(page.id, {}).get(source.id)
+        version = registry.find_version(source.id, digest) if digest and registry else None
+        available = context.source_availability.get((page.id, source.id))
+        availability = {
+            None: "original unavailable or not retained",
+            True: "verified retained original",
+            False: "original unavailable",
+        }[available]
+        facts = [
+            f"attribution: {source.title or 'unknown'}",
+            f"source version: {digest or 'unbound'}",
+            f"registered at: {version.created_at if version else 'unknown'}",
+            f"filename: {version.filename if version and version.filename else 'unknown'}",
+            availability,
+        ]
+        passage_html = ""
+        if available is True and not may_inspect:
+            passage_html = "<p>Source-backed passage requires Source Inspection permission.</p>"
+        elif available is True and digest is not None and store is not None and registry:
+            try:
+                binding = resolve_source_reference_binding(
+                    registry,
+                    context.captured.manifest,
+                    source.id,
+                    entity_id=page.id,
+                )
+                original = fetch_verified_artifact(store, binding).decode("utf-8")
+            except (SourceInspectionError, UnicodeDecodeError) as exc:
+                passage_html = f"<p>Original passage unavailable: {html.escape(str(exc))}</p>"
+            else:
+                candidates = [
+                    *quotes,
+                    *[
+                        line.strip()
+                        for quote in quotes
+                        for line in quote.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")
+                    ],
+                ]
+                passage = next((text for text in candidates if text and text in original), None)
+                if passage is None:
+                    passage_html = (
+                        "<p>The retained original has no exact published-quote match; "
+                        "use separate Source Inspection. No raw-source Claim lineage "
+                        "is inferred.</p>"
+                    )
+                else:
+                    passage_html = (
+                        "<p>Source-backed passage (exact text match; not persisted Claim-lineage "
+                        "and not semantic verification):</p><blockquote><pre>"
+                        + html.escape(passage)
+                        + "</pre></blockquote>"
+                    )
+        items.append(f"<li>{html.escape('; '.join(facts))}{passage_html}</li>")
+    return "<ul>" + "".join(items) + "</ul>" if items else "<p>No source attribution.</p>"
+
+
+def _claim_conflicts(
+    base: Any,
+    candidate: Any,
+    subject_id: str,
+    claim: Any,
+    proposed_ids: set[str],
+) -> list[str]:
+    conflicts = []
+    seen = set()
+    for origin, graph in (("candidate", candidate), ("admitted", base)):
+        for page in graph.kb.pages:
+            for existing in page.claims:
+                if existing.id == claim.id or (page.id, existing.id) in seen:
+                    continue
+                conflict = None
+                if (
+                    claim.object is not None
+                    and existing.predicate == claim.predicate
+                    and existing.object == claim.object
+                    and page.id != subject_id
+                ):
+                    label = (
+                        "potential intra-candidate conflict"
+                        if origin == "candidate" and existing.id in proposed_ids
+                        else "potential conflict"
+                    )
+                    conflict = (
+                        f"{label}: {page.id} also has {existing.predicate} "
+                        f"{existing.object} in {existing.id}"
+                    )
+                elif (
+                    page.id == subject_id
+                    and existing.predicate == claim.predicate
+                    and existing.object != claim.object
+                ):
+                    conflict = f"predicate-cardinality review: {existing.id} has a different object"
+                elif (
+                    page.id == subject_id
+                    and existing.predicate == claim.predicate
+                    and claim.object is None
+                    and existing.object is None
+                    and (existing.value, existing.value_type) != (claim.value, claim.value_type)
+                ):
+                    label = (
+                        "potential intra-candidate literal cardinality conflict"
+                        if origin == "candidate" and existing.id in proposed_ids
+                        else "potential literal cardinality conflict"
+                    )
+                    conflict = f"{label}: {existing.id} has a different literal value"
+                if conflict is not None:
+                    seen.add((page.id, existing.id))
+                    conflicts.append(conflict)
+    return conflicts
+
+
+def _render_enrichment_claims(
+    context: ReviewContext,
+    page_change: Any,
+    captured: Any,
+    base: Any,
+) -> str:
+    if context.operation.response.get("kind") != "enrichment":
+        return ""
+    base_pages = {page.id: page for page in base.kb.pages}
+    proposed_ids = {
+        change.claim_id
+        for changed_page in context.authoring.knowledge.pages
+        for change in changed_page.claims
+    }
+    claims = {claim.id: claim for claim in captured.claims}
+    base_page = base_pages.get(captured.id)
+    removed_claims = {claim.id: claim for claim in base_page.claims} if base_page else {}
+    rendered = []
+    for change in page_change.claims:
+        claim = claims.get(change.claim_id) or removed_claims.get(change.claim_id)
+        if claim is None:
+            continue
+        quotes = [_anchor_quote(captured, anchor) for anchor in claim.evidence]
+        anchors = "".join(
+            "<li>section "
+            + html.escape(str(anchor.section or "unspecified"))
+            + ", lines "
+            + html.escape(str(anchor.line_start or "unspecified"))
+            + "-"
+            + html.escape(str(anchor.line_end or "unspecified"))
+            + "<blockquote><pre>"
+            + html.escape(quote)
+            + "</pre></blockquote></li>"
+            for anchor, quote in zip(claim.evidence, quotes, strict=True)
+        )
+        subject_implication = (
+            "reuses the selected existing Entity"
+            if captured.id in base_pages
+            else "proposes a new Entity; no automatic merge or alias resolution occurred"
+        )
+        object_implication = (
+            f"object Entity ID: {claim.object}; no automatic merge occurred"
+            if claim.object is not None
+            else "literal Claim; no Entity merge implication"
+        )
+        conflicts = _claim_conflicts(base, context.captured, captured.id, claim, proposed_ids)
+        conflict_html = (
+            _items(conflicts)
+            if conflicts
+            else "<p>No exact Claim conflict detected; semantic conflicts still require review.</p>"
+        )
+        rendered.append(
+            "<section>"
+            f"<h5>{html.escape(change.claim_id)} — {html.escape(change.change)}</h5>"
+            f"<p>predicate {html.escape(change.predicate)}; status "
+            f"{html.escape(claim.status or 'unknown')}</p>"
+            "<h6>Exact published-page quote and anchor</h6>"
+            f"<ul>{anchors}</ul>"
+            "<h6>Attribution, source version and availability</h6>"
+            f"{_claim_sources(context, captured, quotes)}"
+            "<h6>Conflicts</h6>"
+            f"{conflict_html}"
+            "<h6>Identity and merge implications</h6>"
+            f"<p>{html.escape(subject_implication)}; {html.escape(object_implication)}; "
+            + "Claim ID "
+            + ("corrects an existing Claim" if change.claim_id in removed_claims else "is new")
+            + ".</p>"
+            "</section>"
+        )
+    return "<h4>Proposed Claim review</h4>" + "".join(rendered)
+
+
+def _render_source_refresh(impact: list[dict]) -> str:
+    if not impact:
+        return ""
+    rendered = []
+    for item in impact:
+        claims = []
+        for claim in item["claims"]:
+            references = ", ".join(
+                f"{anchor['section'] or 'unspecified'} lines "
+                f"{anchor['line_start'] or 'unspecified'}-"
+                f"{anchor['line_end'] or 'unspecified'}"
+                for anchor in claim["evidence"]
+            )
+            claims.append(
+                f"<li><code>{html.escape(claim['id'])}</code>; Evidence: "
+                f"{html.escape(references or 'none recorded')}</li>"
+            )
+        claim_html = (
+            f"<p>Claims on this page that may need review:</p><ul>{''.join(claims)}</ul>"
+            if claims
+            else ("<p>No Claims are recorded on this page; page-level review still applies.</p>")
+        )
+        rendered.append(
+            "<li>Source <code>"
+            + html.escape(item["source_id"])
+            + "</code>: bound <code>"
+            + html.escape(item["bound_hash"])
+            + "</code>; "
+            + (
+                "task-proposed <code>" + html.escape(item["proposed_hash"]) + "</code>; "
+                if item["proposed_hash"] is not None
+                else ""
+            )
+            + "registry-latest <code>"
+            + html.escape(item["latest_hash"])
+            + "</code>.<br>Page <code>"
+            + html.escape(item["page_id"])
+            + "</code> ("
+            + html.escape(item["page_title"])
+            + ") may need review."
+            + claim_html
+            + "</li>"
+        )
+    return (
+        '<section id="source-refresh-impact"><h3>Source refresh impact</h3>'
+        "<p>Exact source bindings and page Evidence identify these conservative "
+        "review candidates. Page-level provenance cannot determine Claim-level or raw-passage "
+        "impact. A source change does not classify a Claim as false or retire it; historical "
+        "anchors remain bound to the displayed original version. Corrections require a fresh "
+        "reviewed change.</p>"
+        f"<ul>{''.join(rendered)}</ul></section>"
+    )
+
+
 def _items(values: list[str]) -> str:
     if not values:
         return "<p>None.</p>"
     return "<ul>" + "".join(f"<li>{html.escape(value)}</li>" for value in values) + "</ul>"
 
 
-def render_review(context: ReviewContext, pinned_version: str | None) -> str:
+def _render_analytics_review(context: AnalyticsReviewContext, pinned_version: str | None) -> str:
+    display = context.display
+    review = display.get("review")
+    knowledge = review.get("knowledge") if review else None
+    overall = display.get("overall")
+    publication = overall["publication_review"] if overall else None
+    source = display.get("source") or (review.get("source") if review else {})
+    template = Template(
+        package_resources.files("lumio_workspace")
+        .joinpath("templates/review.html")
+        .read_text(encoding="utf-8")
+    )
+    analytics = {
+        "source": source,
+        "core_changes": review.get("core_changes") if review else None,
+        "unknown_paths": review.get("unknown_paths") if review else None,
+        "overall": overall,
+    }
+    retention = publication["retention"] if publication else "separate source/data grants"
+    excluded = (
+        review.get("excluded_unstaged", []) + review.get("excluded_untracked", []) if review else []
+    )
+    control = knowledge.get("control_changes") if knowledge else None
+    ontology = knowledge.get("ontology_changes") if knowledge else None
+    conversion = context.operation.response.get("conversion", [])
+    return template.substitute(
+        task=html.escape(context.operation.operation_id),
+        namespace=html.escape(display["namespace"]),
+        base=html.escape(display["base"]),
+        submission_base=html.escape(context.binding["submission_base"]),
+        submission_review=html.escape(context.binding["submission_review"]),
+        candidate=html.escape(display["candidate"]),
+        destination=html.escape(display["destination"]),
+        expected=html.escape(display["expected"]),
+        observed=html.escape(display["observed"] or "none"),
+        pin=html.escape(pinned_version or "current pointer"),
+        authoring_digest=html.escape(context.binding["submission_review"]),
+        publication_digest=html.escape(context.binding.get("overall_digest") or "pending"),
+        retention=html.escape(retention),
+        validation=_items(display["validation"]),
+        blocking=_items(display["blocking"]),
+        exclusions=_items(excluded),
+        pages=f"<pre>{html.escape(_json(knowledge.get('pages', []) if knowledge else []))}</pre>",
+        manifest_changes=_items(knowledge.get("manifest_changes", []) if knowledge else []),
+        control_changes=f"<pre>{html.escape(_json(control))}</pre>",
+        ontology_changes=f"<pre>{html.escape(_json(ontology))}</pre>",
+        analytics=f"<pre>{html.escape(_json(analytics))}</pre>",
+        publication_details=f"<pre>{html.escape(_json(overall or source))}</pre>",
+        conversion=f"<pre>{html.escape(_json(conversion))}</pre>",
+        decision_description=html.escape(
+            "Approve executes only the displayed exact operation. "
+            "Requesting changes or rejecting does not publish."
+        ),
+        decision_label=html.escape(display["decision_label"]),
+        action_digest=html.escape(context.action_digest, quote=True),
+        disabled="disabled" if display["blocking"] else "",
+    )
+
+
+def render_review(
+    context: ReviewContext | AnalyticsReviewContext, pinned_version: str | None
+) -> str:
+    if isinstance(context, AnalyticsReviewContext):
+        return _render_analytics_review(context, pinned_version)
     authoring = context.authoring
     publication = context.publication
     pages = []
     captured_by_path = {page.path: page for page in context.captured.kb.pages}
+    enrichment_base = (
+        capture_revision(context.task_kb, authoring.base_revision)
+        if context.operation.response.get("kind") == "enrichment"
+        else None
+    )
     for page in authoring.knowledge.pages:
         captured = captured_by_path.get(page.path)
         support = []
@@ -518,8 +923,8 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
                 }[availability]
                 if availability is True:
                     link = (
-                        f'/review/{quote(context.operation.operation_id)}/source/'
-                        f'{quote(source_id)}/{quote(captured.id)}'
+                        f"/review/{quote(context.operation.operation_id)}/source/"
+                        f"{quote(source_id)}/{quote(captured.id)}"
                     )
                     support.append(f'<a href="{link}">{html.escape(source_id)}</a> ({label})')
                 else:
@@ -537,12 +942,18 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
             f"{html.escape(page.visibility or 'none')}</p>"
             f"<h4>Source support</h4>{support_html}"
             f"<h4>Content diff</h4><pre>{html.escape(page.body_diff or 'No body change.')}</pre>"
-            "<h4>Semantic and Claim changes</h4>"
+            + (
+                _render_enrichment_claims(context, page, captured, enrichment_base)
+                if captured is not None and enrichment_base is not None
+                else ""
+            )
+            + "<h4>Semantic and Claim changes</h4>"
             "<pre>"
             + html.escape(_json({"semantic": page.semantic_changes, "claims": page.claims}))
             + "</pre>"
             "</section>"
         )
+    impact_html = _render_source_refresh(context.source_impact)
     pin = pinned_version or "current pointer"
     template = Template(
         package_resources.files("lumio_workspace")
@@ -573,11 +984,17 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
                 for fact in context.operation.response.get("conversion", [])
             ]
         ),
-        pages="\n".join(pages),
+        pages=impact_html + "\n".join(pages),
         manifest_changes=_items(authoring.knowledge.manifest_changes),
         control_changes=f"<pre>{html.escape(_json(authoring.knowledge.control_changes))}</pre>",
         ontology_changes=f"<pre>{html.escape(_json(authoring.knowledge.ontology_changes))}</pre>",
         publication_details=f"<pre>{html.escape(_json(publication))}</pre>",
+        analytics="<p>Not an analytics candidate.</p>",
+        decision_description=html.escape(
+            "Approve activates only this exact candidate at the displayed destination and "
+            "expected active version. Requesting changes or rejecting does not publish."
+        ),
+        decision_label="Approve and publish exactly this candidate",
         conversion=(
             "<pre>"
             + html.escape(_json(context.operation.response.get("conversion", [])))
@@ -590,10 +1007,10 @@ def render_review(context: ReviewContext, pinned_version: str | None) -> str:
 
 def render_source(task_id: str, filename: str, text: str) -> str:
     return (
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>Source: {html.escape(filename)}</title></head><body><main>"
-        f"<p><a href=\"/review/{quote(task_id)}\">Back to exact candidate review</a></p>"
+        f'<p><a href="/review/{quote(task_id)}">Back to exact candidate review</a></p>'
         f"<h1>{html.escape(filename)}</h1><pre>{html.escape(text)}</pre>"
         "</main></body></html>"
     )
