@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import shlex
 from dataclasses import replace
 from pathlib import Path
@@ -256,17 +257,48 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     space_output = capsys.readouterr().out
     space_project = analytics_space_root / "analytics-project"
     space_bindings = analytics_space_root / "analytics-bindings.json"
-    export_line = "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=" + shlex.quote(
-        str(space_project)
-    )
+    export_line = "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=" + shlex.quote(str(space_project))
     assert export_line in space_output
     assert shlex.split(export_line[len("export ") :]) == [
         f"LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH={space_project}"
     ]
     assert (
-        "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
-        + shlex.quote(str(space_bindings))
+        "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS=" + shlex.quote(str(space_bindings))
         in space_output
     )
     assert f'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="{space_project}"' in space_output
     assert f'LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="{space_bindings}"' in space_output
+
+    # A target containing a double quote and a backslash produces escaped
+    # EnvironmentFile lines that systemd's documented rule parses back exactly.
+    analytics_escaped_root = tmp_path / 'workspace"new\\root'
+    escaped_arguments = [
+        "restore",
+        "--backup-root",
+        str(analytics_backup),
+        "--target-root",
+        str(analytics_escaped_root),
+    ]
+    assert operations_main(escaped_arguments) == 0
+    escaped_output = capsys.readouterr().out
+    escaped_project = analytics_escaped_root / "analytics-project"
+    escaped_bindings = analytics_escaped_root / "analytics-bindings.json"
+
+    def systemd_escape(value) -> str:
+        return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+    def systemd_parse(line: str) -> str:
+        inner = line.split("=", 1)[1]
+        assert inner[0] == '"' and inner[-1] == '"'
+        return re.sub(r'\\(["\\])', r"\1", inner[1:-1])
+
+    project_line = (
+        f'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="{systemd_escape(escaped_project)}"'
+    )
+    assert project_line in escaped_output
+    assert systemd_parse(project_line) == str(escaped_project)
+    bindings_line = (
+        f'LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="{systemd_escape(escaped_bindings)}"'
+    )
+    assert bindings_line in escaped_output
+    assert systemd_parse(bindings_line) == str(escaped_bindings)

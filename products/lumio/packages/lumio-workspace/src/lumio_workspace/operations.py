@@ -101,6 +101,12 @@ def _copy_file(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
+def _environment_file_line(name: str, value: Path) -> str:
+    """Escape for systemd's documented double-quoted EnvironmentFile parsing."""
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'{name}="{escaped}"'
+
+
 def quiesced_backup(config: WorkspaceConfig, backup_root: Path) -> Path:
     """Copy the whole data root under the activation mutation locks.
 
@@ -285,13 +291,16 @@ def main(argv: list[str] | None = None) -> int:
             print("# systemd EnvironmentFile= lines (no export prefix):")
             if restored.analytics_project_path is not None:
                 print(
-                    'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="'
-                    f'{restored.analytics_project_path}"'
+                    _environment_file_line(
+                        "LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH", restored.analytics_project_path
+                    )
                 )
             if restored.analytics_source_bindings_path is not None:
                 print(
-                    'LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="'
-                    f'{restored.analytics_source_bindings_path}"'
+                    _environment_file_line(
+                        "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS",
+                        restored.analytics_source_bindings_path,
+                    )
                 )
     return 0
 
