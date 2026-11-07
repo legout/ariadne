@@ -897,7 +897,7 @@ wheels = [
 
 [[package]]
 name = "lumio-lancedb"
-version = "0.5.1"
+version = "0.6.0"
 source = { editable = "products/lumio/packages/lumio-lancedb" }
 dependencies = [
     { name = "lancedb" },
@@ -927,7 +927,7 @@ provides-extras = ["embeddings", "s3"]
 
 [[package]]
 name = "lumio-wiki"
-version = "0.5.1"
+version = "0.6.0"
 source = { editable = "products/lumio/packages/lumio-wiki" }
 dependencies = [
     { name = "msgpack" },
