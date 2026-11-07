@@ -204,3 +204,48 @@ jobs:
           build_server(FilesystemLocation("products/lumio/tests/fixtures/valid"))
           print("mcp wheel smoke ok:", rows["results"][0]["path"])
           EOF
+
+  # Issue #98 (W6): isolated service-wheel checks. The base environment
+  # proves the Lumio-only deployment surface (workspace wheel + built SDK
+  # wheel, Core and its runtime absent) through the packaging verifier; the
+  # analytics pair resolves Core from the same-commit built wheel and runs
+  # the member service suite against the installed distributions, mirroring
+  # the core-source job's pair-installed pattern. The service tests come
+  # from the checkout; every product package they import comes from the
+  # built wheels.
+  isolated-lumio-workspace-wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv build --package lumio-workspace --wheel --out-dir dist/workspace
+      - run: uv build --package lumio-wiki --wheel --out-dir dist/sdk
+      - run: uv build --package ariadne-data --wheel --out-dir dist/core
+      - name: Lumio-only base service environment (Core absent)
+        run: |
+          uv venv --python 3.14 /tmp/workspace-base
+          uv pip install --python /tmp/workspace-base/bin/python \
+            dist/workspace/lumio_workspace-*.whl dist/sdk/lumio_wiki-*.whl
+      - name: Workspace wheel packaging check (templates, extras boundary)
+        run: |
+          verifier=products/lumio/packages/lumio-workspace/scripts/verify_workspace_wheel.py
+          /tmp/workspace-base/bin/python -I "$verifier" \
+            dist/workspace/lumio_workspace-*.whl
+      - name: Analytics pair environment (Core from the same-commit wheel)
+        run: |
+          WHEEL=$(ls dist/workspace | grep whl)
+          SDK=$(ls dist/sdk | grep whl)
+          CORE=$(ls dist/core | grep whl)
+          uv venv --python 3.14 /tmp/workspace-pair
+          uv pip install --python /tmp/workspace-pair/bin/python \
+            "./dist/workspace/$WHEEL[analytics]" \
+            "./dist/sdk/$SDK" "./dist/core/$CORE"
+          uv pip install --python /tmp/workspace-pair/bin/python pytest
+      - name: Service tests against the installed pair
+        run: |
+          /tmp/workspace-pair/bin/python -m pytest -q \
+            products/lumio/packages/lumio-workspace/tests
