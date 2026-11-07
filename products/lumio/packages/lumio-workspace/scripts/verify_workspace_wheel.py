@@ -49,7 +49,7 @@ EXPECTED_BASE_REQUIREMENTS = sorted(
         "uvicorn<1,>=0.54",
     ]
 )
-EXPECTED_ANALYTICS_REQUIREMENTS = ["ariadne-data[spreadsheets]<0.8.0,>=0.7.0"]
+EXPECTED_ANALYTICS_REQUIREMENTS = ["ariadne-data[spreadsheets]<0.9.0,>=0.8.0"]
 
 # The hatch force-include assets: losing either template breaks the owner
 # setup and browser review surfaces even though imports still succeed.
