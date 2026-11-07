@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import shlex
 from dataclasses import replace
 from pathlib import Path
 
@@ -240,3 +241,32 @@ def test_restore_and_revocation_preserve_admitted_only_access(
         f"export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
         f"{analytics_cli_root / 'analytics-bindings.json'}" in output
     )
+
+    # A whitespace restore target still yields shell-safe assignments whose
+    # value evaluates to the full rebased path, plus EnvironmentFile lines.
+    analytics_space_root = tmp_path / "workspace new"
+    space_arguments = [
+        "restore",
+        "--backup-root",
+        str(analytics_backup),
+        "--target-root",
+        str(analytics_space_root),
+    ]
+    assert operations_main(space_arguments) == 0
+    space_output = capsys.readouterr().out
+    space_project = analytics_space_root / "analytics-project"
+    space_bindings = analytics_space_root / "analytics-bindings.json"
+    export_line = "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=" + shlex.quote(
+        str(space_project)
+    )
+    assert export_line in space_output
+    assert shlex.split(export_line[len("export ") :]) == [
+        f"LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH={space_project}"
+    ]
+    assert (
+        "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
+        + shlex.quote(str(space_bindings))
+        in space_output
+    )
+    assert f'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="{space_project}"' in space_output
+    assert f'LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="{space_bindings}"' in space_output

@@ -97,13 +97,19 @@ exactly these environment variables:
 | `published_path=` | `LUMIO_WORKSPACE_PUBLISHED_PATH` |
 | `private_profile_path=` | `LUMIO_WORKSPACE_PRIVATE_PROFILE` |
 | `private_root=` | `LUMIO_WORKSPACE_PRIVATE_ROOT` |
-| `export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=` | `LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH` |
-| `export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS=` | `LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS` |
+| `export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=…` or `LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="…"` | `LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH` |
+| `export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS=…` or `LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="…"` | `LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS` |
 
-When analytics is configured, the two analytics lines are printed as
-ready-to-paste `export` assignments for the new data root. An owner
-following this recipe literally copies every mapped variable into the
-environment file and restarts the service against the restored copies.
+When analytics is configured, the command prints two labeled blocks for the
+analytics variables, one per use: **shell lines** (`export
+LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH=<shell-quoted value>`, ready to
+paste into an interactive shell — the value is `shlex`-quoted, so paths
+containing spaces survive) and **systemd `EnvironmentFile=` lines**
+(`LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="value"`, no `export` prefix —
+systemd does not accept one). Copy the block that matches how the
+environment is loaded and never mix the two forms. An owner following this
+recipe literally copies every mapped variable into the environment file and
+restarts the service against the restored copies.
 
 **Disclosed restore boundary (analytics proposals):** restored Ariadne
 proposal records retain their old absolute project identity, so native

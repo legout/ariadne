@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import sqlite3
 from dataclasses import dataclass, replace
@@ -266,16 +267,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"published_path={restored.published_path}")
         print(f"private_profile_path={restored.private_profile_path}")
         print(f"private_root={restored.private_root}")
-        if restored.analytics_project_path is not None:
-            print(
-                "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="
-                f"{restored.analytics_project_path}"
-            )
-        if restored.analytics_source_bindings_path is not None:
-            print(
-                "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
-                f"{restored.analytics_source_bindings_path}"
-            )
+        if (
+            restored.analytics_project_path is not None
+            or restored.analytics_source_bindings_path is not None
+        ):
+            print("# Paste into an interactive shell:")
+            if restored.analytics_project_path is not None:
+                print(
+                    "export LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="
+                    + shlex.quote(str(restored.analytics_project_path))
+                )
+            if restored.analytics_source_bindings_path is not None:
+                print(
+                    "export LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="
+                    + shlex.quote(str(restored.analytics_source_bindings_path))
+                )
+            print("# systemd EnvironmentFile= lines (no export prefix):")
+            if restored.analytics_project_path is not None:
+                print(
+                    'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="'
+                    f'{restored.analytics_project_path}"'
+                )
+            if restored.analytics_source_bindings_path is not None:
+                print(
+                    'LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS="'
+                    f'{restored.analytics_source_bindings_path}"'
+                )
     return 0
 
 
