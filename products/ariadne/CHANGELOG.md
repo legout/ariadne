@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - 2026-11-07
+
+- **Whole-contribution review and commit check (#91, A2)** — the new
+  `ariadne.contribution_review` module composes knowledge and Core changes
+  into one review: complete staged-tree inventory, raw Core diffs with
+  truthful plain-language consequences and explicit static-review unknowns,
+  current-staged-index consistency (a later staged addition invalidates an
+  existing-candidate check), and exact post-hook commit verification through
+  `ariadne-authoring contribution-review` / `contribution-check`.
+- **Explicit private-profile managed admission (#91, A1)** — absolute
+  `--context-private-profile` selection through CLI/Python preview and
+  confirmation, native overall admission with original retention, locked
+  rebinding refusal, Core-last activation and a profile-free reader.
+- **Bounded selected-resource profiling seams (#92, D1)** —
+  `AuthoringProject.inputs()`/`inputs()` gain an optional exact
+  `(source, table)` selector (sample_rows retained) and an
+  `expected_revision` preflight checked before any source opens;
+  `QueryRuntime.open_project` accepts a validated `admission_record` pin
+  (snapshot/approval/binding revalidated without re-resolution) for
+  race-free pinned queries.
+- **Stored-value XLSX import (#93, D2)** — `ariadne.spreadsheet_import`
+  (optional `spreadsheets` extra with `openpyxl`) produces immutable
+  DuckDB artifacts with conversion provenance: actual-XML extent and
+  cell-order validation before openpyxl, sparse EmptyCell handling,
+  selection-wide cell bound, implicit-reference inference, and honest
+  refusal of implicit-`r` shared formulas — never recalculation, macros
+  or external links. CSV/JSON/Parquet reuse the existing native handlers.
+- **Packaged skill** guidance for the managed shared-workspace exception
+  (browser-exact actions only; no agent-run human-only commands).
 
 ## 0.7.0 - 2026-10-22
 

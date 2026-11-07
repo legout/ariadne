@@ -236,6 +236,26 @@ these capabilities: the exact candidate wheel pairing (Core and producer
 source refs and wheel digests) is recorded with the qualification run
 evidence, not assumed from published versions.
 
+### Release 0.8.0 / 0.6.0
+
+The public pairing is `ariadne-data==0.8.0` with
+`lumio-wiki==0.6.0` (Python >=3.14). Install the exact pair:
+
+```sh
+pip install 'ariadne-data[mcp]==0.8.0' 'lumio-wiki==0.6.0'
+```
+
+Omit `[mcp]` for CLI-only use; `lumio-lancedb==0.6.0` is an optional retrieval
+adapter, not a Core requirement. Base Core still imports without either SDK
+or MCP. Qualification records the exact producer source commit and each built
+wheel hash; the release workflow pins the exact published `lumio-wiki` 0.6.0
+producer wheel by immutable PyPI URL and SHA-256. A different installed build
+needs genuine validation and a fresh overall admission; it never upgrades an
+old Bound Release in place. The 0.8.0/0.6.0 pair adds the whole-contribution
+review, explicit private-profile managed admission, bounded selected-resource
+profiling seams, and the stored-value XLSX import (optional `spreadsheets`
+extra) — none of which existing admissions gain silently.
+
 ### Release 0.7.0 / 0.5.0
 
 The public pairing is `ariadne-data==0.7.0` with

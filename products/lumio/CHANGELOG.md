@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 - 2026-11-07
+
+- **Lossless native verification metadata rendering (#91)** — the
+  whole-contribution review's profile renderer preserves validated native
+  metadata types: mixed boolean/string keys stay distinguishable and a
+  native date never collapses into the identical quoted text (typed
+  rendering over a shallow structural copy with sorted, human-readable
+  output).
+- **Packaged skill guidance for the optional document-first enrichment
+  route (#95, #96)** — bounded selection (≤20 pages / ≤200,000 characters /
+  ≤40 proposed Claims), complete candidates through the native ingest
+  route, fresh-exact-review regeneration for corrections/subsets,
+  source-backed passages for permissioned reviewers, and explicit
+  no-join/no-metric/no-publication authority; the independent-host path is
+  unchanged.
+- Lockstep family release: `lumio-lancedb` requires
+  `lumio-wiki>=0.6.0,<0.7.0`. Release channel tag: `lumio-v0.6.0`. See
+  [release notes](docs/release-notes/v0.6.0.md).
 
 ## 0.5.1 - 2026-10-22
 

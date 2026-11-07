@@ -75,7 +75,8 @@ consumption.
 - [Sample corpus](examples/sample-corpus/) — one synthetic file per supported format
 - [Capture adapters](examples/capture-adapters/)
 - [Packaging and optional dependencies](docs/packaging.md)
-- [Changelog](CHANGELOG.md), [0.5.1 patch notes](docs/release-notes/v0.5.1.md)
+- [Changelog](CHANGELOG.md), [0.6.0 release notes](docs/release-notes/v0.6.0.md),
+  [0.5.1 patch notes](docs/release-notes/v0.5.1.md)
   and the [0.5.0 feature baseline](docs/release-notes/v0.5.0.md)
 - [Development instructions](../../CONTRIBUTING.md)
 - [Report an issue](https://github.com/legout/ariadne/issues)
