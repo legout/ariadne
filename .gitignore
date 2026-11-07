@@ -38,3 +38,6 @@ dist/
 mockups/shots/live/
 .wiki/
 .pi-subagents/
+# Zensical docs-site generated artifacts
+docs-site/docs/
+docs-site/site/

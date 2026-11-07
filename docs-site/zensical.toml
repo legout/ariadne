@@ -1,0 +1,136 @@
+[project]
+site_url = "https://legout.github.io/ariadne/"
+site_name = "Ariadne & Lumio"
+site_description = "Governed metrics, knowledge bases, and shared workspaces for autonomous agents."
+site_author = "Legout"
+copyright = "Copyright &copy; 2026 Legout"
+
+repo_url = "https://github.com/legout/ariadne"
+repo_name = "legout/ariadne"
+edit_uri = "edit/main/docs-site/docs/"
+
+nav = [
+  { "Welcome" = "index.md" },
+
+  { "Ariadne" = [
+    { "Getting started" = "ariadne/tutorials/getting-started.md" },
+    { "How-to guides" = [
+      { "Git authoring" = "ariadne/how-to/git-authoring.md" },
+      { "Context knowledge" = "ariadne/how-to/context-knowledge.md" },
+      { "Docker MCP" = "ariadne/how-to/docker-mcp.md" },
+      { "Multiple S3 storages" = "ariadne/how-to/multiple-s3-storages.md" },
+      { "Pi agent workflow" = "ariadne/how-to/pi-agent-workflow.md" },
+      { "Shared workspace data" = "ariadne/how-to/shared-workspace-data.md" },
+    ]},
+    { "Reference" = [
+      { "CLI" = "ariadne/reference/cli.md" },
+      { "Context knowledge" = "ariadne/reference/context-knowledge.md" },
+      { "Data contracts" = "ariadne/reference/data-contracts.md" },
+      { "Data sources" = "ariadne/reference/data-sources.md" },
+      { "Git authoring migration" = "ariadne/reference/git-authoring-migration.md" },
+    ]},
+    { "Explanation" = [
+      { "How Ariadne works" = "ariadne/explanations/how-ariadne-works.md" },
+    ]},
+  ]},
+
+  { "Lumio" = [
+    { "Quickstart" = "lumio/tutorials/quickstart.md" },
+    { "How-to guides" = [
+      { "Pi agent" = "lumio/how-to/howto-pi-agent.md" },
+      { "Shared workspace" = "lumio/how-to/howto-shared-workspace.md" },
+      { "Workspace operations" = "lumio/how-to/howto-workspace-operations.md" },
+      { "Document-first enrichment" = "lumio/how-to/howto-document-first.md" },
+      { "S3 publishing" = "lumio/how-to/howto-s3-publish.md" },
+      { "Source handoff" = "lumio/how-to/howto-source-handoff.md" },
+    ]},
+    { "Reference" = [
+      { "Usage" = "lumio/reference/usage.md" },
+      { "KB format" = "lumio/reference/kb-format.md" },
+      { "Ariadne context pairing" = "lumio/reference/ariadne-context.md" },
+      { "Packaging" = "lumio/reference/packaging.md" },
+    ]},
+    { "Release notes" = "lumio/reference/release-notes/index.md" },
+  ]},
+
+  { "Integration" = [
+    { "Local tutorial" = "integration/tutorials/lumio-ariadne-local.md" },
+    { "Bound releases" = "integration/reference/lumio-bound-releases.md" },
+    { "Git local source" = "integration/how-to/lumio-git-local.md" },
+  ]},
+]
+
+[project.theme]
+language = "en"
+features = [
+  "announce.dismiss",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.tabs",
+  "navigation.tabs.sticky",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/legout/ariadne"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.arithmatex.generic = true
+pymdownx.betterem = {}
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences.custom_fences = [
+  { name = "mermaid", class = "mermaid", format = "pymdownx.superfences.fence_code_format" },
+]
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
