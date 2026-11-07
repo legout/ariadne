@@ -47,11 +47,11 @@ jobs:
         # test-pairing input only and is never published by this job.
         run: |
           mkdir -p .ci-sdk-dist
-          sdk_wheel=.ci-sdk-dist/lumio_wiki-0.5.0-py3-none-any.whl
-          sha=df0890b75aa273352ee8d1d02170ac63ef9f3d24ff0236e2251edc439bc8533e
+          sdk_wheel=.ci-sdk-dist/lumio_wiki-0.6.0-py3-none-any.whl
+          sha=052c41bc8f91e99d141bd4277e0e2cbf11ef0e673cfe866bc850e0eced346bbd
           curl -fsSL -o "$sdk_wheel" \
-            "https://files.pythonhosted.org/packages/1a/60/01f0a81772abcf69fa07103bb523323eb8ddacf247b6c794e0dab00761fc/lumio_wiki-0.5.0-py3-none-any.whl"
-          echo "lumio-wiki producer: published PyPI wheel lumio-wiki==0.5.0"
+            "https://files.pythonhosted.org/packages/37/3b/e2ebc58a1be604a24a9e83c67bc9f838cc030e6945efb4706ef54a9f9f72/lumio_wiki-0.6.0-py3-none-any.whl"
+          echo "lumio-wiki producer: published PyPI wheel lumio-wiki==0.6.0"
           echo "$sha  $sdk_wheel" | sha256sum -c -
           sha256sum "$sdk_wheel"
 
