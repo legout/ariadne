@@ -78,6 +78,16 @@ for f in ../products/lumio/docs/release-notes/*.md; do
   cp "$f" "$DOCS/lumio/reference/release-notes/"
 done
 
+# Release-notes index page (the nav references it; generate from the files)
+(
+  echo "# Release notes"
+  echo
+  for f in ../products/lumio/docs/release-notes/*.md; do
+    base=$(basename "$f" .md)
+    echo "- [$base]($base.md)"
+  done | sort -r
+) > "$DOCS/lumio/reference/release-notes/index.md"
+
 # --- Integration docs ---
 mkdir -p "$DOCS/integration/"{tutorials,reference,how-to}
 
