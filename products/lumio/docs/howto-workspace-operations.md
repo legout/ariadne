@@ -87,7 +87,10 @@ python -m lumio_workspace.operations restore --backup-root /private/backups/work
 ```
 
 The command prints the rebased launch paths; put them into the environment
-file, then start the service against the new root. Restore performs, in order:
+file, then start the service against the new root. When analytics is
+configured, the printed paths also include `analytics_project_path=` and
+`analytics_source_bindings_path=`; update them in the environment file
+together with the other rebased paths. Restore performs, in order:
 
 1. Copies every role into the target root under the §2 convention.
 2. Relinks moved task worktrees (the pending candidate worktrees stay
@@ -143,19 +146,24 @@ immediately before every service upgrade.
 
 There is **no automatic garbage collection and no total-erasure promise.**
 Retained originals do not expire by themselves, and publication retirement
-does not erase history or bytes. When an owner must remove an original, it is
-an owner-operated, explicitly authorized procedure through the existing
-native/private-store operations (the Lumio SDK source-retention path), not a
-contributor tool:
+never deletes historical artifacts. The single authorized deletion path is
+the native Lumio operation `delete_artifact_with_disclosure`
+(owner-operated through the SDK's artifact-store tooling; not a contributor
+tool). It takes the exact `source_id` and `content_hash` pair and:
 
-- Review the affected source bindings first; existing retention refusals
-  (profile `"retention": "required"`) still apply and block deletion of
-  material that admitted content depends on.
-- Deletion removes the referenced bytes going forward; it does not rewrite
-  Git history, immutable published versions, receipts, or any backup. Copies
-  that remain in backups and immutable publications must be handled by
-  rotating those artifacts under their own procedures.
-- Report truthfully what remains; never claim compliant erasure of every
+- computes the affected Published Versions from the stored binding
+  manifests **before** deleting, then deletes those artifact bytes and clears
+  the registry binding, so metadata never claims a retained artifact the
+  store no longer holds;
+- performs **no retention pre-check and does not refuse** when admitted
+  content is bound — the affected-version disclosure is returned by the
+  operation itself; an owner who needs the list before deciding enumerates it
+  first with the same helper (`affected_published_versions`); the versions
+  themselves are not rewritten;
+- leaves Git history, immutable published versions, receipts, and every
+  backup untouched. Copies that remain in backups and immutable publications
+  must be handled by rotating those artifacts under their own procedures.
+  Report truthfully what remains; never claim compliant erasure of every
   immutable copy.
 
 ## 9. Limits

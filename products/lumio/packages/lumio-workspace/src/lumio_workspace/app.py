@@ -236,10 +236,7 @@ def _membership_rows(
     capabilities: dict[str, list[str]] = {user: [] for user, _enabled in users}
     for object_id, capability in grants:
         capabilities.setdefault(object_id, []).append(capability)
-    return [
-        (user, bool(enabled), tuple(capabilities.get(user, ())))
-        for user, enabled in users
-    ]
+    return [(user, bool(enabled), tuple(capabilities.get(user, ()))) for user, enabled in users]
 
 
 def _render_membership(workspace: str, rows: list[tuple[str, bool, tuple[str, ...]]]) -> str:
@@ -268,7 +265,7 @@ def _render_membership(workspace: str, rows: list[tuple[str, bool, tuple[str, ..
         f"</thead><tbody>\n{body_rows}\n</tbody></table>"
         '<form method="post" action="/membership">'
         '<label>Local user <input name="user_id" required autocomplete="off"></label> '
-        f"<select name=\"capability\">\n{options}\n</select> "
+        f'<select name="capability">\n{options}\n</select> '
         '<select name="action"><option value="grant">grant</option>'
         '<option value="revoke">revoke</option></select> '
         '<button type="submit">Apply</button></form>'
@@ -409,9 +406,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         )
 
     def enrichment_service() -> EnrichmentService:
-        return EnrichmentService(
-            contribution_service(), destination=config.published_path
-        )
+        return EnrichmentService(contribution_service(), destination=config.published_path)
 
     def review_service() -> ReviewService:
         if config.authoring_path is None or config.private_profile_path is None:
@@ -793,10 +788,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             return HTMLResponse(
                 _render_membership(config.workspace_id, _membership_rows(state, config))
             )
-        if (
-            request.url.scheme != "https"
-            or request.headers.get("origin") != config.external_url
-        ):
+        if request.url.scheme != "https" or request.headers.get("origin") != config.external_url:
             return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
         if request.headers.get("content-type", "").split(";", 1)[0] != (
             "application/x-www-form-urlencoded"
@@ -817,12 +809,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         users = fields.get("user_id", [])
         capabilities = fields.get("capability", [])
         actions = fields.get("action", [])
-        if (
-            len(fields) != 3
-            or len(users) != 1
-            or len(capabilities) != 1
-            or len(actions) != 1
-        ):
+        if len(fields) != 3 or len(users) != 1 or len(capabilities) != 1 or len(actions) != 1:
             return JSONResponse(
                 {"error": "one user, capability, and action are required"}, status_code=400
             )

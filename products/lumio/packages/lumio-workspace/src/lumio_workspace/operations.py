@@ -62,9 +62,7 @@ class WorkspaceLayout:
         if config.authoring_path is None or config.private_profile_path is None:
             raise OperationsError("backup requires an authoring-enabled workspace")
         repo, subtree = resolve_repository(config.authoring_path)
-        profile = load_private_profile(
-            config.private_profile_path, kb_root=config.authoring_path
-        )
+        profile = load_private_profile(config.private_profile_path, kb_root=config.authoring_path)
         resources = resolve_private_profile(
             profile, kb_root=config.authoring_path, needs=frozenset({"registry", "artifacts"})
         )
@@ -124,9 +122,7 @@ def quiesced_backup(config: WorkspaceConfig, backup_root: Path) -> Path:
     with mutation_lock(*lock_resources):
         _copy_file(layout.state_path, staging / _STATE)
         if (layout.state_path.parent / _OPERATION_LOCKS).is_dir():
-            shutil.copytree(
-                layout.state_path.parent / _OPERATION_LOCKS, staging / _OPERATION_LOCKS
-            )
+            shutil.copytree(layout.state_path.parent / _OPERATION_LOCKS, staging / _OPERATION_LOCKS)
         shutil.copytree(layout.private_root, staging / _PRIVATE)
         shutil.copytree(layout.authoring_repo, staging / _AUTHORING_REPO)
         shutil.copytree(layout.published_path, staging / _PUBLISHED)
@@ -153,10 +149,9 @@ def quiesced_backup(config: WorkspaceConfig, backup_root: Path) -> Path:
     return backup_root
 
 
-def _rebase_worktrees(target_root: Path) -> None:
+def _relink_registered_worktrees(repo_root: Path, worktrees_root: Path) -> None:
     """Relink task worktrees copied to a new data root (git worktree repair)."""
-    registered_root = target_root / _AUTHORING_REPO / ".git" / "worktrees"
-    worktrees_root = target_root / _PRIVATE / "worktrees"
+    registered_root = repo_root / ".git" / "worktrees"
     if not registered_root.is_dir():
         return
     for registered in sorted(registered_root.iterdir()):
@@ -196,6 +191,8 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
     """
     backup_root = Path(backup_root)
     target_root = Path(target_root)
+    if not target_root.is_absolute():
+        raise OperationsError("the restore target must be an absolute path")
     manifest = json.loads((backup_root / _MANIFEST).read_text(encoding="utf-8"))
     if manifest.get("workspace_id") != config.workspace_id:
         raise OperationsError("the backup belongs to a different workspace")
@@ -216,12 +213,20 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
         if not (backup_root / _ANALYTICS_PROJECT).is_dir():
             raise OperationsError("the configured analytics project is absent from this backup")
         shutil.copytree(backup_root / _ANALYTICS_PROJECT, target_root / _ANALYTICS_PROJECT)
-    if config.analytics_source_bindings_path is not None and (
-        backup_root / _ANALYTICS_BINDINGS
-    ).is_file():
+    if (
+        config.analytics_source_bindings_path is not None
+        and (backup_root / _ANALYTICS_BINDINGS).is_file()
+    ):
         _copy_file(backup_root / _ANALYTICS_BINDINGS, target_root / _ANALYTICS_BINDINGS)
 
-    _rebase_worktrees(target_root)
+    _relink_registered_worktrees(
+        target_root / _AUTHORING_REPO, target_root / _PRIVATE / "worktrees"
+    )
+    if config.analytics_project_path is not None:
+        _relink_registered_worktrees(
+            target_root / _ANALYTICS_PROJECT,
+            target_root / _ANALYTICS_PROJECT / ".ariadne" / "worktrees",
+        )
     _rebase_profile(target_root)
     _invalidate_restored_actions(target_root / _STATE)
     return replace(
@@ -232,9 +237,7 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
         private_root=target_root / _PRIVATE,
         published_path=target_root / _PUBLISHED,
         analytics_project_path=(
-            target_root / _ANALYTICS_PROJECT
-            if config.analytics_project_path is not None
-            else None
+            target_root / _ANALYTICS_PROJECT if config.analytics_project_path is not None else None
         ),
         analytics_source_bindings_path=(
             target_root / _ANALYTICS_BINDINGS
@@ -263,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"published_path={restored.published_path}")
         print(f"private_profile_path={restored.private_profile_path}")
         print(f"private_root={restored.private_root}")
+        if restored.analytics_project_path is not None:
+            print(f"analytics_project_path={restored.analytics_project_path}")
+        if restored.analytics_source_bindings_path is not None:
+            print(f"analytics_source_bindings_path={restored.analytics_source_bindings_path}")
     return 0
 
 

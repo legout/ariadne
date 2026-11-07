@@ -4,9 +4,11 @@ import importlib
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from lumio_wiki.location import PublishedFilesystemLocation
 from lumio_workspace import create_app
-from lumio_workspace.operations import quiesced_backup, restore
+from lumio_workspace.operations import OperationsError, quiesced_backup, restore
+from lumio_workspace.operations import main as operations_main
 from starlette.testclient import TestClient
 
 _review = importlib.import_module(
@@ -18,6 +20,7 @@ _contribute = _review._contribute
 _decision = _review._decision
 _digest = _review._digest
 _fixture = _review._fixture
+_git = _review._git
 _login = _review._login
 
 TITLE_A = "Operations Runbook"
@@ -32,7 +35,7 @@ EXPECTED_A_BODY = (
 
 
 def test_restore_and_revocation_preserve_admitted_only_access(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
     fixture = _fixture(tmp_path, monkeypatch)
     config = fixture.config
@@ -146,18 +149,12 @@ def test_restore_and_revocation_preserve_admitted_only_access(
         granted = membership_post(user_id="reviewer", capability="read", action="grant")
         assert granted.status_code == 200, granted.text
         assert granted.json()["capabilities"] == ["read", "review"]
-        revoked_read = membership_post(
-            user_id="reviewer", capability="read", action="revoke"
-        )
+        revoked_read = membership_post(user_id="reviewer", capability="read", action="revoke")
         assert revoked_read.status_code == 200, revoked_read.text
         assert revoked_read.json()["capabilities"] == ["review"]
-        refused = membership_post(
-            user_id="reviewer", capability="inspect_source", action="grant"
-        )
+        refused = membership_post(user_id="reviewer", capability="inspect_source", action="grant")
         assert refused.status_code == 400
-        revoked_review = membership_post(
-            user_id="reviewer", capability="review", action="revoke"
-        )
+        revoked_review = membership_post(user_id="reviewer", capability="review", action="revoke")
         assert revoked_review.status_code == 200, revoked_review.text
         assert revoked_review.json()["capabilities"] == []
 
@@ -177,3 +174,72 @@ def test_restore_and_revocation_preserve_admitted_only_access(
         ).json()["result"]["structuredContent"]
         assert still_pending["status"] == "pending_review"
         assert still_pending["published"] is False
+
+    # A minimal configured-analytics layout travels with backup/restore.
+    analytics_project = tmp_path / "analytics-project"
+    analytics_project.mkdir()
+    _git(analytics_project, "init", "-q")
+    _git(analytics_project, "config", "user.name", "Fixture")
+    _git(analytics_project, "config", "user.email", "fixture@example.invalid")
+    _git(analytics_project, "commit", "--allow-empty", "-qm", "analytics base")
+    proposal_id = "p-0123456789abcd-012345"
+    _git(
+        analytics_project,
+        "worktree",
+        "add",
+        "-b",
+        f"ariadne/proposal/{proposal_id}",
+        str(analytics_project / ".ariadne" / "worktrees" / proposal_id),
+    )
+    analytics_bindings = tmp_path / "analytics-bindings.json"
+    analytics_bindings.write_text('{"storages": {}}', encoding="utf-8")
+    analytics_config = replace(
+        config,
+        analytics_project_id="fixture-project",
+        analytics_project_path=analytics_project,
+        analytics_source_bindings_path=analytics_bindings,
+    )
+    analytics_backup = quiesced_backup(analytics_config, tmp_path / "analytics-backup")
+
+    # A relative restore target is rejected before anything is copied.
+    with pytest.raises(OperationsError, match="absolute path"):
+        restore(analytics_backup, Path("relative-data-root"), analytics_config)
+
+    analytics_second = tmp_path / "analytics-second-root"
+    analytics_restored = restore(analytics_backup, analytics_second, analytics_config)
+    assert analytics_restored.analytics_project_path == analytics_second / "analytics-project"
+    assert analytics_restored.analytics_source_bindings_path == (
+        analytics_second / "analytics-bindings.json"
+    )
+    relinked = (
+        analytics_second / "analytics-project" / ".ariadne" / "worktrees" / proposal_id
+    )
+    assert _git(relinked, "rev-parse", "--abbrev-ref", "HEAD") == (
+        f"ariadne/proposal/{proposal_id}"
+    )
+
+    monkeypatch.setenv("LUMIO_WORKSPACE_AUTH_MODE", "local-token")
+    monkeypatch.setenv("LUMIO_WORKSPACE_EXTERNAL_URL", "https://workspace.test")
+    monkeypatch.setenv("LUMIO_WORKSPACE_PUBLISHED_PATH", str(config.published_path))
+    monkeypatch.setenv("LUMIO_WORKSPACE_ANALYTICS_PROJECT_ID", "fixture-project")
+    monkeypatch.setenv(
+        "LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH", str(analytics_project)
+    )
+    monkeypatch.setenv(
+        "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS", str(analytics_bindings)
+    )
+    analytics_cli_root = tmp_path / "analytics-cli-root"
+    arguments = [
+        "restore",
+        "--backup-root",
+        str(analytics_backup),
+        "--target-root",
+        str(analytics_cli_root),
+    ]
+    assert operations_main(arguments) == 0
+    output = capsys.readouterr().out
+    assert f"analytics_project_path={analytics_cli_root / 'analytics-project'}" in output
+    assert (
+        f"analytics_source_bindings_path={analytics_cli_root / 'analytics-bindings.json'}"
+        in output
+    )
