@@ -25,6 +25,7 @@ CORPUS = Path(__file__).resolve().parents[1]
 
 # Fixed archive timestamps keep the generated OOXML containers byte-reproducible.
 ZIP_TIMESTAMP = (2026, 1, 1, 0, 0, 0)
+CORE_TIMESTAMP = "2026-01-01T00:00:00Z"
 
 # Hand-computed cached results for catalog.xlsx!pricing (list_price = cost
 # marked up by the margin): 32*1.25=40, 8*1.5=12, 210*1.4=294, 160*1.3=208.
@@ -81,7 +82,9 @@ def _sheet_path(archive: zipfile.ZipFile, workbook: str, rels: str, sheet: str) 
 
 def _inject_cached_values(sheet_xml: str) -> str:
     for cell, value in PRICING_CACHE.items():
-        pattern = rf'(<c r="{cell}"[^>]*>)(<f>[^<]*</f>)'
+        # openpyxl writes formulas with an EMPTY <v></v>; replace that element
+        # in place so each cached cell carries exactly one value element.
+        pattern = rf'(<c r="{cell}"[^>]*>)(<f>[^<]*</f>)(<v\s*/>|<v></v>)'
         replacement = rf"\1\2<v>{value}</v>"
         sheet_xml, count = re.subn(pattern, replacement, sheet_xml)
         assert count == 1, f"formula cell {cell} not found exactly once"
@@ -108,10 +111,20 @@ def generate_xlsx() -> Path:
     draft.append(("draft", 1, 2, "=B2+C2"))  # no stored cached value, on purpose
     workbook.save(path)
 
-    # openpyxl writes formulas without cached results; Excel-compatible
-    # readers expect a stored <v>. Rewrite the pricing sheet in place.
+    # openpyxl writes formulas without cached results and stamps docProps with
+    # wall-clock times (the writer force-sets `modified` at save); rewrite both
+    # in place so the committed workbook stays byte-reproducible.
     with zipfile.ZipFile(path) as archive:
         entries = {name: archive.read(name) for name in archive.namelist()}
+    core = entries["docProps/core.xml"].decode()
+    for field in ("created", "modified"):
+        core, count = re.subn(
+            rf"(<dcterms:{field}[^>]*>)[^<]*(</dcterms:{field}>)",
+            rf"\g<1>{CORE_TIMESTAMP}\g<2>",
+            core,
+        )
+        assert count == 1, f"core property {field} not found exactly once"
+    entries["docProps/core.xml"] = core.encode()
     sheet_part = _sheet_path(
         archive=None,  # type: ignore[arg-type]
         workbook=entries["xl/workbook.xml"].decode(),
@@ -143,8 +156,7 @@ def generate_pdf() -> Path:
         for offset in offsets:
             out += f"{offset:010d} 00000 n \n".encode()
         out += (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{start}\n%%EOF\n"
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n"
         ).encode()
         return bytes(out)
 
@@ -196,11 +208,14 @@ def generate_docx() -> Path:
         "</Relationships>"
     )
     path = CORPUS / "installation-note.docx"
-    _write_zip(path, {
-        "[Content_Types].xml": content_types.encode(),
-        "_rels/.rels": rels.encode(),
-        "word/document.xml": part.encode(),
-    })
+    _write_zip(
+        path,
+        {
+            "[Content_Types].xml": content_types.encode(),
+            "_rels/.rels": rels.encode(),
+            "word/document.xml": part.encode(),
+        },
+    )
     return path
 
 

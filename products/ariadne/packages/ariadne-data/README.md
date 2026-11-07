@@ -15,7 +15,8 @@ Follow [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ar
 worked example with three synthetic orders: **150 EUR recognized revenue and two
 completed orders**, returned with the governing policy and citations. It uses the
 historically tested published Core 0.6.0 / Lumio 0.4.0 pair (the current published
-pair is Core 0.8.0 / Lumio 0.6.0; the tutorial's section 8 covers it separately),
+pair is Core 0.8.0 / Lumio 0.6.0; the tutorial's section 8 separately covers its
+own older 0.7.0 / 0.5.0 query extension),
 ordinary Git and local files; no Docker, S3 or model key is needed. The [standalone tutorial](../../docs/tutorials/getting-started.md)
 remains available when you want Ariadne without Lumio.
 

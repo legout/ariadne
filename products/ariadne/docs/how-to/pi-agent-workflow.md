@@ -56,11 +56,18 @@ governed number. To keep a definition, move it through a reviewed proposal
 ## 4. Author through proposals, stop at human admission
 
 ```bash
-ariadne-authoring start --project .        # revision-checked proposal
-ariadne-authoring edit ...                 # typed edits into the proposal
-ariadne-authoring validate --project . --proposal ID
+ariadne-authoring start --project .              # revision-checked proposal
+ariadne-authoring edit --project . --proposal ID \
+    --expected-revision CURRENT --file edit.json # typed edit; returns the new revision
+ariadne-authoring validate --project . --proposal ID \
+    --expected-revision CURRENT                   # the revision from the preceding edit
 ariadne-authoring review --project . --proposal ID   # read-only; return its exact payload
 ```
+
+`--expected-revision` is required and always names the current candidate
+revision returned by the preceding edit or validation. The full sequence —
+approved inputs, the finalize commit, human admission — is the
+[Git-backed authoring guide](git-authoring.md).
 
 The agent makes the candidate and reports the review payload and digest.
 **Admission is a human Git decision** — the agent stops there, never runs

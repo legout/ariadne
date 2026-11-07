@@ -74,22 +74,24 @@ this first (`operations-notes.md`, `supplier-brief.pdf`,
    separately authenticated human action in the browser; no MCP tool, token,
    or agent performs it. Changed candidates require a fresh review.
 
-## 3. Request data, profile it, and query it
+## 3. Request data, profile it, review the change, then query it
 
 With analytics enabled by the owner, use the structured corpus files
 (`orders.csv`, `orders.json`, `orders.parquet`, `catalog.xlsx` from the
 [sample corpus](../examples/sample-corpus/)).
 
-1. **Upload the structured bytes** exactly as above (`/workspace-upload`).
-   For CSV, JSON, and Parquet, do **not** pass `sheets`. For XLSX, pass an
-   explicit `sheets` list (try `["pricing"]` from the sample corpus;
-   selecting the cache-less `draft_totals` sheet deliberately demonstrates
-   the documented `missing_formula_cache` refusal).
+1. **Upload the structured bytes** exactly as above (`/workspace-upload`),
+   retaining the returned **`upload_id`**.
 
 2. **Request the source without opening it**: `prepare_data_source` with a
    stable `retry_key`, the configured `project` and `source` handles, the
-   `table`, and the known `business_questions`. The service stages a native
-   source proposal and returns a `task_id` and `review_url`.
+   `table`, the known `business_questions`, and — for a structured upload —
+   the returned `upload_id`. CSV, JSON, and Parquet use their native
+   handlers and take no `sheets`; only XLSX additionally takes an explicit
+   `sheets` list (try `["pricing"]` from the sample corpus; selecting the
+   cache-less `draft_totals` sheet deliberately demonstrates the documented
+   `missing_formula_cache` refusal). The service stages a native source
+   proposal and returns a `task_id` and `review_url`.
 
 3. **Two browser reviews follow** (human, never in Pi): the **Source
    Approval** binding the complete resolved source identity, and the
@@ -98,17 +100,25 @@ With analytics enabled by the owner, use the structured corpus files
 
 4. **Profile after both grants**: `profile_data_source` with the source
    `task_id` returns measured schema, row, and type facts. Facts never
-   infer business rules or authorize joins.
+   infer business rules or authorize joins — and neither the approvals nor
+   the profile admit anything.
 
-5. **Query the admitted revision**: `query_data` with `get_metric`/
+5. **Review the combined change**: `prepare_contribution` with the granted
+   `source_task_id`, the exact uploaded document sources, and the authored
+   pages and native edits. Its first browser review binds the complete
+   candidate (knowledge, Policy text, native changes, conversion facts);
+   the second performs the **overall admission** that activates the
+   governed revision.
+
+6. **Query the admitted revision**: `query_data` with `get_metric`/
    `query_metrics` (governed), `query_detail`, `query_records`, or an
-   explicitly ungoverned one-shot `define_metric`. Answers carry the
-   governance label, mandatory context, citations, and the pinned commit.
+   explicitly ungoverned one-shot `define_metric`. Its prerequisite is the
+   admitted revision from step 5 — source approval, data authorization and
+   profiling alone make nothing queryable. Answers carry the governance
+   label, mandatory context, citations, and the pinned commit.
 
-A combined knowledge-plus-calculation change goes through
-`prepare_contribution` again — its first browser review binds the complete
-candidate, the second performs the overall admission. The exact contracts
-live in the [data how-to](../../ariadne/docs/how-to/shared-workspace-data.md).
+The exact contracts live in the
+[data how-to](../../ariadne/docs/how-to/shared-workspace-data.md).
 
 ## 4. What Pi must never do
 
