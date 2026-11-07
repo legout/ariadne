@@ -68,7 +68,7 @@ jobs:
           SDK=$(ls dist/sdk | grep whl)
           uv venv --python 3.14 /tmp/core-pair
           uv pip install --python /tmp/core-pair/bin/python \
-            "./dist/core/$WHEEL[mcp,dev]" "./dist/sdk/$SDK"
+            "./dist/core/$WHEEL[mcp,dev,spreadsheets]" "./dist/sdk/$SDK"
       - name: Core native test selection (pair-installed, member config)
         run: |
           /tmp/core-pair/bin/python -m pytest -q \
@@ -140,6 +140,10 @@ jobs:
           enable-cache: true
       - run: uv lock --check
       - run: uv sync --locked
+      - name: Install DuckDB httpfs extension for managed S3 queries
+        run: >-
+          uv run --locked python -c "import duckdb;
+          duckdb.sql('INSTALL httpfs')"
       - name: Run onboarding and public S3-compatible suites
         run: |
           uv run --locked pytest -q integration/tests/lumio_s3_context.py \
