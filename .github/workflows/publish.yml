@@ -61,7 +61,7 @@ jobs:
           WHEEL=$(ls dist/core | grep whl)
           SDK_WHEEL=$(ls .ci-sdk-dist | grep whl)
           uv pip install --python .ci-venv/bin/python \
-            "./dist/core/$WHEEL[mcp,dev]" \
+            "./dist/core/$WHEEL[mcp,dev,spreadsheets]" \
             "./.ci-sdk-dist/$SDK_WHEEL"
           # The three storage-profile/Lakehouse qualification modules are
           # capability-locked by spec 0025 (§§6–7): they require the prepared
