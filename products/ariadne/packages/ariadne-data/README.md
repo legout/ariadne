@@ -15,7 +15,7 @@ Follow [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ar
 worked example with three synthetic orders: **150 EUR recognized revenue and two
 completed orders**, returned with the governing policy and citations. It uses the
 historically tested published Core 0.6.0 / Lumio 0.4.0 pair (the current published
-pair is Core 0.7.0 / Lumio 0.5.0; the tutorial's section 8 covers it separately),
+pair is Core 0.8.0 / Lumio 0.6.0; the tutorial's section 8 covers it separately),
 ordinary Git and local files; no Docker, S3 or model key is needed. The [standalone tutorial](../../docs/tutorials/getting-started.md)
 remains available when you want Ariadne without Lumio.
 
@@ -28,7 +28,7 @@ The documentation follows [Diátaxis](https://diataxis.fr/):
 - **[Reference](../../docs/README.md#reference):** look up CLI commands, data-source configuration, and migration mappings.
 - **[Explanation](../../docs/explanations/how-ariadne-works.md):** understand Ariadne's layers, governance gates, and authority boundaries.
 
-The [documentation index](../../docs/README.md) lists all guides and references for **Ariadne 0.7.0**.
+The [documentation index](../../docs/README.md) lists all guides and references for **Ariadne 0.8.0**.
 
 **Data Contracts:** the [reference](../../docs/reference/data-contracts.md) describes
 Core’s limited, pinned ODCS v3.2.0 consumer profile, separate Git bindings and

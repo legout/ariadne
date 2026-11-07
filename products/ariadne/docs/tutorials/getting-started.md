@@ -1,4 +1,4 @@
-# Getting started with Ariadne 0.6.0
+# Getting started with Ariadne 0.8.0
 
 This tutorial takes a data owner from an empty project directory to a fresh query against a human-admitted Git catalog. Ariadne can prepare the work, but it does not make the owner's source-approval, review, or admission decisions.
 
@@ -16,7 +16,7 @@ This page covers the standalone Ariadne setup route for your own project.
 Install the core CLI:
 
 ```bash
-uv tool install ariadne-data==0.6.0
+uv tool install ariadne-data==0.8.0
 ```
 
 No server or LLM credential is required for local CLI queries. Optional transports and packages are listed in the [CLI reference](../reference/cli.md#optional-transports-and-packages).

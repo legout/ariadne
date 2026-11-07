@@ -1,6 +1,6 @@
 # Ariadne documentation
 
-This documentation targets Ariadne 0.7.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
+This documentation targets Ariadne 0.8.0 and is organized by reader goal, following [Diátaxis](https://diataxis.fr/). Choose one type based on what you need to do:
 
 ## Tutorials
 
@@ -13,6 +13,8 @@ This documentation targets Ariadne 0.7.0 and is organized by reader goal, follow
 - [Local Lumio Git workflow](../../../integration/docs/how-to/lumio-git-local.md) — sync content, inspect admitted identity and explicitly activate a reviewed Bound Release.
 - [Git-backed authoring](how-to/git-authoring.md) — create and review proposals, admit a catalog, explicitly reauthor content for a fresh Git project; no legacy-state import.
 - [Multiple S3 storages](how-to/multiple-s3-storages.md) — read two independently credentialed S3-compatible storages through named, credential-free profiles (optional; requires the appropriate runtime extensions).
+- [Request and query data through a shared workspace](how-to/shared-workspace-data.md) — the owner-managed analytics path: request a source, approve its exact identity, profile it, review the combined change, and query the admitted revision from an agent such as Pi.
+- [Use Ariadne from a Pi coding agent](how-to/pi-agent-workflow.md) — install the packaged skill and drive the local CLI (governed queries, ad-hoc definitions, proposals) from Pi.
 - [Context knowledge](how-to/context-knowledge.md) — refresh schema facts, resolve terms, inspect mappings, and author routing guidance.
 - [Docker MCP](how-to/docker-mcp.md) — run the optional containerized MCP service with an external project.
 

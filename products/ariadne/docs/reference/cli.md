@@ -65,13 +65,13 @@ A Git commit, validation result, proposed source, authored status field or succe
 ## Optional transports and packages
 
 The local CLI needs no server or model key for the deterministic query path.
-Install Core 0.6.0 on Python >=3.14. Choose optional packages for the task:
+Install Core 0.8.0 on Python >=3.14. Choose optional packages for the task:
 
-- `ariadne-data[mcp]==0.6.0` adds the pinned MCP 2.2.0 transport.
-- `ariadne-data[documents]==0.6.0` adds the supported document converters;
+- `ariadne-data[mcp]==0.8.0` adds the pinned MCP 2.2.0 transport.
+- `ariadne-data[documents]==0.8.0` adds the supported document converters;
   it does not approve an input or supply model credentials.
-- `lumio-wiki==0.4.0` supplies the optional integrated knowledge binding.
-  `lumio-lancedb==0.4.0` is optional retrieval, not a Core requirement.
+- `lumio-wiki==0.6.0` supplies the optional integrated knowledge binding.
+  `lumio-lancedb==0.6.0` is optional retrieval, not a Core requirement.
 
 The separately distributed Ariadne Agent/Tau stack has its own dependencies;
 it was not qualified by this Core/Lumio release. DuckDB source-format extensions

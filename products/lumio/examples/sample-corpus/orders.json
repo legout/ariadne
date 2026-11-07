@@ -1,0 +1,14 @@
+[
+  {"order_id": 1001, "order_date": "2026-01-06", "region": "north", "customer": "Nordwind GmbH", "product_line": "panels", "quantity": 10, "unit_price_eur": 50.00, "net_amount_eur": 500.00},
+  {"order_id": 1002, "order_date": "2026-01-09", "region": "north", "customer": "Nordwind GmbH", "product_line": "inverters", "quantity": 2, "unit_price_eur": 300.00, "net_amount_eur": 600.00},
+  {"order_id": 1003, "order_date": "2026-01-15", "region": "south", "customer": "Suedlicht AG", "product_line": "panels", "quantity": 20, "unit_price_eur": 50.00, "net_amount_eur": 1000.00},
+  {"order_id": 1004, "order_date": "2026-01-21", "region": "east", "customer": "Ostwind UG", "product_line": "batteries", "quantity": 4, "unit_price_eur": 250.00, "net_amount_eur": 1000.00},
+  {"order_id": 1005, "order_date": "2026-02-03", "region": "south", "customer": "Suedlicht AG", "product_line": "panels", "quantity": 15, "unit_price_eur": 50.00, "net_amount_eur": 750.00},
+  {"order_id": 1006, "order_date": "2026-02-10", "region": "east", "customer": "Ostwind UG", "product_line": "inverters", "quantity": 3, "unit_price_eur": 300.00, "net_amount_eur": 900.00},
+  {"order_id": 1007, "order_date": "2026-02-17", "region": "north", "customer": "Nordwind GmbH", "product_line": "batteries", "quantity": 6, "unit_price_eur": 250.00, "net_amount_eur": 1500.00},
+  {"order_id": 1008, "order_date": "2026-02-24", "region": "south", "customer": "Hafenbau Sued", "product_line": "panels", "quantity": 25, "unit_price_eur": 50.00, "net_amount_eur": 1250.00},
+  {"order_id": 1009, "order_date": "2026-03-04", "region": "east", "customer": "Ostwind UG", "product_line": "panels", "quantity": 12, "unit_price_eur": 50.00, "net_amount_eur": 600.00},
+  {"order_id": 1010, "order_date": "2026-03-11", "region": "north", "customer": "Nordwind GmbH", "product_line": "panels", "quantity": 18, "unit_price_eur": 50.00, "net_amount_eur": 900.00},
+  {"order_id": 1011, "order_date": "2026-03-18", "region": "south", "customer": "Suedlicht AG", "product_line": "batteries", "quantity": 5, "unit_price_eur": 250.00, "net_amount_eur": 1250.00},
+  {"order_id": 1012, "order_date": "2026-03-25", "region": "east", "customer": "Ostwind UG", "product_line": "inverters", "quantity": 1, "unit_price_eur": 300.00, "net_amount_eur": 300.00}
+]

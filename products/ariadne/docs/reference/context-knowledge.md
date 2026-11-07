@@ -1,6 +1,6 @@
 # Context knowledge reference
 
-This page describes the context-layer artifacts, generated facts, and tool roles available in Ariadne 0.6.0. For procedures, see [How to manage context knowledge](../how-to/context-knowledge.md). For the authority boundaries shared by all these artifacts, see [How Ariadne works](../explanations/how-ariadne-works.md).
+This page describes the context-layer artifacts, generated facts, and tool roles available in Ariadne 0.8.0. For procedures, see [How to manage context knowledge](../how-to/context-knowledge.md). For the authority boundaries shared by all these artifacts, see [How Ariadne works](../explanations/how-ariadne-works.md).
 
 These `context_layer/` paths describe standalone Core projects. In an integrated
 project, curated Metric/Policy/Reference pages live once under `knowledge/`, carry

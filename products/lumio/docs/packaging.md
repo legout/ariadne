@@ -81,7 +81,7 @@ there is no dependency edge from the foundation wheel. The CLI/evaluation
 composition boundary may discover and lazily load it only when an operator
 explicitly selects a LanceDB backend — the dependency graph remains one-way.
 
-**Dependencies:** `lumio-wiki>=0.5.1,<0.6.0`, `lancedb`, `pyarrow`,
+**Dependencies:** `lumio-wiki>=0.6.0,<0.7.0`, `lancedb`, `pyarrow`,
 `msgspec[yaml]`. Optional `embeddings` extra pulls in
 `sentence-transformers` (Torch stays out of the base adapter and out of
 `lumio-wiki`). Verified in every release by the
@@ -104,7 +104,7 @@ browser ingest/review workflows.
 Its exact dependency ranges are owned and certified by that private
 repository. The last ranges certified inside the former three-package
 workspace (`lumio-wiki>=0.1.1,<0.2.0`, `lumio-lancedb>=0.1.1,<0.2.0`) predate
-the current 0.5.x public family; the private application's compatibility
+the current 0.6.x public family; the private application's compatibility
 with the current family remains a separate integration and release decision,
 not a claim of this repository.
 
@@ -196,7 +196,7 @@ isolated wheel jobs below verify base-install and import independence.
 - Members share one workspace lockfile for development reproducibility.
 - The lockfile is **not** a public compatibility contract. Every published
   inter-member dependency declares a bounded range
-  (e.g. `lumio-wiki>=0.5.1,<0.6.0`, declared by `lumio-lancedb`). This is
+  (e.g. `lumio-wiki>=0.6.0,<0.7.0`, declared by `lumio-lancedb`). This is
   certified at the metadata level
   (`test_published_member_dependencies_declare_compatible_version_ranges`)
   and at the built-wheel METADATA level
@@ -210,7 +210,7 @@ isolated wheel jobs below verify base-install and import independence.
 Following ADR-0025, the two **public** distributions (`lumio-wiki` and
 `lumio-lancedb`) release as one **lockstep family**. The private application
 moves independently and is not published or qualified by this repository.
-The current public family is 0.5.x.
+The current public family is 0.6.x.
 
 - Both public members carry the **same version** (certified by
   `test_members_share_one_lockstep_version`). A release tag `lumio-vX.Y.Z` builds
@@ -222,8 +222,8 @@ The current public family is 0.5.x.
   a new member version with an older sibling.
 - **Partial upgrades fail at install time, actionably.** Because every
   member-to-member range is bounded to the family (`>=X.Y.Z,<0.N+1.0`), a
-  family-crossing combination (e.g. `lumio-lancedb==0.5.0` with
-  `lumio-wiki==0.4.0`) is rejected by `pip`/`uv` resolution with a conflict
+  family-crossing combination (e.g. `lumio-lancedb==0.6.0` with
+  `lumio-wiki==0.5.0`) is rejected by `pip`/`uv` resolution with a conflict
   naming both ranges — never a runtime failure. Certified by
   `test_inter_member_bounds_track_the_released_family`.
 

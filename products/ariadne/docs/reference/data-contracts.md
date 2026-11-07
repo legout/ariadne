@@ -1,6 +1,6 @@
 # Data Contract reference
 
-**Ariadne 0.6.0 — limited consumer profile, not full ODCS compliance.**
+**Ariadne 0.8.0 — limited consumer profile, not full ODCS compliance.**
 Producer expectations, local bindings, measured observations and human admission
 are separate facts. OSI retains calculation, grain and join authority; OKF owns
 explanatory knowledge and business Policies. Contract narrative/context is inert

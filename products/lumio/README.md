@@ -58,7 +58,7 @@ The [joint local tutorial](../../integration/docs/tutorials/lumio-ariadne-local.
 shows the complete flow with synthetic orders and Policy citations. Its
 historical baseline and the newer query extension are labeled separately.
 See [current pairing and boundaries](docs/ariadne-context.md) for the
-Core 0.7.0 pairing with the Lumio 0.5 family and optional pinned S3
+Core 0.8.0 pairing with the Lumio 0.6 family and optional pinned S3
 consumption.
 
 ## Documentation and examples
@@ -66,6 +66,13 @@ consumption.
 - [Usage and CLI](docs/usage.md)
 - [Compiled Page format](docs/kb-format.md)
 - [Optional S3 publication](docs/howto-s3-publish.md)
+- [Source handoff](docs/howto-source-handoff.md) and [document-first authoring](docs/howto-document-first.md)
+- [Shared workspace with Pi](docs/howto-pi-agent.md) — connect Pi, contribute
+  documents and query data through the managed workspace
+  ([configuration](docs/howto-shared-workspace.md),
+  [operations](docs/howto-workspace-operations.md),
+  [journey](examples/shared-workspace-journey/))
+- [Sample corpus](examples/sample-corpus/) — one synthetic file per supported format
 - [Capture adapters](examples/capture-adapters/)
 - [Packaging and optional dependencies](docs/packaging.md)
 - [Changelog](CHANGELOG.md), [0.5.1 patch notes](docs/release-notes/v0.5.1.md)
