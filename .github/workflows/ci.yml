@@ -237,10 +237,13 @@ jobs:
             dist/workspace/lumio_workspace-*.whl
       - name: Analytics pair environment (Core from the same-commit wheel)
         run: |
+          WHEEL=$(ls dist/workspace | grep whl)
+          SDK=$(ls dist/sdk | grep whl)
+          CORE=$(ls dist/core | grep whl)
           uv venv --python 3.14 /tmp/workspace-pair
           uv pip install --python /tmp/workspace-pair/bin/python \
-            "dist/workspace/lumio_workspace-*.whl[analytics]" \
-            dist/sdk/lumio_wiki-*.whl dist/core/ariadne_data-*.whl
+            "./dist/workspace/$WHEEL[analytics]" \
+            "./dist/sdk/$SDK" "./dist/core/$CORE"
           uv pip install --python /tmp/workspace-pair/bin/python pytest
       - name: Service tests against the installed pair
         run: |

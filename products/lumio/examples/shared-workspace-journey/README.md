@@ -13,7 +13,7 @@ prerequisites have NOT passed and are not simulated as passed:
 | Open leg | Owner-bound prerequisite |
 |---|---|
 | Two human participants (contributor + reviewer, separately delivered credentials) | Two local humans; one agent acting as both people proves nothing about human approval |
-| Installed Pi with the workspace extension | Installed Pi on the contributor machine, `/workspace` + `/mcp` connection, owner model allowlist (`LUMIO_WORKSPACE_ALLOWED_MODES`) |
+| Installed Pi with the workspace extension | Installed Pi on the contributor machine, `/workspace` + `/mcp` connection, owner model allowlist (`LUMIO_WORKSPACE_ALLOWED_MODELS`) |
 | Private HTTPS boundary | Operator-provided private HTTPS for the workspace host |
 | Live Entra leg | Deferred (spec0034 r4); no tenant fixture exists — never report a pass |
 | Live S3 / live spreadsheet run-legs | Reuse the D2/D3 lane evidence below instead of fabricating a live pass |
@@ -165,8 +165,12 @@ operator-controlled environment and the owner's model allowlist. Via `/mcp`:
 
 1. Sign in at `/auth/login` with the *browser* credential over HTTPS.
    **Refusal observations:** an API-purpose token is refused here (401), a
-   browser-purpose token on `/mcp` is refused (401), an anonymous review GET
-   redirects to login, and a contributor without `review` is refused.
+   browser-purpose token on `/mcp` is refused (401), and an anonymous
+   review-URL GET redirects to the login page. A contributor session
+   attempting the review URL without the `review` capability was **not
+   exercised** in the synthetic run — that capability refusal stays covered by
+   the member service suite at source level and is never claimed as passed
+   here.
 2. Open the `review_url`: the GET is inert and shows the complete effective
    change — the new *handover within 5 minutes* sentence must be visible —
    plus native submission ancestry. Each GET issues a fresh one-use action.

@@ -182,8 +182,10 @@ def assert_analytics_stays_optional() -> None:
 
 
 def _service_entry_point() -> None:
+    entry = Path(sys.prefix) / "bin" / "lumio-workspace"
+    assert entry.is_file(), f"console entry point missing from the environment: {entry}"
     result = subprocess.run(
-        [sys.executable, "-I", "-m", "lumio_workspace", "--help"],
+        [str(entry), "--help"],
         check=True,
         capture_output=True,
         text=True,
