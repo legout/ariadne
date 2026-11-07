@@ -49,9 +49,7 @@ def test_uv_workspace_root_is_coordination_only_with_four_members():
         "msgspec[yaml]>=0.21.1",
     ]
     assert member["project"]["license"] == "Apache-2.0"
-    assert member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
-        "src/lumio_wiki"
-    ]
+    assert member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/lumio_wiki"]
 
     lancedb_member = _toml(LANCEDB_MEMBER / "pyproject.toml")
     assert lancedb_member["project"]["name"] == "lumio-lancedb"
@@ -62,9 +60,7 @@ def test_uv_workspace_root_is_coordination_only_with_four_members():
     assert "pyarrow>=24.0.0" in lancedb_member["project"]["dependencies"]
     # Torch stays out of the base adapter (ADR-0010): the embeddings extra is
     # the only thing that pulls in sentence-transformers.
-    assert "sentence-transformers" not in " ".join(
-        lancedb_member["project"]["dependencies"]
-    )
+    assert "sentence-transformers" not in " ".join(lancedb_member["project"]["dependencies"])
     assert lancedb_member["project"]["optional-dependencies"]["embeddings"] == [
         "sentence-transformers>=2.6.0"
     ]

@@ -123,9 +123,9 @@ def test_optional_capability_extras_are_self_describing():
     assert "embeddings" in lance_extras, "lumio-lancedb[embeddings] extra must exist"
     # Torch stays out of the base adapter (ADR-0010).
     assert not any("torch" in d for d in lancedb["project"]["dependencies"])
-    assert any(
-        "sentence-transformers" in d for d in lance_extras["embeddings"]
-    ), "lumio-lancedb[embeddings] must declare sentence-transformers"
+    assert any("sentence-transformers" in d for d in lance_extras["embeddings"]), (
+        "lumio-lancedb[embeddings] must declare sentence-transformers"
+    )
 
 
 def test_workspace_lockfile_is_the_single_coordination_point():
