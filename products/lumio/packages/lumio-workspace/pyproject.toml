@@ -6,7 +6,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
-    "lumio-wiki[documents,mcp]>=0.5.1,<0.6.0",
+    "lumio-wiki[documents,mcp]>=0.6.0,<0.7.0",
     "mcp>=2.2,<3",
     "authlib>=1.6,<2",
     "httpx>=0.28,<1",
