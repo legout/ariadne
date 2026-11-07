@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import os
 import secrets
 import time
@@ -35,11 +36,16 @@ from .enrichment import EnrichmentService
 from .intake import IntakeService, UploadError
 from .review import ReviewError, ReviewService, render_review, render_source
 from .setup import SetupError, apply_setup, preview_setup, render_setup
-from .state import Actor, RetryConflict, WorkspaceState
+from .state import LOCAL_TENANT_ID, Actor, RetryConflict, WorkspaceState, local_actor
 
 
 class WorkspaceError(ToolError):
     pass
+
+
+# The owner browser surface assigns only membership and reviewer work;
+# inspect_source and setup stay separate explicit operator grants.
+_MEMBERSHIP_CAPABILITIES = ("read", "contribute", "review")
 
 
 class _BrowserSession(dict):
@@ -210,6 +216,63 @@ def _browser_actor(request: Request) -> Actor | None:
     return Actor(
         tenant_id=str(raw.get("tenant_id", "")),
         object_id=str(raw.get("object_id", "")),
+    )
+
+
+def _membership_rows(
+    state: WorkspaceState, config: WorkspaceConfig
+) -> list[tuple[str, bool, tuple[str, ...]]]:
+    # Read-only listing through the state's own connection; state.py is not
+    # part of this surface's owned files.
+    with state._connect() as connection:
+        users = connection.execute(
+            "SELECT user_id, enabled FROM local_users ORDER BY user_id"
+        ).fetchall()
+        grants = connection.execute(
+            "SELECT object_id, capability FROM memberships "
+            "WHERE workspace_id = ? AND tenant_id = ? ORDER BY object_id, capability",
+            (config.workspace_id, LOCAL_TENANT_ID),
+        ).fetchall()
+    capabilities: dict[str, list[str]] = {user: [] for user, _enabled in users}
+    for object_id, capability in grants:
+        capabilities.setdefault(object_id, []).append(capability)
+    return [
+        (user, bool(enabled), tuple(capabilities.get(user, ())))
+        for user, enabled in users
+    ]
+
+
+def _render_membership(workspace: str, rows: list[tuple[str, bool, tuple[str, ...]]]) -> str:
+    body_rows = "\n".join(
+        "<tr>"
+        f"<td><code>{html.escape(user)}</code></td>"
+        f"<td>{'enabled' if enabled else 'disabled'}</td>"
+        f"<td>{html.escape(', '.join(capabilities) or 'none')}</td>"
+        "</tr>"
+        for user, enabled, capabilities in rows
+    )
+    options = "\n".join(
+        f'<option value="{capability}">{capability}</option>'
+        for capability in _MEMBERSHIP_CAPABILITIES
+    )
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>Workspace membership</title></head><body><main>"
+        "<h1>Workspace membership</h1>"
+        f"<p>Owner surface for {html.escape(workspace)}: assign or revoke member, "
+        "contributor, and reviewer capabilities. Original/source/data inspection "
+        "(<code>inspect_source</code>) and owner setup remain separate explicit "
+        "operator grants outside this page.</p>"
+        "<table><thead><tr><th>User</th><th>State</th><th>Capabilities</th></tr>"
+        f"</thead><tbody>\n{body_rows}\n</tbody></table>"
+        '<form method="post" action="/membership">'
+        '<label>Local user <input name="user_id" required autocomplete="off"></label> '
+        f"<select name=\"capability\">\n{options}\n</select> "
+        '<select name="action"><option value="grant">grant</option>'
+        '<option value="revoke">revoke</option></select> '
+        '<button type="submit">Apply</button></form>'
+        "</main></body></html>"
     )
 
 
@@ -714,6 +777,84 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         except ReviewError as exc:
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
         return HTMLResponse(render_source(request.path_params["task_id"], filename, text))
+
+    @server.custom_route("/membership", methods=["GET", "POST"], include_in_schema=False)
+    async def membership(request: Request) -> Response:
+        actor = _browser_actor(request)
+        if actor is None:
+            if request.method == "GET":
+                return RedirectResponse("/auth/login", status_code=303)
+            return JSONResponse({"error": "browser authentication required"}, status_code=401)
+        if not state.permits(config.workspace_id, actor, "setup"):
+            return JSONResponse(
+                {"error": "workspace membership management is not available"}, status_code=403
+            )
+        if request.method == "GET":
+            return HTMLResponse(
+                _render_membership(config.workspace_id, _membership_rows(state, config))
+            )
+        if (
+            request.url.scheme != "https"
+            or request.headers.get("origin") != config.external_url
+        ):
+            return JSONResponse({"error": "same-origin HTTPS POST required"}, status_code=403)
+        if request.headers.get("content-type", "").split(";", 1)[0] != (
+            "application/x-www-form-urlencoded"
+        ):
+            return JSONResponse({"error": "form POST required"}, status_code=415)
+        try:
+            body = await request.body()
+            if len(body) > 8192:
+                raise ValueError("membership form too large")
+            fields = parse_qs(
+                body.decode(),
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=3,
+            )
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"error": "invalid membership form"}, status_code=400)
+        users = fields.get("user_id", [])
+        capabilities = fields.get("capability", [])
+        actions = fields.get("action", [])
+        if (
+            len(fields) != 3
+            or len(users) != 1
+            or len(capabilities) != 1
+            or len(actions) != 1
+        ):
+            return JSONResponse(
+                {"error": "one user, capability, and action are required"}, status_code=400
+            )
+        user_id, capability, action = users[0], capabilities[0], actions[0]
+        if user_id.strip() != user_id or not user_id:
+            return JSONResponse({"error": "invalid local user ID"}, status_code=400)
+        if capability not in _MEMBERSHIP_CAPABILITIES:
+            return JSONResponse(
+                {
+                    "error": "this page assigns only read, contribute, and review; "
+                    "original/source/data access stays a separate explicit operator grant"
+                },
+                status_code=400,
+            )
+        target_actor = local_actor(user_id)
+        try:
+            if action == "grant":
+                state.grant(config.workspace_id, target_actor, capability)
+            elif action == "revoke":
+                state.revoke(config.workspace_id, target_actor, capability)
+            else:
+                return JSONResponse({"error": "unknown membership action"}, status_code=400)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "user_id": user_id,
+                "capability": capability,
+                "action": action,
+                "capabilities": list(state.capabilities(config.workspace_id, target_actor)),
+            }
+        )
 
     @server.custom_route("/auth/login", methods=["GET", "POST"], include_in_schema=False)
     async def login(request: Request) -> Response:
