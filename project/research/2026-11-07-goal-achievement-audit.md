@@ -4,6 +4,7 @@
 **Scope:** Full monorepo at `2f5bc97` (delivered main, post lumio-v0.6.0 + core-v0.8.0 releases)
 **Method:** 7 independent coding agents, each with zero prior context, examined the implementation code only (no plans, ADRs, specs, or issue trackers). Each agent used its own sub-agents for parallel deep-dives.
 **Reports:** [Individual audit reports](2026-11-07-goal-audit-reports/)
+**Follow-up (2026-11-08):** [8-model re-run](2026-11-08-goal-achievement-audit.md) — verdict unchanged (PARTIALLY ACHIEVED, 7–1), two parent-verified blockers added (first-publication bootstrap deadlock, restricted-page disclosure).
 
 ## Agents
 
