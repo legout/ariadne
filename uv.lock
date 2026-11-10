@@ -100,7 +100,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.18" },
     { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
-    { name = "lumio-wiki", editable = "products/lumio/packages/lumio-wiki", specifier = ">=0.6.0,<0.7" },
+    { name = "lumio-wiki", editable = "products/lumio/packages/lumio-wiki", specifier = ">=0.7,<0.8" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'dev'", specifier = ">=0.1.6" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==2.2.0" },
@@ -929,7 +929,7 @@ provides-extras = ["embeddings", "s3"]
 
 [[package]]
 name = "lumio-wiki"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "products/lumio/packages/lumio-wiki" }
 dependencies = [
     { name = "msgpack" },
