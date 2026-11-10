@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from ariadne import admission, answer_examples, authoring_inputs, context, query_results
+from ariadne import admission, answer_examples, authoring_inputs, context, proposals, query_results
 from ariadne.context import list_pages, read_page, resolve_term, search_pages
 from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
     CONSUMER_PROFILE,
@@ -689,6 +689,10 @@ class DiscoveryRuntime:
     @classmethod
     def open_project(cls, project: str | Path) -> _DiscoverySession:
         root = Path(project).resolve()
+        # AC10/spec0035 §6: the shared retired-format gate applies to the
+        # ordinary CLI/discovery open path too — admitted and unadmitted
+        # branches alike refuse before any state is read or created.
+        proposals.refuse_unsupported_project(root)
         if admission.load_current(root) is None:
             return _DiscoverySession(
                 root / "semantic_layer",

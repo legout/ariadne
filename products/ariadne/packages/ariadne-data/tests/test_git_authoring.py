@@ -1198,12 +1198,61 @@ def documents_claim(claim_id: str, object_entity: str) -> str:
     )
 
 
+# One profiled Reference page with SYSTEM-STAMPED native trust claims
+# (``verified``) and the AUTHORED Reference extension (``native.ariadne`` —
+# the exact existing authored-Reference exception mirrored at the native
+# kind). Hand-authored from the documented profile contract; the maintainer
+# content is committed so edits inherit the claims verbatim.
+PROFILED_REFERENCE_PAGE = """---
+id: "entity:policy-basis"
+title: "Policy Basis"
+entity_types:
+  - reference
+tags:
+  - "orders"
+summary: "Policy Basis."
+lifecycle: "draft"
+visibility: "public"
+sources:
+  - id: "owner-notes"
+    title: "Owner notes"
+ariadne_profile:
+  version: 1
+  kind: reference
+  native:
+    type: reference
+    title: "Policy Basis"
+    description: "The basis of the order policy."
+    tags:
+      - orders
+    status: stable
+    verified:
+      - by: "human:owner"
+        on: "2026-11-10"
+    ariadne:
+      version: 1
+      reference_role: identifier
+      representations: []
+      mappings: []
+    sources:
+      - id: "owner-notes"
+        resource: "references/policy-basis.md"
+        title: "Owner notes"
+---
+
+# Policy Basis
+
+Basis body.
+"""
+
+
 def native_context_project(tmp_path: Path) -> Path:
     """A real temporary Git project on the native path: the KB the scaffold
     creates (Control File with Core's declared vocabulary plus ONE explicit
     claims predicate the fixture's maintainer declares deliberately, and the
     Source Reference Manifest bound to an explicit namespace) plus the inert
-    registry — committed once as the human-created base."""
+    registry and one committed profiled Reference page carrying system-stamped
+    native trust claims — committed once as the human-created base."""
     project = tmp_path / "native"
     (project / "knowledge").mkdir(parents=True)
     (project / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
@@ -1211,6 +1260,10 @@ def native_context_project(tmp_path: Path) -> Path:
     (project / "knowledge" / ".lumio-authoring.yaml").write_text(
         'version: 1\nnamespace: "urn:uuid:native-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
+    )
+    (project / "knowledge" / "references").mkdir()
+    (project / "knowledge" / "references" / "policy-basis.md").write_text(
+        PROFILED_REFERENCE_PAGE, encoding="utf-8"
     )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
@@ -1222,6 +1275,7 @@ def native_context_project(tmp_path: Path) -> Path:
         "ariadne.yaml",
         "knowledge/lumio.yaml",
         "knowledge/.lumio-authoring.yaml",
+        "knowledge/references/policy-basis.md",
     )
     run_git(project, "commit", "-q", "-m", "human: native base")
     return project
@@ -1320,3 +1374,221 @@ def test_native_context_batch_is_revision_atomic(tmp_path):
     assert repeat["changed"] is False
     assert repeat["revision"] == revision
     assert branch_of(project, pid) == revision
+
+
+def test_native_profile_trust_claims_inherit_or_refuse(tmp_path):
+    """F2: the producer-owned native profile carries the same system-owned
+    trust/generated claims under ``ariadne_profile.native`` — the batch seam
+    applies the inherited-verbatim rule there too: introducing, changing or
+    REMOVING a stamped claim (``verified``) refuses before any write, an
+    edit inheriting it verbatim stays allowed, and the AUTHORED Reference
+    extension (``native.ariadne``, the exact existing exception mirrored at
+    the native kind) stays caller-authorable/inherited without refusal."""
+    project = native_context_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    pid = started["proposal"]
+    rel = "knowledge/references/policy-basis.md"
+    base_blob = proposals._read_blob(project, started["candidate_revision"], rel)
+    assert base_blob is not None
+    base_text = base_blob.decode("utf-8")
+
+    # inherited verbatim: a body-only change is an ordinary edit
+    inherited = base_text.replace("Basis body.", "Basis body, clarified.")
+    allowed = api.edit_pages_batch(
+        pid,
+        started["candidate_revision"],
+        [{"path": rel, "content": inherited}],
+    )
+    assert allowed["changed"] is True
+
+    # FORGED: the stamped verification is re-attributed to another author
+    forged = inherited.replace('by: "human:owner"', 'by: "agent:forged"')
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(pid, allowed["revision"], [{"path": rel, "content": forged}])
+
+    # REMOVED: dropping the stamped claim is the same forgery
+    removed = inherited.replace(
+        '    verified:\n      - by: "human:owner"\n        on: "2026-11-10"\n', ""
+    )
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(pid, allowed["revision"], [{"path": rel, "content": removed}])
+
+    # the branch, the recorded revision and the page bytes never moved
+    assert branch_of(project, pid) == allowed["revision"]
+    assert record_of(project, pid)["candidate_revision"] == allowed["revision"]
+    assert proposals._read_blob(project, allowed["revision"], rel) == inherited.encode("utf-8")
+
+    # the AUTHORED Reference extension inherits without refusal (the exact
+    # existing authored-Reference exception mirrored at the native kind)
+    assert "ariadne:" in inherited  # the base carries native.ariadne
+
+
+def test_path_title_mismatch_refuses_before_any_write(tmp_path):
+    """F3: a path-addressed batch entry whose declared canonical title/identity
+    resolves to a DIFFERENT recorded page (agent identity mix-up — no hostile
+    filesystem needed) refuses BEFORE any write or claim check against the
+    wrong page: every page byte, the branch and the recorded revision stay
+    exactly as they were, and no extra path is staged as a workaround."""
+    project = native_context_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    pid = started["proposal"]
+    first = api.edit_pages_batch(
+        pid,
+        started["candidate_revision"],
+        [
+            {
+                "path": "knowledge/references/order-status-codes.md",
+                "content": reference_page(
+                    "Order Status Codes",
+                    "entity:order-status",
+                    "# Order Status Codes\n\n## Overview\n\nCodes.\n",
+                ),
+            },
+            {
+                "path": "knowledge/references/order-glossary.md",
+                "content": reference_page(
+                    "Order Glossary",
+                    "entity:order-glossary",
+                    "# Order Glossary\n\n## Overview\n\nGlossary.\n",
+                ).replace(
+                    'summary: "Order Glossary."',
+                    'summary: "Order Glossary."\naliases:\n  - "Glossary"',
+                ),
+            },
+        ],
+    )
+    assert first["changed"] is True
+    revision = first["revision"]
+    a_bytes = proposals._read_blob(project, revision, "knowledge/references/order-status-codes.md")
+    b_bytes = proposals._read_blob(project, revision, "knowledge/references/order-glossary.md")
+
+    # B's identity submitted at A's recorded path, plus a valid new page C
+    mixed = [
+        {
+            "path": "knowledge/references/order-status-codes.md",
+            "content": reference_page(
+                "Order Glossary",
+                "entity:order-glossary",
+                "# Order Glossary\n\n## Overview\n\nRelocated attempt.\n",
+            ),
+        },
+        {
+            "path": "knowledge/references/order-ledger.md",
+            "content": reference_page(
+                "Order Ledger",
+                "entity:order-ledger",
+                "# Order Ledger\n\n## Overview\n\nLedger.\n",
+            ),
+        },
+    ]
+    with pytest.raises(ValueError, match="resolves to the recorded page"):
+        api.edit_pages_batch(pid, revision, mixed)
+
+    # nothing moved: bytes, branch, record; no refused draft leaked anywhere
+    assert branch_of(project, pid) == revision
+    assert record_of(project, pid)["candidate_revision"] == revision
+    assert proposals._read_blob(
+        project, revision, "knowledge/references/order-status-codes.md"
+    ) == a_bytes
+    assert proposals._read_blob(
+        project, revision, "knowledge/references/order-glossary.md"
+    ) == b_bytes
+    assert run_git(project, "status", "--porcelain") == ""
+
+    # a title resolving THROUGH AN ALIAS to another recorded page cannot
+    # redirect the addressed path either ("Glossary" is B's alias)
+    aliased = reference_page(
+        "Glossary",
+        "entity:glossary-alias",
+        "# Glossary\n\n## Overview\n\nRedirect attempt.\n",
+    )
+    with pytest.raises(ValueError, match="resolves to the recorded page"):
+        api.edit_pages_batch(
+            pid,
+            revision,
+            [{"path": "knowledge/references/order-ledger.md", "content": aliased}],
+        )
+    assert branch_of(project, pid) == revision
+    assert run_git(project, "status", "--porcelain") == ""
+
+
+def test_unsupported_project_refuses_on_every_public_open_without_mutation(tmp_path):
+    """F4: the opening gate validates the ACTUAL native project/admission
+    format — a retired standalone project carrying only a DUMMY ``knowledge/``
+    directory refuses, and a legacy ADMITTED project whose checkout/snapshot
+    serves retired Context pages refuses on EVERY public open path (proposal,
+    discovery, query) before any state is created, with nothing mutated."""
+    project = tmp_path / "legacy-admitted"
+    (project / "context_layer" / "metrics").mkdir(parents=True)
+    (project / "context_layer" / "metrics" / "old.md").write_text(
+        "---\ntype: metric\ntitle: Old\n---\n\n# Old\n", encoding="utf-8"
+    )
+    (project / "knowledge").mkdir()  # a DUMMY directory is not the native KB
+    (project / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml", "context_layer/metrics/old.md")
+    run_git(project, "commit", "-q", "-m", "human: legacy admitted base")
+    # a pinned LEGACY admission whose snapshot serves the retired pages
+    commit = "1" * 40
+    snapshot = project / ".ariadne" / "snapshots" / commit
+    (snapshot / "context_layer" / "metrics").mkdir(parents=True)
+    (snapshot / "context_layer" / "metrics" / "old.md").write_text(
+        "---\ntype: metric\ntitle: Old\n---\n\n# Old\n", encoding="utf-8"
+    )
+    record = {
+        "route": "git-review-admission",
+        "proposal": "p-20260101000000-abcdef",
+        "commit": commit,
+        "snapshot": f".ariadne/snapshots/{commit}",
+        "artifact_digest": "legacy",
+        "review_digest": "legacy",
+        "source_digest": "legacy",
+        "sources": [],
+        "validation": {},
+        "confirmed": True,
+    }
+    (project / ".ariadne" / "current.json").write_text(
+        json.dumps(record, sort_keys=True), encoding="utf-8"
+    )
+    state_before = sorted(str(p) for p in project.rglob("*"))
+
+    from ariadne.discovery import DiscoveryRuntime  # noqa: E402 — the public open path
+    from ariadne.query import QueryRuntime  # noqa: E402
+
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        AuthoringProject(project).start_proposal()
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        DiscoveryRuntime.open_project(project)
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        QueryRuntime.open_project(project)
+
+    # the refusal is NONMUTATING: no locks, worktrees, proposals or writes
+    assert sorted(str(p) for p in project.rglob("*")) == state_before
+
+    # the checkout-only legacy shape (pages served from the pinned snapshot,
+    # checkout cleaned) refuses through the same admission gate
+    checkout = tmp_path / "legacy-checkout"
+    checkout.mkdir()
+    (checkout / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
+    run_git(checkout, "init", "-q")
+    run_git(checkout, "config", "user.name", "Ariadne Tests")
+    run_git(checkout, "config", "user.email", "tests@ariadne.local")
+    run_git(checkout, "add", "--", "ariadne.yaml")
+    run_git(checkout, "commit", "-q", "-m", "human: legacy cleaned checkout")
+    snapshot = checkout / ".ariadne" / "snapshots" / commit
+    (snapshot / "context_layer" / "metrics").mkdir(parents=True)
+    (snapshot / "context_layer" / "metrics" / "old.md").write_text(
+        "---\ntype: metric\ntitle: Old\n---\n\n# Old\n", encoding="utf-8"
+    )
+    (checkout / ".ariadne" / "current.json").write_text(
+        json.dumps(record, sort_keys=True), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        DiscoveryRuntime.open_project(checkout)
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        AuthoringProject(checkout).start_proposal()
+    assert not (checkout / "knowledge").exists()

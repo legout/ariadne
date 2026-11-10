@@ -342,9 +342,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.with_mcp:  # opt-in only (spec §7): the local CLI needs no MCP config
         files.append((".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"))
 
-    # Fail closed: refuse before any write if a scaffold path, or a parent of it
-    # under TARGET, is a symlink (even dangling) — never write through a link.
-    for rel in ("data", "knowledge", *(rel for rel, _ in files)):
+    # Fail closed: refuse before any write if a scaffold path, a callback
+    # destination, or a parent of it under TARGET, is a symlink (even
+    # dangling) — never write through a link.
+    for rel in ("data", "knowledge", ".env", "AGENTS.md", *(rel for rel, _ in files)):
         offender = _symlink_under(target, rel)
         if offender is not None:
             print(
@@ -396,11 +397,40 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
+    # The no-overwrite contract covers the SDK apply callbacks exactly like
+    # the plain scaffold files: an existing operator AGENTS.md/.env refuses
+    # the WHOLE scaffold before any write (checked here so the KB-exists
+    # refusal keeps precedence on a re-run; plan/recheck never write).
+    for rel in (".env", "AGENTS.md"):
+        occupied = target / rel
+        if occupied.exists() or occupied.is_symlink():
+            print(
+                f"error: refusing to scaffold: {occupied} already exists — setup "
+                "never overwrites existing operator files; move or remove it "
+                "(or choose a different target) and re-run. Nothing was written.",
+                file=sys.stderr,
+            )
+            return 1
+
     def _write_env() -> None:
-        (target / ".env").write_text(plan.env_bytes.decode("utf-8"), encoding="utf-8")
+        destination = target / ".env"
+        if destination.exists() or destination.is_symlink():  # appeared mid-apply
+            raise EmptySetupError(
+                f"{destination} appeared during setup — nothing is overwritten; "
+                "inspect it and re-run the preview",
+                code="setup_target_changed",
+            )
+        destination.write_text(plan.env_bytes.decode("utf-8"), encoding="utf-8")
 
     def _write_agents() -> None:
-        (target / "AGENTS.md").write_bytes(plan.agents_bytes)
+        destination = target / "AGENTS.md"
+        if destination.exists() or destination.is_symlink():  # appeared mid-apply
+            raise EmptySetupError(
+                f"{destination} appeared during setup — nothing is overwritten; "
+                "inspect it and re-run the preview",
+                code="setup_target_changed",
+            )
+        destination.write_bytes(plan.agents_bytes)
 
     try:
         apply_plan(plan, write_env=_write_env, write_agents=_write_agents, install_skill=None)

@@ -215,6 +215,32 @@ def test_git_pointer_page_separates_source_permission_and_admission(tmp_path):
     assert "staging/" not in agents and "ariadne-promote" not in agents
 
 
+def test_existing_operator_files_and_symlinked_destinations_are_preserved(tmp_path, capsys):
+    """F1: setup never overwrites existing operator AGENTS.md/.env content and
+    never writes through a symlinked callback destination — the no-overwrite
+    contract covers the SDK apply callbacks exactly like the plain scaffold
+    files; nothing is written at all when an occupied destination refuses."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (target / "AGENTS.md").write_text("# my project facts\n", encoding="utf-8")
+    (target / ".env").write_text("MY_SETTING=keep-me\n", encoding="utf-8")
+    assert scaffold(target) == 1
+    err = capsys.readouterr().err
+    assert "never overwrites existing operator files" in err
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "# my project facts\n"
+    assert (target / ".env").read_text(encoding="utf-8") == "MY_SETTING=keep-me\n"
+    assert not (target / "knowledge").exists()  # nothing was written
+
+    # a symlinked callback destination (dangling included) is refused before
+    # any write; the link target is never created or followed
+    linked = tmp_path / "proj2"
+    linked.mkdir()
+    (linked / "AGENTS.md").symlink_to(tmp_path / "outside-agents.md")
+    assert scaffold(linked) == 1
+    assert not (tmp_path / "outside-agents.md").exists()
+    assert not (linked / "knowledge").exists()
+
+
 def test_second_run_refuses_reinitialization(tmp_path, capsys):
     """A created or existing Knowledge Base is NEVER reinitialized (spec 0010
     §2.2): the second run refuses before any write and the tree is
