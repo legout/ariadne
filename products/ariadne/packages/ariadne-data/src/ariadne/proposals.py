@@ -563,7 +563,9 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
         base_native = base_profile.get("native")
         if isinstance(base_native, dict):
             inherited_slot = base_native
-            base_has_generated_block = "ariadne" in base_native
+            base_has_generated_block = (
+                inherited_kind != "reference" and "ariadne" in base_native
+            )
     # The generated rendered BODY of an inherited native generated page is
     # core-owned exactly like the outer generated pages: altering, dropping or
     # adding the rendered Schema/Observations sections refuses even when every
@@ -588,18 +590,8 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
             )
     if isinstance(proposed_profile, dict) or isinstance(base_profile, dict):
         proposed = proposed_profile if isinstance(proposed_profile, dict) else {}
-        # The authored-Reference exception applies ONLY to genuinely authored
-        # Reference edits: a non-Reference page carrying the inherited generated
-        # ariadne block cannot launder it into an authored extension by changing
-        # the envelope kind (F2 completion).
-        laundering = (
-            inherited_kind is not None
-            and inherited_kind != "reference"
-            and base_has_generated_block
-        )
-        if (
-            proposed.get("kind") == "reference" or inherited_kind == "reference"
-        ) and not laundering:
+        # Only edits that remain authored References may change this extension.
+        if proposed.get("kind") == "reference" and inherited_kind in (None, "reference"):
             native_system = native_system - {"ariadne"}  # the authored extension
         slot = proposed.get("native")
         if not isinstance(slot, dict):

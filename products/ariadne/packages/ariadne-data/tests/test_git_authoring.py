@@ -1509,6 +1509,12 @@ def test_native_profile_trust_claims_inherit_or_refuse(tmp_path):
     # the AUTHORED Reference extension inherits without refusal (the exact
     # existing authored-Reference exception mirrored at the native kind)
     assert "ariadne:" in inherited  # the base carries native.ariadne
+    # A Reference's authored Schema heading is not a measured Table section.
+    inherited += "\n\n## Schema\n\nAuthored reference schema.\n"
+    allowed = api.edit_pages_batch(
+        pid, allowed["revision"], [{"path": rel, "content": inherited}]
+    )
+    assert allowed["changed"] is True
 
     # F2 completion — native TABLE generated facts (positive producer shape):
     table_rel = "knowledge/tables/orders-table.md"
@@ -1881,3 +1887,94 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     # AC7 positive control: the refusal never blocks the project itself — the
     # native KB stays authorable (no blanket refusal from unrelated state)
     assert api.start_proposal()["proposal"].startswith("p-")
+
+
+@pytest.mark.parametrize("native_format", ("missing", "invalid", "unselected", "unbound", "valid"))
+def test_selected_snapshot_requires_native_identity_without_classic_pages(tmp_path, native_format):
+    from ariadne import admission
+
+    project = tmp_path / "project"
+    commit = "a" * 40
+    snapshot = project / ".ariadne" / "snapshots" / commit
+    snapshot.mkdir(parents=True)
+    record = {"commit": commit, "bound_release": {"digest": "0" * 64}}
+    if native_format == "unbound":
+        record.pop("bound_release")
+    if native_format != "unselected":
+        (snapshot / "context_integration.yaml").write_text(
+            'version: 1\nmode: integrated\nsubtree: knowledge\n'
+            'namespace: "urn:uuid:native-fixture"\nprofile: ariadne-context/1\n',
+            encoding="utf-8",
+        )
+    if native_format != "missing":
+        knowledge = snapshot / "knowledge"
+        knowledge.mkdir()
+        (knowledge / "lumio.yaml").write_text(
+            "not: [valid" if native_format == "invalid" else NATIVE_CONTROL, encoding="utf-8"
+        )
+        (knowledge / ".lumio-authoring.yaml").write_text(
+            'version: 1\nnamespace: "urn:uuid:native-fixture"\nsources: {}\nbindings: {}\n'
+            if native_format != "invalid"
+            else "{{ invalid",
+            encoding="utf-8",
+        )
+    before = {
+        path.relative_to(project): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+    if native_format == "valid":
+        admission.refuse_unsupported_admission_snapshot(project, record)
+    else:
+        with pytest.raises(ValueError, match="retired standalone Context layout"):
+            admission.refuse_unsupported_admission_snapshot(project, record)
+    assert before == {
+        path.relative_to(project): path.read_bytes()
+        for path in project.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_reference_kind_cannot_author_generated_table_claims(tmp_path):
+    import yaml
+    from lumio_wiki import load_knowledge_base
+    from lumio_wiki.ariadne_context import native_metadata_errors
+
+    project = native_context_project(tmp_path)
+    rel = "knowledge/references/policy-basis.md"
+    reference = yaml.safe_load(PROFILED_REFERENCE_PAGE.split("---", 2)[1])
+    table = yaml.safe_load(PROFILED_TABLE_PAGE.split("---", 2)[1])
+    reference["ariadne_profile"]["core_ref"] = table["ariadne_profile"]["core_ref"]
+    reference["ariadne_profile"]["native"].update(
+        resource=ORDERS_TABLE_URI, stale_after="2027-11-10"
+    )
+    body = "\n# Policy Basis\n\nBasis body.\n"
+    original = "---\n" + yaml.safe_dump(reference) + "---\n" + body
+    (project / rel).write_text(original, encoding="utf-8")
+    table_rel = "knowledge/tables/orders-table.md"
+    (project / table_rel).unlink()
+    run_git(project, "add", "--", rel, table_rel)
+    run_git(project, "commit", "-q", "-m", "human: authored reference to orders")
+    _kb, report = load_knowledge_base(project / "knowledge")
+    assert report.is_valid, report
+
+    table["id"] = reference["id"]
+    table["title"] = reference["title"]
+    table["ariadne_profile"]["native"].update(
+        title=reference["title"],
+        status="stable",
+        verified=reference["ariadne_profile"]["native"]["verified"],
+    )
+    assert native_metadata_errors("native", table["ariadne_profile"]["native"], kind="table") == []
+    forged = "---\n" + yaml.safe_dump(table) + "---\n" + body
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(
+            started["proposal"], started["candidate_revision"], [{"path": rel, "content": forged}]
+        )
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    assert (
+        record_of(project, started["proposal"])["candidate_revision"]
+        == started["candidate_revision"]
+    )

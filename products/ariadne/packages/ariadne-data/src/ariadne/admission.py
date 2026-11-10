@@ -1323,26 +1323,30 @@ def reconcile(project: str | Path, proposal: str, expected_revision: str, revisi
 
 
 def refuse_unsupported_admission_snapshot(project: str | Path, record: dict) -> None:
-    """AC10/spec0035 §6 for an EXACT supplied (or current) admission record:
-    the pinned snapshot serving retired Context pages without the native
-    knowledge/ Knowledge Base manifest is the legacy standalone contract —
-    refuse before any source/numerical execution with fresh-setup guidance,
-    never mutating or rewriting the record or its snapshot bytes. The exact
-    supplied record is authoritative for this check even when the project's
-    current admission is already the native contract."""
-    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
-        SOURCE_REFERENCE_MANIFEST_BASENAME,
-    )
+    """Require native identity in the exact selected snapshot without mutating it."""
+    from lumio_wiki import load_control_file, load_source_reference_manifest
+    from lumio_wiki.knowledge_base import ControlFileError
+    from lumio_wiki.source_references import SourceReferenceError
 
-    snapshot = Path(project) / _expected_snapshot(record["commit"])
-    context_pages = snapshot / "context_layer"
-    if context_pages.is_dir() and any(context_pages.rglob("*.md")) and not (
-        snapshot / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME
-    ).is_file():
+    from ariadne import lumio_context
+
+    knowledge = Path(project) / _expected_snapshot(record["commit"]) / "knowledge"
+    native = False
+    if knowledge.is_dir():
+        try:
+            native = (
+                isinstance(record.get("bound_release"), dict)
+                and "digest" in record["bound_release"]
+                and lumio_context.selector(knowledge.parent) is not None
+                and load_source_reference_manifest(knowledge) is not None
+                and load_control_file(knowledge) is not None
+            )
+        except (ControlFileError, SourceReferenceError, ValueError):
+            pass
+    if not native:
         raise ValueError(
-            f"{project}: the pinned admission {record['commit'][:12]} serves the "
-            "retired standalone Context layout (its snapshot carries context_layer/ "
-            "pages without the native knowledge/ Knowledge Base manifest); "
+            f"{project}: the pinned admission {record['commit'][:12]} uses the "
+            "retired standalone Context layout or lacks a supported native Knowledge Base; "
             + proposals._UNSUPPORTED_PROJECT_GUIDANCE
         )
 
@@ -1372,6 +1376,7 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             "the served bytes changed after admission; this needs human resolution and "
             "re-admission of a reviewed/validated revision, never a fallback"
         )
+    refuse_unsupported_admission_snapshot(project, record)
     if not approval_present(project, record["source_digest"]):
         raise ValueError(
             "the admitted source identity no longer carries the operator's approval — "
