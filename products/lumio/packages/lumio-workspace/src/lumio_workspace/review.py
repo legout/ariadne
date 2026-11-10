@@ -207,10 +207,27 @@ class ReviewService:
             self._authoring(task_kb, repo_root, submission_base, candidate, resources)
             admitted = self.publication.current_version()
             if admitted is None:
-                # First publication from a genuinely empty workspace: the exact
-                # submission base is the reviewed baseline and the explicit
-                # expected predecessor is "none" (never an unchecked mode).
-                base = submission_base
+                # First publication with no admitted baseline: review the
+                # complete candidate against the verified owner-confirmed
+                # setup baseline — never the immediate continuation
+                # predecessor — so approval cannot activate undisclosed
+                # ancestor content. The explicit expected predecessor stays
+                # "none" (never an unchecked mode).
+                setup_base = self.state.setup_base_revision(self.workspace_id, attachment)
+                if setup_base is None:
+                    raise ReviewError(
+                        "the owner-confirmed setup baseline is unavailable for a "
+                        "complete first-publication review",
+                        code="incomplete_review_scope",
+                    )
+                try:
+                    base = resolve_full_commit(repo_root, setup_base)
+                except GitAuthoringError as exc:
+                    raise ReviewError(
+                        "the owner-confirmed setup baseline is unavailable for a "
+                        "complete first-publication review",
+                        code="incomplete_review_scope",
+                    ) from exc
                 expected_current = "none"
             else:
                 base = resolve_full_commit(repo_root, admitted)

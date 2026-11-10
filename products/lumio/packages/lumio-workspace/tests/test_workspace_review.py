@@ -1140,46 +1140,87 @@ def test_first_document_requires_review_without_initial_publication(
         assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
 
         _login(reviewer, fixture.reviewer_browser)
-        review = reviewer.get(f"/review/{task['task_id']}")
+        direct_review = reviewer.get(f"/review/{task['task_id']}")
+        assert direct_review.status_code == 200, direct_review.text
+        assert "&lt;unsafe&gt;&amp;review" in direct_review.text
+
+        continuation = _contribute(
+            contributor,
+            fixture,
+            retry_key="first-publication-continuation",
+            title="Second Runbook",
+            addition="Second runbook content.",
+            source_id="second-runbook-source",
+            filename="second-runbook.md",
+            continuation_task_id=task["task_id"],
+            request_id=2,
+        )
+        assert continuation["native_base"] == task["native_candidate"]
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        # Before the first approval the review must disclose BOTH complete page
+        # bodies: approval activates the whole candidate, never only the last
+        # continuation diff. "Then start it." exists only in ancestor A's body
+        # and "First Runbook — added" only in A's page section.
+        review = reviewer.get(f"/review/{continuation['task_id']}")
         assert review.status_code == 200, review.text
-        assert "&lt;unsafe&gt;&amp;review" in review.text
+        assert "First Runbook — added" in review.text
+        assert "Then start it." in review.text
+        assert "Second Runbook — added" in review.text
+        assert "Second runbook content." in review.text
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
         digest = _digest(review.text)
-        approved = _decision(reviewer, task["task_id"], digest, "approve")
+        approved = _decision(reviewer, continuation["task_id"], digest, "approve")
         assert approved.status_code == 200, approved.text
         publication = approved.json()
-        candidate = task["native_candidate"]
+        candidate = continuation["native_candidate"]
         assert publication["status"] == "published"
         assert publication["publication"]["activated"] is True
         assert publication["publication"]["version"] == candidate
         assert publication["publication"]["expected_current"] == "none"
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
 
-        admitted = _call_tool(
-            contributor, fixture.contributor_api, "read_knowledge", {"title": "First Runbook"}, 2
-        ).json()["result"]["structuredContent"]
-        assert admitted["markdown"].strip() == (
-            "# First Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\nThen start it."
-        )
-        assert admitted["citation"] == {
-            "title": "First Runbook",
-            "path": "procedures/first_runbook.md",
-            "published_version": candidate,
-        }
+        for title, body, path, request_id in (
+            (
+                "First Runbook",
+                "# First Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\nThen start it.",
+                "procedures/first_runbook.md",
+                3,
+            ),
+            (
+                "Second Runbook",
+                "# Second Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\n"
+                "Second runbook content.",
+                "procedures/second_runbook.md",
+                4,
+            ),
+        ):
+            admitted = _call_tool(
+                contributor, fixture.contributor_api, "read_knowledge", {"title": title}, request_id
+            ).json()["result"]["structuredContent"]
+            assert admitted["markdown"].strip() == body
+            assert admitted["citation"] == {
+                "title": title,
+                "path": path,
+                "published_version": candidate,
+            }
 
         second = _contribute(
             contributor,
             fixture,
             retry_key="second-document",
-            title="Second Runbook",
-            addition="Second runbook content.",
-            source_id="second-runbook-source",
-            filename="second-runbook.md",
-            request_id=3,
+            title="Third Runbook",
+            addition="Third runbook content.",
+            source_id="third-runbook-source",
+            filename="third-runbook.md",
+            request_id=5,
         )
         assert second["native_base"] == candidate
         second_review = reviewer.get(f"/review/{second['task_id']}")
         assert second_review.status_code == 200, second_review.text
-        assert "Second Runbook — added" in second_review.text
+        assert "Third Runbook — added" in second_review.text
         assert "First Runbook — removed" not in second_review.text
+        assert "Second Runbook — removed" not in second_review.text
         # Reviewing alone must not publish.
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
