@@ -658,14 +658,10 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         omitted, the configured current publication is served.
         """
         _, resolved, authorized = snapshot(published_version)
-        authorized_paths = {page.path for page in authorized}
-        # Canonical titles take precedence inside the authorized view; a hidden
-        # canonical title can never suppress a visible alias (spec0034 §12.2).
-        pages = [page for page in resolved.lookup_by_title(title) if page.path in authorized_paths]
+        # Match only authorized pages, with canonical titles before aliases.
+        pages = [page for page in authorized if page.title == title]
         if not pages:
-            pages = [
-                page for page in resolved.lookup_by_alias(title) if page.path in authorized_paths
-            ]
+            pages = [page for page in authorized if title in page.aliases]
         if not pages:
             return {"found": False}
         page = pages[0]
