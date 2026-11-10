@@ -11,19 +11,23 @@ from dataclasses import dataclass
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from lumio_wiki.git_authoring import GitAuthoringError
 from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from lumio_wiki.page_search import normalize_search_query
+from lumio_wiki.private_profile import PrivateProfileError
 from lumio_wiki.records import CompiledPage, SourceFileDigest, SourceFingerprint
 from lumio_wiki.retrieval import default_retrieval_adapter
 from lumio_wiki.source_inspection import (
     SourceInspectionError,
+    fetch_verified_artifact,
     read_local_published_bindings,
+    resolve_local_published_binding,
     validate_published_version,
 )
+from lumio_wiki.source_registry import safe_artifact_filename
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -45,6 +49,7 @@ from .auth import (
 from .contributions import ContributionError, ContributionService
 from .enrichment import EnrichmentService
 from .intake import IntakeService, UploadError
+from .publication import PublicationService
 from .review import ReviewError, ReviewService, render_review, render_source
 from .setup import SetupError, apply_setup, preview_setup, render_setup
 from .state import LOCAL_TENANT_ID, Actor, RetryConflict, WorkspaceState, local_actor
@@ -67,6 +72,89 @@ MAX_EVIDENCE_TEXT_CHARS = 16000
 # The owner browser surface assigns only membership and reviewer work;
 # inspect_source and setup stay separate explicit operator grants.
 _MEMBERSHIP_CAPABILITIES = ("read", "contribute", "review")
+
+#: Supported binary originals open as exact-byte safe attachments on both
+#: inspection routes; every other original keeps its UTF-8 text inspection
+#: view (spec0034 §12.3).
+_BINARY_ORIGINAL_SUFFIXES = frozenset({".pdf", ".docx"})
+
+#: Distinct truthful outcomes for a failed original resolution or fetch, shown
+#: only to an authorized inspector and never substituted with other content
+#: or registry-latest bytes (spec0034 §12.3).
+_INSPECTION_FAILURES = {
+    "access-denied": (403, "backend access to the retained original was denied"),
+    "absent-binding": (404, "this original reference is not retained at this workspace"),
+    "unavailable-artifact": (404, "the retained original is temporarily unavailable"),
+    "corruption": (409, "the retained original failed verification"),
+    "historical-version-mismatch": (
+        404,
+        "no exact original binding exists for this published version",
+    ),
+    "ambiguous-binding": (404, "this original reference is not available at this workspace"),
+    "signing-unsupported": (409, "this original does not support the requested retrieval"),
+}
+
+
+def _is_binary_original(filename: str | None) -> bool:
+    return Path(filename or "").suffix.lower() in _BINARY_ORIGINAL_SUFFIXES
+
+
+def _inspection_failure(exc: SourceInspectionError) -> JSONResponse:
+    status, message = _INSPECTION_FAILURES.get(
+        exc.outcome, (404, "this original reference is not available at this workspace")
+    )
+    return JSONResponse(
+        {"error": message, "code": exc.outcome.replace("-", "_")}, status_code=status
+    )
+
+
+def _safe_attachment(raw: bytes, filename: str | None, source_id: str) -> Response:
+    """Verified bytes as a download-only safe attachment, never inline HTML.
+
+    The name is the registry's sanitized safe basename; the generic media type
+    plus ``nosniff`` prevent active rendering, and no signed or otherwise
+    bearer-capable URL is produced (spec0034 §12.3).
+    """
+    name = safe_artifact_filename(filename) or f"{source_id}.bin"
+    ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "")
+    disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(name)}'
+    return Response(
+        content=raw,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": disposition,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _source_references(version: str | None, page: Any) -> list[dict[str, Any]]:
+    """All authored source attributions with a version-qualified action.
+
+    Attribution facts (id, title, external URL) come only from the published
+    page itself. The reference action names the exact Published Version,
+    Entity, and Source ID and conveys no bearer access: opening it re-checks
+    browser authentication, current membership, the separate inspect_source
+    grant, and the exact admitted binding. No availability, filename, size, or
+    digest is disclosed and no private store is probed to build it
+    (spec0034 §12.3).
+    """
+    entries = []
+    for source in page.sources:
+        reference = (
+            f"/original/{quote(version)}/{quote(page.id)}/{quote(source.id)}"
+            if version and page.id and source.id
+            else None
+        )
+        entries.append(
+            {
+                "id": source.id,
+                "title": source.title or None,
+                "url": source.url,
+                "reference": reference,
+            }
+        )
+    return entries
 
 
 class _BrowserSession(dict):
@@ -410,9 +498,12 @@ def _bounded_evidence_response(
 
     Oversized indivisible Evidence units are omitted — never returned with
     false complete spans — and their exact coordinates are disclosed without
-    their text (spec0034 §12.2).
+    their text (spec0034 §12.2). Each result carries every authored source
+    attribution of its page with the non-bearer reference actions of the
+    served Published Version (spec0034 §12.3).
     """
     entity_ids = {page.path: (page.id or None) for page in authorized}
+    pages_by_path = {page.path: page for page in authorized}
     included: list[dict[str, Any]] = []
     omitted: list[dict[str, Any]] = []
     remaining = MAX_EVIDENCE_TEXT_CHARS
@@ -451,6 +542,9 @@ def _bounded_evidence_response(
                     "line_end": result.citation.line_end,
                     "section_title": result.citation.section_title,
                 },
+                "sources": _source_references(
+                    resolved.published_version, pages_by_path.get(evidence.page_path)
+                ),
                 "snippet": result.snippet,
                 "score": result.score,
                 "trace": {
@@ -671,6 +765,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             "summary": page.summary,
             "markdown": page.body,
             "entity_id": page.id or None,
+            "sources": _source_references(resolved.published_version, page),
             "citation": {
                 "title": page.title,
                 "path": page.path,
@@ -1119,7 +1214,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         if not state.permits(config.workspace_id, actor, "review"):
             return JSONResponse({"error": "workspace review is not available"}, status_code=403)
         try:
-            filename, text = review_service().inspect_source(
+            binding, raw = review_service().inspect_source(
                 actor,
                 request.path_params["task_id"],
                 request.path_params["source_id"],
@@ -1127,7 +1222,127 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             )
         except ReviewError as exc:
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
-        return HTMLResponse(render_source(request.path_params["task_id"], filename, text))
+        if _is_binary_original(binding.filename):
+            # Exact verified binary bytes as a download-only safe attachment —
+            # never a UTF-8 decode or extracted-text substitution (spec0034
+            # §12.3).
+            return _safe_attachment(raw, binding.filename, request.path_params["source_id"])
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return JSONResponse(
+                {"error": "the retained original failed text verification", "code": "corruption"},
+                status_code=409,
+            )
+        return HTMLResponse(
+            render_source(
+                request.path_params["task_id"],
+                binding.filename or request.path_params["source_id"],
+                text,
+            )
+        )
+
+    @server.custom_route(
+        "/original/{published_version}/{entity_id}/{source_id}",
+        methods=["GET"],
+        include_in_schema=False,
+    )
+    async def original_reference(request: Request) -> Response:
+        """Deliver one admitted publication's exact original as a safe attachment.
+
+        Browser-authenticated and independent of any pending review. Current
+        membership and the separate ``inspect_source`` grant are re-checked on
+        the request before any private store probe or availability, filename,
+        size, or digest disclosure; only then does the reference resolve the
+        exact admitted configured page/source/version binding through the
+        native sealed record — never a caller-supplied object key, filesystem
+        path, hash, or registry-latest substitute (spec0034 §12.3).
+        """
+        actor = _browser_actor(request)
+        if actor is None:
+            return RedirectResponse("/auth/login", status_code=303)
+        if request.url.scheme != "https":
+            return JSONResponse({"error": "HTTPS required"}, status_code=403)
+        # Current membership (any capability) AND the separate inspection grant
+        # precede every private probe: no availability, filename, size, or
+        # digest fact is disclosed to a caller lacking either (spec0034 §12.3:
+        # only current members with separate inspect_source may download; a
+        # review-only member holding that grant qualifies).
+        if not state.capabilities(config.workspace_id, actor):
+            return JSONResponse({"error": "workspace access is not available"}, status_code=403)
+        if not state.permits(config.workspace_id, actor, "inspect_source"):
+            return JSONResponse(
+                {"error": "source inspection requires its separate capability"},
+                status_code=403,
+            )
+        version = request.path_params["published_version"]
+        entity_id = request.path_params["entity_id"]
+        source_id = request.path_params["source_id"]
+        unavailable = JSONResponse(
+            {"error": "this original reference is not available at this workspace"},
+            status_code=404,
+        )
+        if config.published_version is not None and version != config.published_version:
+            return unavailable
+        try:
+            validate_published_version(version)
+            verify_admitted_version(version)
+            resolved = open_knowledge_base(
+                PublishedFilesystemLocation(config.published_path, version=version)
+            )
+        except (
+            ValueError,
+            GitAuthoringError,
+            KnowledgeBaseError,
+            SourceInspectionError,
+            WorkspaceError,
+        ):
+            return unavailable
+        if not resolved.validation_report.is_valid:
+            return unavailable
+        pages = [page for page in _authorized_pages(resolved) if page.id == entity_id]
+        if not pages or source_id not in {source.id for source in pages[0].sources}:
+            # A hidden or unknown reference is indistinguishable from a missing
+            # one; no binding detail is disclosed either way (spec0034 §12.2).
+            return unavailable
+        if config.authoring_path is None or config.private_profile_path is None:
+            return JSONResponse(
+                {
+                    "error": "the private source resources are unavailable",
+                    "code": "unavailable_artifact",
+                },
+                status_code=404,
+            )
+        try:
+            resources = PublicationService(
+                authoring_path=config.authoring_path,
+                profile_path=config.private_profile_path,
+                destination=config.published_path,
+            ).resources()
+        except PrivateProfileError:
+            return JSONResponse(
+                {
+                    "error": "the private source resources are unavailable",
+                    "code": "unavailable_artifact",
+                },
+                status_code=404,
+            )
+        if resources.artifact_store is None:
+            return JSONResponse(
+                {
+                    "error": "the private source resources are unavailable",
+                    "code": "unavailable_artifact",
+                },
+                status_code=404,
+            )
+        try:
+            binding = resolve_local_published_binding(
+                config.published_path, version, source_id, entity_id=entity_id
+            )
+            raw = fetch_verified_artifact(resources.artifact_store, binding)
+        except SourceInspectionError as exc:
+            return _inspection_failure(exc)
+        return _safe_attachment(raw, binding.filename, source_id)
 
     @server.custom_route("/membership", methods=["GET", "POST"], include_in_schema=False)
     async def membership(request: Request) -> Response:

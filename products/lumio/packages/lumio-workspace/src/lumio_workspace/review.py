@@ -36,6 +36,7 @@ from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.mutation import mutation_lock
 from lumio_wiki.private_profile import PrivateProfileError, ResolvedPrivateSources
 from lumio_wiki.source_inspection import (
+    ResolvedSourceBinding,
     SourceInspectionError,
     fetch_verified_artifact,
     resolve_source_reference_binding,
@@ -352,7 +353,13 @@ class ReviewService:
 
     def inspect_source(
         self, actor: Actor, task_id: str, source_id: str, entity_id: str
-    ) -> tuple[str, str]:
+    ) -> tuple[ResolvedSourceBinding, bytes]:
+        """Return the candidate's exact binding and verified original bytes.
+
+        Binary originals must stay bytes end to end: the caller decides the
+        delivery form, so no UTF-8 decoding or extracted-text substitution
+        happens here (spec0034 §12.3).
+        """
         if not self.state.permits(self.workspace_id, actor, "inspect_source"):
             raise ReviewError(
                 "source inspection requires its separate capability",
@@ -379,11 +386,9 @@ class ReviewService:
                 source_id,
                 entity_id=entity_id,
             )
-            raw = fetch_verified_artifact(artifact_store, binding)
-            text = raw.decode("utf-8")
-        except (SourceInspectionError, UnicodeDecodeError) as exc:
+            return binding, fetch_verified_artifact(artifact_store, binding)
+        except SourceInspectionError as exc:
             raise ReviewError(str(exc), code="source_unavailable") from exc
-        return binding.filename or source_id, text
 
     def decide(self, actor: Actor, task_id: str, action_digest: str, decision: str) -> dict:
         if decision not in {"approve", "reject", "request_changes"}:
