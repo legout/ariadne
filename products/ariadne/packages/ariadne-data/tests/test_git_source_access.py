@@ -20,6 +20,7 @@ network, no provider.
 import hashlib
 import json
 import os
+import pwd
 import subprocess
 import sys
 from pathlib import Path
@@ -665,6 +666,28 @@ _PG_DSN_CASES = [
         id="uri-query-override",
     ),
     pytest.param(
+        # libpq percent decoding: a literal ``+`` is NOT a space — ``app+blue``
+        # and ``app%20blue`` are two DIFFERENT valid databases that must bind
+        # differently (HTML-form decoding would collapse them).
+        "postgresql://owner:pgsecret-a@db-a.internal:5432/?dbname=app+blue",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432/?dbname=app+blue",
+        "postgresql://owner:pgsecret-b@db-a.internal:5432/?dbname=app%20blue",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432/?dbname=app+blue",
+        "dbname=app",
+        id="uri-percent-dbname",
+    ),
+    pytest.param(
+        # URI path delimiter: exactly ONE leading slash is the separator —
+        # ``//app`` names the database "/app", not ``app`` (no lossy
+        # normalization of the target).
+        "postgresql://owner:pgsecret-a@db-a.internal:5432//app",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432//app",
+        "postgresql://owner:pgsecret-b@db-a.internal:5432/app",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432//app",
+        "dbname=app",
+        id="uri-path-slashes",
+    ),
+    pytest.param(
         # ordered multi-host: DB-B differs from DB-A ONLY by host ORDER — the
         # ordered list is part of the destination identity (failover order).
         "postgresql://owner:pgsecret-a@db-a.internal,db-c.internal:5433/app",
@@ -793,4 +816,49 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
             started["proposal"], proposed["revision"], proposed["source_digest"]
         )
     assert _PG_ENV in str(service_error.value)
+    assert "prod" not in str(service_error.value)  # never the service VALUE
     assert opened == []  # nothing was opened for the refused form either
+
+    # An ACTIVE PGSERVICE environment selects the target through the service
+    # file even WITHOUT service= in the connection string — the same refused
+    # indirection, named by variable, never by its value.
+    monkeypatch.setenv("PGSERVICE", "prod")
+    monkeypatch.setenv(_PG_ENV, "dbname=app user=owner")
+    with pytest.raises(ValueError, match="PGSERVICE") as env_service_error:
+        api.approve_sources(
+            started["proposal"], proposed["revision"], proposed["source_digest"]
+        )
+    assert "prod" not in str(env_service_error.value)
+    assert opened == []
+    monkeypatch.delenv("PGSERVICE")
+
+    # The libpq default user is the EFFECTIVE operating-system account —
+    # never the LOGNAME/USER environment hints (independent oracle: the OS
+    # account database itself). Naming that account via PGUSER afterwards is
+    # a TARGET change, not a silent alias of the same identity.
+    for hint in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.setenv(hint, "ariadne-decoy-user")
+    effective_user = pwd.getpwuid(os.geteuid()).pw_name
+    monkeypatch.setenv(_PG_ENV, "host=db-a.internal dbname=app")
+    approved_os = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_os["storage_bindings"]["postgres:pg"]["user"] == effective_user
+    monkeypatch.setenv("PGUSER", "ariadne-decoy-user")
+    approved_pguser = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_pguser["approval_digest"] != approved_os["approval_digest"]
+    monkeypatch.delenv("PGUSER")
+
+    # Malformed URIs refuse through the sanitized parser boundary: a decoder
+    # exception must never echo the connection string — this netloc carries
+    # an NFKC-invalid fullwidth slash, so the raw parser error would surface
+    # the password.
+    monkeypatch.setenv(_PG_ENV, "postgresql://owner:pgsecret@db／a/app")
+    with pytest.raises(ValueError, match="not a valid connection URI") as nfkc_error:
+        api.approve_sources(
+            started["proposal"], proposed["revision"], proposed["source_digest"]
+        )
+    assert "pgsecret" not in str(nfkc_error.value)
+    assert opened == []

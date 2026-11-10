@@ -1392,11 +1392,20 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
     # opens the unapproved endpoint under this admission — the environment
     # check reads endpoint/region values only, never key/token values.
     bindings = record.get("storage_bindings") or {}
-    referenced = {
-        entry["storage"]["name"]
-        for entry in record.get("sources") or []
-        if isinstance(entry.get("storage"), dict) and isinstance(entry["storage"].get("name"), str)
-    }
+    # The referenced set spans BOTH binding namespaces (spec 0025 §4,
+    # spec0035 §8 disposition): S3 profile names AND postgres destinations
+    # under their ``postgres:<source-name>`` keys — a record carrying a
+    # postgres source without its destination binding is a destination-
+    # unbound historical record and refuses for fresh human approval, while
+    # a complete mixed S3+PG identity still verifies (never silently
+    # skipped, never rewritten).
+    referenced: set[str] = set()
+    for entry in record.get("sources") or []:
+        storage = entry.get("storage")
+        if isinstance(storage, dict) and isinstance(storage.get("name"), str):
+            referenced.add(storage["name"])
+        elif entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+            referenced.add(f"postgres:{entry['name']}")
     if referenced:
         if set(bindings) != referenced:
             raise ValueError(

@@ -40,14 +40,13 @@ catalog (cheap enumeration only — no profiling here).
 from __future__ import annotations
 
 import base64
-import getpass
 import json
 import os
 import re
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
@@ -748,13 +747,21 @@ def _pg_uri_params(source: str, variable: str | None, dsn: str) -> dict[str, str
     """One libpq connection URI as the same keyword→value mapping: the
     hierarchical components convert first, named query parameters override
     them (PQconnectdb's last-wins conversion order). Multi-host hostspecs are
-    split bracket-aware; hosts are percent-decoded."""
-    parts = urlsplit(dsn)
+    split bracket-aware; components are percent-decoded libpq-style
+    (percent-only — a literal ``+`` is never a space) and the URI path
+    delimiter is stripped exactly once, never normalized away."""
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        # the parser's own message may quote the whole netloc incl. any
+        # credential — refuse by source/variable, discarding the raw text
+        raise _pg_refuse(source, variable, "is not a valid connection URI") from None
     params: dict[str, str] = {}
     if parts.username is not None:
         params["user"] = unquote(parts.username)  # password: stripped, never recorded
     if parts.path not in ("", "/"):
-        params["dbname"] = unquote(parts.path.lstrip("/"))
+        path = parts.path[1:] if parts.path.startswith("/") else parts.path
+        params["dbname"] = unquote(path)
     userinfo, _, hostspec = parts.netloc.rpartition("@")
     if hostspec:
         hosts: list[str] = []
@@ -774,9 +781,22 @@ def _pg_uri_params(source: str, variable: str | None, dsn: str) -> dict[str, str
             params["host"] = ",".join(hosts)
         if any(ports):
             params["port"] = ",".join(ports)
-    for keyword, value in parse_qsl(parts.query, keep_blank_values=True):
+    for keyword, value in _pg_uri_query(parts.query):
         params[keyword.lower()] = value
     return params
+
+
+def _pg_uri_query(query: str) -> list[tuple[str, str]]:
+    """One libpq URI query string as keyword/value pairs with PERCENT-ONLY
+    decoding (RFC 3986/libpq: a literal ``+`` is a plus, never a space —
+    HTML-form decoding would collapse distinct database names)."""
+    pairs: list[tuple[str, str]] = []
+    for part in query.split("&"):
+        if not part:
+            continue
+        keyword, _, value = part.partition("=")
+        pairs.append((unquote(keyword), unquote(value)))
+    return pairs
 
 
 def _pg_split_hostspec(hostspec: str) -> list[str]:
@@ -799,6 +819,28 @@ def _pg_split_hostspec(hostspec: str) -> list[str]:
     return items
 
 
+def _pg_os_user(source: str, variable: str | None) -> str:
+    """The EFFECTIVE operating-system account — the actual libpq default user
+    for an omitted user (Unix account database by effective uid). The
+    LOGNAME/USER environment hints are deliberately NOT consulted: a
+    preserved environment can name a different login than the account libpq
+    would connect as, which would alias two distinct targets into one
+    identity. Platforms without an account database refuse: the identity
+    never guesses a user it cannot verify."""
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (ImportError, KeyError, OSError):
+        raise _pg_refuse(
+            source,
+            variable,
+            "omits the user and the operating-system account libpq would default "
+            "to cannot be determined on this platform — set user= in the "
+            "connection string or export PGUSER explicitly",
+        ) from None
+
+
 def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict:
     """The EFFECTIVE non-secret destination identity of one resolved postgres
     connection string (libpq URI or keyword/value form — the forms the DuckDB
@@ -817,6 +859,18 @@ def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict
     unchanged; any target-selection change (host, hostaddr, ordered multi-host
     order, port, dbname, user) produces a different record and needs its own
     source approval (spec 0025 §4)."""
+    if os.environ.get("PGSERVICE"):
+        # an active PGSERVICE selects settings through the service file even
+        # when the connection string never names service= — the target cannot
+        # be bound without resolving that file, which approval never does
+        raise _pg_refuse(
+            source,
+            variable,
+            "resolves through the PGSERVICE environment (a service-file target) "
+            "— file-based target indirection is not supported for source "
+            "approval; clear PGSERVICE and approve an explicit target instead "
+            "(host/hostaddr, port, dbname, user)",
+        )
     if "=" not in dsn and not DSN_RE.match(dsn):
         params = {"dbname": dsn.strip()}  # libpq: a bare connstring is a dbname
     elif DSN_RE.match(dsn):
@@ -847,10 +901,7 @@ def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict
             targets[keyword] = env_value.strip()
     user = targets.get("user")
     if user is None:
-        try:
-            user = getpass.getuser()
-        except Exception:  # pragma: no cover - no OS user identity at all
-            user = None
+        user = _pg_os_user(source, variable)
     dbname = targets.get("dbname", user)
     ports = _pg_target_list(targets["port"]) if "port" in targets else ["5432"]
     return {

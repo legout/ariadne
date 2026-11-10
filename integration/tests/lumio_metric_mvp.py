@@ -4,6 +4,7 @@ Golden producer bytes remain untouched; test candidates use explicit Git edits.
 All sources, publications, receipts and operator confirmations are synthetic/local.
 """
 
+import argparse
 import asyncio
 import copy
 import hashlib
@@ -18,8 +19,10 @@ import pytest  # pyright: ignore[reportMissingImports] — qualified test env is
 import yaml
 from ariadne import (  # pyright: ignore[reportAttributeAccessIssue] — editor resolves the baseline checkout
     admission,
+    authoring_sources,
     lumio_context,
     query_results,
+    status,
 )
 from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli
@@ -854,3 +857,87 @@ finally:
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_admission_binding_checks_carry_postgres_destinations(tmp_path, monkeypatch):
+    """a2 fix pass, review finding 2 (spec 0025 §4 disposition in spec0035
+    §8): the serve-side admission binding checks compare the COMPLETE
+    binding set — ``postgres:<source>`` destinations under their namespaced
+    keys as well as S3 profile names. A destination-unbound historical
+    record refuses for fresh human approval without rewriting it, a drifted
+    destination refuses before any SQL, and a complete unchanged identity
+    passes the binding checks; status inherits the same comparison through
+    admission resolution instead of reporting a drifted binding as current.
+
+    The journey is a REAL native admitted release (ready → preview →
+    activate). A live postgres journey cannot run offline (validation opens
+    every declared source), so for the postgres scenarios the admitted
+    RECORD is namespace-shaped per the spec 0025 §4 record contract
+    (declaration digest + credential-free destination binding + sources
+    entry); the binding values are hand-written from the contract, never
+    derived from the implementation. The release wrapper deliberately stays
+    the original admit-time one, so a shaped record that PASSES the binding
+    checks surfaces the later, out-of-scope release mismatch — that late
+    refusal is the observable proving the binding checks accepted the
+    complete set (a real integrated PG admission computes the same core
+    binding at its own admit time and serves)."""
+    project, api, review = ready(tmp_path)
+    destination = tmp_path / "published"
+    composite = preview(project, review, destination)
+    activate(project, review, composite)
+    record, _snapshot = admission.resolve_admission(project)  # the real release serves
+    before = current_bytes(project)
+
+    pg_env = "ARIADNE_TEST_PG_DSN"
+    monkeypatch.setenv(pg_env, "postgresql://owner:pgsecret-a@db-a.internal:5432/app")
+    entry = {"name": "pg", "type": "postgres", "connection_env": pg_env, "read_only": True}
+    # hand-written from the spec 0025 §4 binding contract: a credential-free
+    # destination is the ordered host/hostaddr/port lists plus dbname/user
+    binding = {
+        "host": ["db-a.internal"],
+        "hostaddr": [],
+        "port": ["5432"],
+        "dbname": "app",
+        "user": "owner",
+    }
+    declared = record.get("source_declaration_digest") or record["source_digest"]
+    bindings = {"postgres:pg": binding}
+    shaped = dict(record)
+    shaped["sources"] = [*record["sources"], entry]
+    shaped["storage_bindings"] = bindings
+    shaped["source_digest"] = authoring_sources.approval_digest(declared, bindings)
+
+    approvals = authoring_sources._load_approvals(project)
+    approvals[shaped["source_digest"]] = {"source_digest": shaped["source_digest"]}
+    authoring_sources._store_approvals(project, approvals)
+
+    # unchanged destination: the COMPLETE binding set passes the admission
+    # binding checks — any refusal must come from the later release-wrapper
+    # integrity (out of scope here), never from a binding refusal
+    with pytest.raises(ValueError, match="Bound Release"):
+        admission.validate_admission_record(project, shaped)
+
+    # a destination change under the SAME connection_env name refuses at the
+    # binding comparison — before the release wrapper, before any SQL
+    monkeypatch.setenv(pg_env, "postgresql://owner:pgsecret-b@db-b.internal:5432/app")
+    with pytest.raises(ValueError, match="different effective storage binding"):
+        admission.validate_admission_record(project, shaped)
+
+    # a destination-unbound historical record (the old namespace: declaration
+    # digest only) refuses for fresh approval and never rewrites the record
+    unbound = dict(record)
+    unbound["sources"] = [*record["sources"], entry]
+    unbound["storage_bindings"] = {}
+    unbound["source_digest"] = declared
+    with pytest.raises(ValueError, match="incomplete"):
+        admission.validate_admission_record(project, unbound)
+    assert current_bytes(project) == before
+
+    # status inherits the same complete comparison: the drifted on-disk
+    # record is reported invalid with the binding reason — never as a
+    # current destination
+    (project / ".ariadne" / "current.json").write_text(json.dumps(shaped))
+    report = status.build_report(argparse.Namespace(project=str(project)))
+    assert report["ready"] is False
+    assert "different effective storage binding" in report["ready_reason"]
+    assert report["sources"]["selection"] != "admitted"
