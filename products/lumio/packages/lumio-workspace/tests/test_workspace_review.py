@@ -240,18 +240,26 @@ class Fixture:
     contributor_browser: str
     reviewer_api: str
     reviewer_browser: str
-    published_revision: str
+    published_revision: str | None
     artifact_path: Path
 
 
-def _fixture(tmp_path: Path, monkeypatch, *, single_person: bool = False) -> Fixture:
+def _fixture(
+    tmp_path: Path, monkeypatch, *, single_person: bool = False, empty_workspace: bool = False
+) -> Fixture:
     monkeypatch.setenv("LUMIO_WORKSPACE_ID", "workspace-fixture")
     monkeypatch.setenv("LUMIO_WORKSPACE_STATE_PATH", str(tmp_path / "state.sqlite3"))
     authoring_repo = tmp_path / "authoring-repo"
     authoring_kb = authoring_repo / "kb"
     authoring_repo.mkdir()
     published_path = tmp_path / "published"
-    published_revision = _published_sentinel(authoring_repo, published_path)
+    if empty_workspace:
+        # Genuinely empty setup: no seeded page and no seeded publication.
+        authoring_kb.mkdir()
+        _git(authoring_repo, "init", "-q", "-b", "main")
+        published_revision = None
+    else:
+        published_revision = _published_sentinel(authoring_repo, published_path)
     private = tmp_path / "profile-private"
     private.mkdir()
     profile_path = private / "profile.json"
@@ -1092,3 +1100,86 @@ def test_recovery_cannot_overwrite_newer_review_decision(tmp_path: Path, monkeyp
             PublishedFilesystemLocation(config.published_path).read_pointer()
             == task["native_candidate"]
         )
+
+
+def test_first_document_requires_review_without_initial_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, empty_workspace=True)
+    config = fixture.config
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+    ):
+        _login(owner, fixture.owner_browser)
+        setup = owner.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(owner.get("/setup").text)},
+        )
+        assert setup.status_code == 200, setup.text
+        assert setup.json()["kind"] == "empty"
+        base_revision = setup.json()["base_revision"]
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        task = _contribute(
+            contributor,
+            fixture,
+            retry_key="first-document",
+            title="First Runbook",
+            addition="Then start it.",
+            source_id="first-runbook-source",
+            filename="first-runbook.md",
+            request_id=1,
+        )
+        assert task["status"] == "pending_review"
+        assert task["published"] is False
+        assert task["native_base"] == base_revision
+        # Independent oracle: nothing publishes without the human browser decision.
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        _login(reviewer, fixture.reviewer_browser)
+        review = reviewer.get(f"/review/{task['task_id']}")
+        assert review.status_code == 200, review.text
+        assert "&lt;unsafe&gt;&amp;review" in review.text
+        digest = _digest(review.text)
+        approved = _decision(reviewer, task["task_id"], digest, "approve")
+        assert approved.status_code == 200, approved.text
+        publication = approved.json()
+        candidate = task["native_candidate"]
+        assert publication["status"] == "published"
+        assert publication["publication"]["activated"] is True
+        assert publication["publication"]["version"] == candidate
+        assert publication["publication"]["expected_current"] == "none"
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
+
+        admitted = _call_tool(
+            contributor, fixture.contributor_api, "read_knowledge", {"title": "First Runbook"}, 2
+        ).json()["result"]["structuredContent"]
+        assert admitted["markdown"].strip() == (
+            "# First Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\nThen start it."
+        )
+        assert admitted["citation"] == {
+            "title": "First Runbook",
+            "path": "procedures/first_runbook.md",
+            "published_version": candidate,
+        }
+
+        second = _contribute(
+            contributor,
+            fixture,
+            retry_key="second-document",
+            title="Second Runbook",
+            addition="Second runbook content.",
+            source_id="second-runbook-source",
+            filename="second-runbook.md",
+            request_id=3,
+        )
+        assert second["native_base"] == candidate
+        second_review = reviewer.get(f"/review/{second['task_id']}")
+        assert second_review.status_code == 200, second_review.text
+        assert "Second Runbook — added" in second_review.text
+        assert "First Runbook — removed" not in second_review.text
+        # Reviewing alone must not publish.
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate

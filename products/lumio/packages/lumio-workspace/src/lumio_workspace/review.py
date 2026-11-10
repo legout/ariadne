@@ -207,14 +207,19 @@ class ReviewService:
             self._authoring(task_kb, repo_root, submission_base, candidate, resources)
             admitted = self.publication.current_version()
             if admitted is None:
-                raise ReviewError(
-                    "no admitted Git baseline is available for a complete effective review",
-                    code="incomplete_review_scope",
-                )
-            base = resolve_full_commit(repo_root, admitted)
+                # First publication from a genuinely empty workspace: the exact
+                # submission base is the reviewed baseline and the explicit
+                # expected predecessor is "none" (never an unchecked mode).
+                base = submission_base
+                expected_current = "none"
+            else:
+                base = resolve_full_commit(repo_root, admitted)
+                expected_current = admitted
             authoring = self._authoring(task_kb, repo_root, base, candidate, resources)
             captured = capture_revision(task_kb, candidate)
-            publication = self.publication.preview(task_kb, candidate, admitted, resources)
+            publication = self.publication.preview(
+                task_kb, candidate, expected_current, resources
+            )
             availability = self._source_availability(captured, resources)
             source_impact: list[dict] = []
             proposed_sources: dict[str, str] = {}

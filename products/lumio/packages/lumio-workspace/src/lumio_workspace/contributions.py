@@ -20,13 +20,20 @@ from lumio_wiki.authoring_review import (
     check_authoring_commit,
     review_authoring_candidate,
 )
-from lumio_wiki.git_authoring import GitAuthoringError, capture_revision, resolve_repository
+from lumio_wiki.git_authoring import (
+    GitAuthoringError,
+    capture_revision,
+    resolve_full_commit,
+    resolve_repository,
+)
 from lumio_wiki.knowledge_base import (
     ControlFileError,
+    KnowledgeBaseError,
     document_first_control_file,
     load_control_file,
     write_control_file,
 )
+from lumio_wiki.location import PublishedFilesystemLocation
 from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 from lumio_wiki.private_profile import (
     PrivateProfileError,
@@ -182,6 +189,24 @@ class ContributionService:
         else:
             repo_root, _subtree = resolve_repository(self.authoring_path)
             managed = _git(repo_root, "rev-parse", "HEAD")
+            if self.destination is not None:
+                # Derive the next candidate from the actual admitted baseline
+                # when it resolves inside this authoring repository; the
+                # repository HEAD remains the truth for the first publication.
+                try:
+                    pointer = PublishedFilesystemLocation(self.destination).read_pointer()
+                except KnowledgeBaseError as exc:
+                    raise ContributionError(
+                        f"the admitted publication pointer is unavailable: {exc}",
+                        code="invalid_base",
+                    ) from exc
+                if pointer is not None and _FULL_COMMIT.fullmatch(pointer):
+                    try:
+                        resolve_full_commit(repo_root, pointer)
+                    except GitAuthoringError:
+                        pass  # A pointer from another repository cannot bind local candidates.
+                    else:
+                        managed = pointer
         if not _FULL_COMMIT.fullmatch(managed):
             raise ContributionError(
                 "the managed authoring base is unavailable", code="invalid_base"
