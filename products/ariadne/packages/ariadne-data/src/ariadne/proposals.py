@@ -82,6 +82,20 @@ _AWS_ASSIGNMENT_RE = re.compile(
     r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
 )
 
+# The fresh-setup guidance for a retired-format project (spec0035 §6/AC10):
+# the new release supports only the native knowledge/ contract — an old
+# standalone project refuses before any mutation and is never reset or
+# converted; its files and snapshots stay untouched.
+_UNSUPPORTED_PROJECT_GUIDANCE = (
+    "This release supports only the native knowledge/ contract (spec0035): the "
+    "retired standalone context_layer/ path is not supported and is never "
+    "converted, activated or reset. Create a FRESH project with 'ariadne-init "
+    "<target> --namespace <namespace> --private-profile <profile>' (explicit "
+    "selections; Git must already exist) and deliberately re-onboard the "
+    "needed content into it through normal authoring and review; old approvals "
+    "do not transfer. Nothing was read, written or modified here."
+)
+
 # The fail-closed instruction for an interrupted Git proposal transition
 # (spec §4): name the evidence, forbid any agent reset or deletion.
 _HUMAN_RESOLUTION = (
@@ -820,6 +834,26 @@ def _admitted_baseline(project: Path) -> str | None:
     return None if current is None else current["commit"]
 
 
+def refuse_unsupported_project(project: str | Path) -> None:
+    """Refuse a retired standalone-format project BEFORE any mutation (AC10,
+    spec0035 §6): served ``context_layer/`` pages without a ``knowledge/``
+    Knowledge Base are the retired contract — fresh-setup guidance, no
+    conversion, no reset, no filesystem change. The shared project-open path
+    (proposals and the query runtime) calls this so runtime rejection never
+    lives only in the scaffolder. Projects carrying the native ``knowledge/``
+    path (including mixed intermediate candidates on the migration line) are
+    supported here."""
+    project = Path(project)
+    context_layer = project / "context_layer"
+    has_retired_pages = context_layer.is_dir() and any(context_layer.rglob("*.md"))
+    if has_retired_pages and not (project / "knowledge").is_dir():
+        raise ValueError(
+            f"{project} uses the retired standalone Context layout "
+            "(context_layer/ pages without a knowledge/ Lumio Knowledge Base); "
+            + _UNSUPPORTED_PROJECT_GUIDANCE
+        )
+
+
 def start_proposal(project: str | Path, *, base_revision: str | None = None) -> dict:
     """Start ONE isolated authoring proposal in the fixed data project: a
     system-generated ID, its branch ``ariadne/proposal/<id>`` and its dedicated
@@ -834,6 +868,7 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     revisions (equal until the first edit)."""
     project = Path(project).resolve()
     _require_repo(project)
+    refuse_unsupported_project(project)  # AC10: before any state exists
     _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
     _require_git_identity(project)
     with _file_lock(project / LOCKS_REL / "project.lock"):
@@ -1070,6 +1105,161 @@ def add_answer_example(
         record["candidate_revision"] = revision
         _store_record(project, record)
     return {"proposal": proposal, "revision": revision, "changed": True, "path": rel}
+
+
+# ------------------------------------------------- native KB page batches
+
+# One knowledge-page edit of a complete batch: exactly the documented fields.
+_PAGE_EDIT_KEYS = frozenset({"path", "content"})
+
+
+def check_page_batch(pages: object) -> list[tuple[str, str]]:
+    """Validate one complete knowledge-page batch BEFORE any write: a non-empty
+    list of objects carrying exactly ``{path, content}``, every ``path`` a
+    native KB page identity (``knowledge/…​.md`` — generated bookkeeping and
+    non-page files are refused) and every ``content`` within the shared
+    content boundary. Returns ``(rel, content)`` pairs; a repeated path is a
+    duplicate-target conflict, never last-writer-wins."""
+    if not isinstance(pages, list) or not pages:
+        raise ValueError(
+            "a page batch is a non-empty JSON list of {path, content} objects — "
+            "one coherent candidate revision or no accepted batch"
+        )
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict) or set(page) != _PAGE_EDIT_KEYS:
+            raise ValueError(
+                f"pages[{index}] must be an object with exactly the fields "
+                "['content', 'path'] — approval/attestation claims and arbitrary "
+                "metadata are system-owned"
+            )
+        rel = page["path"]
+        if not isinstance(rel, str) or not knowledge_path(rel) or not rel.endswith(".md"):
+            raise ValueError(
+                f"pages[{index}].path {rel!r} is not a knowledge/ Compiled Page "
+                "identity — only native knowledge pages route through the "
+                "complete-batch writer (index.md/log.md are system-owned)"
+            )
+        if PurePosixPath(rel).name in _GENERATED_FILES:
+            refuse_generated(rel)
+        if rel in seen:
+            raise ValueError(
+                f"the batch carries {rel!r} twice — two writes for one page are "
+                "a duplicate-target conflict, never last-writer-wins"
+            )
+        seen.add(rel)
+        content = page["content"]
+        check_artifact_content(f"page {rel!r}", content)
+        pairs.append((rel, content))
+    return pairs
+
+
+def edit_page_batch(
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
+    pages: list,
+) -> dict:
+    """Apply ONE complete knowledge-page batch through the PUBLIC native
+    writer inside the existing proposal lock/revision discipline (AC4,
+    spec0035 §2): the whole batch is validated as one candidate by the SDK
+    (``write_pages_into_worktree`` — new and revised pages together, never
+    sequential single-page writes) before any byte is written, so mutually
+    linked pages are accepted together and a dangling reference or invalid
+    metadata rejects the batch without accepting a partial page set. Core
+    then stages ONLY the writer's returned intended paths, commits on the
+    proposal branch and updates the recorded candidate revision AFTER the
+    commit; an interrupted transition stays human-resolution evidence.
+
+    Preserved guards: the stale-expected-revision refusal, the identical-batch
+    no-op, the shared pre-write content boundary, the forged system-owned
+    claim boundary per page and the untracked-draft refusal. OSI/model draft
+    edits keep their separate :func:`edit_proposal` handling — this seam is
+    only for ``knowledge/`` pages."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        parse_frontmatter,
+    )
+    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
+        GitAuthoringError,
+        write_pages_into_worktree,
+    )
+    from lumio_wiki.ingest import ProposedPage  # pyright: ignore[reportMissingImports]
+
+    project = Path(project).resolve()
+    pairs = check_page_batch(pages)
+    _load_record(project, proposal)  # identity/belonging errors surface early
+    worktree_root = project / WORKTREES_REL / proposal
+    with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
+        record = _load_record(project, proposal)  # authoritative under the lock
+        _check_coherent(project, record)
+        current = record["candidate_revision"]
+        if expected_revision != current:
+            raise ValueError(
+                f"stale revision: proposal {proposal} is at candidate {current}, the "
+                f"batch expected {expected_revision} — re-read the candidate and retry "
+                "with the current candidate revision; nothing was written"
+            )
+        identical = True
+        proposed: list = []
+        for rel, content in pairs:
+            base_content = _read_blob(project, current, rel)
+            if base_content is not None and base_content == content.encode("utf-8"):
+                continue  # an identical page edit contributes no change
+            identical = False
+            if not (worktree_root / rel).exists():
+                _refuse_untracked_new_artifact(project, worktree_root, rel, current)
+            _refuse_forged_claims(rel, content, base_content)
+            meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+            title = meta.get("title") if isinstance(meta, dict) else None
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError(
+                    f"page {rel!r} carries no non-empty canonical title — the "
+                    "native writer addresses every page by its declared title"
+                )
+            kb_rel = PurePosixPath(rel).relative_to("knowledge").as_posix()
+            proposed.append(ProposedPage(relative_path=kb_rel, title=title, markdown=content))
+        if identical:
+            return {
+                "proposal": proposal,
+                "revision": current,
+                "changed": False,
+                "paths": [rel for rel, _content in pairs],
+                "count": len(pairs),
+            }  # identical batch: no commit, candidate unchanged
+        # The complete candidate validates as ONE batch before any byte: a
+        # dangling reference or invalid metadata refuses with the worktree,
+        # branch and record untouched (the writer restores any partial state).
+        try:
+            result = write_pages_into_worktree(
+                worktree_root / "knowledge",
+                proposed,
+                operation="ariadne candidate page batch",
+            )
+        except GitAuthoringError:
+            raise
+        _require_git_identity(project)
+        # Stage ONLY the returned intended paths (literal pathspecs), then
+        # commit; the recorded candidate revision updates AFTER the commit —
+        # a core-authored commit the record never saw is the interrupted
+        # transition signature the coherence gate refuses for the human.
+        intended = [f"knowledge/{kb_path}" for kb_path in result.written]
+        literal = [_literal(rel) for rel in intended]
+        _git(["add", "-f", "--", *literal], worktree_root)
+        _git(
+            ["commit", "-m", f"ariadne: page batch ({len(intended)} pages)", "--", *literal],
+            worktree_root,
+        )
+        new_revision = _git(["rev-parse", "HEAD"], worktree_root).stdout.strip()
+        record["candidate_revision"] = new_revision
+        _store_record(project, record)
+    return {
+        "proposal": proposal,
+        "revision": new_revision,
+        "changed": True,
+        "paths": intended,
+        "count": len(intended),
+    }
 
 
 # ------------------------------------------- G4 (issue #36): finalize + evidence

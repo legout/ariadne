@@ -308,6 +308,18 @@ class AuthoringProject:
         rel, content = editor.resolve_edit(edit, **kwargs)
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
+    def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
+        """Apply ONE complete native knowledge-page batch (AC4, spec0035 §2):
+        every page is a ``{path, content}`` object addressed by its
+        ``knowledge/`` identity; the whole batch validates as one candidate
+        through the public native writer inside the proposal lock/revision
+        discipline — mutually linked pages are accepted together, a dangling
+        reference or invalid metadata rejects the batch without a partial page
+        set, and an identical batch is a no-op. OSI/model drafts keep their
+        separate single-edit handling. Returns
+        ``{proposal, revision, changed, paths, count}``."""
+        return proposals.edit_page_batch(self.project, proposal, expected_revision, pages)
+
     # ------------------- G3 (issue #35): sources, approval, measured inputs
 
     def propose_sources(

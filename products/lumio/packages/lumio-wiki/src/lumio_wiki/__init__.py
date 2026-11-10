@@ -525,6 +525,18 @@ from lumio_wiki.git_connection import (
     GitConnectionReport,
     check_git_connection,
 )
+from lumio_wiki.journey_setup import (  # noqa: I001
+    EMPTY_SETUP_SCHEMA_VERSION,
+    AuthoringFacts,
+    EmptySetupError,
+    EmptySetupPlan,
+    SetupAction,
+    apply_plan,
+    build_envelope,
+    discover_authoring_location,
+    plan_empty_setup,
+    recheck_plan,
+)
 
 __all__ = [
     "ACTIVITY_LOG_ARTIFACT",
@@ -986,6 +998,16 @@ __all__ = [
     "GIT_CONNECTION_SCHEMA_VERSION",
     "GitConnectionReport",
     "check_git_connection",
+    "EMPTY_SETUP_SCHEMA_VERSION",
+    "AuthoringFacts",
+    "EmptySetupError",
+    "EmptySetupPlan",
+    "SetupAction",
+    "apply_plan",
+    "build_envelope",
+    "discover_authoring_location",
+    "plan_empty_setup",
+    "recheck_plan",
 ]
 
 __version__ = "0.5.1"

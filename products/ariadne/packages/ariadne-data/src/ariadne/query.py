@@ -76,6 +76,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     answer_examples,
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
+    proposals,  # AC10: the shared retired-format refusal in the project-open path
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
@@ -1507,6 +1508,10 @@ class QueryRuntime:
         admission_record: dict | None = None,
     ) -> _QueryRuntimeSession:
         root = Path(project).resolve()
+        # AC10/spec0035 §6: a retired standalone-format project refuses in the
+        # shared project-open path with fresh-setup guidance — never converted,
+        # reset, or served from its retired pages.
+        proposals.refuse_unsupported_project(root)
         if admission_record is not None:
             if discovery is not None:
                 raise ValueError(

@@ -14,6 +14,17 @@ dependencies = [
     "openai>=1.40",
     "pyyaml>=6.0",
     "jsonschema>=4.18",  # spec 0028 §2: pinned ODCS v3.2.0 structural validation (Draft 2019-09)
+    # spec0035/ADR-0029: the Lumio SDK is MANDATORY (the native KB, its public
+    # setup/authoring contracts and page mutations are the one knowledge path).
+    # MCP/cloud/model capabilities stay optional (the extras below; the SDK
+    # wheel itself is service-free). The floor pairs the same-commit SDK wheel
+    # (CI builds both wheels from one commit). RELEASE BOUNDARY (C1 report):
+    # published lumio-wiki 0.6.0 lacks the new public empty-setup exports
+    # (plan_empty_setup/recheck_plan/apply_plan/EmptySetupPlan); before any
+    # ariadne-data distribution this floor MUST move to the coordinated
+    # lumio-wiki release that ships them (>=0.7,<0.8 recommended) — the exact
+    # pairing is pinned by the release workflow.
+    "lumio-wiki>=0.6.0,<0.7",
 ]
 
 [project.scripts]

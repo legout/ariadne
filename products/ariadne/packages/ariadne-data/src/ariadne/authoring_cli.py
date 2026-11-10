@@ -211,6 +211,29 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
+    edit_pages_cmd = sub.add_parser(
+        "edit-pages",
+        help="apply ONE complete knowledge-page batch through the native writer "
+        "inside the proposal revision discipline: mutually linked pages are "
+        "accepted together as one candidate revision; a dangling reference or "
+        "invalid metadata rejects the batch without a partial page set (AC4)",
+    )
+    edit_pages_cmd.add_argument("--proposal", required=True, help="the proposal ID")
+    edit_pages_cmd.add_argument(
+        "--expected-revision",
+        required=True,
+        help="the CURRENT candidate revision the batch is based on",
+    )
+    edit_pages_cmd.add_argument(
+        "--file",
+        required=True,
+        help='the complete page batch as JSON: [{"path": "knowledge/...", '
+        '"content": ...}, ...] ("-" reads stdin)',
+    )
+    edit_pages_cmd.add_argument(
+        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
+    )
+
     validate_cmd = sub.add_parser(
         "validate",
         help="validate one Git proposal's effective candidate at its EXACT final "
@@ -519,6 +542,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "edit":
             result = AuthoringProject(args.project).edit_proposal(
                 args.proposal, args.expected_revision, _read_edit_document(args.file)
+            )
+        elif args.command == "edit-pages":
+            raw = (
+                sys.stdin.read()
+                if args.file == "-"
+                else Path(args.file).read_text(encoding="utf-8")
+            )
+            pages = json.loads(raw)
+            result = AuthoringProject(args.project).edit_pages_batch(
+                args.proposal, args.expected_revision, pages
             )
         else:  # approve-sources is the human-only exact Git source permission
             result = AuthoringProject(args.project).approve_sources(

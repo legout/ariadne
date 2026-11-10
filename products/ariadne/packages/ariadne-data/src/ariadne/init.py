@@ -1,33 +1,33 @@
-"""Project scaffolder (``ariadne-init [TARGET_DIR]``): writes the INPUT files a
-fresh ariadne project needs — Seed Notes, an AGENTS.md pointer page, inert source
-registry and Git-ignore templates. It never creates admitted artifacts or accesses
-original source documents:
-served artifacts are authored through revision-checked Git proposals and
-become queryable only after human Git Review Admission.
+"""Project scaffolder (``ariadne-init TARGET``): creates ONE native Lumio
+Knowledge Base under the project's ``knowledge/`` subtree through the SDK's
+public confirmed empty-setup contract (spec0035 §2, ADR-0029) plus the Core
+input files the fresh project needs — the inert source registry, AGENTS.md
+pointer page, Git-ignore and env templates. It never creates admitted
+artifacts, initializes Git, publishes, or accesses original source documents:
+authored layers arrive through revision-checked Git proposals and become
+queryable only after human Git Review Admission.
 
-AGENTS.md is deliberately a pointer page (ADR-0011, spec rev 10): project facts,
-the directory layout, the admission-gate rule, and "load the ariadne skill" —
-the workflow itself lives in the packaged skill (``ariadne-skill install``),
-not duplicated here. ``.mcp.json`` is opt-in (spec 2026-09-23-0001 §7, ADR-0012):
-``--with-mcp`` scaffolds the registry-aware config — it points the facade at
-``ariadne.yaml``, whose ``sources:`` block is the single source of truth for
-what the project serves (ADR-0010). The default scaffold omits it: querying
-happens through the local ``ariadne`` CLI, which needs no server, and an
-existing ``.mcp.json`` is never removed or overwritten.
+The KB creation is the SDK's own digest-bound preview → recheck → guarded
+apply path (``plan_empty_setup``/``recheck_plan``/``apply_plan``): explicit
+namespace and private-profile selection are REQUIRED, a nonempty or existing
+KB target is refused before any write (never adopted or reinitialized), and
+Core supplies only its own declared configuration-write callbacks — no agent
+skill install, no automatic Git initialization (the target must already be a
+registered Git worktree; ``discover_authoring_location`` refuses otherwise
+with fresh-setup guidance). After apply, the Control File gains Core's
+declared page vocabulary (categories + the supported ariadne profile Entity
+Types) through the public Control File contract, so a fresh project accepts
+native page batches immediately (never a second KB file format).
 
-Idempotent: an existing file is reported and skipped, never overwritten. A
-directory that already holds an ariadne ``pyproject.toml`` (i.e. this repo) is
-refused unless ``--force``; so is an unparsable ``pyproject.toml`` (ambiguous
-project). Fail closed on symlinks: if any scaffold path under TARGET — or a
-parent of it — is a symlink (e.g. ``data`` linked outside TARGET, or a dangling
-``.env.example``), nothing is written through the link.
-
-The Git-only scaffold uses the proposal workflow: the
-artifact layers become TRACKED artifacts (the ignore template drops the
-``context_layer/``/``semantic_layer/`` rules and ignores ``.ariadne/``
-instead), the pointer page describes the proposal/admission layout and gate,
-and still no OUTPUT is pre-seeded — an existing ``.gitignore`` or AGENTS.md is
-never overwritten, while proposal seams track only explicitly selected artifacts.
+Idempotency contract: an existing managed KB is never reinitialized (the
+SDK's adoption guard refuses the second run); an existing Core input file is
+reported and skipped, never overwritten. A directory that already holds an
+ariadne ``pyproject.toml`` is refused unless ``--force``; so is an unparsable
+``pyproject.toml`` (ambiguous project), and a retired standalone
+``context_layer/`` project without a ``knowledge/`` KB refuses with
+fresh-setup guidance (spec0035 §6: no silent conversion or reset). Fail
+closed on symlinks: if any scaffold path under TARGET — or a parent of it —
+is a symlink, nothing is written through the link.
 """
 
 from __future__ import annotations
@@ -38,7 +38,10 @@ import sys
 import tomllib
 from pathlib import Path
 
-# Local inputs, secrets and operator state are excluded; authored layers remain tracked.
+from ariadne.proposals import refuse_unsupported_project
+
+# Local inputs, secrets and operator state are excluded; the knowledge/ KB and
+# authored layers remain tracked.
 GITIGNORE = """\
 data/*
 !data/seed_notes.md
@@ -70,8 +73,9 @@ MCP_JSON = {
     }
 }
 
-# The project-facts pointer page describes tracked Git artifacts, operator-owned
-# state and human Git Review Admission.
+# The project-facts pointer page describes the native knowledge KB, tracked
+# Core artifacts, operator-owned state and human Git Review Admission
+# (spec0035 §2: one content and authoring path).
 AGENTS_MD_GIT = """\
 # Ariadne project facts
 
@@ -79,7 +83,7 @@ AGENTS_MD_GIT = """\
 
 TODO: one paragraph — what the database is about, who owns it, which questions
 the governed metrics answer. The human-owned rules live in `data/seed_notes.md`;
-served policy pages cite them.
+knowledge pages cite them.
 
 ## The ariadne skill
 
@@ -90,10 +94,13 @@ workflow and the grain rules. This file holds only project facts.
 
 | Directory | Role |
 | :--- | :--- |
+| `knowledge/` | The Lumio Knowledge Base — one native authoring path. |
 | `data/` | Private source inputs; originals remain operator-controlled. |
 | `semantic_layer/` | OSI models — tracked Git artifacts edited through proposals. |
-| `context_layer/` | OKF pages: datasets, tables, references, policies, metrics, computations. |
 | `.ariadne/` | Operator-owned state: proposals, approvals, snapshots (never committed). |
+
+Knowledge pages cover datasets, tables, references, policies, metrics and
+guides; technical facts and curated explanations share the same KB.
 
 ## Admission gate
 
@@ -189,16 +196,105 @@ ARIADNE_YAML = """\
 #     read_only: true
 """
 
+# The supported ariadne profile Entity Types (spec0029 §1.5 SUPPORT["profiles"],
+# plus the table kinds the managed journey documents): the KB-local vocabulary
+# Core's native pages declare. Predicates stay KB-local Maintainer content and
+# are NOT seeded — a project declares claims vocabulary deliberately.
+_ARIADNE_ENTITY_TYPES = (
+    "metric",
+    "policy",
+    "reference",
+    "dataset",
+    "table",
+    "computation",
+)
+
+# Core's own KB categories beyond the SDK's seeded catalog: the page kinds of
+# the ariadne knowledge path (spec0035 §2).
+_CORE_CATEGORIES = ("metrics", "policies")
+
+
+def _core_control_file():  # noqa: PLR0911 - none; single return path
+    """Core's declared Control File: the SDK seed plus Core's categories and
+    Entity Type vocabulary, validated through the public proposed-Control
+    contract BEFORE anything is written (never a second KB file format)."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        EntityTypeDefinition,
+        Ontology,
+        extend_control_file_categories,
+        seeded_control_file,
+        validate_proposed_control_file,
+    )
+
+    control = extend_control_file_categories(seeded_control_file(), _CORE_CATEGORIES)
+    control = control.__class__(
+        version=control.version,
+        categories=control.categories,
+        hot_index=control.hot_index,
+        ontology=Ontology(
+            entity_types={
+                name: EntityTypeDefinition(description=f"Ariadne {name} knowledge page.")
+                for name in _ARIADNE_ENTITY_TYPES
+            },
+            predicates=control.ontology.predicates,
+            redirects=control.ontology.redirects,
+        ),
+    )
+    issues = validate_proposed_control_file(control)
+    blocking = [issue for issue in issues if issue.severity != "warning"]
+    if blocking:  # pragma: no cover - the declared vocabulary is valid by contract
+        raise ValueError(
+            "the declared Ariadne Control File vocabulary failed validation: "
+            + "; ".join(issue.message for issue in blocking)
+        )
+    return control
+
+
+def _default_private_locations(namespace: str) -> tuple[Path, Path]:
+    """Core's default private registry/store roots for a NEW profile (always
+    under the machine home, never inside any content repository)."""
+    home = Path.home()
+    return home / ".ariadne" / "registries" / namespace, home / ".ariadne" / "artifacts" / namespace
+
+
+def _new_profile_payload(namespace: str) -> str:
+    """The declaration for a NEW private profile (spec 0010 §2.1 shape):
+    required retention, machine-local registry and artifact store."""
+    registry, store = _default_private_locations(namespace)
+    payload = {
+        "schema_version": 1,
+        "namespace": namespace,
+        "source_registry": str(registry.expanduser().resolve()),
+        "retention": "required",
+        "artifact_store": {"kind": "local", "root": str(store.expanduser().resolve())},
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ariadne-init",
         description=(
-            "Scaffold a fresh Git-authoring project without initializing Git "
-            "or granting source access."
+            "Create a fresh Git-authoring project: one native Lumio Knowledge "
+            "Base (knowledge/) plus the Core input files. Explicit namespace "
+            "and private-profile selection are required; Git, admission and "
+            "source access stay separate human steps."
         ),
     )
     parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
+    parser.add_argument(
+        "--namespace",
+        required=True,
+        help="explicit Knowledge Base namespace (stable identity, e.g. "
+        "urn:uuid:...); never generated or taken from an unrelated profile",
+    )
+    parser.add_argument(
+        "--private-profile",
+        required=True,
+        type=Path,
+        help="machine-local private source profile file (must live OUTSIDE "
+        "the repository); created from Core defaults when absent",
+    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -212,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    target = Path(args.target)
+    target = Path(args.target).resolve()
     pyproject = target / "pyproject.toml"
     if not args.force and pyproject.is_file():
         refusal = _project_conflict(pyproject)
@@ -220,10 +316,26 @@ def main(argv: list[str] | None = None) -> int:
             print(refusal, file=sys.stderr)
             return 1
 
+    # spec0035 §6: a retired standalone project refuses BEFORE any mutation,
+    # with fresh-setup guidance — never a reset or conversion.
+    try:
+        refuse_unsupported_project(target)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if not args.namespace.strip():
+        print(
+            "error: --namespace must be an explicit non-empty namespace "
+            "(spec 0010 §2.2)",
+            file=sys.stderr,
+        )
+        return 1
+    namespace = args.namespace.strip()
+
     files = [
         ("data/seed_notes.md", SEED_NOTES),
         ("ariadne.yaml", ARIADNE_YAML),
-        ("AGENTS.md", AGENTS_MD_GIT),
         (".env.example", ENV_EXAMPLE),
         (".gitignore", GITIGNORE),
     ]
@@ -232,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Fail closed: refuse before any write if a scaffold path, or a parent of it
     # under TARGET, is a symlink (even dangling) — never write through a link.
-    for rel in ("data", *(rel for rel, _ in files)):
+    for rel in ("data", "knowledge", *(rel for rel, _ in files)):
         offender = _symlink_under(target, rel)
         if offender is not None:
             print(
@@ -241,6 +353,68 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+
+    kb_target = target / "knowledge"
+    profile_path = args.private_profile
+    new_payload = None if profile_path.is_file() else _new_profile_payload(namespace)
+
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        EmptySetupError,
+        apply_plan,
+        plan_empty_setup,
+        recheck_plan,
+    )
+    from lumio_wiki.private_profile import (  # pyright: ignore[reportMissingImports]
+        PrivateProfileError,
+    )
+
+    # The SDK's digest-bound plan validates every selection and the target
+    # (absent/empty KB target only) BEFORE any byte is written — an occupied
+    # or adopted target refuses here with the SDK's own recovery guidance.
+    try:
+        plan = plan_empty_setup(
+            target=kb_target,
+            namespace=namespace,
+            profile_path=profile_path,
+            new_profile_payload=new_payload,
+            submission={"mode": "commit", "remote": None, "branch": None},
+            project_dir=target,
+            agents_enabled=True,
+            env_bytes=f"LUMIO_KB_PATH={kb_target}\n".encode(),
+            agents_bytes=AGENTS_MD_GIT.encode(),
+            skill=None,  # Core installs no agent skill implicitly
+        )
+        # The guarded apply is authorized by this one explicit command in one
+        # process: the digest-bound recheck refuses any drift before apply.
+        recheck_plan(
+            plan,
+            env_bytes=f"LUMIO_KB_PATH={kb_target}\n".encode(),
+            agents_bytes=AGENTS_MD_GIT.encode(),
+            skill=None,
+        )
+    except (EmptySetupError, PrivateProfileError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    def _write_env() -> None:
+        (target / ".env").write_text(plan.env_bytes.decode("utf-8"), encoding="utf-8")
+
+    def _write_agents() -> None:
+        (target / "AGENTS.md").write_bytes(plan.agents_bytes)
+
+    try:
+        apply_plan(plan, write_env=_write_env, write_agents=_write_agents, install_skill=None)
+    except EmptySetupError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    # Core's declared page vocabulary rides the same uncommitted scaffold
+    # transaction through the public Control File contract.
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        write_control_file,
+    )
+
+    write_control_file(kb_target, _core_control_file())
 
     target.mkdir(parents=True, exist_ok=True)
     (target / "data").mkdir(exist_ok=True)  # local inputs are ignored by the project template
@@ -255,10 +429,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  created: {path}")
         created += 1
     print(
-        f"ariadne project ready in {target}: {created} file(s) created, "
-        f"{skipped} skipped — next: initialize Git yourself, then use "
-        "ariadne-authoring start; source permission and Admission remain "
-        "separate human decisions (MCP config: re-run with --with-mcp)"
+        f"ariadne project ready in {target}: knowledge/ Knowledge Base "
+        f"(namespace {namespace}) plus {created} input file(s) created, "
+        f"{skipped} skipped — next: stage and commit the created files with "
+        "native Git, then use ariadne-authoring start; source permission and "
+        "Admission remain separate human decisions (MCP config: re-run with "
+        "--with-mcp)"
     )
     return 0
 

@@ -33,6 +33,9 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — the mandatory SDK
+    GitAuthoringError,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
@@ -241,7 +244,14 @@ def complete_bundle_project(tmp_path: Path) -> Path:
     revision is a COMPLETE existing bundle: registry with two parquet sources
     (events unique; labels repeating — the unsafe-join fixture), Seed Notes,
     the OSI model and every OKF content type the ADR-0007 gate requires, plus
-    the operator's input-area document the policy cites (never an artifact)."""
+    the operator's input-area document the policy cites (never an artifact).
+
+    spec0035 candidate line: the complete bundle is an INTEGRATED project —
+    it carries the native ``knowledge/`` KB (Control File + Source Reference
+    Manifest, the exact artifacts the new scaffold creates) alongside its
+    legacy ``context_layer/`` pages until C6 reconciles the retired layout.
+    The KB bookkeeping is hand-written here from the documented KB format;
+    the native page vocabulary it declares is the scaffold's."""
     project = tmp_path / "proj"
     project.mkdir(parents=True, exist_ok=True)
     write_parquet(
@@ -281,10 +291,43 @@ def complete_bundle_project(tmp_path: Path) -> Path:
         path = project / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:authoring-fixture\n"
+        "profile: ariadne-context/1\n",
+        encoding="utf-8",
+    )
+    kb = project / "knowledge"
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:authoring-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    scope = ["ariadne.yaml", "data/seed_notes.md", "semantic_layer/models/events.yml", *pages]
+    scope = [
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/events.yml",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        *pages,
+    ]
     run_git(project, "add", "--", *scope)
     run_git(project, "commit", "-q", "-m", "human: complete existing bundle", "--", *scope)
     return project
@@ -1096,3 +1139,184 @@ def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(t
     # pages carries nothing to check (no invented missing categories)
     assert checks["page_contract"]["outcome"] == "passed"
     assert result["repair_status"] == "open"  # recoverable, rounds remain
+
+
+# ---------------------------------------------- native knowledge-page batches
+
+# spec0035/AC4 (plan 0035 C1): the NEW-path fixture and its regression. The
+# KB bookkeeping and both pages are hand-authored here from the documented
+# KB format (docs/kb-format.md: a dangling claim object entity is a blocking
+# validation error; every used Entity Type and Predicate must be declared in
+# the Control File) — the oracle is the documented contract, never
+# implementation output.
+
+
+NATIVE_CONTROL = """
+version: 2
+mode: "categorized"
+categories:
+  - name: references
+    description: "Reference landing pages for independently useful sources."
+ontology:
+  entity_types:
+    reference: {}
+  predicates:
+    documents: {}
+  redirects: {}
+"""
+
+
+def reference_page(title: str, entity_id: str, body: str, claims_yaml: str = "") -> str:
+    """One independently authored Compiled Page (the documented frontmatter
+    contract: title, declared Entity ID and types, tags, summary, lifecycle,
+    visibility, at least one source)."""
+    claims = f"claims:\n{claims_yaml}" if claims_yaml else ""
+    return (
+        "---\n"
+        f'id: "{entity_id}"\n'
+        f'title: "{title}"\n'
+        "entity_types:\n  - reference\n"
+        'tags:\n  - "orders"\n'
+        f'summary: "{title}."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "public"\n'
+        'sources:\n  - id: "owner-notes"\n    title: "Owner notes"\n'
+        f"{claims}"
+        "---\n\n"
+        f"{body}"
+    )
+
+
+def documents_claim(claim_id: str, object_entity: str) -> str:
+    return (
+        f'  - id: "{claim_id}"\n'
+        "    predicate: documents\n"
+        f'    object: "{object_entity}"\n'
+        "    status: accepted\n"
+        "    evidence:\n"
+        '      - section: "Overview"\n'
+    )
+
+
+def native_context_project(tmp_path: Path) -> Path:
+    """A real temporary Git project on the native path: the KB the scaffold
+    creates (Control File with Core's declared vocabulary plus ONE explicit
+    claims predicate the fixture's maintainer declares deliberately, and the
+    Source Reference Manifest bound to an explicit namespace) plus the inert
+    registry — committed once as the human-created base."""
+    project = tmp_path / "native"
+    (project / "knowledge").mkdir(parents=True)
+    (project / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
+    (project / "knowledge" / "lumio.yaml").write_text(NATIVE_CONTROL, encoding="utf-8")
+    (project / "knowledge" / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:native-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+    )
+    run_git(project, "commit", "-q", "-m", "human: native base")
+    return project
+
+
+def test_native_context_batch_is_revision_atomic(tmp_path):
+    """AC4 (spec0035 §2): a batch of mutually linked valid pages is accepted
+    TOGETHER as one coherent candidate revision — each page's Claim resolves
+    against a page that only exists through the other batch member, so no
+    write ordering could accept them one at a time. A batch whose required
+    reference dangles at an Entity absent from the candidate refuses without
+    accepting a partial page set: page bytes, branch and recorded revision
+    stay exactly as they were. A stale expected revision refuses the same
+    way, and an identical repeat is a no-op (no commit, revision unchanged)."""
+    project = native_context_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    pid = started["proposal"]
+
+    # two independently authored pages, mutually linked through Claims whose
+    # objects resolve only WITHIN the batch
+    codes = reference_page(
+        "Order Status Codes",
+        "entity:order-status",
+        "# Order Status Codes\n\n## Overview\n\nEvery order status code.\n",
+        documents_claim("claim:codes-documents-glossary", "entity:order-glossary"),
+    )
+    glossary = reference_page(
+        "Order Glossary",
+        "entity:order-glossary",
+        "# Order Glossary\n\n## Overview\n\nThe order vocabulary.\n",
+        documents_claim("claim:glossary-documents-codes", "entity:order-status"),
+    )
+    batch = [
+        {"path": "knowledge/references/order-status-codes.md", "content": codes},
+        {"path": "knowledge/references/order-glossary.md", "content": glossary},
+    ]
+
+    result = api.edit_pages_batch(pid, started["candidate_revision"], batch)
+    assert result["changed"] is True and result["count"] == 2
+    revision = result["revision"]
+
+    # one coherent revision: the proposal branch sits exactly at it, the
+    # record names it (bookkeeping updated only AFTER the commit), and the
+    # commit carries ONLY the batch's intended paths
+    assert revision == branch_of(project, pid)
+    assert record_of(project, pid)["candidate_revision"] == revision
+    paths = {line.split()[1] for line in commit_paths(project, revision)}
+    assert paths == {
+        "knowledge/references/order-status-codes.md",
+        "knowledge/references/order-glossary.md",
+    }
+    # both pages landed with their exact authored bytes
+    assert proposals._read_blob(
+        project, revision, "knowledge/references/order-status-codes.md"
+    ) == codes.encode("utf-8")
+    assert proposals._read_blob(
+        project, revision, "knowledge/references/order-glossary.md"
+    ) == glossary.encode("utf-8")
+
+    # a batch whose required reference DANGLES at an entity absent from the
+    # candidate (and from the KB) is rejected: no partial page set, no commit,
+    # no revision movement, no byte change
+    dangling = reference_page(
+        "Order Status Codes",
+        "entity:order-status",
+        "# Order Status Codes\n\n## Overview\n\nRevised body.\n",
+        documents_claim("claim:codes-documents-glossary", "entity:ghost-page"),
+    )
+    with pytest.raises(GitAuthoringError, match="dangling object entity"):
+        api.edit_pages_batch(
+            pid,
+            revision,
+            [
+                {"path": "knowledge/references/order-status-codes.md", "content": dangling},
+                {"path": "knowledge/references/order-glossary.md", "content": glossary},
+            ],
+        )
+    assert branch_of(project, pid) == revision  # the branch never moved
+    assert record_of(project, pid)["candidate_revision"] == revision
+    assert proposals._read_blob(
+        project, revision, "knowledge/references/order-status-codes.md"
+    ) == codes.encode("utf-8")  # the refused page's bytes are untouched
+    assert not any(
+        line.endswith("ghost") for line in run_git(project, "status", "--porcelain").splitlines()
+    )  # no refused draft leaked into the worktree
+
+    # a stale expected revision refuses before anything is written
+    with pytest.raises(ValueError, match="stale"):
+        api.edit_pages_batch(pid, started["candidate_revision"], batch)
+    assert branch_of(project, pid) == revision
+    assert record_of(project, pid)["candidate_revision"] == revision
+
+    # the identical repeat is a no-op: no commit, the candidate stays
+    repeat = api.edit_pages_batch(pid, revision, batch)
+    assert repeat["changed"] is False
+    assert repeat["revision"] == revision
+    assert branch_of(project, pid) == revision
