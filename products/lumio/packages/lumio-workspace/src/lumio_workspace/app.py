@@ -73,10 +73,13 @@ MAX_EVIDENCE_TEXT_CHARS = 16000
 # inspect_source and setup stay separate explicit operator grants.
 _MEMBERSHIP_CAPABILITIES = ("read", "contribute", "review")
 
-#: Supported binary originals open as exact-byte safe attachments on both
-#: inspection routes; every other original keeps its UTF-8 text inspection
-#: view (spec0034 §12.3).
-_BINARY_ORIGINAL_SUFFIXES = frozenset({".pdf", ".docx"})
+#: Originals whose exact bound metadata positively establishes a supported
+#: text form keep the UTF-8 inspection view. Everything else — binary
+#: originals, names truncated by the registry's safe-filename cap, or
+#: unknown names — is conservatively delivered as verified bytes, never
+#: silently UTF-8 decoded (spec0034 §12.3).
+_TEXT_ORIGINAL_SUFFIXES = frozenset({".txt", ".md", ".markdown"})
+_TEXT_CONTENT_TYPES = frozenset({"text/plain", "text/markdown"})
 
 #: Distinct truthful outcomes for a failed original resolution or fetch, shown
 #: only to an authorized inspector and never substituted with other content
@@ -95,8 +98,18 @@ _INSPECTION_FAILURES = {
 }
 
 
-def _is_binary_original(filename: str | None) -> bool:
-    return Path(filename or "").suffix.lower() in _BINARY_ORIGINAL_SUFFIXES
+def _is_text_original(filename: str | None, content_type: str | None) -> bool:
+    """True only when exact bound metadata positively establishes text.
+
+    The workspace candidate path registers no content_type, so the exact
+    bound filename decides; a native text content-type is honored only when
+    registration actually supplied one.
+    """
+    if content_type is not None:
+        base_type = content_type.split(";")[0].strip().lower()
+        if base_type in _TEXT_CONTENT_TYPES:
+            return True
+    return Path(filename or "").suffix.lower() in _TEXT_ORIGINAL_SUFFIXES
 
 
 def _inspection_failure(exc: SourceInspectionError) -> JSONResponse:
@@ -1222,25 +1235,29 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             )
         except ReviewError as exc:
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
-        if _is_binary_original(binding.filename):
-            # Exact verified binary bytes as a download-only safe attachment —
-            # never a UTF-8 decode or extracted-text substitution (spec0034
-            # §12.3).
-            return _safe_attachment(raw, binding.filename, request.path_params["source_id"])
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return JSONResponse(
-                {"error": "the retained original failed text verification", "code": "corruption"},
-                status_code=409,
+        if _is_text_original(binding.filename, binding.content_type):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return JSONResponse(
+                    {
+                        "error": "the retained original failed text verification",
+                        "code": "corruption",
+                    },
+                    status_code=409,
+                )
+            return HTMLResponse(
+                render_source(
+                    request.path_params["task_id"],
+                    binding.filename or request.path_params["source_id"],
+                    text,
+                )
             )
-        return HTMLResponse(
-            render_source(
-                request.path_params["task_id"],
-                binding.filename or request.path_params["source_id"],
-                text,
-            )
-        )
+        # The bound metadata does not positively establish text (binary
+        # original, extension lost to the safe-filename cap, or unknown name):
+        # deliver the exact verified bytes as a safe attachment — never a
+        # UTF-8 decode of unknown content (spec0034 §12.3).
+        return _safe_attachment(raw, binding.filename, request.path_params["source_id"])
 
     @server.custom_route(
         "/original/{published_version}/{entity_id}/{source_id}",

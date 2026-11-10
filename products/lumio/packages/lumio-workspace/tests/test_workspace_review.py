@@ -57,7 +57,18 @@ ENTITY_ID = "entity:restart-worker-runbook"
 # Reference actions percent-encode path components like the existing
 # review-source links; requests may use either form.
 ENCODED_ENTITY = "entity%3Arestart-worker-runbook"
-SOURCE_IDS = ("restart-runbook-source", "restart-pdf-source", "restart-docx-source")
+SOURCE_IDS = (
+    "restart-runbook-source",
+    "restart-pdf-source",
+    "restart-docx-source",
+    "restart-long-docx-source",
+)
+# F1: a valid long upload basename (within the accepted 160-char upload
+# contract) loses its extension at the registry's 128-character safe-filename
+# cap, so the bound metadata cannot positively establish text; the exact
+# bytes must still open as a safe attachment, never a UTF-8 decode attempt.
+LONG_DOCX_UPLOAD_NAME = "a" * 129 + ".docx"
+LONG_DOCX_BOUND_NAME = "a" * 128
 
 
 def _hand_authored_pdf(text: str) -> bytes:
@@ -1378,7 +1389,9 @@ def test_published_original_reference_is_exact_and_permissioned(
     (exact admitted version binding) — while plain readers/reviewers without
     the separate inspection grant cannot probe either route, older admitted
     bytes never substitute registry-latest, and original-only markers never
-    enter ordinary wiki retrieval.
+    enter ordinary wiki retrieval. A valid long binary basename that loses
+    its extension at the registry's safe-filename cap still opens as exact
+    attachment bytes (F1).
     """
     fixture = _fixture(tmp_path, monkeypatch)
     config = fixture.config
@@ -1404,6 +1417,7 @@ def test_published_original_reference_is_exact_and_permissioned(
             ("attributed-v1-text", ORIGINAL_V1, SOURCE_IDS[0], "runbook-v1.md"),
             ("attributed-v1-pdf", pdf_bytes, SOURCE_IDS[1], "restart-procedure.pdf"),
             ("attributed-v1-docx", docx_bytes, SOURCE_IDS[2], "restart-annex.docx"),
+            ("attributed-v1-long", docx_bytes, SOURCE_IDS[3], LONG_DOCX_UPLOAD_NAME),
         ):
             uploaded = _upload_named(
                 contributor, fixture.contributor_api, raw, retry_key, source_id, filename
@@ -1456,6 +1470,19 @@ def test_published_original_reference_is_exact_and_permissioned(
         pending_text = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[0]}/{ENTITY_ID}")
         assert pending_text.status_code == 200
         assert TEXT_MARKER in pending_text.text
+        # F1: the long binary basename truncates at the registry's 128-char
+        # cap, so the bound metadata can no longer positively establish text;
+        # the route must still deliver the exact verified bytes as a safe
+        # attachment — never a UTF-8 decode of binary content.
+        pending_long = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[3]}/{ENTITY_ID}")
+        assert pending_long.status_code == 200, pending_long.text
+        assert pending_long.content == docx_bytes
+        assert pending_long.headers["content-type"].split(";")[0] == "application/octet-stream"
+        assert pending_long.headers["x-content-type-options"] == "nosniff"
+        long_disposition = pending_long.headers["content-disposition"]
+        assert long_disposition.startswith("attachment;")
+        assert LONG_DOCX_BOUND_NAME in long_disposition
+        assert ".docx" not in long_disposition
 
         v1_digest = _digest(reviewer_browser.get(f"/review/{task_id}").text)
         approved = _decision(reviewer_browser, task_id, v1_digest, "approve")
@@ -1514,6 +1541,7 @@ def test_published_original_reference_is_exact_and_permissioned(
             (SOURCE_IDS[0], ORIGINAL_V1, "runbook-v1.md"),
             (SOURCE_IDS[1], pdf_bytes, "restart-procedure.pdf"),
             (SOURCE_IDS[2], docx_bytes, "restart-annex.docx"),
+            (SOURCE_IDS[3], docx_bytes, LONG_DOCX_BOUND_NAME),
         ):
             opened = reviewer_browser.get(f"/original/{candidate_v1}/{ENTITY_ID}/{source_id}")
             assert opened.status_code == 200, opened.text
