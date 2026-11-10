@@ -159,6 +159,18 @@ The live [R0–R5 issues #102–107](../plans/2026-11-04-0034-agent-first-shared
 
 The owner subsequently approved these targeted ticket/source clarifications with “Passt! erstelle die Tickets bzw. passe die bestehenden an”. Spec0034 revision 6 and plan amendment revision 2 reconcile the affected text; ticketization publishes the exact amendment alongside, rather than overwriting, earlier frozen snapshots. Keep unaffected R-track requirements and validation budgets; add or alter a check only for a named uncovered scenario. AC12 and integrated AC14/15 need their own mapping when the separate spec0035 implementation plan is authorized.
 
+### Source-boundary disposition: PostgreSQL effective destination (2026-11-10)
+
+The pre-existing finding “a PostgreSQL destination change under the same `connection_env` name is mistaken for harmless secret rotation” is dispositioned by owner decision (2026-11-10, “Ohne Dependency”) as a narrow repair against the existing spec0025 §4 contract, without a new connector, dependency or approval store:
+
+- Offline source proposals stay inert: a proposal reads no environment values, and the declaration digest keeps binding variable NAMES only.
+- Approval and grants key the CURRENT effective non-secret destination: the resolved target (explicit connstring components in conninfo order plus PG destination-environment defaults for omitted components, including `PGHOSTADDR` and ordered multi-host lists, with libpq defaults for port/dbname/user) is recorded under collision-free `postgres:<source-name>` binding keys. Password/sslpassword values never enter any record, message or page; credential rotation at the same destination needs no new approval.
+- File-based target indirection (`service=`/`PGSERVICE`) refuses at approval with actionable explicit-target guidance instead of guessing the file-resolved destination — an owner-approved narrowing of one previously pass-through form.
+- The approved binding freezes through the builder: the ONE captured connection string is verified against the frozen destination and attached — no check-A/open-B window. Transport-only environment values (e.g. `PGSSLMODE`) sit outside the target identity as a stated limit.
+- Destination-unbound legacy PostgreSQL approvals/validation evidence refuse through the existing explicit messages and need fresh human approval/revalidation; historical records are never rewritten, and file/S3 grants, keys and digests are unchanged.
+
+The pre-approval XLSX conversion and profiling bounds findings from the same research remain open for their own disposition.
+
 The audit's PostgreSQL effective-destination binding and pre-approval XLSX/profile-bound concerns are not fixed by this dependency change or claimed resolved here. Before claiming AC3 on an affected source path, disposition its concrete source-authorization gap against the existing data contract. Do not add generic connector or profiler rewrites to R0–R5.
 
 Approved earlier task executions remain historical evidence, not authorization for this breaking follow-up. Existing tickets/plans that depend on the superseded contract need reconciliation before new dependent work; no GitHub updates or execution grants are made here.

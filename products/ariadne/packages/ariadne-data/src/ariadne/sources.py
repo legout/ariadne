@@ -40,13 +40,14 @@ catalog (cheap enumeration only — no profiling here).
 from __future__ import annotations
 
 import base64
+import getpass
 import json
 import os
 import re
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
@@ -231,6 +232,12 @@ class Registry:
     path: str | None = None
     storages: dict[str, StorageProfile] | None = None
     bindings: dict[str, StorageBinding] | None = None
+    # Frozen per-SOURCE non-secret postgres destination records (the narrow
+    # effective-destination repair, spec 0025 §4 disposition in spec0035 §8):
+    # an approval's pinned target identity, keyed by source name. plan() only
+    # ATTACHes a postgres DSN whose derived destination equals the frozen
+    # record — the same captured value is verified and attached.
+    connection_bindings: dict[str, dict] | None = None
 
 
 def default_registry_path(
@@ -655,6 +662,206 @@ def _env_value(variable: str, profile: StorageProfile, what: str) -> str:
     return value
 
 
+# ------------------------------------------------------------ postgres target identity
+
+# Credential keywords: never recorded, never echoed (spec 0025 §4 disposition
+# in spec0035 §8; 2026-11-10 owner decision).
+_PG_SECRET_KEYWORDS = frozenset({"password", "sslpassword"})
+# The TARGET-selection keywords only: transport/timeout options are outside
+# the destination identity (stated limit; PGSSLMODE-style ENV drift is not a
+# destination change).
+_PG_TARGET_KEYWORDS = frozenset({"host", "hostaddr", "port", "dbname", "user"})
+# The PG destination-environment names consulted for OMITTED target components
+# (libpq defaults order; explicit connstring values always win).
+_PG_TARGET_ENV = {
+    "host": "PGHOST",
+    "hostaddr": "PGHOSTADDR",
+    "port": "PGPORT",
+    "dbname": "PGDATABASE",
+    "user": "PGUSER",
+}
+
+
+def _pg_refuse(source: str, variable: str | None, why: str) -> ValueError:
+    """One binding refusal naming the source and the connection_env variable —
+    never the connection string or any credential value."""
+    where = f"environment variable {variable} " if variable else ""
+    return ValueError(
+        f"source {source!r}: {where}{why} — the effective destination cannot be "
+        "bound for source approval; no connection value is ever echoed here"
+    )
+
+
+def _pg_target_list(value: str) -> list[str]:
+    """One comma-separated target value as an ordered item list (multi-host;
+    items kept verbatim — libpq gives empty items their own meaning)."""
+    return value.split(",")
+
+
+def _pg_kv_params(source: str, variable: str | None, dsn: str) -> dict[str, str]:
+    """One libpq keyword/value conninfo as an ordered keyword→value mapping
+    (last occurrence wins, per PQconnectdb): whitespace-separated settings,
+    single-quoted values with ``\\'``/``\\\\`` escapes, backslash escapes in
+    bare values. Malformed strings refuse by source/variable, never echoing
+    the value."""
+    params: dict[str, str] = {}
+    i, n = 0, len(dsn)
+    while i < n:
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        while i < n and not dsn[i].isspace() and dsn[i] != "=":
+            i += 1
+        keyword = dsn[start:i].lower()
+        while i < n and dsn[i].isspace():
+            i += 1
+        if i >= n or dsn[i] != "=":
+            raise _pg_refuse(source, variable, "is not a valid keyword/value connection string")
+        i += 1
+        while i < n and dsn[i].isspace():
+            i += 1
+        buf: list[str] = []
+        if i < n and dsn[i] == "'":
+            i += 1
+            while i < n and dsn[i] != "'":
+                if dsn[i] == "\\" and i + 1 < n:
+                    i += 1
+                buf.append(dsn[i])
+                i += 1
+            if i >= n:
+                raise _pg_refuse(source, variable, "has an unterminated quoted value")
+            i += 1  # the closing quote
+        else:
+            while i < n and not dsn[i].isspace():
+                if dsn[i] == "\\" and i + 1 < n:
+                    i += 1
+                buf.append(dsn[i])
+                i += 1
+        if keyword:
+            params[keyword] = "".join(buf)
+    return params
+
+
+def _pg_uri_params(source: str, variable: str | None, dsn: str) -> dict[str, str]:
+    """One libpq connection URI as the same keyword→value mapping: the
+    hierarchical components convert first, named query parameters override
+    them (PQconnectdb's last-wins conversion order). Multi-host hostspecs are
+    split bracket-aware; hosts are percent-decoded."""
+    parts = urlsplit(dsn)
+    params: dict[str, str] = {}
+    if parts.username is not None:
+        params["user"] = unquote(parts.username)  # password: stripped, never recorded
+    if parts.path not in ("", "/"):
+        params["dbname"] = unquote(parts.path.lstrip("/"))
+    userinfo, _, hostspec = parts.netloc.rpartition("@")
+    if hostspec:
+        hosts: list[str] = []
+        ports: list[str] = []
+        for item in _pg_split_hostspec(hostspec):
+            if item.startswith("["):  # bracketed IPv6
+                host, _, rest = item.partition("]")
+                host = host[1:]
+                port = rest[1:] if rest.startswith(":") else ""
+            else:
+                host, _, port = item.rpartition(":")
+                if not host:  # no colon — the whole item is the host
+                    host, port = item, ""
+            hosts.append(unquote(host))
+            ports.append(unquote(port))
+        if hosts != [""] or ports != [""]:
+            params["host"] = ",".join(hosts)
+        if any(ports):
+            params["port"] = ",".join(ports)
+    for keyword, value in parse_qsl(parts.query, keep_blank_values=True):
+        params[keyword.lower()] = value
+    return params
+
+
+def _pg_split_hostspec(hostspec: str) -> list[str]:
+    """A URI hostspec as ordered items — commas split at the top level only
+    (bracketed IPv6 addresses may contain colons, never commas)."""
+    items: list[str] = []
+    buf: list[str] = []
+    in_brackets = False
+    for ch in hostspec:
+        if ch == "[":
+            in_brackets = True
+        elif ch == "]":
+            in_brackets = False
+        elif ch == "," and not in_brackets:
+            items.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    items.append("".join(buf))
+    return items
+
+
+def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict:
+    """The EFFECTIVE non-secret destination identity of one resolved postgres
+    connection string (libpq URI or keyword/value form — the forms the DuckDB
+    postgres extension's ATTACH takes): explicit target components in
+    conninfo order (last occurrence wins; URI query parameters override the
+    URI components), then the PG destination environment for omitted
+    components (PGHOST/PGHOSTADDR/PGPORT/PGDATABASE/PGUSER), then the
+    deterministic libpq defaults (port 5432, dbname := user, user := the OS
+    user; an entirely unconfigured host records as an EMPTY list — the
+    platform-default local socket, so later PGHOST drift flips it).
+    Credential values (password/sslpassword, any form) never enter the record
+    and the connection string is never echoed; ``service=``/``PGSERVICE``
+    file-based target indirection refuses instead of guessing (narrowing
+    approved by the owner, 2026-11-10). Credential rotation at the same
+    destination keeps this record — and therefore the approval identity —
+    unchanged; any target-selection change (host, hostaddr, ordered multi-host
+    order, port, dbname, user) produces a different record and needs its own
+    source approval (spec 0025 §4)."""
+    if "=" not in dsn and not DSN_RE.match(dsn):
+        params = {"dbname": dsn.strip()}  # libpq: a bare connstring is a dbname
+    elif DSN_RE.match(dsn):
+        params = _pg_uri_params(source, variable, dsn)
+    else:
+        params = _pg_kv_params(source, variable, dsn)
+    for keyword in params:
+        if keyword in _PG_SECRET_KEYWORDS:
+            continue  # credential values never enter the record
+        if keyword == "service":
+            raise _pg_refuse(
+                source,
+                variable,
+                "selects a service-file target (service=) — file-based target "
+                "indirection is not supported for source approval; approve an "
+                "explicit target instead (host/hostaddr, port, dbname, user)",
+            )
+    targets: dict[str, str] = {}
+    for keyword in sorted(_PG_TARGET_KEYWORDS):
+        value = params.get(keyword)
+        if value is not None and value != "":
+            targets[keyword] = value
+    for keyword, env_name in _PG_TARGET_ENV.items():
+        if keyword in targets:
+            continue
+        env_value = os.environ.get(env_name)
+        if env_value and env_value.strip():
+            targets[keyword] = env_value.strip()
+    user = targets.get("user")
+    if user is None:
+        try:
+            user = getpass.getuser()
+        except Exception:  # pragma: no cover - no OS user identity at all
+            user = None
+    dbname = targets.get("dbname", user)
+    ports = _pg_target_list(targets["port"]) if "port" in targets else ["5432"]
+    return {
+        "host": _pg_target_list(targets["host"]) if "host" in targets else [],
+        "hostaddr": _pg_target_list(targets["hostaddr"]) if "hostaddr" in targets else [],
+        "port": ports,
+        "dbname": dbname,
+        "user": user,
+    }
+
+
 def used_profiles(registry: Registry) -> dict[str, StorageProfile]:
     """The profiles actually referenced by the registry's sources (spec 0025
     §2: unused definitions are never resolved or installed)."""
@@ -717,8 +924,24 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
             )
         elif src.type == "postgres":
             _want(loads, "postgres")
+            dsn = _resolve_dsn(src)
+            # The narrow effective-destination check (spec 0025 §4 disposition
+            # in spec0035 §8): when this registry carries a FROZEN approved
+            # destination record for the source, the ONE captured DSN below is
+            # both verified against it and attached — a re-resolved different
+            # destination never opens (no check-A/open-B window), credential
+            # rotation at the same destination passes.
+            frozen = (registry.connection_bindings or {}).get(src.name)
+            if frozen is not None and postgres_binding(src.name, dsn, src.connection_env) != frozen:
+                raise ValueError(
+                    f"source {src.name!r}: environment variable {src.connection_env} "
+                    "now resolves a different destination than the approved binding "
+                    "(spec 0025 §4) — the changed destination needs its own source "
+                    "approval before any open; rotating credentials alone is not a "
+                    "destination change"
+                )
             statements.append(
-                f"ATTACH '{_noquotes(_resolve_dsn(src))}' AS {src.name} (TYPE POSTGRES{suffix})"
+                f"ATTACH '{_noquotes(dsn)}' AS {src.name} (TYPE POSTGRES{suffix})"
             )
         elif src.type == "delta":
             _want(loads, "delta")

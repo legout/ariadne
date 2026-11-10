@@ -40,8 +40,16 @@ from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import authoring_inputs, profiler, proposals, sources
-from ariadne.sources import Registry, Source
+from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages  # noqa: E501
+    authoring_inputs,
+    profiler,
+    proposals,
+    sources,
+)
+from ariadne.sources import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages  # noqa: E501
+    Registry,
+    Source,
+)
 
 # Operator-owned approval state, ignored via the repo-LOCAL exclude file G2
 # already maintains: outside every candidate commit, never staged (plan §2).
@@ -80,10 +88,24 @@ def approval_digest(source_digest: str, storage_bindings: dict | None) -> str:
 def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
     """Resolve the CURRENT effective non-secret bindings of a resolved
     identity from the environment (spec 0025 §4): endpoint/region variable
-    values only — no key/token reads, no network. Used profiles only;
-    profile-free identities resolve to ``{}`` (no lookup at all)."""
+    values for used profiles, and the effective destination for postgres
+    sources (the narrow repair, spec0035 §8 disposition) — no key/token
+    reads, no network. S3 profile bindings keep their profile-name keys and
+    record shape byte-for-byte; postgres bindings live under the collision-
+    free ``postgres:<source-name>`` keys (colons cannot occur in either
+    namespace: both are ``[a-z][a-z0-9_]*`` slugs). An unset connection_env
+    is a visible prerequisite, never a corrupt declaration."""
     bindings: dict[str, dict] = {}
     for entry in resolved or []:
+        if entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+            name = entry["name"]
+            dsn = sources._resolve_dsn(
+                Source(name=name, type="postgres", connection_env=entry["connection_env"])
+            )
+            bindings[f"postgres:{name}"] = sources.postgres_binding(
+                name, dsn, entry["connection_env"]
+            )
+            continue
         storage = entry.get("storage")
         if not isinstance(storage, dict) or isinstance(storage.get("name"), str) is False:
             continue
@@ -209,11 +231,23 @@ def identity_registry(resolved: list[dict], bindings: dict | None = None) -> Reg
         for name, record in (bindings or {}).items()
         if name in storages
     }
+    # Frozen postgres destinations route by their namespaced key (spec 0025
+    # §4 disposition in spec0035 §8): the approval/admission record's
+    # ``postgres:<source-name>`` entries pin each source's effective target
+    # so plan() verifies-and-attaches exactly the checked destination. S3
+    # profile keys and records pass through untouched.
+    pg_frozen: dict[str, dict] = {}
+    for entry in resolved:
+        if entry.get("type") == "postgres" and entry.get("connection_env"):
+            record = (bindings or {}).get(f"postgres:{entry['name']}")
+            if record is not None:
+                pg_frozen[entry["name"]] = record
     return Registry(
         sources=objects,
         path=None,
         storages=storages or None,
         bindings=frozen or None,
+        connection_bindings=pg_frozen or None,
     )
 
 

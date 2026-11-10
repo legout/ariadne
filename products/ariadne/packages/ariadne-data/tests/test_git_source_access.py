@@ -33,7 +33,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 import ariadne.sources  # noqa: E402
-from ariadne import proposals  # noqa: E402
+from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 
@@ -609,3 +609,188 @@ def test_cli_git_mode_propose_approve_and_inputs_roundtrip(tmp_path, capsys):
     table = measured["profile"]["sources"][0]["tables"]["events"]
     assert table["row_count"] == 2 and table["sampled"] is True
     assert measured["documents"][0]["title"] == "policy.md"
+
+
+# ------------------------------------- postgres effective destination (issue #110)
+
+_PG_ENV = "ARIADNE_TEST_PG_DSN"
+
+# Supported DSN representations (libpq URI and keyword/value — the postgres
+# extension takes a libpq connstring), each with its own synthetic DB-A /
+# rotated-credential / DB-B values and an implicit-target connstring (host
+# omitted; libpq resolves it from PGHOST). Expectations come from spec 0025
+# §4, not from implementation output. ``plan_rotation_dsn`` is the DSN used
+# at the ATTACH-reaching frozen-check step: quote-bearing connstrings refuse
+# at ATTACH construction by the existing no-quotes rule (a separate contract,
+# pre-existing), so the quoted forms here are pinned at the binding/approval
+# level and their identical quote-free binding is used for that one step.
+_PG_DSN_CASES = [
+    pytest.param(
+        "postgresql://owner:pgsecret-a@db-a.internal:5432/app",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432/app",
+        "postgresql://owner:pgsecret-b@db-b.internal:5432/app",
+        "postgresql://owner:pgsecret-rot@db-a.internal:5432/app",
+        "postgresql:///app",
+        id="libpq-uri",
+    ),
+    pytest.param(
+        "host=db-a.internal port=5432 dbname=app user=owner password=pgsecret-a",
+        "host=db-a.internal port=5432 dbname=app user=owner password=pgsecret-rot",
+        "host=db-b.internal port=5432 dbname=app user=owner password=pgsecret-b",
+        "host=db-a.internal port=5432 dbname=app user=owner password=pgsecret-rot",
+        "dbname=app",
+        id="libpq-key-value",
+    ),
+    pytest.param(
+        # last-wins quoting: decoy-then-authoritative values, quoted values
+        # with spaces — the LAST host/user/password is the effective one.
+        "host=decoy.internal host=db-a.internal dbname=app user=ghost user=owner"
+        " password='decoy one' password='pgsecret a'",
+        "host=decoy.internal host=db-a.internal dbname=app user=ghost user=owner"
+        " password='decoy one' password='pgsecret rot'",
+        "host=decoy.internal host=db-b.internal dbname=app user=ghost user=owner"
+        " password='decoy one' password='pgsecret b'",
+        "host=db-a.internal dbname=app user=owner password=pgsecret-rot",
+        "dbname=app",
+        id="kv-last-wins-quoting",
+    ),
+    pytest.param(
+        # URI query override: an empty hierarchy with the target supplied as
+        # named query parameters (libpq's documented alternative form).
+        "postgresql:///app?host=db-a.internal&port=5432&user=owner&password=pgsecret-a",
+        "postgresql:///app?host=db-a.internal&port=5432&user=owner&password=pgsecret-rot",
+        "postgresql:///app?host=db-b.internal&port=5432&user=owner&password=pgsecret-b",
+        "postgresql:///app?host=db-a.internal&port=5432&user=owner&password=pgsecret-rot",
+        "postgresql:///app",
+        id="uri-query-override",
+    ),
+    pytest.param(
+        # ordered multi-host: DB-B differs from DB-A ONLY by host ORDER — the
+        # ordered list is part of the destination identity (failover order).
+        "postgresql://owner:pgsecret-a@db-a.internal,db-c.internal:5433/app",
+        "postgresql://owner:pgsecret-rot@db-a.internal,db-c.internal:5433/app",
+        "postgresql://owner:pgsecret-b@db-c.internal,db-a.internal:5433/app",
+        "postgresql://owner:pgsecret-rot@db-a.internal,db-c.internal:5433/app",
+        "dbname=app",
+        id="uri-multihost-ordered",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "dsn_a,dsn_rotated,dsn_b,plan_rotation_dsn,implicit_dsn", _PG_DSN_CASES
+)
+def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
+    tmp_path, monkeypatch, dsn_a, dsn_rotated, dsn_b, plan_rotation_dsn, implicit_dsn
+):
+    """A PostgreSQL destination change under an UNCHANGED ``connection_env``
+    name is a changed effective source identity (spec 0025 §4 keyed grants;
+    spec0035 §3/AC3; issue #110 source-boundary gate), never harmless secret
+    rotation: DB-A's approval must refuse DB-B BEFORE any source open. The
+    contract-derived expectations:
+
+    1. approval binds the EFFECTIVE destination — the recorded grant carries
+       the resolved non-secret destination, never a credential value;
+    2. DB-B under the same variable name refuses with no builder call (the
+       recorder IS the real builder boundary ``ariadne.sources
+       .build_connection`` — profiler opens through it);
+    3. rotating ONLY the credential at the same destination keeps the same
+       effective approval identity (spec 0025 §4: rotation is not a
+       destination change);
+    4. the approved binding freezes through the builder seam: plan() refuses
+       a re-resolved different destination (no check-A/open-B window) and
+       accepts the rotated credential at the same destination.
+    """
+    opened: list[list[str | None]] = []
+
+    def refusing_builder(registry, read_only=True):
+        opened.append([src.connection_env for src in registry.sources])
+        raise AssertionError(
+            "the shared connection builder was handed an identity that must "
+            "refuse at the approval gate — nothing may open here"
+        )
+
+    monkeypatch.setattr(ariadne.sources, "build_connection", refusing_builder)
+
+    project = git_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    proposed = api.propose_sources(
+        started["proposal"],
+        started["candidate_revision"],
+        [{"name": "pg", "type": "postgres", "connection_env": _PG_ENV}],
+    )
+
+    # DB-A: the operator approves under the CURRENT destination.
+    monkeypatch.setenv(_PG_ENV, dsn_a)
+    approved_a = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+
+    # DB-B under the SAME env name: the historical DB-A grant must refuse
+    # BEFORE any open — a changed destination is a changed effective identity.
+    monkeypatch.setenv(_PG_ENV, dsn_b)
+    with pytest.raises(ValueError, match="NO operator approval"):
+        api.inputs(started["proposal"])
+    assert opened == []  # the builder boundary was never reached
+
+    # The grant binds the effective NON-SECRET destination, never a secret;
+    # the binding key is the collision-free namespaced ``postgres:<name>``
+    # (S3 profile keys stay plain slugs; colons occur in neither namespace).
+    assert approved_a["approval_digest"] != approved_a["source_digest"]
+    assert set(approved_a["storage_bindings"]) == {"postgres:pg"}
+    record_text = (project / ".ariadne" / "source-approvals.json").read_text(
+        encoding="utf-8"
+    )
+    assert "pgsecret" not in record_text  # no plaintext DSN/credential in the grant
+    assert "db-a.internal" in record_text  # the destination itself is recorded
+
+    # Credential rotation at the SAME destination: same effective approval
+    # identity — no new destination grant is minted (spec 0025 §4).
+    monkeypatch.setenv(_PG_ENV, dsn_rotated)
+    approved_rotated = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_rotated["approval_digest"] == approved_a["approval_digest"]
+
+    # The approved binding FREEZES through the builder seam: a re-resolved
+    # different destination refuses at plan() (no check-A/open-B window);
+    # the rotated credential at the SAME destination passes the frozen check.
+    registry = authoring_sources.identity_registry(
+        approved_a["sources"], approved_a["storage_bindings"]
+    )
+    monkeypatch.setenv(_PG_ENV, dsn_b)
+    with pytest.raises(ValueError, match=_PG_ENV) as frozen_error:
+        ariadne.sources.plan(registry)
+    assert "pgsecret" not in str(frozen_error.value)  # no secret in the refusal
+    monkeypatch.setenv(_PG_ENV, plan_rotation_dsn)
+    loads, statements = ariadne.sources.plan(registry)
+    assert any("TYPE POSTGRES" in statement for statement in statements)
+
+    # Implicit-target ENV drift (one concrete case): a connstring that OMITS
+    # the host resolves its target against the PG destination environment
+    # (libpq defaults; DuckDB postgres ATTACH takes a libpq connstring), so a
+    # PGHOST change A->B is a destination change even though the approved
+    # variable VALUE never changed — it must refuse before any open.
+    monkeypatch.setenv("PGHOST", "db-a.internal")
+    monkeypatch.setenv(_PG_ENV, implicit_dsn)
+    approved_implicit = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_implicit["approval_digest"] != approved_a["approval_digest"]
+    monkeypatch.setenv("PGHOST", "db-b.internal")
+    with pytest.raises(ValueError, match="NO operator approval"):
+        api.inputs(started["proposal"])
+    assert opened == []
+
+    # Service-file indirection (service=) refuses at approval instead of
+    # guessing the file-resolved target (owner-approved narrowing): the
+    # refusal names the variable and the keyword, never the connection value.
+    monkeypatch.delenv("PGHOST", raising=False)
+    monkeypatch.setenv(_PG_ENV, "service=prod dbname=app")
+    with pytest.raises(ValueError, match="service") as service_error:
+        api.approve_sources(
+            started["proposal"], proposed["revision"], proposed["source_digest"]
+        )
+    assert _PG_ENV in str(service_error.value)
+    assert opened == []  # nothing was opened for the refused form either
