@@ -1,5 +1,7 @@
 # Specification: Context Layer schemas, terminology and identifier knowledge
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Use producer-native Lumio pages instead of a parallel classic bundle. Preserve schema observations, curated meaning, identifier evidence, exact-revision confirmation and context-only onboarding. Structural draft batches must be valid; no automatic migration or legacy fallback is retained. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved, revision 1 — written review complete** |

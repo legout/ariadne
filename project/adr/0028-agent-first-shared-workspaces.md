@@ -4,7 +4,15 @@ status: accepted
 
 # ADR-0028: Owner-managed workspaces through existing agent apps
 
-Date: 2026-11-04. Revision: 4 (identity amendment approved 2026-11-05).
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Every Ariadne journey uses lumio-wiki; Lumio-only workspaces remain independent. Hosting, identity, curated retrieval and source-retention decisions, including the document-only scope of the retention exception, are unchanged. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
+Date: 2026-11-04. Revision: 5 (identity amendment approved 2026-11-05; scoped retrieval/retention decision approved 2026-11-09).
+
+**Scoped owner decision — 2026-11-09:** The owner confirmed the proposed retrieval/scope/retention combination with “Ja passt.” in Hermes: search only curated published knowledge using Zero-Index/optional BM25 initially; personal/team ACLs and Hybrid deferred; default-required originals with an explicitly authorized standalone exception and selectable S3/persistent-server storage. Original files remain reachable only through separate authorized references, never through search. This scopes the operating model, not implementation/deployment authority. [Spec0034 §12](../specs/2026-11-04-0034-agent-first-shared-workspaces.md#12-curated-wiki-retrieval-and-original-references-proposed-revision-5) owns behavior and the proposed delivery details.
+
+**Detailed amendment approval — 2026-11-09:** “Freigegeben. Ticketize” approves spec0034 revision 5, plan amendment revision 1 and their reconciled scoped constraints. It authorizes GitHub ticket publication only, not implementation, integration, deployment, commit/push or release.
+
+Rationale: shared references must not depend on files on individual contributor laptops. Central server storage is already shared through the service; S3 separates original persistence from that server. Retention remains the safe default, while an explicit document-only exception acknowledges useful curated knowledge without pretending an exact original is available. This trades later inspection guarantees for an intentional owner choice, never for silent outage fallback. Existing required independent-host/integrated paths and previously retained history remain unchanged. Reuse the existing private storage seam rather than adding a source-search system or SharePoint now.
 
 **Owner approval — 2026-11-05:** In BB thread `thr_26ccqihn5b`, the owner approved per-user revocable API tokens, separate browser sign-in credentials/sessions, explicit authentication mode, and deferred Entra qualification. Record this design and present a bounded implementation plan; no implementation, integration, push, deployment, release or issue mutation is authorized. This supersedes the Entra-first prerequisite below, not the existing Entra implementation or authority/privacy guarantees. [Spec0034 revision 4](../specs/2026-11-04-0034-agent-first-shared-workspaces.md) owns the amended behavior.
 

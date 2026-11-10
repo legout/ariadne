@@ -1,5 +1,7 @@
 # Plan 0034: Managed data onboarding through Pi
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Future dependent work must use the mandatory Lumio Context contract rather than the optional SDK language below. This is not a new task decomposition or execution grant; earlier D-lane approvals/delivery records remain historical and unchanged. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Owner approval — 2026-11-04:** “Approved. lets ticketize” approves this revision, the linked plans and scoped technical refinements, and GitHub ticket publication. It grants no new implementation, tenant/source access, deployment, integration, push or release authority. Tracker: [#85](https://github.com/legout/ariadne/issues/85).
 
 Canonical task bodies now live in the linked GitHub issues; this file owns the interface/dependency/coverage overview, not duplicate task instructions.

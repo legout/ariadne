@@ -1,5 +1,7 @@
 # Public Ariadne–Lumio monorepo
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Replace symmetric installation independence and the separate Core-without-SDK entry path with Ariadne -> lumio-wiki. Independent Lumio use, product/package identities and release families remain; installation still grants no content admission or source permission. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped follow-up outside approved revision 2, 2026-11-04:** [spec0034 §10](2026-11-04-0034-agent-first-shared-workspaces.md#10-technical-realization) defines one optional deployment package, `lumio-workspace`, as a fourth uv member. The owner approved this scoped amendment with #85; it preserves a coordination-only root, existing product/package independence and separate release authorization. This amends the membership design only; the code still has three members until separately authorized implementation.
 
 Status: **approved design, revision 2** (owner, 2026-10-21).

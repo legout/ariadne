@@ -5,6 +5,8 @@ amends: ADR-0011, ADR-0024
 
 # ADR-0026: Lumio SDK and atomically bound governed releases
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The SDK is mandatory for Ariadne; the standalone Context fallback and backward-compatibility obligations are retired. Exact knowledge/analytics binding, native publication, source permissions and Core-last activation remain. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped operating-model extension, 2026-11-04:** [shared ADR-0028](../../../../project/adr/0028-agent-first-shared-workspaces.md) / [spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) define an owner-managed boundary that executes exact human-authorized actions through the native SDKs. The direct SDK, private-source checks, standalone independence, build/content binding, and Core-last activation remain. Spec0034 revision 3 explicitly owns the approved transport and per-user boundary; actual source grants, fixture access and implementation remain separately authorized.
 
 ## Accepted managed-source configuration amendment — 2026-10-23

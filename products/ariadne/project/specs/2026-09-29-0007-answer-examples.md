@@ -1,5 +1,7 @@
 # Specification: Saved answer examples
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Move Answer Example storage/search into Lumio knowledge and common admission, without a separate OKF directory/index. Retain explicit save consent, bounded historical content, analytical provenance and safe fresh-query reuse; do not treat Examples as Policies or current answers. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. Separate Example meaning, consent, bounds, provenance and staleness remain, but a sibling Git directory/common admission and explicit candidate draft discovery replace the independent staging/store/review route. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |

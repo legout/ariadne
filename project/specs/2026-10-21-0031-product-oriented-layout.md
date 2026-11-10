@@ -1,5 +1,7 @@
 # Product-oriented Ariadne–Lumio repository layout
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The directory layout and ownership remain. Statements preserving optional integration or a Core install without the SDK are superseded by mandatory Ariadne -> lumio-wiki; Lumio remains independent. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped follow-up outside approved revision 1, 2026-11-04:** [spec0034 §10](2026-11-04-0034-agent-first-shared-workspaces.md#10-technical-realization) places the optional workspace service under `products/lumio/packages/lumio-workspace/` and its Pi client under `products/lumio/clients/pi-workspace/`. The owner approved a fourth uv member and its exact layout-test amendment with #85; implementation is not started or newly authorized. Product ownership, root coordination-only behavior and existing private-app/Agent boundaries remain unchanged.
 
 Status: **approved, revision 1** (2026-10-21).

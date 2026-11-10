@@ -1,5 +1,7 @@
 # Specification 0009: Ariadne Context Profile and pinned SDK consumption
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Ariadne consumes the Lumio foundation obligatorily; Lumio remains independent and owns knowledge lifecycle operations. Core retains technical fact generation and analytics governance, not parallel page management. Generic Lumio capabilities and native source/privacy rules are not retired by Ariadne's compatibility cleanup. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved managed-source consumer follow-up — 2026-10-23:**
 [Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
 owns integrated admission using a private profile. The additive shared source

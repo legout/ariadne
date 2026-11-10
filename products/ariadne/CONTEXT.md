@@ -17,7 +17,7 @@ _Avoid_: text-to-SQL agent
 ### Layers
 
 **Context Layer**:
-The source-linked physical schemas and business guide: tribal knowledge, filtering rules, terminology, identifier relationships and provenance as version-controlled OKF Markdown. Routes and guides; never calculates.
+The source-linked physical schemas and business guide: tribal knowledge, filtering rules, terminology, identifier relationships and provenance maintained as Compiled Pages in the project's Lumio Knowledge Base. Routes and guides; never calculates.
 _Avoid_: documentation, business glossary, wiki
 
 **Semantic Layer**:
@@ -185,18 +185,18 @@ A legacy persisted Ad-hoc Metric definition awaiting its former human review rou
 _Avoid_: draft, candidate file
 
 **Answer Example**:
-An explicitly submitted OKF record of a question, intended meaning, used query method and bounded historical answer. Review approves it as a reusable reference, not a governed definition or an answer cache.
+An explicitly submitted knowledge page recording a question, intended meaning, used query method and bounded historical answer in the project's Lumio Knowledge Base. Review approves it as a reusable reference, not a Policy, governed definition or answer cache.
 _Avoid_: query snippet, cached answer
 
 **SQL Provenance**:
 The historical SQL text retained from the submitted result of an Answer Example. It is evidence of what was submitted, not an executable reuse method or authenticated proof that a computation ran.
 _Avoid_: saved query, execution proof, query history
 
-### Context Layer (OKF bundle)
+### Context Layer knowledge
 
 **Bundle**:
-The project's version-controlled OKF Context Layer, containing the typed pages relevant to its documented sources and modeled meaning, with generated navigation and change history. It can describe sources before any metric is modeled.
-_Avoid_: knowledge base directory, docs folder
+The historical name for Ariadne's separately maintained OKF Context Layer. Current Context knowledge belongs to the Lumio Knowledge Base and can describe sources before any metric is modeled; it is not a second maintained bundle.
+_Avoid_: independent Context store, second Knowledge Base
 
 **Context Routing Map**:
 A human-owned OKF Reference directing business questions to existing definitions, Policies and source evidence. It is a navigational guide, not a second definition catalog or authority to calculate.
@@ -231,7 +231,7 @@ The declared row identity of a dataset (its primary key in analytical terms). Ea
 _Avoid_: granularity, level
 
 **Policy**:
-A human-owned business rule expressed as Context Layer knowledge (e.g. status exclusion, currency cutover). Standalone metrics cite native OKF Policies; integrated metrics bind required Policies from an exact Lumio snapshot.
+A human-owned business rule expressed as Context Layer knowledge (e.g. status exclusion, currency cutover). Ariadne binds required Policies from the exact admitted Lumio knowledge snapshot; a Policy's narrative alone grants no execution or join authority.
 _Avoid_: rule note, guideline
 
 **Computation**:

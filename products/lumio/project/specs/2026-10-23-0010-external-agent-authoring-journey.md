@@ -1,5 +1,9 @@
 # Specification 0010: External-agent authoring journey
 
+**Approved 2026-11-09:** The owner accepted this scoped clarification with shared spec0034 revision 5 and plan amendment revision 1 (“Freigegeben. Ticketize”). No implementation grant is implied.
+
+**Scoped shared-workspace clarification — 2026-11-09:** [Shared spec0034 §12.4](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md#124-retention-exception) permits an explicitly owner-confirmed non-required-retention mode only for standalone managed document knowledge. This is not this independent-host handoff journey: its CLI/default candidate calls, transfer bundles and publishing environment retain all required-original gates below. A future native implementation must use an explicit opt-in at the managed boundary, not infer permission from a missing Artifact Store or silently relax this specification. Integrated Ariadne admission is not covered by that exception.
+
 **Approved scoped follow-up, 2026-11-04 (outside approved revision 5):** [shared spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) defines owner-managed team contribution through existing agent apps. This specification continues to own the independent-host Git/bootstrap/private-handoff route; that route is not the selected default contributor setup. Existing source and admission guarantees remain. The approved new plans own the managed route; this notice neither executes nor supersedes this independent-host revision.
 
 Status: approved design with scoped owner amendments. Written revision: 5.

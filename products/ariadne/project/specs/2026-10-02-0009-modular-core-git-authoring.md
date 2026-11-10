@@ -1,5 +1,7 @@
 # Specification: Modular Ariadne Core and Git-backed authoring
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Replace independent Core Context editing/storage with Lumio operations and structurally valid knowledge-page batches. Core candidate/Git coordination and analytics/source checks remain; this does not prohibit incomplete OSI drafts or permit automatic admission. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Accepted scoped Git-only amendment (2026-10-16):** [Specification 0027, written revision 1](2026-10-16-0027-core-git-only-authoring.md) captures the owner-approved bounded Core direction; the owner approved the complete written revision and these scoped amendments with “Schriftliche Fassung freigeben (Recommended)”. All durable authored Core artifacts use the existing Git route; ad-hoc execution is ephemeral and explicit persistence uses existing Authoring edits. The owner excludes legacy migration/compatibility and real-project reset; the former retained exceptions are retired. Unaffected original approval remains; no implementation or shared #76 contract is approved by this notice.
 
 | | |

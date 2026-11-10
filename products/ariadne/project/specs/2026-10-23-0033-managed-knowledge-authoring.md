@@ -1,5 +1,7 @@
 # Specification 0033: Managed knowledge authoring and integrated admission
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Lumio is mandatory for every Ariadne knowledge path, including document intake; retire the standalone Core ingestion alternative. Private-source bindings, exact whole-contribution review, retention and human admission remain. No second maintained Context Layer or migration path is introduced. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped follow-up, 2026-11-04 (outside approved revision 1):** [shared spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) defines owner-managed contribution/review, retaining the source-retention and native overall-admission guarantees here without requiring a deployment on every contributor machine. This existing specification still owns its independent-environment integration contract. Neither the approved new design nor this notice claims pending integration is delivered or authorizes new execution; the new plans record the approved managed-route dependency selection.
 
 Status: owner-approved complete design, revision 1. Date: 2026-10-23.
