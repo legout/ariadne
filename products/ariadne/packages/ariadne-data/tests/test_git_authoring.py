@@ -25,6 +25,7 @@ bundle shapes (tests/test_authoring.py); no second numeric oracle exists here
 — assertions cover outcomes, not recomputed measurement values.
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -239,19 +240,10 @@ def write_parquet(path: Path, rows: list[tuple], columns: list[str]) -> Path:
     return path
 
 
-def complete_bundle_project(tmp_path: Path) -> Path:
-    """A real temporary Git data project whose human-created initial artifact
-    revision is a COMPLETE existing bundle: registry with two parquet sources
-    (events unique; labels repeating — the unsafe-join fixture), Seed Notes,
-    the OSI model and every OKF content type the ADR-0007 gate requires, plus
-    the operator's input-area document the policy cites (never an artifact).
-
-    spec0035 candidate line: the complete bundle is an INTEGRATED project —
-    it carries the native ``knowledge/`` KB (Control File + Source Reference
-    Manifest, the exact artifacts the new scaffold creates) alongside its
-    legacy ``context_layer/`` pages until C6 reconciles the retired layout.
-    The KB bookkeeping is hand-written here from the documented KB format;
-    the native page vocabulary it declares is the scaffold's."""
+def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Path:
+    """The complete existing bundle fixture; ``native_state=False`` builds the
+    LEGACY variant (no knowledge/ KB and no integration selector) for the
+    F4 historical-admission protocol."""
     project = tmp_path / "proj"
     project.mkdir(parents=True, exist_ok=True)
     write_parquet(
@@ -298,7 +290,7 @@ def complete_bundle_project(tmp_path: Path) -> Path:
         "namespace: urn:uuid:authoring-fixture\n"
         "profile: ariadne-context/1\n",
         encoding="utf-8",
-    )
+    ) if native_state else None
     kb = project / "knowledge"
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
@@ -311,11 +303,11 @@ def complete_bundle_project(tmp_path: Path) -> Path:
         "  predicates: {}\n"
         "  redirects: {}\n",
         encoding="utf-8",
-    )
+    ) if native_state else None
     (kb / ".lumio-authoring.yaml").write_text(
         'version: 1\nnamespace: "urn:uuid:authoring-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
-    )
+    ) if native_state else None
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -323,11 +315,14 @@ def complete_bundle_project(tmp_path: Path) -> Path:
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/models/events.yml",
-        "context_integration.yaml",
-        "knowledge/lumio.yaml",
-        "knowledge/.lumio-authoring.yaml",
         *pages,
     ]
+    if native_state:
+        scope += [
+            "context_integration.yaml",
+            "knowledge/lumio.yaml",
+            "knowledge/.lumio-authoring.yaml",
+        ]
     run_git(project, "add", "--", *scope)
     run_git(project, "commit", "-q", "-m", "human: complete existing bundle", "--", *scope)
     return project
@@ -1151,19 +1146,106 @@ def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(t
 # implementation output.
 
 
-NATIVE_CONTROL = """
+NATIVE_CONTROL = """\
 version: 2
 mode: "categorized"
 categories:
   - name: references
     description: "Reference landing pages for independently useful sources."
+  - name: tables
+    description: "Documentation for table relations."
 ontology:
   entity_types:
     reference: {}
+    table: {}
   predicates:
     documents: {}
   redirects: {}
 """
+
+# The canonical table Resource of the fixture's order table, derived from the
+# native payload contract (sources.py table_resource): base64url of the JSON
+# array [source, catalog|null, schema, table] with compact separators — an
+# independently computed oracle, not implementation output.
+ORDERS_PAYLOAD = json.dumps(["retail", None, "main", "orders"], separators=(",", ":"))
+ORDERS_TABLE_URI = "ariadne://table/" + base64.urlsafe_b64encode(
+    ORDERS_PAYLOAD.encode("utf-8")
+).decode("ascii").rstrip("=")
+
+# One profiled native TABLE page with the generated ``ariadne``
+# schema/observations block AND its rendered generated body sections — the
+# positive producer metadata shape (documented native table families),
+# hand-authored. ``stale_after`` is system-stamped; edits inherit verbatim.
+PROFILED_TABLE_PAGE = """---
+id: "entity:orders-table"
+title: "Orders Table"
+entity_types:
+  - table
+tags:
+  - "orders"
+summary: "Orders Table."
+lifecycle: "draft"
+visibility: "public"
+sources:
+  - id: "owner-notes"
+    title: "Owner notes"
+ariadne_profile:
+  version: 1
+  kind: table
+  core_ref:
+    kind: resource
+    id: "@ORDERS_URI@"
+  native:
+    type: table
+    title: "Orders Table"
+    description: "The orders table."
+    tags:
+      - orders
+    resource: "@ORDERS_URI@"
+    stale_after: "2027-11-10"
+    sources:
+      - id: "owner-notes"
+        title: "Owner notes"
+    grain:
+      primary_key: [order_number]
+      cardinality_enforcement: "strict_1_to_1"
+    observed_value_columns:
+      order_number: VARCHAR
+    ariadne:
+      schema:
+        - column: order_number
+          type: VARCHAR
+          nullable: unknown
+          default: unknown
+          comment: unknown
+      observations:
+        observed_at: "2026-10-01T00:00:00+00:00"
+        scope: full
+        row_count: 10
+        candidate_keys: [order_number]
+        columns:
+          order_number:
+            null_count: 0
+            distinct_count: 10
+        citation: "@ORDERS_URI@"
+        value_evidence:
+          order_number:
+            state: observed
+            top_values:
+              - value: "00123"
+                count: 1
+---
+
+# Orders Table
+
+## Schema
+
+order_number VARCHAR — one column per order row.
+
+## Observations
+
+Observed 2026-10-01: 10 rows, order_number unique.
+""".replace("@ORDERS_URI@", ORDERS_TABLE_URI)
 
 
 def reference_page(title: str, entity_id: str, body: str, claims_yaml: str = "") -> str:
@@ -1265,6 +1347,10 @@ def native_context_project(tmp_path: Path) -> Path:
     (project / "knowledge" / "references" / "policy-basis.md").write_text(
         PROFILED_REFERENCE_PAGE, encoding="utf-8"
     )
+    (project / "knowledge" / "tables").mkdir()
+    (project / "knowledge" / "tables" / "orders-table.md").write_text(
+        PROFILED_TABLE_PAGE, encoding="utf-8"
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -1276,6 +1362,7 @@ def native_context_project(tmp_path: Path) -> Path:
         "knowledge/lumio.yaml",
         "knowledge/.lumio-authoring.yaml",
         "knowledge/references/policy-basis.md",
+        "knowledge/tables/orders-table.md",
     )
     run_git(project, "commit", "-q", "-m", "human: native base")
     return project
@@ -1422,6 +1509,81 @@ def test_native_profile_trust_claims_inherit_or_refuse(tmp_path):
     # the AUTHORED Reference extension inherits without refusal (the exact
     # existing authored-Reference exception mirrored at the native kind)
     assert "ariadne:" in inherited  # the base carries native.ariadne
+
+    # F2 completion — native TABLE generated facts (positive producer shape):
+    table_rel = "knowledge/tables/orders-table.md"
+    table_blob = proposals._read_blob(project, allowed["revision"], table_rel)
+    assert table_blob is not None
+    table_text = table_blob.decode("utf-8")
+
+    # inherited verbatim: an authored addition OUTSIDE the generated sections
+    # is an ordinary edit (the generated Schema/Observations sections are
+    # carried unchanged)
+    table_edited = table_text.replace(
+        "# Orders Table\n\n## Schema",
+        "# Orders Table\n\nAuthored context note.\n\n## Schema",
+    )
+    table_ok = api.edit_pages_batch(
+        pid, allowed["revision"], [{"path": table_rel, "content": table_edited}]
+    )
+    assert table_ok["changed"] is True
+
+    # the RENDERED generated sections are core-owned too: altering the
+    # rendered schema type (native metadata unchanged) refuses and leaves
+    # bytes/branch/record untouched
+    rendered = table_edited.replace(
+        "order_number VARCHAR — one column per order row.",
+        "order_number TEXT — one column per order row.",
+    )
+    with pytest.raises(ValueError, match="core-generated"):
+        api.edit_pages_batch(pid, table_ok["revision"], [{"path": table_rel, "content": rendered}])
+    assert branch_of(project, pid) == table_ok["revision"]
+    assert proposals._read_blob(project, table_ok["revision"], table_rel) == table_edited.encode(
+        "utf-8"
+    )
+
+    # changing the envelope kind to reference cannot LAUNDER the inherited
+    # generated non-Reference ariadne block into an authored extension
+    laundered = table_edited.replace("kind: table", "kind: reference").replace(
+        "type: table", "type: reference"
+    )
+    laundered = laundered.replace("entity_types:\n  - table", "entity_types:\n  - reference")
+    laundered = laundered.replace(
+        "    ariadne:\n      schema:\n        - column: order_number\n"
+        "          type: VARCHAR\n          nullable: unknown\n"
+        "          default: unknown\n          comment: unknown\n"
+        "      observations:\n"
+        '        observed_at: "2026-10-01T00:00:00+00:00"\n'
+        "        scope: full\n        row_count: 10\n"
+        "        candidate_keys: [order_number]\n"
+        "        columns:\n          order_number:\n"
+        "            null_count: 0\n            distinct_count: 10\n"
+        f'        citation: "{ORDERS_TABLE_URI}"\n'
+        "        value_evidence:\n          order_number:\n"
+        "            state: observed\n            top_values:\n"
+        '              - value: "00123"\n                count: 1\n',
+        "    ariadne:\n      version: 1\n      reference_role: identifier\n"
+      "      representations: []\n      mappings: []\n",
+    )
+    assert "reference_role: identifier" in laundered  # the authored extension shape
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(pid, table_ok["revision"], [{"path": table_rel, "content": laundered}])
+    assert branch_of(project, pid) == table_ok["revision"]
+
+    # INTRODUCING system-stamped generated/stale_after claims refuses
+    stamped = inherited.replace(
+        "    status: stable\n",
+        '    status: stable\n    generated: "2026-11-10T00:00:00+00:00"\n'
+        '    stale_after: "2027-11-10"\n',
+    )
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(pid, table_ok["revision"], [{"path": rel, "content": stamped}])
+
+    # REMOVING the inherited system-stamped stale_after refuses
+    unstamped = table_edited.replace('    stale_after: "2027-11-10"\n', "")
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        api.edit_pages_batch(pid, table_ok["revision"], [{"path": table_rel, "content": unstamped}])
+    assert branch_of(project, pid) == table_ok["revision"]
 
 
 def test_path_title_mismatch_refuses_before_any_write(tmp_path):
@@ -1592,3 +1754,130 @@ def test_unsupported_project_refuses_on_every_public_open_without_mutation(tmp_p
     with pytest.raises(ValueError, match="retired standalone Context layout"):
         AuthoringProject(checkout).start_proposal()
     assert not (checkout / "knowledge").exists()
+
+
+def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_path):
+    """F4 completion: the opening gate parses the ACTUAL producer format —
+    occupied-but-invalid knowledge/ marker files refuse before proposal state
+    exists, and an EXACT supplied historical standalone admission (real
+    commit, real snapshot, admitted through the public protocol from the
+    legacy base revision) refuses at QueryRuntime.open_project BEFORE any
+    source open, without mutation, while the valid pinned NATIVE current
+    admission still opens (AC7: unrelated state never blocks a valid
+    admission)."""
+    from ariadne import admission
+    from ariadne.query import QueryRuntime
+
+    # occupied-but-INVALID marker files are not the native KB state
+    invalid = tmp_path / "invalid-markers"
+    (invalid / "context_layer" / "metrics").mkdir(parents=True)
+    (invalid / "context_layer" / "metrics" / "old.md").write_text(
+        "---\ntype: metric\ntitle: Old\n---\n\n# Old\n", encoding="utf-8"
+    )
+    knowledge = invalid / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "lumio.yaml").write_text("not: [a: control\n", encoding="utf-8")
+    (knowledge / ".lumio-authoring.yaml").write_text("{{ no manifest", encoding="utf-8")
+    (invalid / "ariadne.yaml").write_text("# registry template\n", encoding="utf-8")
+    run_git(invalid, "init", "-q")
+    run_git(invalid, "config", "user.name", "Ariadne Tests")
+    run_git(invalid, "config", "user.email", "tests@ariadne.local")
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        AuthoringProject(invalid).start_proposal()
+    assert not (invalid / ".ariadne").exists()  # no proposal state was created
+
+    # an ACTUAL valid historical standalone admission: the public admit
+    # protocol from the LEGACY base revision, then a native admission on top
+    project = complete_bundle_project(tmp_path / "history", native_state=False)
+    legacy_commit = run_git(project, "rev-parse", "HEAD").strip()
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:authoring-fixture\n"
+        "profile: ariadne-context/1\n",
+        encoding="utf-8",
+    )
+    kb = project / "knowledge"
+    kb.mkdir()
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:authoring-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    # the native-state commit retires the legacy metric/model pair (the
+    # integrated contract sanctions native metric pages against the working
+    # model inventory; the historical LEGACY commit below keeps them)
+    (project / "semantic_layer" / "models" / "events.yml").unlink()
+    (project / "context_layer" / "metrics" / "event_count.md").unlink()
+    run_git(project, "add", "--", "context_integration.yaml", "knowledge/lumio.yaml",
+            "knowledge/.lumio-authoring.yaml")
+    run_git(project, "add", "--", "semantic_layer/models/events.yml",
+            "context_layer/metrics/event_count.md")
+    run_git(project, "commit", "-q", "-m", "human: native state added")
+
+    api = AuthoringProject(project)
+
+    # the HISTORICAL standalone record: a REAL validated/reviewed candidate
+    # from the LEGACY base revision, materialized with the real persistence
+    # machinery at its exact revision — never published (exactly like a
+    # pre-cutover historical artifact; the integrated composite publication
+    # contract is R0-owned and cannot exist in a local fixture). The project
+    # gate passes (real native KB, no current admission) so the refusal
+    # exercises the EXACT supplied-record boundary.
+    def policy_edit(text: str) -> dict:
+        return {
+            "kind": "page",
+            "section": "policies",
+            "name": "all-events-count",
+            "content": POLICY_PAGE.replace("The rule body.", text),
+        }
+
+    started2 = api.start_proposal(base_revision=legacy_commit)
+    resolved2, source_digest2 = candidate_sources(project, started2["candidate_revision"])
+    assert resolved2 is not None and source_digest2 is not None
+    api.approve_sources(started2["proposal"], started2["candidate_revision"], source_digest2)
+    edited2 = api.edit_proposal(started2["proposal"], started2["candidate_revision"],
+                                policy_edit("Legacy admitted body."))
+    validated2 = api.validate_proposal(started2["proposal"], edited2["revision"])
+    assert validated2["ok"] is True and validated2["errors"] == []
+    review2 = api.review_proposal(started2["proposal"])
+    assert review2["report"]["ok"] is True
+    admission._materialize_snapshot(
+        project, review2["revision"], proposals.scope_blobs(project, review2["revision"])
+    )
+    legacy_record = {
+        "route": admission.ADMISSION_ROUTE,
+        "project": str(project),
+        "proposal": review2["proposal"],
+        "commit": review2["revision"],
+        "snapshot": f".ariadne/snapshots/{review2['revision']}",
+        "artifact_digest": validated2["artifact_digest"],
+        "review_digest": review2["review_digest"],
+        "source_digest": source_digest2,
+        "sources": resolved2,
+        "validation": {"ok": True, "revision": validated2["revision"]},
+        "confirmed": True,
+    }
+    assert admission.load_current(project) is None  # no current: the supplied
+    # record alone is gated — exactly the review's bypass path
+
+    state_before = sorted(str(p) for p in project.rglob("*"))
+    with pytest.raises(ValueError, match="retired standalone Context layout"):
+        QueryRuntime.open_project(project, admission_record=legacy_record)
+    assert sorted(str(p) for p in project.rglob("*")) == state_before  # nonmutating
+
+    # AC7 positive control: the refusal never blocks the project itself — the
+    # native KB stays authorable (no blanket refusal from unrelated state)
+    assert api.start_proposal()["proposal"].startswith("p-")

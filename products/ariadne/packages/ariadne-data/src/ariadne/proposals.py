@@ -402,6 +402,8 @@ def check_artifact_name(name: object, *, what: str) -> str:
 _NATIVE_SYSTEM_CLAIM_KEYS = frozenset(
     {
         "verified",
+        "generated",
+        "stale_after",
         "attestation",
         "attester",
         "ariadne_evidence",
@@ -544,11 +546,32 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
             "inherited unchanged from the base revision are allowed, remove the "
             "claim and retry"
         )
-    # The core-owned BODY sections of an inherited generated page (marked by
-    # the base's generated-facts claims) are system facts too: forged or
-    # dropped rendered schema/observation/history facts must refuse even when
-    # every frontmatter claim is carried verbatim (issue #41)
-    if PurePosixPath(rel).suffix == ".md" and {"ariadne", "resource"} & base.keys():
+    # spec0035 C1 fix (F2): the producer-owned native profile carries the SAME
+    # system-owned trust/generated claims under ``ariadne_profile.native`` —
+    # the identical inherited-verbatim rule applies there, with the exact
+    # existing authored-Reference exception mirrored at the native kind (the
+    # ``ariadne`` reference extension stays caller-authorable). The SDK stays
+    # independent: this is Core's own authorship boundary over its profile.
+    native_system = _NATIVE_SYSTEM_CLAIM_KEYS
+    proposed_profile = claims.get("ariadne_profile")
+    base_profile = base.get("ariadne_profile")
+    inherited_kind = None
+    inherited_slot: dict = {}
+    base_has_generated_block = False
+    if isinstance(base_profile, dict):
+        inherited_kind = base_profile.get("kind")
+        base_native = base_profile.get("native")
+        if isinstance(base_native, dict):
+            inherited_slot = base_native
+            base_has_generated_block = "ariadne" in base_native
+    # The generated rendered BODY of an inherited native generated page is
+    # core-owned exactly like the outer generated pages: altering, dropping or
+    # adding the rendered Schema/Observations sections refuses even when every
+    # metadata claim compares equal (F2 completion — core_body_sections is the
+    # existing comparison).
+    if PurePosixPath(rel).suffix == ".md" and (
+        {"ariadne", "resource"} & base.keys() or base_has_generated_block
+    ):
         base_sections = core_body_sections(base_text)
         sections = core_body_sections(content)
         body_forged = sorted(
@@ -563,34 +586,32 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
                 "refresh_schema, never authored in a proposal; carry them "
                 "unchanged and edit the authored sections only"
             )
-    # spec0035 C1 fix (F2): the producer-owned native profile carries the SAME
-    # system-owned trust/generated claims under ``ariadne_profile.native`` —
-    # the identical inherited-verbatim rule applies there, with the exact
-    # existing authored-Reference exception mirrored at the native kind (the
-    # ``ariadne`` reference extension stays caller-authorable). The SDK stays
-    # independent: this is Core's own authorship boundary over its profile.
-    native_system = _NATIVE_SYSTEM_CLAIM_KEYS
-    proposed_profile = claims.get("ariadne_profile")
-    base_profile = base.get("ariadne_profile")
     if isinstance(proposed_profile, dict) or isinstance(base_profile, dict):
         proposed = proposed_profile if isinstance(proposed_profile, dict) else {}
-        inherited = base_profile if isinstance(base_profile, dict) else {}
-        if proposed.get("kind") == "reference" or inherited.get("kind") == "reference":
+        # The authored-Reference exception applies ONLY to genuinely authored
+        # Reference edits: a non-Reference page carrying the inherited generated
+        # ariadne block cannot launder it into an authored extension by changing
+        # the envelope kind (F2 completion).
+        laundering = (
+            inherited_kind is not None
+            and inherited_kind != "reference"
+            and base_has_generated_block
+        )
+        if (
+            proposed.get("kind") == "reference" or inherited_kind == "reference"
+        ) and not laundering:
             native_system = native_system - {"ariadne"}  # the authored extension
         slot = proposed.get("native")
         if not isinstance(slot, dict):
             slot = {}
-        base_slot = inherited.get("native")
-        if not isinstance(base_slot, dict):
-            base_slot = {}
         forged_native = sorted(
             key
             for key in native_system & slot.keys()
-            if key not in base_slot or base_slot[key] != slot[key]
+            if key not in inherited_slot or inherited_slot[key] != slot[key]
         )
         # REMOVING a stamped native claim the base carried is the same forgery
         forged_native = sorted(
-            set(forged_native) | (native_system & base_slot.keys() - slot.keys())
+            set(forged_native) | (native_system & inherited_slot.keys() - slot.keys())
         )
         if forged_native:
             raise ValueError(
@@ -906,14 +927,35 @@ def refuse_unsupported_project(project: str | Path) -> None:
     candidates on the migration line) and plain onboarding-empty projects are
     supported here."""
     from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
-        SOURCE_REFERENCE_MANIFEST_BASENAME,
+        load_control_file,
+        load_source_reference_manifest,
+    )
+    from lumio_wiki.knowledge_base import (  # pyright: ignore[reportMissingImports]
+        ControlFileError,
+    )
+    from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImports]
+        SourceReferenceError,
     )
 
     project = Path(project)
+
+    def _native_kb_state(kb_dir: Path) -> bool:
+        """Producer-parse the ACTUAL KB identity (F4 completion): Control File
+        and Source Reference Manifest must load and validate. Presence of the
+        files alone never establishes support, and page validity is NEVER
+        consulted here (AC7: unrelated mutable working-copy drafts cannot
+        block a valid pinned admission)."""
+        if not kb_dir.is_dir():
+            return False
+        try:
+            manifest = load_source_reference_manifest(kb_dir)
+            control = load_control_file(kb_dir)
+        except (ControlFileError, SourceReferenceError):
+            return False
+        return manifest is not None and control is not None
+
     knowledge = project / "knowledge"
-    native_kb = (knowledge / SOURCE_REFERENCE_MANIFEST_BASENAME).is_file() and (
-        knowledge / "lumio.yaml"
-    ).is_file()
+    native_kb = _native_kb_state(knowledge)
     context_layer = project / "context_layer"
     retired_pages = context_layer.is_dir() and any(context_layer.rglob("*.md"))
     unsupported = (retired_pages and not native_kb) or (knowledge.is_dir() and not native_kb)
@@ -925,12 +967,7 @@ def refuse_unsupported_project(project: str | Path) -> None:
 
         record = admission.load_current(project)
         if record is not None:
-            snapshot = project / admission._expected_snapshot(record["commit"])
-            snapshot_kb = (snapshot / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME).is_file()
-            snapshot_context = (snapshot / "context_layer").is_dir() and any(
-                (snapshot / "context_layer").rglob("*.md")
-            )
-            unsupported = snapshot_context and not snapshot_kb
+            admission.refuse_unsupported_admission_snapshot(project, record)
     if unsupported:
         raise ValueError(
             f"{project} uses the retired standalone Context layout or carries a "

@@ -1520,6 +1520,10 @@ class QueryRuntime:
             if Path(admission_record["project"]).resolve() != root:
                 raise ValueError("admission record does not pin this project")
             record, snapshot = admission.validate_admission_record(root, admission_record)
+            # F4 completion: the EXACT supplied record is gated too — a valid
+            # historical standalone admission refuses before any source or
+            # numerical execution even when the current admission is native.
+            admission.refuse_unsupported_admission_snapshot(root, record)
         elif discovery is None:
             record, snapshot = admission.resolve_admission(root)
         else:

@@ -1322,6 +1322,31 @@ def reconcile(project: str | Path, proposal: str, expected_revision: str, revisi
 # ------------------------------------------------ pinned-snapshot resolution
 
 
+def refuse_unsupported_admission_snapshot(project: str | Path, record: dict) -> None:
+    """AC10/spec0035 §6 for an EXACT supplied (or current) admission record:
+    the pinned snapshot serving retired Context pages without the native
+    knowledge/ Knowledge Base manifest is the legacy standalone contract —
+    refuse before any source/numerical execution with fresh-setup guidance,
+    never mutating or rewriting the record or its snapshot bytes. The exact
+    supplied record is authoritative for this check even when the project's
+    current admission is already the native contract."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        SOURCE_REFERENCE_MANIFEST_BASENAME,
+    )
+
+    snapshot = Path(project) / _expected_snapshot(record["commit"])
+    context_pages = snapshot / "context_layer"
+    if context_pages.is_dir() and any(context_pages.rglob("*.md")) and not (
+        snapshot / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME
+    ).is_file():
+        raise ValueError(
+            f"{project}: the pinned admission {record['commit'][:12]} serves the "
+            "retired standalone Context layout (its snapshot carries context_layer/ "
+            "pages without the native knowledge/ Knowledge Base manifest); "
+            + proposals._UNSUPPORTED_PROJECT_GUIDANCE
+        )
+
+
 def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, Path]:
     """Verify the supplied pinned record without consulting the current admission.
 
