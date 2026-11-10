@@ -11,6 +11,7 @@ import zipfile
 from html import unescape
 from pathlib import Path, PurePosixPath
 
+import duckdb
 import pytest
 from ariadne import admission, authoring_sources, execution
 from ariadne import sources as native_sources
@@ -1008,13 +1009,37 @@ def test_xlsx_conversion_requires_approved_source_and_caller_grant(tmp_path, mon
         sources = {source["name"]: source for source in profiled["profile"]["sources"]}
         orders = sources[prepared["native_source"]]["tables"]["orders"]
         # Authored cells: (1, 100, completed), (2, 50, completed), (3, 25, cancelled).
+        # The public stored row-lineage column keeps original worksheet row numbers.
         assert orders["row_count"] == 3
         columns = {name: column["type"] for name, column in orders["columns"].items()}
-        assert columns == {"id": "BIGINT", "amount": "BIGINT", "status": "VARCHAR"}
+        assert columns == {
+            "__ariadne_source_row": "BIGINT",
+            "id": "BIGINT",
+            "amount": "BIGINT",
+            "status": "VARCHAR",
+        }
+        # Read the derived artifact identified by the approved declaration,
+        # read-only: stored values stay the authored cells with their original
+        # worksheet rows (header row 1; lineage column pinned by Core's own
+        # test_workbook_stored_values_and_refresh_are_truthful oracle).
+        stored = analytics.get(contributor, source_task)
+        artifact = project / stored["conversion"][0]["derived_source"]["registry_path"]
+        connection = duckdb.connect(str(artifact), read_only=True)
+        try:
+            artifact_rows = connection.execute(
+                "SELECT __ariadne_source_row, id, amount, status FROM \"orders\" "
+                "ORDER BY __ariadne_source_row"
+            ).fetchall()
+        finally:
+            connection.close()
+        assert artifact_rows == [
+            (2, 1, 100, "completed"),
+            (3, 2, 50, "completed"),
+            (4, 3, 25, "cancelled"),
+        ]
         assert opened
         # Same-input retry reuses the verified artifact without a second conversion.
         again = analytics.profile_data_source(contributor, source_task)
         assert again["profile"] == profiled["profile"]
-        stored = analytics.get(contributor, source_task)
         assert stored["conversion"][0]["conversion_status"] == "converted_authorized"
     assert len(conversion_calls) == 1
