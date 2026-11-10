@@ -27,7 +27,7 @@ from lumio_wiki.source_inspection import (
     resolve_local_published_binding,
     validate_published_version,
 )
-from lumio_wiki.source_registry import safe_artifact_filename
+from lumio_wiki.source_registry import SAFE_FILENAME_MAX_LENGTH, safe_artifact_filename
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -105,6 +105,9 @@ def _is_text_original(filename: str | None, content_type: str | None) -> bool:
     bound filename decides; a native text content-type is honored only when
     registration actually supplied one.
     """
+    # Capped display names can retain a misleading text suffix.
+    if filename and len(filename) >= SAFE_FILENAME_MAX_LENGTH:
+        return False
     if content_type is not None:
         base_type = content_type.split(";")[0].strip().lower()
         if base_type in _TEXT_CONTENT_TYPES:

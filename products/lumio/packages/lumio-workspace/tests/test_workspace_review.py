@@ -63,12 +63,9 @@ SOURCE_IDS = (
     "restart-docx-source",
     "restart-long-docx-source",
 )
-# F1: a valid long upload basename (within the accepted 160-char upload
-# contract) loses its extension at the registry's 128-character safe-filename
-# cap, so the bound metadata cannot positively establish text; the exact
-# bytes must still open as a safe attachment, never a UTF-8 decode attempt.
-LONG_DOCX_UPLOAD_NAME = "a" * 129 + ".docx"
-LONG_DOCX_BOUND_NAME = "a" * 128
+# Truncation can leave a misleading text suffix on a valid binary filename.
+LONG_DOCX_UPLOAD_NAME = "a" * 124 + ".txt.docx"
+LONG_DOCX_BOUND_NAME = "a" * 124 + ".txt"
 
 
 def _hand_authored_pdf(text: str) -> bytes:
