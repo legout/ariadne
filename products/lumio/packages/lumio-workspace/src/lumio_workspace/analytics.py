@@ -40,7 +40,7 @@ from lumio_wiki.private_profile import (
 )
 
 from .contributions import _digest, _git
-from .intake import IntakeService
+from .intake import IntakeService, UploadError
 from .publication import PublicationService
 from .review import AnalyticsReviewContext
 from .setup import current_attachment_digest
@@ -239,25 +239,29 @@ class AnalyticsService:
         identity: str,
     ) -> tuple[list[dict], list[dict]]:
         native_source = f"upload_{identity[:24]}"
-        managed = self.project / ".ariadne" / "managed-sources" / identity
         source_type = facts["source_type"]
         if source_type == "xlsx":
-            from ariadne.spreadsheet_import import import_workbook
-
-            imported = import_workbook(path, sheets=sheets or [], output=managed / "workbook")
-            if imported["source_sha256"] != facts["sha256"]:
-                raise AnalyticsError("the retained XLSX bytes changed after upload")
-            if table not in imported["derived_source"]["tables"]:
-                raise AnalyticsError(
-                    "table must name one normalized table from the explicitly imported sheets"
-                )
-            artifact = Path(imported["artifact_path"]).resolve()
-            try:
-                relative = artifact.relative_to(self.project)
-            except ValueError as exc:
-                raise AnalyticsError(
-                    "derived workbook artifact escaped its private destination"
-                ) from exc
+            # Planning only: the retained upload digest and the explicit sheet
+            # selection determine the declared derived artifact identity without
+            # reading the workbook. The workbook is first interpreted in
+            # _convert_authorized_upload, after both exact grants exist.
+            if not sheets:
+                raise AnalyticsError("XLSX requires an explicit nonempty sheet selection")
+            selection = hashlib.sha256(
+                json.dumps(
+                    {"source_sha256": facts["sha256"], "sheets": sorted(sheets)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            relative = (
+                Path(".ariadne")
+                / "managed-sources"
+                / identity
+                / "workbook"
+                / selection
+                / "data.duckdb"
+            )
             entry = {
                 "name": native_source,
                 "type": "duckdb",
@@ -265,20 +269,22 @@ class AnalyticsService:
             }
             conversion = {
                 **facts,
-                "conversion_status": "converted_pending_approval",
-                "selection_identity": imported["selection_identity"],
+                "conversion_status": "staged_pending_approval",
+                "selection_identity": selection,
                 "derived_source": {
-                    "identity": imported["derived_source"]["identity"],
+                    "identity": selection,
                     "type": "duckdb",
-                    "tables": imported["derived_source"]["tables"],
                     "registry_path": relative.as_posix(),
                 },
-                "artifact_sha256": imported["artifact_sha256"],
-                "sheets": imported["sheets"],
-                "limitations": imported["limitations"],
+                "selected_sheets": sorted(sheets),
                 "cache_freshness": "unknown",
                 "formula_evaluation": False,
                 "recalculation": False,
+                "limitations": [
+                    "The workbook is not read or converted before exact native Source Approval "
+                    "and the requester's separate data grant; authorized profiling performs "
+                    "the conversion.",
+                ],
             }
             return [entry], [conversion]
 
@@ -501,6 +507,72 @@ class AnalyticsService:
             )
             return response
 
+    def _convert_authorized_upload(self, actor: Actor, operation: Operation) -> dict:
+        """Convert a staged XLSX upload only after both exact grants passed.
+
+        The declared derived artifact identity is deterministic from the
+        retained upload digest and the explicit sheet selection, so this is the
+        task's first workbook access; the materialized artifact must match the
+        pre-approved declaration exactly."""
+        response = operation.response
+        conversion = response.get("conversion") or []
+        if response.get("upload_id") is None or not conversion:
+            return response
+        staged = conversion[0]
+        if staged.get("source_type") != "xlsx":
+            return response
+        if staged.get("conversion_status") != "staged_pending_approval":
+            return response
+        expected = staged["derived_source"]["registry_path"]
+        try:
+            _upload, upload_path, upload_facts = self.intake.structured(
+                self.workspace_id, actor, response["upload_id"]
+            )
+        except UploadError as exc:
+            raise AnalyticsError(f"the retained upload is unavailable: {exc}") from exc
+        from ariadne.spreadsheet_import import import_workbook
+
+        output = (self.project / expected).parent.parent
+        try:
+            imported = import_workbook(
+                upload_path, sheets=staged["selected_sheets"], output=output
+            )
+        except ValueError as exc:
+            raise AnalyticsError(str(exc)) from exc
+        if imported["source_sha256"] != upload_facts["sha256"]:
+            raise AnalyticsError("the retained XLSX bytes changed after upload")
+        artifact = Path(imported["artifact_path"]).resolve()
+        try:
+            relative = artifact.relative_to(self.project)
+        except ValueError as exc:
+            raise AnalyticsError(
+                "derived workbook artifact escaped its private destination"
+            ) from exc
+        if relative.as_posix() != expected:
+            raise AnalyticsError(
+                "converted artifact does not match its declared source identity"
+            )
+        if response["table"] not in imported["derived_source"]["tables"]:
+            raise AnalyticsError(
+                "table must name one normalized table from the explicitly imported sheets"
+            )
+        converted = {
+            **staged,
+            "conversion_status": "converted_authorized",
+            "artifact_sha256": imported["artifact_sha256"],
+            "derived_source": {
+                **staged["derived_source"],
+                "tables": imported["derived_source"]["tables"],
+            },
+            "sheets": imported["sheets"],
+            "limitations": imported["limitations"],
+        }
+        updated = {**response, "conversion": [converted]}
+        self.state.finish_operation(
+            self.workspace_id, actor, operation, operation.status, updated
+        )
+        return updated
+
     def profile_data_source(self, actor: Actor, task_id: str) -> dict:
         operation = self._operation(actor, "prepare_data_source", task_id)
         response = operation.response
@@ -511,6 +583,7 @@ class AnalyticsService:
         approval = authoring_sources.approval_state(self.project, resolved, digest)
         if approval.get("approval_digest") != response["approval_digest"]:
             raise AnalyticsError("the profile effective identity no longer matches its grant")
+        response = self._convert_authorized_upload(actor, operation)
         try:
             measured = self.api.inputs(
                 response["native_proposal"],

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import subprocess
+import zipfile
 from html import unescape
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from ariadne import admission, authoring_sources, execution
@@ -317,6 +319,128 @@ def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
 def _decide(review: ReviewService, reviewer: Actor, task_id: str) -> dict:
     context = review.get(reviewer, task_id)
     return review.decide(reviewer, task_id, context.action_digest, "approve")
+
+
+def _write_workbook(path: Path) -> bytes:
+    """Hand-authored minimal OOXML: one 'Orders' sheet with three stored rows."""
+
+    sheet = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:C4"/><sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>id</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>amount</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>status</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2"><v>1</v></c><c r="B2"><v>100</v></c>
+      <c r="C2" t="inlineStr"><is><t>completed</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3"><v>2</v></c><c r="B3"><v>50</v></c>
+      <c r="C3" t="inlineStr"><is><t>completed</t></is></c>
+    </row>
+    <row r="4">
+      <c r="A4"><v>3</v></c><c r="B4"><v>25</v></c>
+      <c r="C4" t="inlineStr"><is><t>cancelled</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"""
+    entries = {
+        "[Content_Types].xml": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml"
+    ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>""",
+        "_rels/.rels": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+    Target="xl/workbook.xml"/>
+</Relationships>""",
+        "xl/workbook.xml": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Orders" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>""",
+        "xl/_rels/workbook.xml.rels": """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+    Target="worksheets/sheet1.xml"/>
+</Relationships>""",
+        "xl/worksheets/sheet1.xml": sheet,
+    }
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, text in entries.items():
+            archive.writestr(name, text)
+    return path.read_bytes()
+
+
+def _xlsx_service(tmp_path: Path, project: Path):
+    """Minimal source-task harness over the real admitted-baseline project."""
+
+    private = tmp_path / "private"
+    registry = private / "registry"
+    artifacts = private / "artifacts"
+    registry.mkdir(parents=True)
+    artifacts.mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(registry),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(artifacts)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bindings = private / "source-bindings.json"
+    bindings.write_text("{}", encoding="utf-8")
+    config = WorkspaceConfig(
+        workspace_id="workspace-xlsx-gate",
+        external_url="https://workspace.test",
+        published_path=tmp_path / "published",
+        published_version=None,
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    state = WorkspaceState(config.state_path)
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    reviewer = Actor(tenant_id="local", object_id="reviewer")
+    for actor in (contributor, reviewer):
+        state.create_local_user(actor.object_id)
+        state.grant(config.workspace_id, actor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    state.grant(config.workspace_id, reviewer, "review")
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+    review = ReviewService(
+        state,
+        workspace_id=config.workspace_id,
+        authoring_path=config.authoring_path,
+        profile_path=profile,
+        private_root=config.operational_root,
+        destination=config.published_path,
+        analytics=analytics,
+    )
+    return analytics, review, contributor, reviewer, state, config, intake
 
 
 def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch):
@@ -782,3 +906,115 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert fresh["stage"] == "source_approval"
     assert fresh["reused_source_declaration"] is False
     assert opened == []
+
+
+def test_xlsx_conversion_requires_approved_source_and_caller_grant(tmp_path, monkeypatch):
+    """spec0035 §3.1/AC3: workbook interpretation waits for both exact grants.
+
+    Conversion (reading workbook sheets/cells and creating the derived DuckDB
+    artifact) must not happen during prepare_data_source or the source-approval
+    stage; only authorized profiling after native Source Approval AND the
+    caller's separate data grant may interpret. Expected stored values are
+    hand-derived from the authored cells and the documented sheet-name
+    normalization, never from implementation output."""
+
+    project, _api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    analytics, review, contributor, reviewer, _state, config, intake = _xlsx_service(
+        tmp_path, project
+    )
+    import ariadne.spreadsheet_import as spreadsheet_import
+
+    conversion_calls: list[str] = []
+    real_import_workbook = spreadsheet_import.import_workbook
+
+    def counting_workbook(source, *, sheets, output):
+        conversion_calls.append(str(source))
+        return real_import_workbook(source, sheets=sheets, output=output)
+
+    monkeypatch.setattr(spreadsheet_import, "import_workbook", counting_workbook)
+
+    opened: list[list[str]] = []
+    real_builder = execution.build_connection
+
+    def spy(registry, **kwargs):
+        opened.append([source.path for source in registry.sources])
+        return real_builder(registry, **kwargs)
+
+    monkeypatch.setattr(execution, "build_connection", spy)
+    monkeypatch.setattr(native_sources, "build_connection", spy)
+
+    workbook_bytes = _write_workbook(tmp_path / "orders.xlsx")
+    upload = intake.save(
+        config.workspace_id,
+        contributor,
+        "orders-workbook",
+        "orders.xlsx",
+        "xlsx-upload-one",
+        workbook_bytes,
+    )
+    prepared = analytics.prepare_data_source(
+        contributor,
+        retry_key="xlsx-request-one",
+        project="retail",
+        source="orders-workbook",
+        table="orders",
+        business_questions=["Which orders count as completed revenue?"],
+        upload_id=upload["upload_id"],
+        sheets=["Orders"],
+    )
+    source_task = prepared["task_id"]
+    # Preparation stages the declaration without workbook interpretation or a
+    # derived artifact: only retained-byte facts and the explicit selection.
+    assert prepared["status"] == "pending_source_approval"
+    assert conversion_calls == []
+    assert not (project / ".ariadne" / "managed-sources").exists()
+    staged = prepared["conversion"][0]
+    assert staged["conversion_status"] == "staged_pending_approval"
+    assert staged["selected_sheets"] == ["Orders"]
+    assert staged["source_type"] == "xlsx"
+    assert staged["sha256"] == hashlib.sha256(workbook_bytes).hexdigest()
+    assert "artifact_sha256" not in staged
+    assert "sheets" not in staged
+    declaration = prepared["native_entries"][0]
+    assert declaration["type"] == "duckdb"
+    declared_path = PurePosixPath(declaration["path"])
+    assert declared_path.parts[-1] == "data.duckdb"
+    assert declared_path.parts[-2] == staged["selection_identity"]
+    assert declared_path.parts[-3] == "workbook"
+
+    with pytest.raises(AnalyticsError, match="Source Approval"):
+        analytics.profile_data_source(contributor, source_task)
+    assert conversion_calls == []
+    assert opened == []
+
+    approved = _decide(review, reviewer, source_task)
+    assert approved["status"] == "pending_data_grant"
+    with pytest.raises(AnalyticsError, match="data authorization"):
+        analytics.profile_data_source(contributor, source_task)
+    assert conversion_calls == []
+    assert opened == []
+
+    granted = _decide(review, reviewer, source_task)
+    assert granted["status"] == "data_granted"
+    try:
+        profiled = analytics.profile_data_source(contributor, source_task)
+    except AnalyticsError as exc:
+        # The designated shared runtime lacks the optional ariadne-data[spreadsheets]
+        # extra (openpyxl): the authorized conversion truthfully discloses that and
+        # opens no backend instead of substituting invented rows. The stored-value
+        # assertions in the other branch need that optional extra in the runtime.
+        assert "ariadne-data[spreadsheets]" in str(exc)
+    else:
+        sources = {source["name"]: source for source in profiled["profile"]["sources"]}
+        orders = sources[prepared["native_source"]]["tables"]["orders"]
+        # Authored cells: (1, 100, completed), (2, 50, completed), (3, 25, cancelled).
+        assert orders["row_count"] == 3
+        columns = {name: column["type"] for name, column in orders["columns"].items()}
+        assert columns == {"id": "BIGINT", "amount": "BIGINT", "status": "VARCHAR"}
+        assert opened
+        # Same-input retry reuses the verified artifact without a second conversion.
+        again = analytics.profile_data_source(contributor, source_task)
+        assert again["profile"] == profiled["profile"]
+        stored = analytics.get(contributor, source_task)
+        assert stored["conversion"][0]["conversion_status"] == "converted_authorized"
+    assert len(conversion_calls) == 1
