@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import secrets
@@ -12,7 +13,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
+from lumio_wiki.page_search import normalize_search_query
+from lumio_wiki.records import CompiledPage, SourceFileDigest, SourceFingerprint
+from lumio_wiki.retrieval import default_retrieval_adapter
+from lumio_wiki.source_inspection import validate_published_version
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -41,6 +47,16 @@ from .state import LOCAL_TENANT_ID, Actor, RetryConflict, WorkspaceState, local_
 
 class WorkspaceError(ToolError):
     pass
+
+
+# The shared audience (spec0034 §12.2): explicitly public and internal admitted
+# pages. ``restricted`` and absent/unknown Visibility are unavailable through
+# every ordinary workspace read, search, and Evidence path, before any lookup,
+# match, rank, count, or snippet.
+_SHARED_AUDIENCE = frozenset({"public", "internal"})
+
+#: Maximum returned Evidence-text characters per retrieve_knowledge call.
+MAX_EVIDENCE_TEXT_CHARS = 16000
 
 
 # The owner browser surface assigns only membership and reviewer work;
@@ -153,6 +169,7 @@ class WorkspaceConfig:
     analytics_project_id: str | None = None
     analytics_project_path: Path | None = None
     analytics_source_bindings_path: Path | None = None
+    retrieval_backend: str = "zero-index"
 
     @property
     def operational_root(self) -> Path:
@@ -178,6 +195,7 @@ class WorkspaceConfig:
             analytics_source_bindings_path=_optional_path(
                 "LUMIO_WORKSPACE_ANALYTICS_SOURCE_BINDINGS"
             ),
+            retrieval_backend=os.environ.get("LUMIO_WORKSPACE_RETRIEVAL_BACKEND") or "zero-index",
         )
 
     def __post_init__(self) -> None:
@@ -187,6 +205,8 @@ class WorkspaceConfig:
             raise ValueError("authentication mode must be local-token or entra")
         if self.auth_mode == "entra" and self.identity is None:
             raise ValueError("Entra mode requires identity configuration")
+        if self.retrieval_backend not in {"zero-index", "bm25"}:
+            raise ValueError("retrieval backend must be zero-index or bm25")
 
 
 def _required(name: str) -> str:
@@ -199,6 +219,253 @@ def _required(name: str) -> str:
 def _optional_path(name: str) -> Path | None:
     value = os.environ.get(name)
     return Path(value) if value else None
+
+
+def _analytics_configured(config: WorkspaceConfig) -> bool:
+    """True when any Ariadne analytics integration is configured (integrated mode)."""
+    return any(
+        (
+            config.analytics_project_id,
+            config.analytics_project_path,
+            config.analytics_source_bindings_path,
+        )
+    )
+
+
+def _authorized_pages(resolved: Any) -> list[CompiledPage]:
+    """The one server-side authorized view: the shared-audience admitted pages.
+
+    Every ordinary workspace read, search, and Evidence path filters to this
+    candidate set before any lookup, match, rank, count, or snippet, so a
+    hidden page cannot influence visible results and a hidden title, alias, or
+    ID is indistinguishable from a missing one (spec0034 §12.2).
+    """
+    return [page for page in resolved.pages if (page.visibility or "") in _SHARED_AUDIENCE]
+
+
+def _view_fingerprint(resolved: Any, authorized: list[CompiledPage]) -> SourceFingerprint:
+    """Fingerprint the exact admitted publication plus its visible captured content.
+
+    This is the derived-cache binding: publication version, visible-set
+    identity, and captured page content. It is deliberately narrower than the
+    publication fingerprint so an index built over the authorized view is
+    never mistaken for one built over a broader set.
+    """
+
+    def page_digest(page: CompiledPage) -> str:
+        material = "\x1f".join(
+            (
+                page.path,
+                page.visibility or "",
+                page.title,
+                *sorted(page.aliases),
+                *sorted(page.tags),
+                page.summary or "",
+                page.body,
+            )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    ordered = sorted(authorized, key=lambda page: page.path)
+    digest = hashlib.sha256(
+        "\n".join(
+            [resolved.published_version or "", *(f"{p.path}\x1f{page_digest(p)}" for p in ordered)]
+        ).encode("utf-8")
+    ).hexdigest()
+    return SourceFingerprint(
+        digest=digest,
+        sources=[SourceFileDigest(path=page.path, digest=page_digest(page)) for page in ordered],
+    )
+
+
+def _retrieval_cache_dir(config: WorkspaceConfig, version: str | None) -> Path:
+    """The private derived-cache path for one Published Version.
+
+    Always under the operational root, never inside an immutable published
+    tree; the version label binds the cache to one publication.
+    """
+    label = validate_published_version(version or "")
+    return config.operational_root / "retrieval-cache" / label
+
+
+def prepare_retrieval_cache(config: WorkspaceConfig) -> str:
+    """Operator-only preparation of the optional authorized BM25 retrieval cache.
+
+    Builds the derived index over the authorized shared view of the configured
+    admitted publication into the private operational cache. It never activates
+    content, never writes a published tree, and never calls an embedding
+    service or the network. Readers never build the cache; a missing or stale
+    cache falls back truthfully to lexical retrieval over the same view.
+    """
+    if _analytics_configured(config):
+        raise WorkspaceError(
+            "standalone retrieval preparation is not available in an integrated workspace; "
+            "integrated knowledge remains on its pinned governed release"
+        )
+    if config.retrieval_backend != "bm25":
+        raise WorkspaceError(
+            "retrieval preparation requires LUMIO_WORKSPACE_RETRIEVAL_BACKEND=bm25"
+        )
+    try:
+        from lumio_lancedb.index import LanceDBRetrievalAdapter
+    except ImportError as exc:
+        raise WorkspaceError(
+            "the optional retrieval dependency is missing; install lumio-workspace[retrieval]"
+        ) from exc
+    resolved = open_knowledge_base(
+        PublishedFilesystemLocation(config.published_path, version=config.published_version)
+    )
+    if not resolved.validation_report.is_valid:
+        raise WorkspaceError("published knowledge is unavailable")
+    authorized = _authorized_pages(resolved)
+    cache_dir = _retrieval_cache_dir(config, resolved.published_version)
+    LanceDBRetrievalAdapter().build_index(
+        authorized, cache_dir, fingerprint=_view_fingerprint(resolved, authorized)
+    )
+    return (
+        f"prepared BM25 retrieval cache for Published Version {resolved.published_version}: "
+        f"{len(authorized)} authorized pages at {cache_dir}"
+    )
+
+
+def _search_entry(result: Any) -> dict[str, Any]:
+    """One bounded search result, preserving the existing response fields.
+
+    The stable Entity ID is additive native metadata (spec0034 §12.2); Legacy
+    Flat Mode pages declare none, so the key stays absent rather than deriving
+    an ID from the title.
+    """
+    entry: dict[str, Any] = {
+        "title": result.page.title,
+        "citation": {"title": result.page.title, "path": result.page.path},
+        "passage": result.snippet,
+    }
+    if result.page.id:
+        entry["entity_id"] = result.page.id
+    return entry
+
+
+def _retrieve_evidence(
+    config: WorkspaceConfig,
+    normalized: str,
+    limit: int,
+    resolved: Any,
+    authorized: list[CompiledPage],
+) -> tuple[list[Any], dict[str, Any]]:
+    """Retrieve Evidence over the authorized view and disclose the effective backend.
+
+    Default is the existing zero-index lexical adapter; an owner-configured
+    optional BM25 cache is read through the existing LanceDB adapter, never
+    built by a reader, and never selects semantic/Hybrid retrieval or an
+    embedding/network call. A missing, stale, or unhealthy cache falls back
+    truthfully to lexical over the same authorized view.
+    """
+    if config.retrieval_backend != "bm25":
+        results = default_retrieval_adapter().retrieve(
+            authorized, normalized, limit=limit, mode="lexical", eligible_pages=authorized
+        )
+        return results, {"backend": "zero-index", "fallback": None}
+    try:
+        from lumio_lancedb.index import LanceDBRetrievalAdapter
+        from lumio_lancedb.location import LocalIndexLocation
+    except ImportError:
+        results = default_retrieval_adapter().retrieve(
+            authorized, normalized, limit=limit, mode="lexical", eligible_pages=authorized
+        )
+        return results, {
+            "backend": "zero-index",
+            "fallback": (
+                "the optional retrieval dependency is unavailable; "
+                "lexical fallback over the authorized view"
+            ),
+        }
+    cache_dir = _retrieval_cache_dir(config, resolved.published_version)
+    adapter = LanceDBRetrievalAdapter(index_location=LocalIndexLocation(cache_dir))
+    results = adapter.retrieve(
+        authorized,
+        normalized,
+        limit=limit,
+        index_dir=cache_dir,
+        mode="lexical",
+        eligible_pages=authorized,
+        expected_fingerprint=_view_fingerprint(resolved, authorized),
+    )
+    detail = adapter.last_fallback_detail
+    backend = "zero-index" if detail is not None else "lancedb-bm25"
+    return results, {"backend": backend, "fallback": detail}
+
+
+def _bounded_evidence_response(
+    resolved: Any,
+    authorized: list[CompiledPage],
+    results: list[Any],
+    retrieval: dict[str, Any],
+) -> dict[str, Any]:
+    """Bound retrieved Evidence to the per-call text budget with truthful disclosure.
+
+    Oversized indivisible Evidence units are omitted — never returned with
+    false complete spans — and their exact coordinates are disclosed without
+    their text (spec0034 §12.2).
+    """
+    entity_ids = {page.path: (page.id or None) for page in authorized}
+    included: list[dict[str, Any]] = []
+    omitted: list[dict[str, Any]] = []
+    remaining = MAX_EVIDENCE_TEXT_CHARS
+    for result in results:
+        evidence = result.evidence
+        if len(evidence.text) > remaining:
+            omitted.append(
+                {
+                    "page_title": evidence.page_title,
+                    "page_path": evidence.page_path,
+                    "section_title": evidence.section_title,
+                    "line_start": evidence.line_start,
+                    "line_end": evidence.line_end,
+                    "reason": "evidence text exceeds the remaining per-call character budget",
+                }
+            )
+            continue
+        remaining -= len(evidence.text)
+        included.append(
+            {
+                "entity_id": entity_ids.get(evidence.page_path),
+                "evidence": {
+                    "id": evidence.id,
+                    "page_title": evidence.page_title,
+                    "page_path": evidence.page_path,
+                    "section_title": evidence.section_title,
+                    "line_start": evidence.line_start,
+                    "line_end": evidence.line_end,
+                    "text": evidence.text,
+                },
+                "citation": {
+                    "title": result.citation.page_title,
+                    "path": result.citation.relative_path,
+                    "source": result.citation.source,
+                    "line_start": result.citation.line_start,
+                    "line_end": result.citation.line_end,
+                    "section_title": result.citation.section_title,
+                },
+                "snippet": result.snippet,
+                "score": result.score,
+                "trace": {
+                    "stages": [
+                        {"name": stage.name, "detail": stage.detail}
+                        for stage in result.trace.stages
+                    ],
+                    "candidates_seen": result.trace.candidates_seen,
+                    "results_returned": result.trace.results_returned,
+                    "results_dropped": result.trace.results_dropped,
+                },
+            }
+        )
+    return {
+        "published_version": resolved.published_version,
+        "retrieval": retrieval,
+        "results": included,
+        "omitted": omitted,
+        "text_characters": MAX_EVIDENCE_TEXT_CHARS - remaining,
+    }
 
 
 def _actor() -> Actor:
@@ -277,7 +544,6 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
     state = WorkspaceState(config.state_path)
     intake = IntakeService(state, config.operational_root)
     setup_previews: dict[str, tuple[Actor, Any]] = {}
-    location = PublishedFilesystemLocation(config.published_path, version=config.published_version)
     browser_auth = None
     if config.auth_mode == "entra":
         assert config.identity is not None
@@ -303,19 +569,49 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         ),
     )
 
-    def snapshot() -> Any:
+    def snapshot(requested_version: str | None = None) -> Any:
         actor = _actor()
         if not state.permits(config.workspace_id, actor):
             raise WorkspaceError("workspace access is not available")
-        resolved = open_knowledge_base(location)
+        try:
+            resolved = open_knowledge_base(read_location(requested_version))
+        except KnowledgeBaseError as exc:
+            if requested_version is None:
+                raise
+            raise WorkspaceError(
+                "requested Published Version is not available at this workspace"
+            ) from exc
         if not resolved.validation_report.is_valid:
             raise WorkspaceError("published knowledge is unavailable")
-        return actor, resolved
+        return actor, resolved, _authorized_pages(resolved)
+
+    def read_location(requested_version: str | None) -> PublishedFilesystemLocation:
+        """Resolve one version of the configured publication for an ordinary read.
+
+        Historical reads stay on admitted history at the configured destination
+        under current authorization (spec0034 §12.2); an explicit reader pin
+        serves exactly that version and nothing else.
+        """
+        if requested_version is None:
+            return PublishedFilesystemLocation(
+                config.published_path, version=config.published_version
+            )
+        if config.published_version is not None and requested_version != config.published_version:
+            raise WorkspaceError(
+                "this workspace is pinned to one Published Version; another is not available"
+            )
+        try:
+            validate_published_version(requested_version)
+        except ValueError as exc:
+            raise WorkspaceError(
+                "requested Published Version is not available at this workspace"
+            ) from exc
+        return PublishedFilesystemLocation(config.published_path, version=requested_version)
 
     @server.tool()
     def workspace_status() -> dict[str, Any]:
         """Return ready state and current capabilities, without configuration secrets."""
-        actor, resolved = snapshot()
+        actor, resolved, _authorized = snapshot()
         return {
             "workspace": config.workspace_id,
             "ready": True,
@@ -324,10 +620,20 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         }
 
     @server.tool()
-    def read_knowledge(title: str) -> dict[str, Any]:
-        """Read one admitted Compiled Page by Canonical Page Title or alias."""
-        _, resolved = snapshot()
-        pages = resolved.lookup_by_title(title) or resolved.lookup_by_alias(title)
+    def read_knowledge(title: str, published_version: str | None = None) -> dict[str, Any]:
+        """Read one admitted Compiled Page by Canonical Page Title or alias.
+
+        ``published_version`` re-reads cited content from that exact admitted
+        publication at the configured destination (version-aware follow-up);
+        omitted, the configured current publication is served.
+        """
+        _, resolved, authorized = snapshot(published_version)
+        authorized_paths = {page.path for page in authorized}
+        pages = [
+            page
+            for page in (resolved.lookup_by_title(title) or resolved.lookup_by_alias(title))
+            if page.path in authorized_paths
+        ]
         if not pages:
             return {"found": False}
         page = pages[0]
@@ -336,6 +642,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             "title": page.title,
             "summary": page.summary,
             "markdown": page.body,
+            "entity_id": page.id or None,
             "citation": {
                 "title": page.title,
                 "path": page.path,
@@ -348,26 +655,43 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         """Search admitted pages and return bounded citation-ready passages."""
         if not 1 <= limit <= 20:
             raise WorkspaceError("limit must be between 1 and 20")
-        _, resolved = snapshot()
+        _, resolved, authorized = snapshot()
         return {
             "published_version": resolved.published_version,
             "results": [
-                {
-                    "title": result.page.title,
-                    "citation": {"title": result.page.title, "path": result.page.path},
-                    "passage": result.snippet,
-                }
-                for result in resolved.search_pages(query, limit=limit)
+                _search_entry(result)
+                for result in resolved.search_pages(query, limit=limit, pages=authorized)
             ],
         }
 
+    @server.tool()
+    def retrieve_knowledge(
+        query: str, limit: int = 5, published_version: str | None = None
+    ) -> dict[str, Any]:
+        """Retrieve bounded citation-ready Evidence from the admitted shared view.
+
+        Standalone knowledge only: an integrated workspace refuses this tool
+        instead of silently changing its governed knowledge view (spec0034
+        §12.2, AC28). ``published_version`` pins the exact admitted publication
+        for a cited-version reread.
+        """
+        if _analytics_configured(config):
+            raise WorkspaceError(
+                "standalone Evidence retrieval is not available in an integrated workspace; "
+                "integrated knowledge remains on its pinned governed release"
+            )
+        if not 1 <= limit <= 20:
+            raise WorkspaceError("limit must be between 1 and 20")
+        try:
+            normalized = normalize_search_query(query)
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        _, resolved, authorized = snapshot(published_version)
+        results, retrieval = _retrieve_evidence(config, normalized, limit, resolved, authorized)
+        return _bounded_evidence_response(resolved, authorized, results, retrieval)
+
     def analytics_service(*, required: bool = True) -> Any:
-        selected = (
-            config.analytics_project_id,
-            config.analytics_project_path,
-            config.analytics_source_bindings_path,
-        )
-        if not any(selected):
+        if not _analytics_configured(config):
             if required:
                 raise WorkspaceError(
                     "analytics is not enabled; the owner must configure the exact project "
@@ -375,7 +699,11 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 )
             return None
         if (
-            not all(selected)
+            not (
+                config.analytics_project_id
+                and config.analytics_project_path
+                and config.analytics_source_bindings_path
+            )
             or config.authoring_path is None
             or config.private_profile_path is None
         ):

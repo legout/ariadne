@@ -41,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     serve = commands.add_parser("serve", help="run behind the configured private HTTPS boundary")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    commands.add_parser(
+        "prepare-retrieval",
+        help="build the optional authorized BM25 retrieval cache for the configured publication",
+    )
     for name in ("grant", "revoke"):
         command = commands.add_parser(name, help=f"{name} an explicit workspace capability")
         command.add_argument("--object-id", required=True, help="Entra object ID, never an email")
@@ -85,6 +89,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(arguments)
     if args.command == "serve":
         uvicorn.run(create_app(WorkspaceConfig.from_env()), host=args.host, port=args.port)
+        return 0
+    if args.command == "prepare-retrieval":
+        # Operator-only: builds the derived BM25 cache from the configured
+        # admitted publication into the private operational cache. Readers
+        # never build indexes; a missing cache falls back to lexical truthfully.
+        from .app import prepare_retrieval_cache
+
+        print(prepare_retrieval_cache(WorkspaceConfig.from_env()))
         return 0
     if args.command in {"grant", "revoke"}:
         workspace_id, state, tenant_id = _state(entra=True)

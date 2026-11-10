@@ -26,6 +26,17 @@ export LUMIO_WORKSPACE_PUBLISHED_VERSION='OPTIONAL_EXACT_VERSION'
 export LUMIO_WORKSPACE_STATE_PATH='/private/workspace/state.sqlite3'
 ```
 
+Ordinary reads, searches, and Evidence see exactly the shared audience: explicitly `public` and `internal` admitted pages of the configured publication. `restricted` and unknown-visibility pages are unavailable before any lookup, match, rank, count, or snippet — a hidden title, alias, or ID is indistinguishable from a missing one. `retrieve_knowledge` returns bounded citation-ready Evidence (at most 16,000 Evidence-text characters per call with truthful omission disclosure and exact spans) and refuses an integrated workspace. `read_knowledge` additionally accepts `published_version` to reread cited content from an exact admitted version at the configured destination; the results of reads, searches, and Evidence carry the stable Entity ID and the exact Published Version from native metadata, so supported follow-ups need no private-file lookup. Reads and searches stay on the configured current publication.
+
+The optional BM25 retrieval cache is owner/server configuration, never caller-selected. Set `LUMIO_WORKSPACE_RETRIEVAL_BACKEND=bm25` and run the operator-only command before serving:
+
+```sh
+export LUMIO_WORKSPACE_RETRIEVAL_BACKEND='bm25'
+lumio-workspace prepare-retrieval
+```
+
+The command builds the derived index over the authorized shared view of the configured admitted publication into `LUMIO_WORKSPACE_PRIVATE_ROOT` (or the state directory's `private/`), never into an immutable published tree, using the existing LanceDB adapter (`lumio-workspace[retrieval]` extra; no semantic/Hybrid selection, no embedding or network call). Readers never build indexes: a missing, stale, or unhealthy cache falls back truthfully to lexical retrieval over the same authorized view, disclosed in the retrieval result.
+
 These settings alone do not enable setup, upload, contribution, or review. For that authoring-enabled path, also configure the service with the native authoring KB and private resources:
 
 ```sh
@@ -175,7 +186,7 @@ export LUMIO_WORKSPACE_ALLOWED_MODELS='APPROVED_PROVIDER/APPROVED_MODEL'
 export LUMIO_WORKSPACE_CALLBACK_PORT='8765'
 ```
 
-Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The read tools are `workspace_status`, `read_knowledge`, and `search_knowledge`; contribution uses `read_source_material`, `prepare_contribution`, and actor-scoped `get_task`. No MCP tool grants browser approval.
+Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The read tools are `workspace_status`, `read_knowledge`, `search_knowledge`, and `retrieve_knowledge`; contribution uses `read_source_material`, `prepare_contribution`, and actor-scoped `get_task`. No MCP tool grants browser approval.
 
 The extension checks the exact provider/model before every workspace MCP call and rechecks after model changes; an empty or nonmatching allowlist blocks reads before content can be returned. After a successful workspace result, it also aborts any provider request that would carry retained workspace history to a nonallowed model, including after a model switch or session resume. Clean conversations without workspace results remain usable. This is trusted-client disclosure policy, not remote attestation.
 

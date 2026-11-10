@@ -995,6 +995,9 @@ dependencies = [
 analytics = [
     { name = "ariadne-data", extra = ["spreadsheets"] },
 ]
+retrieval = [
+    { name = "lumio-lancedb" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1002,12 +1005,13 @@ requires-dist = [
     { name = "authlib", specifier = ">=1.6,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },
+    { name = "lumio-lancedb", marker = "extra == 'retrieval'", editable = "products/lumio/packages/lumio-lancedb" },
     { name = "lumio-wiki", extras = ["documents", "mcp"], editable = "products/lumio/packages/lumio-wiki" },
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "starlette", specifier = ">=1.7,<2" },
     { name = "uvicorn", specifier = ">=0.54,<1" },
 ]
-provides-extras = ["analytics"]
+provides-extras = ["analytics", "retrieval"]
 
 [[package]]
 name = "lxml"
