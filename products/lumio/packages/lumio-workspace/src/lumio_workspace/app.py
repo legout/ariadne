@@ -870,6 +870,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             authoring_path=config.authoring_path,
             profile_path=config.private_profile_path,
             destination=config.published_path,
+            analytics_enabled=_analytics_configured(config),
         )
 
     def enrichment_service() -> EnrichmentService:
@@ -1164,6 +1165,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 profile_path=config.private_profile_path,
                 private_root=config.operational_root,
                 namespace=config.namespace,
+                analytics_enabled=_analytics_configured(config),
             )
         except SetupError as exc:
             return JSONResponse({"error": str(exc), "code": exc.code}, status_code=409)

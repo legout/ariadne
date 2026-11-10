@@ -34,7 +34,11 @@ from lumio_wiki.git_authoring import (
 )
 from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.mutation import mutation_lock
-from lumio_wiki.private_profile import PrivateProfileError, ResolvedPrivateSources
+from lumio_wiki.private_profile import (
+    PrivateProfileError,
+    ResolvedPrivateSources,
+    load_private_profile,
+)
 from lumio_wiki.source_inspection import (
     ResolvedSourceBinding,
     SourceInspectionError,
@@ -169,6 +173,32 @@ class ReviewService:
             )
         return authoring
 
+    def _require_required_retention_context(self) -> None:
+        """Integrated workspaces cannot review or publish the exception (F1).
+
+        Eligibility follows the CURRENT workspace context, never the persisted
+        task shape: a pending standalone document prepared before analytics was
+        enabled must refuse here instead of publishing no-original content in
+        a context where original retention is required (spec0035 §3/AC12,
+        spec0034 §12.4/AC25). Read-only check before any resource resolution.
+        """
+        if self.analytics is None:
+            return
+        try:
+            profile = load_private_profile(
+                self.publication.profile_path, kb_root=self.authoring_path
+            )
+        except PrivateProfileError as exc:
+            raise ReviewError(str(exc), code="stale_review") from exc
+        if profile.retention != "required":
+            raise ReviewError(
+                "this workspace is analytics-enabled (integrated) and requires "
+                "original retention; the selected private profile declares "
+                "retention 'disabled', which is a standalone-only exception — "
+                "restore retention 'required' and confirm setup before review",
+                code="retention_context_incompatible",
+            )
+
     def _context(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
@@ -179,6 +209,7 @@ class ReviewService:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
         if operation.status != "pending_review":
             raise ReviewError("the candidate is not pending review", code="review_not_pending")
+        self._require_required_retention_context()
         if _analytics_task(operation):
             if self.analytics is None:
                 raise ReviewError(

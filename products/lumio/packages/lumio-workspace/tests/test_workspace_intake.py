@@ -1347,17 +1347,113 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
             assert len(SourceRegistry(fixture.registry_path).get("runbook-source").versions) == 1
 
             # Gate 3: reviewable publication — disclosed policy, source-backed
-            # page, real binding records, and no retained-original claim.
+            # page, real binding records, and no retained-original claim. The
+            # pre-flip review first proves the pending standalone task is
+            # reviewable in its own context before the mode transition below.
             candidate = task["native_candidate"]
-            review = client.get(f"/review/{task['task_id']}")
-            assert review.status_code == 200, review.text
-            assert "<dd>disabled</dd>" in review.text
-            assert "no retained original" in review.text
-            decided = client.post(
-                f"/review/{task['task_id']}",
-                headers={"Origin": "https://workspace.test"},
-                data={"digest": _digest(review.text), "decision": "approve"},
+            standalone_review = client.get(f"/review/{task['task_id']}")
+            assert standalone_review.status_code == 200, standalone_review.text
+            assert "<dd>disabled</dd>" in standalone_review.text
+            assert "no retained original" in standalone_review.text
+            pre_flip_digest = _digest(standalone_review.text)
+
+            # F1 mode transition (named integrated negative): the operator
+            # enables the complete analytics configuration on the SAME
+            # workspace/KB/state while the legitimate standalone no-original
+            # document is still pending. The retention exception cannot follow
+            # the workspace into integrated context (spec0035 §3/AC12, AC25).
+            # The artifact store is AVAILABLE: the refusals below are policy,
+            # not a missing backend.
+            analytics_project = tmp_path / "analytics-project"
+            analytics_project.mkdir()
+            (analytics_project / "ariadne.yaml").write_text("sources: []\n", encoding="utf-8")
+            bindings_path = tmp_path / "analytics-bindings.json"
+            bindings_path.write_text("{}", encoding="utf-8")
+            integrated_config = replace(
+                config,
+                analytics_project_id="retail",
+                analytics_project_path=analytics_project,
+                analytics_source_bindings_path=bindings_path,
             )
+            fixture.artifact_path.mkdir()
+            sentinel_receipt = (
+                config.published_path
+                / ".lumio-publication"
+                / "receipts"
+                / f"{fixture.published_revision}.json"
+            )
+            assert sentinel_receipt.exists()
+            with TestClient(
+                create_app(integrated_config), base_url="https://workspace.test"
+            ) as integrated:
+                _login(integrated, fixture.solo_browser)
+                integrated_setup = integrated.get("/setup")
+                assert integrated_setup.status_code == 409, integrated_setup.text
+                assert integrated_setup.json()["code"] == "retention_context_incompatible"
+
+                blocked_review = integrated.get(f"/review/{task['task_id']}")
+                assert blocked_review.status_code == 409, blocked_review.text
+                assert blocked_review.json()["code"] == "retention_context_incompatible"
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+                assert (
+                    len(SourceRegistry(fixture.registry_path).get("runbook-source").versions) == 1
+                )
+
+                stale_action = integrated.post(
+                    f"/review/{task['task_id']}",
+                    headers={"Origin": "https://workspace.test"},
+                    data={"digest": pre_flip_digest, "decision": "approve"},
+                )
+                assert stale_action.status_code == 409, stale_action.text
+                assert stale_action.json()["code"] == "retention_context_incompatible"
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+
+                from ariadne import proposals as native_proposals
+
+                head_before = _git(authoring_kb.parent, "rev-parse", "HEAD")
+                blocked_prepare = _call_tool(
+                    integrated,
+                    fixture.solo_api,
+                    "prepare_contribution",
+                    {
+                        "retry_key": "integrated-negative",
+                        "source_task_id": "missing-grant",
+                        "sources": [{"upload_id": upload_id, "intent": "new"}],
+                        "pages": [
+                            {
+                                "filename": "integrated.md",
+                                "markdown": _page("runbook-source"),
+                            }
+                        ],
+                    },
+                    20,
+                )
+                blocked_result = blocked_prepare.json()["result"]
+                assert blocked_result["isError"] is True
+                assert (
+                    "requires required original retention"
+                    in blocked_result["content"][0]["text"]
+                )
+                assert _git(authoring_kb.parent, "rev-parse", "HEAD") == head_before
+                versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
+                assert len(versions) == 1
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+                assert not (analytics_project / native_proposals.WORKTREES_REL).exists()
+
+            # Genuinely standalone again (analytics removed from the config):
+            # the owner-confirmed exception remains allowed and the pending
+            # document still reviewably publishes without originals.
+            with TestClient(create_app(config), base_url="https://workspace.test") as standalone:
+                _login(standalone, fixture.solo_browser)
+                review = standalone.get(f"/review/{task['task_id']}")
+                assert review.status_code == 200, review.text
+                assert "<dd>disabled</dd>" in review.text
+                assert "no retained original" in review.text
+                decided = standalone.post(
+                    f"/review/{task['task_id']}",
+                    headers={"Origin": "https://workspace.test"},
+                    data={"digest": _digest(review.text), "decision": "approve"},
+                )
             assert decided.status_code == 200, decided.text
             publication = decided.json()
             assert publication["status"] == "published"
@@ -1373,7 +1469,9 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
             )
             assert sealed["sources"] == {"runbook-source": "active"}
             assert sealed["bindings"][binding["entity_id"]]["runbook-source"] == EXPECTED_SHA256
-            assert not fixture.artifact_path.exists()
+            # The store stayed available-but-unused by the exception: no
+            # original bytes were ever retained into it.
+            assert not (fixture.artifact_path / "artifacts").exists()
 
             # A reader without the fixture's version pin follows the live
             # pointer; the qualified follow-up serves exactly the new version.

@@ -47,7 +47,7 @@ from lumio_wiki.source_inspection import (
 )
 
 from .intake import IntakeService, UploadError
-from .setup import SetupError, attachment_resource_needs, current_attachment_digest
+from .setup import SetupError, current_attachment_digest
 from .state import Actor, Operation, RetryConflict, WorkspaceState
 
 _FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -130,6 +130,7 @@ class ContributionService:
         authoring_path: Path,
         profile_path: Path,
         destination: Path | None = None,
+        analytics_enabled: bool = False,
     ) -> None:
         self.state = state
         self.intake = intake
@@ -139,6 +140,10 @@ class ContributionService:
         self.profile_path = profile_path
         self.private_root = intake.private_root
         self.destination = destination
+        # The CURRENT workspace context (analytics-enabled = integrated) gates
+        # retention-exception eligibility; it is never derived from persisted
+        # task shape (spec0035 §3/AC12).
+        self.analytics_enabled = analytics_enabled
 
     def _resources(self):
         try:
@@ -146,11 +151,25 @@ class ContributionService:
             # The owner-confirmed retention policy selects the resource needs:
             # the standalone document-only exception (retention 'disabled') is
             # registry-only — the unused original-byte backend is neither
-            # constructed nor probed (spec0034 §12.4).
+            # constructed nor probed (spec0034 §12.4). An integrated
+            # (analytics-enabled) context refuses the exception outright,
+            # before any Source Registry open or backend probe.
+            if self.analytics_enabled and profile.retention != "required":
+                raise ContributionError(
+                    "the private profile declares retention 'disabled', which is a "
+                    "standalone-only exception; this workspace is analytics-enabled "
+                    "(integrated) and requires original retention",
+                    code="retention_context_incompatible",
+                )
+            needs = (
+                frozenset({"registry"})
+                if profile.retention == "disabled"
+                else frozenset({"registry", "artifacts"})
+            )
             return resolve_private_profile(
                 profile,
                 kb_root=self.authoring_path,
-                needs=attachment_resource_needs(profile),
+                needs=needs,
             )
         except PrivateProfileError as exc:
             raise ContributionError(
@@ -162,6 +181,7 @@ class ContributionService:
             digest = current_attachment_digest(
                 target=self.authoring_path,
                 profile_path=self.profile_path,
+                analytics_enabled=self.analytics_enabled,
             )
         except SetupError as exc:
             raise ContributionError(str(exc), code=exc.code) from exc

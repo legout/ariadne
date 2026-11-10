@@ -962,6 +962,23 @@ def _frozen_s3_runtime(manifest: dict):
     return location, local_publication_metadata_store(identity)
 
 
+def _require_integrated_retention(source_context) -> None:
+    """Integrated admission keeps required retention (F1; spec0035 §3/AC12).
+
+    A deliberately disabled private profile is a standalone-only exception and
+    cannot author or admit an integrated release: refuse before any release
+    build, binding write, or activation. Read/frozen paths never pass a
+    source_context here, so valid reads are untouched.
+    """
+    if source_context is not None and not source_context.retention_required:
+        raise ValueError(
+            "integrated admission requires required original retention; the "
+            "selected private profile declares retention 'disabled', which is a "
+            "standalone-only exception — restore retention 'required' before "
+            "authoring or admitting this release"
+        )
+
+
 def prepare_release(
     project,
     proposal,
@@ -976,6 +993,7 @@ def prepare_release(
     source_context=None,
 ):
     """Stateless composite preview; future receipts never enter its consent digest."""
+    _require_integrated_retention(source_context)
     import msgspec
     from lumio_wiki import git_authoring as native
     from lumio_wiki.s3_location import build_published_manifest
@@ -1185,6 +1203,7 @@ def _s3_navigation_capability() -> None:
 
 
 def publish_and_verify(preview, *, source_context=None):
+    _require_integrated_retention(source_context)
     import msgspec
     from lumio_wiki.git_authoring import S3PublicationRecord, publish_revision
 

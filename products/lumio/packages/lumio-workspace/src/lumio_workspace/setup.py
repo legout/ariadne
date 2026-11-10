@@ -56,6 +56,7 @@ class SetupPreview:
     private_root: Path
     namespace_input: str | None
     retention: str
+    analytics_enabled: bool
 
 
 def attachment_resource_needs(profile) -> frozenset[str]:
@@ -99,6 +100,7 @@ def preview_setup(
     profile_path: Path,
     private_root: Path,
     namespace: str | None,
+    analytics_enabled: bool = False,
 ) -> SetupPreview:
     """Build a read-only preview; unadopted nonempty targets refuse without writes."""
     target = authoring_path.resolve()
@@ -113,6 +115,7 @@ def preview_setup(
                 private_root,
                 namespace,
                 manifest.namespace,
+                analytics_enabled,
             )
         if not namespace:
             raise SetupError("an explicit namespace is required for a new Knowledge Base")
@@ -151,6 +154,7 @@ def preview_setup(
         # plan_empty_setup refuses any non-required retention, so the empty
         # managed journey is always required (spec0010 §2.1/§2.2).
         retention="required",
+        analytics_enabled=analytics_enabled,
         digest=_digest(
             {"native_setup_digest": plan.setup_digest, "managed_commit": commit_action}
         ),
@@ -180,6 +184,7 @@ def _adopted_preview(
     private_root: Path,
     namespace_input: str | None,
     namespace: str,
+    analytics_enabled: bool = False,
 ) -> SetupPreview:
     if namespace_input is not None and namespace_input != namespace:
         raise SetupError("configured namespace does not match the adopted Knowledge Base")
@@ -190,6 +195,7 @@ def _adopted_preview(
         )
     try:
         profile = load_private_profile(profile_path, kb_root=target)
+        _require_profile_context_compatible(profile, analytics_enabled)
         resolved = resolve_private_profile(
             profile,
             kb_root=target,
@@ -225,6 +231,7 @@ def _adopted_preview(
         workspace_id=workspace_id,
         kind="adopted",
         retention=profile.retention,
+        analytics_enabled=analytics_enabled,
         digest=digest,
         target=target,
         namespace=namespace,
@@ -237,8 +244,33 @@ def _adopted_preview(
     )
 
 
-def current_attachment_digest(*, target: Path, profile_path: Path) -> str:
-    """Bind contributions to the confirmed resource identity, not a moving base commit."""
+def _require_profile_context_compatible(profile, analytics_enabled: bool) -> None:
+    """Refuse the standalone retention exception in an integrated workspace.
+
+    spec0034 §12.4/AC25 with spec0035 §3/AC12: analytics-enabled (integrated)
+    workspaces keep required original retention and cannot select the
+    owner-confirmed standalone exception. The refusal precedes every resource
+    resolution — no Source Registry open, no candidate write, no backend probe
+    — and never relabels the profile or invents retained bytes.
+    """
+    if analytics_enabled and profile.retention != "required":
+        raise SetupError(
+            "the private profile declares retention 'disabled', which is a "
+            "standalone-only exception; this workspace is analytics-enabled "
+            "(integrated) and requires original retention — restore "
+            "retention 'required' and confirm setup before this operation",
+            code="retention_context_incompatible",
+        )
+
+
+def current_attachment_digest(
+    *, target: Path, profile_path: Path, analytics_enabled: bool = False
+) -> str:
+    """Bind contributions to the confirmed resource identity, not a moving base commit.
+
+    The CURRENT workspace context gates eligibility: an analytics-enabled
+    workspace refuses the disabled profile before any resource resolution.
+    """
     target = target.resolve()
     try:
         facts = discover_authoring_location(target)
@@ -246,6 +278,7 @@ def current_attachment_digest(*, target: Path, profile_path: Path) -> str:
         if manifest is None:
             raise SetupError("owner setup confirmation is required", code="setup_required")
         profile = load_private_profile(profile_path, kb_root=target)
+        _require_profile_context_compatible(profile, analytics_enabled)
         resolved = resolve_private_profile(
             profile,
             kb_root=target,
@@ -282,6 +315,7 @@ def apply_setup(
             profile_path=preview.profile_path,
             private_root=preview.private_root,
             namespace=preview.namespace_input,
+            analytics_enabled=preview.analytics_enabled,
         )
         if fresh.digest != preview.digest:
             raise SetupError("setup target changed after preview", code="setup_target_changed")

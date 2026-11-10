@@ -33,7 +33,11 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from lumio_wiki.mutation import atomic_write_bytes
-from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
+from lumio_wiki.private_profile import (
+    PrivateProfileError,
+    load_private_profile,
+    resolve_private_profile,
+)
 
 from .contributions import _digest, _git
 from .intake import IntakeService
@@ -45,6 +49,10 @@ from .state import Actor, Operation, RetryConflict, WorkspaceState
 
 class AnalyticsError(ValueError):
     """An actionable analytics configuration, authorization, or native-state error."""
+
+    def __init__(self, message: str, *, code: str = "analytics_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _candidate_page(filename: str, markdown: str) -> tuple[str, dict]:
@@ -143,8 +151,33 @@ class AnalyticsService:
             and all(existing_profiles.get(name) == profile for name, profile in profiles.items())
         )
 
+    def _require_required_retention_profile(self) -> None:
+        """Integrated analytics requires original retention (F1; spec0035 §3/AC12).
+
+        The CURRENT workspace context decides eligibility, never persisted task
+        shape: a deliberately disabled profile is a standalone-only exception
+        and is refused explicitly BEFORE any proposal, control, page, registry
+        write or backend probe. The profile is never relabelled and no bytes or
+        metadata are invented.
+        """
+        try:
+            profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
+        except PrivateProfileError as exc:
+            raise AnalyticsError(
+                f"the private profile is unavailable: {exc}", code="invalid_profile"
+            ) from exc
+        if profile.retention != "required":
+            raise AnalyticsError(
+                "integrated analytics requires required original retention; the "
+                "selected private profile declares retention 'disabled', which is "
+                "a standalone-only exception — restore retention 'required' before "
+                "preparing analytics contributions",
+                code="retention_context_incompatible",
+            )
+
     def _resources(self):
         profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
+        self._require_required_retention_profile()
         return resolve_private_profile(
             profile,
             kb_root=self.authoring_path,
@@ -155,6 +188,7 @@ class AnalyticsService:
         attachment = current_attachment_digest(
             target=self.authoring_path,
             profile_path=self.profile_path,
+            analytics_enabled=True,
         )
         if not self.state.has_setup_attachment(self.workspace_id, attachment):
             raise AnalyticsError(
@@ -884,6 +918,9 @@ class AnalyticsService:
         core_edits: list[dict],
     ) -> dict:
         self._retry(retry_key)
+        # Integrated context eligibility BEFORE attachment digest, grant
+        # lookup, proposal writes, or any registration (F1).
+        self._require_required_retention_profile()
         self._require_attachment()
         grant = self._operation(actor, "prepare_data_source", source_task_id)
         if grant.status != "data_granted":
