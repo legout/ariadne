@@ -20,6 +20,8 @@ from lumio_wiki.private_profile import (
     resolve_private_profile,
 )
 
+from .setup import attachment_resource_needs
+
 
 class PublicationService:
     def __init__(self, *, authoring_path: Path, profile_path: Path, destination: Path) -> None:
@@ -32,7 +34,10 @@ class PublicationService:
         return resolve_private_profile(
             profile,
             kb_root=self.authoring_path,
-            needs=frozenset({"registry", "artifacts"}),
+            # Same owner-confirmed retention binding as the attachment: the
+            # standalone exception (disabled) is registry-only and constructs
+            # no original-byte backend (spec0034 §12.4).
+            needs=attachment_resource_needs(profile),
         )
 
     def current_version(self) -> str | None:

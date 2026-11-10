@@ -55,6 +55,22 @@ class SetupPreview:
     profile_path: Path
     private_root: Path
     namespace_input: str | None
+    retention: str
+
+
+def attachment_resource_needs(profile) -> frozenset[str]:
+    """Resource needs bound into owner-confirmed attachments (spec0034 §12.4).
+
+    The owner-confirmed standalone document-only exception
+    (``retention: disabled``) binds registry-only: the unused original-byte
+    backend is neither constructed nor probed. Under required retention the
+    artifact store stays part of the confirmed resource identity, and any
+    profile/retention change still invalidates consent because the binding
+    always covers namespace, retention and the requested resources.
+    """
+    if profile.retention == "disabled":
+        return frozenset({"registry"})
+    return frozenset({"registry", "artifacts"})
 
 
 def _digest(value: object) -> str:
@@ -132,6 +148,9 @@ def preview_setup(
     return SetupPreview(
         workspace_id=workspace_id,
         kind="empty",
+        # plan_empty_setup refuses any non-required retention, so the empty
+        # managed journey is always required (spec0010 §2.1/§2.2).
+        retention="required",
         digest=_digest(
             {"native_setup_digest": plan.setup_digest, "managed_commit": commit_action}
         ),
@@ -174,7 +193,7 @@ def _adopted_preview(
         resolved = resolve_private_profile(
             profile,
             kb_root=target,
-            needs=frozenset({"registry", "artifacts"}),
+            needs=attachment_resource_needs(profile),
         )
         facts = discover_authoring_location(target)
         _kb, report = load_knowledge_base(target)
@@ -205,6 +224,7 @@ def _adopted_preview(
     return SetupPreview(
         workspace_id=workspace_id,
         kind="adopted",
+        retention=profile.retention,
         digest=digest,
         target=target,
         namespace=namespace,
@@ -229,7 +249,7 @@ def current_attachment_digest(*, target: Path, profile_path: Path) -> str:
         resolved = resolve_private_profile(
             profile,
             kb_root=target,
-            needs=frozenset({"registry", "artifacts"}),
+            needs=attachment_resource_needs(profile),
         )
     except (PrivateProfileError, EmptySetupError, SourceReferenceError, GitAuthoringError) as exc:
         raise SetupError(
@@ -331,6 +351,23 @@ def apply_setup(
     }
 
 
+# Owner-facing setup disclosure of the effective retention policy (§12.4):
+# the exception never claims secure deletion — transient uploads/backups may
+# remain — and required retention stays the default elsewhere.
+RETENTION_NOTES = {
+    "required": (
+        "<p>Originals are retained as required by the confirmed private profile.</p>"
+    ),
+    "disabled": (
+        "<p><strong>Retention exception:</strong> the confirmed private profile does "
+        "not promise a durable original copy. Contributions stay source-backed by "
+        "exact Source ID, hash and bindings; original bytes are not retained and "
+        "are not securely deleted (transient upload copies may remain). Analytics, "
+        "integrated, and independent CLI journeys keep required retention.</p>"
+    ),
+}
+
+
 def render_setup(preview: SetupPreview) -> str:
     template = Template(
         resources.files("lumio_workspace")
@@ -352,6 +389,8 @@ def render_setup(preview: SetupPreview) -> str:
         namespace=html.escape(preview.namespace),
         target=html.escape(str(preview.target)),
         base=html.escape(preview.base_revision or "unborn"),
+        retention=html.escape(preview.retention),
+        retention_note=RETENTION_NOTES[preview.retention],
         actions=actions,
         digest=html.escape(preview.digest, quote=True),
     )

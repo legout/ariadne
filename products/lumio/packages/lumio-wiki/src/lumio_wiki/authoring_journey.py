@@ -15,7 +15,12 @@ Two public operations for the external-agent authoring journey:
   references between new pages never require invalid intermediate ingests.
   New/changed original bytes are retained AND verified before success; a
   failure rolls the authored tree back while immutable private registration
-  residue stays convergent and retry-safe.
+  residue stays convergent and retry-safe. The narrowly explicit
+  ``retention="disabled"`` option (spec0034 §12.4) serves the managed
+  standalone caller only under an owner-confirmed ``disabled`` private
+  profile: it registers exact Source ID/hash/bindings without durable
+  original bytes and must not select any artifact store; every existing
+  caller that omits the option keeps the required-retention refusal.
 """
 
 from __future__ import annotations
@@ -483,15 +488,27 @@ def ingest_candidate(
     *,
     source_registry: SourceRegistry,
     artifact_store=None,
+    retention: str = "required",
 ) -> CandidateResult:
     """Validate one complete candidate completely, then apply it once.
+
+    ``retention`` is narrowly explicit and default-required (spec0034 §12.4):
+    only the managed standalone caller under an owner-confirmed
+    ``retention: disabled`` private profile may pass ``"disabled"`` — the
+    explicit document-only exception that registers exact identity/hash and
+    bindings while omitting durable original bytes (registry-only, no
+    artifact store selected or probed). Omitting the option keeps the
+    required-retention behavior for every existing caller: merely passing no
+    store still refuses. A failed required store write is a storage error,
+    never an implicit exception.
 
     Evaluation order (spec 0010 §3): read and parse every authored page and
     the optional complete Control File, validate the WHOLE candidate
     (ontology, Claims, cross-page references, routing) before any private
     registration or authoring-file write, verify declared digests against
     the actual original bytes, compare new/update intent with the captured
-    base manifest, register and RETAIN+VERIFY new/changed originals, re-check
+    base manifest, register new/changed originals and — under required
+    retention — RETAIN+VERIFY them, re-check
     manifest drift against the fully applied candidate view with exact
     registry resolution, and only then apply pages, Control File and
     manifest atomically. A failure rolls the authored tree back; immutable
@@ -504,6 +521,12 @@ def ingest_candidate(
         _validate_page_routing,
     )
 
+    if retention not in ("required", "disabled"):
+        raise AuthoringJourneyError(
+            "retention must be 'required' or 'disabled'; omit it for the "
+            "default required policy",
+            code="invalid_retention_policy",
+        )
     kb_path = Path(kb_root).resolve()
     manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
@@ -713,12 +736,23 @@ def ingest_candidate(
                 )
         originals[record.source_id] = (original, raw, actual)
 
-    # Private registration + verified retention before any authoring write.
-    # A missing store for new/changed originals is refused up front so no
+    # Private registration before any authoring write. Under the default
+    # required retention, verified byte retention happens before success — a
+    # missing store for new/changed originals is refused up front so no
     # hash-only success is ever reported (and no useless residue is written).
+    # The explicit retention exception keeps the registry registration (real
+    # metadata) and never touches an original-byte backend; the coverage
+    # report below stays truthful about the unretained originals.
     registered: list[str] = []
     if originals:
-        if artifact_store is None:
+        if retention == "disabled" and artifact_store is not None:
+            raise AuthoringJourneyError(
+                "the explicit standalone retention exception is registry-only; "
+                "resolve the private profile with needs={'registry'} instead of "
+                "also selecting a Source Artifact Store",
+                code="retention_exception_invalid",
+            )
+        if retention != "disabled" and artifact_store is None:
             raise AuthoringJourneyError(
                 "the candidate introduces new/changed originals but no Source "
                 "Artifact Store is selected; hash-only retention is never "
@@ -738,30 +772,31 @@ def ingest_candidate(
                     code="registration_mismatch",
                 )
             registered.append(source_id)
-        for source_id, (original, raw, actual) in originals.items():
-            try:
-                retain_artifact(
-                    store,
-                    source_registry,
-                    source_id=source_id,
-                    raw_bytes=raw,
-                    content_type=None,
-                    filename=original.name,
-                )
-            except (ArtifactStoreError, OSError) as exc:
-                raise AuthoringJourneyError(
-                    "Source Artifact retention failed; the immutable registration may "
-                    "remain hash-only, but authoring files were not written — retry "
-                    "the candidate to recover",
-                    code="retention_failed",
-                ) from exc
-            if not store.artifact_exists(source_id=source_id, content_hash=actual):
-                raise AuthoringJourneyError(
-                    f"retained original bytes for {source_id!r} did not verify in the "
-                    "selected store; the registration may remain, but no success is "
-                    "reported — retry the candidate",
-                    code="retention_failed",
-                )
+        if store is not None:
+            for source_id, (original, raw, actual) in originals.items():
+                try:
+                    retain_artifact(
+                        store,
+                        source_registry,
+                        source_id=source_id,
+                        raw_bytes=raw,
+                        content_type=None,
+                        filename=original.name,
+                    )
+                except (ArtifactStoreError, OSError) as exc:
+                    raise AuthoringJourneyError(
+                        "Source Artifact retention failed; the immutable registration may "
+                        "remain hash-only, but authoring files were not written — retry "
+                        "the candidate to recover",
+                        code="retention_failed",
+                    ) from exc
+                if not store.artifact_exists(source_id=source_id, content_hash=actual):
+                    raise AuthoringJourneyError(
+                        f"retained original bytes for {source_id!r} did not verify in the "
+                        "selected store; the registration may remain, but no success is "
+                        "reported — retry the candidate",
+                        code="retention_failed",
+                    )
 
     # Exact bindings: pages bind their declared candidate sources to the
     # actual digest; unchanged baseline bindings are preserved verbatim.

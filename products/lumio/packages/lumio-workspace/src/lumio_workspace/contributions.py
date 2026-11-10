@@ -47,7 +47,7 @@ from lumio_wiki.source_inspection import (
 )
 
 from .intake import IntakeService, UploadError
-from .setup import SetupError, current_attachment_digest
+from .setup import SetupError, attachment_resource_needs, current_attachment_digest
 from .state import Actor, Operation, RetryConflict, WorkspaceState
 
 _FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -143,10 +143,14 @@ class ContributionService:
     def _resources(self):
         try:
             profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
+            # The owner-confirmed retention policy selects the resource needs:
+            # the standalone document-only exception (retention 'disabled') is
+            # registry-only — the unused original-byte backend is neither
+            # constructed nor probed (spec0034 §12.4).
             return resolve_private_profile(
                 profile,
                 kb_root=self.authoring_path,
-                needs=frozenset({"registry", "artifacts"}),
+                needs=attachment_resource_needs(profile),
             )
         except PrivateProfileError as exc:
             raise ContributionError(
@@ -684,7 +688,7 @@ class ContributionService:
         del actor  # Native work is bound to the already-persisted actor-scoped operation.
         self._require_attachment()
         resources = self._resources()
-        if resources.source_registry is None or resources.artifact_store is None:
+        if resources.source_registry is None:
             raise ContributionError(
                 "native registry and artifact retention are required",
                 code="invalid_profile",
@@ -730,6 +734,9 @@ class ContributionService:
                 request,
                 source_registry=resources.source_registry,
                 artifact_store=resources.artifact_store,
+                # The exact policy is bound here, from the owner-confirmed
+                # profile only — there is no contributor-selected flag.
+                retention="required" if resources.retention_required else "disabled",
             )
             _git(task_kb, "add", "--", ".")
             review = review_authoring_candidate(
