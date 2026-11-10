@@ -13,12 +13,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from lumio_wiki.git_authoring import GitAuthoringError
 from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from lumio_wiki.page_search import normalize_search_query
 from lumio_wiki.records import CompiledPage, SourceFileDigest, SourceFingerprint
 from lumio_wiki.retrieval import default_retrieval_adapter
-from lumio_wiki.source_inspection import validate_published_version
+from lumio_wiki.source_inspection import (
+    SourceInspectionError,
+    read_local_published_bindings,
+    validate_published_version,
+)
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -606,7 +611,32 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             raise WorkspaceError(
                 "requested Published Version is not available at this workspace"
             ) from exc
+        verify_admitted_version(requested_version)
         return PublishedFilesystemLocation(config.published_path, version=requested_version)
+
+    def verify_admitted_version(version: str) -> None:
+        """Gate a caller-selected version on verified native admission.
+
+        A complete manifest is not admission (spec0034 §12.2): the version's
+        admission receipt must verify against the configured destination and
+        be activated, or the destination's current pointer must name it
+        (native activation reconciliation). Interrupted publication residue —
+        a complete version directory or a preactivation receipt with an older
+        pointer — never becomes ordinary historical Evidence, and every
+        refusal is the same generic unavailable response, never an existence
+        disclosure. This reads admission provenance only; it never inspects
+        originals or the private source store.
+        """
+        try:
+            receipt, _sealed = read_local_published_bindings(config.published_path, version)
+        except (GitAuthoringError, KnowledgeBaseError, SourceInspectionError) as exc:
+            raise WorkspaceError(
+                "requested Published Version is not available at this workspace"
+            ) from exc
+        if receipt.activated:
+            return
+        if PublishedFilesystemLocation(config.published_path).read_pointer() != version:
+            raise WorkspaceError("requested Published Version is not available at this workspace")
 
     @server.tool()
     def workspace_status() -> dict[str, Any]:
@@ -629,11 +659,13 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         """
         _, resolved, authorized = snapshot(published_version)
         authorized_paths = {page.path for page in authorized}
-        pages = [
-            page
-            for page in (resolved.lookup_by_title(title) or resolved.lookup_by_alias(title))
-            if page.path in authorized_paths
-        ]
+        # Canonical titles take precedence inside the authorized view; a hidden
+        # canonical title can never suppress a visible alias (spec0034 §12.2).
+        pages = [page for page in resolved.lookup_by_title(title) if page.path in authorized_paths]
+        if not pages:
+            pages = [
+                page for page in resolved.lookup_by_alias(title) if page.path in authorized_paths
+            ]
         if not pages:
             return {"found": False}
         page = pages[0]

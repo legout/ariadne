@@ -37,10 +37,3 @@ force-include = { "src/lumio_workspace/templates/setup.html" = "lumio_workspace/
 # The shared workspace venv lives at the monorepo root for this member.
 venvPath = "../../../.."
 venv = ".venv"
-# Sibling workspace members stay source-resolved for static analysis, matching
-# the joint-development PYTHONPATH (spec 0031 §4).
-extraPaths = [
-  "../lumio-wiki/src",
-  "../lumio-lancedb/src",
-  "../../../ariadne/packages/ariadne-data/src",
-]

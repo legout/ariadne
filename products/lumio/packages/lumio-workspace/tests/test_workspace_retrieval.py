@@ -16,6 +16,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import lumio_wiki.git_authoring as git_authoring
 import pytest
 from lumio_wiki.git_authoring import preview_publication, publish_revision
 from lumio_wiki.knowledge_base import (
@@ -36,6 +37,12 @@ NAMESPACE = "urn:uuid:3f2b1c4e-8a7d-4e2f-9c1b-5d6e7f8a9b0c"
 
 RESTRICTED_MARKER = "zebramark-restricted-escalation"
 RESTRICTED_ALIAS = "zebra-escalation-alias"
+# F1 collision: the visible runbook's alias equals the hidden page's canonical
+# title — a valid combination (duplicate canonical titles and duplicate
+# aliases are validated separately, never title/alias collisions).
+COLLISION_NAME = "Escalation Secrets"
+# F2 residue: the line only the interrupted candidate would contain.
+RESIDUE_MARKER = "unadmitted residue marker"
 # Genuinely absent from every fixture page, including as a substring.
 NONSENSE_QUERY = "qqqzzq absent neverwritten"
 
@@ -45,6 +52,7 @@ RUNBOOK_V1 = (
     "---\n"
     'id: "entity:restart-runbook"\n'
     'title: "Restart Runbook"\n'
+    f'aliases: ["{COLLISION_NAME}"]\n'
     'entity_types: ["knowledge-artifact"]\n'
     "category: procedures\n"
     'type: "runbook"\n'
@@ -70,6 +78,11 @@ RUNBOOK_V1 = (
 )
 RUNBOOK_V2 = RUNBOOK_V1 + (
     "\n## Drain connections\n\nDrain open connections after the quiesce step.\n"
+)
+# The interrupted candidate: an ordinary native publication whose pointer
+# activation never happened, leaving complete-but-unadmitted residue.
+RUNBOOK_V3 = RUNBOOK_V2 + (
+    "\n## Interrupted candidate note\n\nThe unadmitted residue marker stays unpublished.\n"
 )
 
 NETWORK_PAGE = (
@@ -160,16 +173,16 @@ APPENDIX_PAGE = (
 
 # Hand-counted from the authored fixture text above (1-based file lines; the
 # published loader numbers the body from the closing frontmatter fence, so the
-# shared 17-line frontmatter puts "# Restart Runbook" on line 19). The
-# splitlines checks tie each literal to the exact fixture text.
-assert RUNBOOK_V1.splitlines()[18] == "# Restart Runbook"
-assert RUNBOOK_V1.splitlines()[22] == "## Quiesce the worker"
-assert RUNBOOK_V1.splitlines()[24] == "Quiesce the worker before stopping it."
-assert RUNBOOK_V2.splitlines()[26] == "## Drain connections"
-assert RUNBOOK_V2.splitlines()[28] == "Drain open connections after the quiesce step."
-V1_QUIESCE_SPAN = (23, 25)
-V2_QUIESCE_SPAN = (23, 26)
-V2_DRAIN_SPAN = (27, 29)
+# 18-line frontmatter puts "# Restart Runbook" on line 20). The splitlines
+# checks tie each literal to the exact fixture text.
+assert RUNBOOK_V1.splitlines()[19] == "# Restart Runbook"
+assert RUNBOOK_V1.splitlines()[23] == "## Quiesce the worker"
+assert RUNBOOK_V1.splitlines()[25] == "Quiesce the worker before stopping it."
+assert RUNBOOK_V2.splitlines()[27] == "## Drain connections"
+assert RUNBOOK_V2.splitlines()[29] == "Drain open connections after the quiesce step."
+V1_QUIESCE_SPAN = (24, 26)
+V2_QUIESCE_SPAN = (24, 27)
+V2_DRAIN_SPAN = (28, 30)
 QUIESCE_SECTION_TEXT = "## Quiesce the worker\n\nQuiesce the worker before stopping it."
 DRAIN_SECTION_TEXT = "## Drain connections\n\nDrain open connections after the quiesce step."
 V1_RUNBOOK_MARKDOWN = (
@@ -200,9 +213,16 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _published_fixture(
-    tmp_path: Path, backend: str = "zero-index"
-) -> tuple[WorkspaceConfig, str, str]:
-    """Two native activations of one authored KB: v1, then the admitted v2 edit."""
+    tmp_path: Path, monkeypatch, backend: str = "zero-index"
+) -> tuple[WorkspaceConfig, str, str, str]:
+    """v1, the admitted v2 edit, and complete-but-unadmitted residue (F2).
+
+    The residue is produced by injecting an ordinary interruption into the
+    native publication's pointer activation: the candidate version directory,
+    manifest, sealed record, and preactivation receipt are all complete, while
+    the current pointer stays at v2 — exactly the state an interrupted
+    publication leaves behind.
+    """
     repo = tmp_path / "authoring-repo"
     kb = repo / "kb"
     kb.mkdir(parents=True)
@@ -231,6 +251,30 @@ def _published_fixture(
     review_v2 = preview_publication(kb, v2, destination, v1)
     assert review_v2.blocking_diagnostics == []
     assert publish_revision(kb, v2, destination, v1, review_v2.review_digest).activated
+    # Third candidate: publish it with the pointer activation interrupted so
+    # only complete unadmitted residue remains (cheap stable seam on the
+    # public module-level atomic write; readers never publish).
+    (kb / "restart_runbook.md").write_text(RUNBOOK_V3, encoding="utf-8")
+    _git(repo, "add", "kb")
+    _git(repo, "commit", "-qm", "interrupted candidate")
+    residue = _git(repo, "rev-parse", "HEAD")
+    review_residue = preview_publication(kb, residue, destination, v2)
+    assert review_residue.blocking_diagnostics == []
+    real_write = git_authoring.atomic_write_bytes
+
+    def interrupted_write(path, *args, **kwargs):
+        if str(path).endswith("current.json"):
+            raise OSError("synthetic interruption before pointer activation")
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(git_authoring, "atomic_write_bytes", interrupted_write)
+    try:
+        publish_revision(kb, residue, destination, v2, review_residue.review_digest)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("the injected publication interruption did not occur")
+    monkeypatch.setattr(git_authoring, "atomic_write_bytes", real_write)
     assert PublishedFilesystemLocation(destination).read_pointer() == v2
     config = WorkspaceConfig(
         workspace_id="workspace-retrieval",
@@ -243,7 +287,7 @@ def _published_fixture(
         private_root=tmp_path / "operations",
         retrieval_backend=backend,
     )
-    return config, v1, v2
+    return config, v1, v2, residue
 
 
 def _reader_token(config: WorkspaceConfig) -> str:
@@ -290,7 +334,7 @@ def _prepare_bm25_cache(config: WorkspaceConfig, monkeypatch, v2: str) -> None:
     monkeypatch.setenv("LUMIO_WORKSPACE_PRIVATE_ROOT", str(config.private_root))
     monkeypatch.setenv("LUMIO_WORKSPACE_RETRIEVAL_BACKEND", "bm25")
     assert workspace_main(["prepare-retrieval"]) == 0
-    cache = config.private_root / "retrieval-cache" / v2
+    cache = config.operational_root / "retrieval-cache" / v2
     assert cache.exists()
 
 
@@ -298,7 +342,7 @@ def _prepare_bm25_cache(config: WorkspaceConfig, monkeypatch, v2: str) -> None:
 def test_scoped_evidence_preserves_version_and_hides_restricted(
     tmp_path: Path, monkeypatch, retrieval_backend: str
 ) -> None:
-    config, v1, v2 = _published_fixture(tmp_path, retrieval_backend)
+    config, v1, v2, residue = _published_fixture(tmp_path, monkeypatch, retrieval_backend)
     token = _reader_token(config)
 
     if retrieval_backend == "bm25":
@@ -309,8 +353,9 @@ def test_scoped_evidence_preserves_version_and_hides_restricted(
         _prepare_bm25_cache(config, monkeypatch, v2)
 
     with TestClient(create_app(config), base_url="https://workspace.test") as reader:
-        # --- A hidden title, alias, and marker are indistinguishable from missing.
-        for title in ("Escalation Secrets", RESTRICTED_ALIAS, "Page That Never Existed"):
+        # --- A hidden alias and a missing title are indistinguishable from
+        # missing (the hidden canonical title case is the F1 collision below).
+        for title in (RESTRICTED_ALIAS, "Page That Never Existed"):
             assert _tool_result(reader, token, "read_knowledge", {"title": title}, 1) == {
                 "found": False
             }
@@ -455,6 +500,66 @@ def test_scoped_evidence_preserves_version_and_hides_restricted(
             15,
         )
         assert refused_retrieve.json()["result"]["isError"] is True
+
+        # --- F1: a visible alias resolves even when a hidden page claims the
+        # same canonical title; the authorized result equals the canonical read
+        # of that same visible page (title precedence inside the authorized
+        # view; hidden content can neither suppress nor be distinguished).
+        collision_read = _tool_result(
+            reader, token, "read_knowledge", {"title": COLLISION_NAME}, 30
+        )
+        canonical_read = _tool_result(
+            reader, token, "read_knowledge", {"title": "Restart Runbook"}, 31
+        )
+        assert collision_read == canonical_read
+        assert collision_read["found"] is True
+        collision_search = _tool_result(
+            reader, token, "search_knowledge", {"query": COLLISION_NAME, "limit": 20}, 32
+        )
+        assert [entry["title"] for entry in collision_search["results"]] == ["Restart Runbook"]
+
+        # --- F2: complete-but-unadmitted publication residue is denied
+        # generically on caller-selected reads and Evidence — a verified
+        # preactivation receipt alone never admits a version; the admitted
+        # older version stays readable and residue content never surfaces.
+        residue_denied_read = _call_tool(
+            reader,
+            token,
+            "read_knowledge",
+            {"title": "Restart Runbook", "published_version": residue},
+            33,
+        )
+        assert residue_denied_read.json()["result"]["isError"] is True
+        residue_denied_retrieve = _call_tool(
+            reader,
+            token,
+            "retrieve_knowledge",
+            {"query": "quiesce", "published_version": residue},
+            34,
+        )
+        assert residue_denied_retrieve.json()["result"]["isError"] is True
+        assert (
+            _tool_result(
+                reader, token, "search_knowledge", {"query": RESIDUE_MARKER, "limit": 20}, 35
+            )["results"]
+            == []
+        )
+        assert (
+            _tool_result(reader, token, "retrieve_knowledge", {"query": RESIDUE_MARKER}, 36)[
+                "results"
+            ]
+            == []
+        )
+        assert (
+            _tool_result(
+                reader,
+                token,
+                "read_knowledge",
+                {"title": "Restart Runbook", "published_version": v1},
+                37,
+            )["found"]
+            is True
+        )
 
         # --- Effective backend disclosure for this lane.
         bm25_healthy = retrieval_backend == "bm25" and quiesce["retrieval"]["fallback"] is None
