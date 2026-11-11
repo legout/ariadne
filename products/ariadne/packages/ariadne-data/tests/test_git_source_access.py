@@ -1176,8 +1176,76 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     finally:
         execution._deadline_clock = real_clock
 
+    # --- surviving-F1 bounded completion (owner-a3): top-values across
+    # columns must consume the shared budget AS COLLECTED. Fixture: three
+    # rows, eight VARCHAR columns, each column holding exactly a,
+    # 'm' + 'x'*30000, z. Default ceilings: the min/max lower bound totals
+    # 16 chars (passes); each column's largest top value is 30,001 chars
+    # (per-stat passes); only TWO such columns fit the 65,536-byte shared
+    # budget — the third must refuse BEFORE its values transfer. The proof
+    # is a read-only observer wrapped around the REAL relation fetch (the
+    # external I/O seam): it counts large strings that actually crossed into
+    # Python — no fake stats, no budget/algorithm mocking, and the eventual
+    # exception alone would NOT prove bounded collection.
+    flat_con = duckdb.connect()
+    flat_con.execute(
+        "CREATE TABLE flat_t (c0 VARCHAR, c1 VARCHAR, c2 VARCHAR, c3 VARCHAR, "
+        "c4 VARCHAR, c5 VARCHAR, c6 VARCHAR, c7 VARCHAR)"
+    )
+    big = "m" + "x" * 30_000
+    flat_con.executemany(
+        "INSERT INTO flat_t VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [("a", "a", "a", "a", "a", "a", "a", "a"),
+         (big, big, big, big, big, big, big, big),
+         ("z", "z", "z", "z", "z", "z", "z", "z")],
+    )
+    flat_con.execute(f"COPY flat_t TO '{project / 'data' / 'flat.parquet'}' (FORMAT PARQUET)")
+    flat_con.close()
+    flat = api.propose_sources(
+        started["proposal"],
+        settled_revision,
+        [{"name": "flat", "type": "parquet", "path": "data/flat.parquet"}],
+    )
+    api.approve_sources(started["proposal"], flat["revision"], flat["source_digest"])
+    settled_revision = flat["revision"]
+
+    class _TransferObserver:
+        """Counts LARGE string values that REALLY crossed the fetch boundary
+        into Python (read-only wrapper around the real DuckDBPyRelation
+       .fetchall; the database does all the work)."""
+
+        def __init__(self) -> None:
+            self.large_transferred = 0
+            self._real = duckdb.DuckDBPyRelation.fetchall
+
+        def __enter__(self):
+            observer = self
+
+            def observing(relation):
+                rows = self._real(relation)
+                for row in rows:
+                    for value in row:
+                        if isinstance(value, str) and len(value) > 1000:
+                            observer.large_transferred += 1
+                return rows
+
+            duckdb.DuckDBPyRelation.fetchall = observing
+            return self
+
+        def __exit__(self, *exc):
+            duckdb.DuckDBPyRelation.fetchall = self._real
+            return False
+
+    with _TransferObserver() as observed:
+        with pytest.raises(profiler.ProfilingPayloadExceeded):
+            api.inputs(started["proposal"], selector=("flat", "flat"))
+    # 2 x 30,001 <= 65,536 < 3 x 30,001: exactly two columns' worth of large
+    # top values may transfer before the shared budget refuses the third
+    assert observed.large_transferred == 2
+
     # each deadline refusal completed the APPROVED setup (one open each) and
     # refused before any profiling statement — never a partial measurement;
     # the earlier pre-open refusals (request over ceiling, invalid config)
-    # opened nothing at all, asserted at their own checkpoints above
-    assert len(connection_spy) == opens_before_deadline + 3
+    # opened nothing at all, asserted at their own checkpoints above; the
+    # bounded-completion case above opened exactly once more
+    assert len(connection_spy) == opens_before_deadline + 4

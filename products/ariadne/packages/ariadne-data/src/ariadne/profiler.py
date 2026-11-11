@@ -342,6 +342,12 @@ def _profile_table(
     accounted incrementally — oversize refuses, never clips."""
     names = [c[0] for c in cols]
     rel = _table_rel(con, ref, table, allowed)
+    # surviving-F1 bounded completion (spec0035 §8): bytes of top-values
+    # already fetched for THIS table, consumed against the shared budget as
+    # collected — every later column's pre-fetch check sees them. The
+    # accumulator never touches `used`: the table fragment debit below
+    # remains the single accounting mutation, so nothing double counts.
+    pending_top_values = 0
 
     with _guard(budget, con):
         row_count = rel.aggregate("COUNT(*) AS n").fetchall()[0][0]
@@ -424,7 +430,9 @@ def _profile_table(
                         "max(length(CAST(__profile_value AS VARCHAR))) AS __profile_vlen"
                     ).fetchall()[0][0]
                     payload.guard_stat(biggest, f"top value of {name!r}")
-                    payload.guard_remaining(int(biggest or 0))
+                    # remaining must cover what earlier columns already
+                    # transferred (pending) PLUS this column's lower bound
+                    payload.guard_remaining(int(biggest or 0) + pending_top_values)
                 top = (
                     _column_rel(rel, name, allowed)
                     .aggregate("__profile_value, COUNT(*) AS __profile_c")
@@ -436,6 +444,11 @@ def _profile_table(
                 {"value": _jsonable(value), "count": count} for value, count in top
             ]
             entry["top_value_share"] = top[0][1] / row_count
+            if payload is not None:
+                # consume AS COLLECTED: this column's actual serialized
+                # top-values (actual CLI escaping) count against the shared
+                # budget for every later column in this table
+                pending_top_values += len(json.dumps(entry["top_values"]).encode("utf-8"))
         columns[name] = entry
     return row_count, pk_candidates, columns
 
