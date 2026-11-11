@@ -58,9 +58,12 @@ def connection_spy(monkeypatch):
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
-    def spy(registry, read_only=True):
+    def spy(registry, read_only=True, **kwargs):
+        # **kwargs forwards the builder's optional deadline/selected_assets
+        # (spec0035 §8 budgets) to the real builder; the canary records the
+        # same registry identity either way
         opened.append([src.path for src in registry.sources])
-        return real(registry, read_only)
+        return real(registry, read_only, **kwargs)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
     return opened
@@ -897,3 +900,199 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     with pytest.raises(ValueError, match="NO operator approval"):
         api.inputs(started["proposal"])  # no grant covers dbname 'app ' + 'other-role'
     assert opened == []
+
+
+def test_authoring_profiling_limits_are_host_owned_and_complete(
+    tmp_path, connection_spy
+):
+    """spec0035 §8 "Source-boundary disposition: authoring profiling limits
+    (2026-11-11)": the HOST-owned ``profiling:`` section governs every
+    agent-facing profiling run — ``inputs`` AND schema refresh — with one
+    total finite budget across approved setup, sampling, statistics and FK
+    inspection, an explicit-sample row ceiling, and a complete-profile
+    payload ceiling. Hand-known 3-row fixture values prove fitting full
+    statistics stay exact and sampled markers stay honest; expiry refuses
+    without partial profiles or refreshed writes; oversize refuses without
+    clipping; operator raise/lower takes effect; and the candidate's own
+    committed widened ``profiling:`` section is inert — the operator's
+    current host configuration always wins. Deadline behavior rides the
+    established deterministic deadline-clock seam (no sleeps, no live
+    sources)."""
+    import time as _time
+
+    from ariadne import execution, profiler
+
+    # the candidate inherits a WIDENED profiling section committed at base;
+    # every assertion below runs against the narrowed CURRENT host file —
+    # candidate config never widens host policy
+    project = tmp_path / "proj"
+    project.mkdir(parents=True)
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n"
+        "  sample_rows: 1000000\n"
+        "  execution_seconds: 999999.0\n"
+        "  response_bytes: 1000000000\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir()
+    (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(project, "commit", "-q", "-m", "human: widened profiling section")
+    parquet = write_parquet(project / "data" / "events.parquet", rows=3)
+
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    proposed = api.propose_sources(
+        started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
+    )
+    assert proposed["sources"][0]["path"] == str(parquet)  # the HOST-root identity
+    candidate_registry = proposals.read_artifact(project, started["proposal"], "ariadne.yaml")[
+        "content"
+    ]
+    assert "sample_rows: 1000000" in candidate_registry  # the widened candidate claim
+    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+
+    # the operator narrows the host working config to NO profiling section:
+    # built-in defaults govern from here on, never the candidate's claim
+    (project / "ariadne.yaml").write_text(
+        "# operator host config (no profiling section)\n", encoding="utf-8"
+    )
+
+    # --- fitting FULL statistics keep their exact hand-known values under
+    # the default ceilings (3-row parquet: ids 1..3, labels row1..row3)
+    measured = api.inputs(started["proposal"])
+    (source,) = measured["profile"]["sources"]
+    table = source["tables"]["events"]
+    assert table["row_count"] == 3
+    # both columns are null-free and fully distinct at 3 rows: both qualify
+    # as PK candidates (existing heuristic), id first in catalog order
+    assert table["primary_key_candidates"] == ["id", "label"]
+    assert table["foreign_key_candidates"] == []
+    assert table["columns"]["id"]["distinct_count"] == 3
+    assert table["columns"]["id"]["null_count"] == 0
+    assert table["columns"]["label"]["distinct_count"] == 3
+    assert "sampled" not in table and "sample_limit" not in table
+    asset = {
+        "source": table["source"],
+        "catalog": table["catalog"],
+        "schema": table["schema"],
+        "table": table["table"],
+    }
+
+    # --- EXPLICIT sample below the ceiling: honest sampled markers; the
+    # sample_limit is the REQUEST, never the host ceiling
+    sampled = api.inputs(started["proposal"], sample_rows=2)
+    stable = sampled["profile"]["sources"][0]["tables"]["events"]
+    assert stable["row_count"] == 2  # the materialized sample, labeled as such
+    assert stable["sampled"] is True and stable["sample_limit"] == 2
+    assert stable["primary_key_candidates"] == []
+    assert stable["foreign_key_candidates"] == []
+
+    # --- a request above the default host ceiling refuses BEFORE any open
+    opens = len(connection_spy)
+    with pytest.raises(ValueError, match="profiling ceiling"):
+        api.inputs(started["proposal"], sample_rows=1001)
+    assert len(connection_spy) == opens  # the shared builder was never called
+
+    # --- operator RAISE takes effect (and still bounds: candidate 1000000 is inert)
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  sample_rows: 5000\n", encoding="utf-8"
+    )
+    raised = api.inputs(started["proposal"], sample_rows=5000)
+    assert raised["profile"]["sources"][0]["tables"]["events"]["sample_limit"] == 5000
+    with pytest.raises(ValueError, match="profiling ceiling"):
+        api.inputs(started["proposal"], sample_rows=5001)
+
+    # --- operator LOWER binds just the same
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  sample_rows: 2\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="profiling ceiling"):
+        api.inputs(started["proposal"], sample_rows=3)
+    lowered = api.inputs(started["proposal"], sample_rows=2)
+    assert lowered["profile"]["sources"][0]["tables"]["events"]["sample_limit"] == 2
+
+    # --- invalid host settings refuse actionably BEFORE source access
+    opens = len(connection_spy)
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  sample_rows: true\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        api.inputs(started["proposal"])
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  execution_seconds: 0\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="must be a finite positive number"):
+        api.inputs(started["proposal"])
+    assert len(connection_spy) == opens
+
+    # --- fitting refresh under the same ceilings: pages are written (the
+    # budget/payload wiring must not disturb the working refresh path)
+    (project / "ariadne.yaml").write_text(
+        "# operator host config (no profiling section)\n", encoding="utf-8"
+    )
+    refreshed = api.refresh_schema(started["proposal"], proposed["revision"], [asset])
+    assert refreshed["changed"] is True
+    assert refreshed["pages"]
+    settled_revision = refreshed["revision"]
+
+    # --- refresh oversize refuses the payload BEFORE any page is written
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  response_bytes: 64\n", encoding="utf-8"
+    )
+    with pytest.raises(profiler.ProfilingPayloadExceeded, match="payload"):
+        api.refresh_schema(started["proposal"], settled_revision, [asset])
+    assert branch_of(project, started["proposal"]) == settled_revision
+    assert tracked_dirty(project, started["proposal"]) == ""
+
+    # --- inputs oversize refuses without a partial or clipped profile
+    with pytest.raises(profiler.ProfilingPayloadExceeded, match="payload"):
+        api.inputs(started["proposal"])
+
+    # --- pre-transfer guard: a SINGLE statistic longer than the whole ceiling
+    # refuses before its value crosses into Python at all — the hand-known
+    # label min/max are 4-char strings ('row1'..), so a 2-byte ceiling
+    # cannot fit them and the guard fires before the SUMMARIZE fetch
+    (project / "ariadne.yaml").write_text(
+        "profiling:\n  response_bytes: 2\n", encoding="utf-8"
+    )
+    with pytest.raises(profiler.ProfilingPayloadExceeded, match="statistic serializes"):
+        api.inputs(started["proposal"])
+
+    # --- expired budget on inputs: explicit deadline refusal, no partial
+    real_clock = execution._deadline_clock
+    opens_before_deadline = len(connection_spy)
+    (project / "ariadne.yaml").write_text(
+        "# operator host config (no profiling section)\n", encoding="utf-8"
+    )
+
+    def spent_clock():
+        # deterministic, no sleeps: the first two clock reads are real time
+        # (budget creation + the setup deadline), every later read jumps
+        # 10,000s — the budget expires after approved setup completes and
+        # BEFORE any profiling statement, mid-operation, never a race
+        reads = iter([_time.monotonic(), _time.monotonic()])
+        return lambda: next(reads, _time.monotonic() + 10_000)
+
+    execution._deadline_clock = spent_clock()
+    try:
+        with pytest.raises(execution.DeadlineExhausted, match="deadline"):
+            api.inputs(started["proposal"])
+
+        # --- expired budget on refresh: refusal before ANY generated fact
+        execution._deadline_clock = spent_clock()
+        with pytest.raises(execution.DeadlineExhausted, match="deadline"):
+            api.refresh_schema(started["proposal"], settled_revision, [asset])
+        assert branch_of(project, started["proposal"]) == settled_revision
+        assert tracked_dirty(project, started["proposal"]) == ""
+    finally:
+        execution._deadline_clock = real_clock
+
+    # each deadline refusal completed the APPROVED setup (one open each) and
+    # refused before any profiling statement — never a partial measurement;
+    # the earlier pre-open refusals (request over ceiling, invalid config)
+    # opened nothing at all, asserted at their own checkpoints above
+    assert len(connection_spy) == opens_before_deadline + 2

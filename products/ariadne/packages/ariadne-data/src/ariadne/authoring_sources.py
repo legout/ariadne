@@ -40,7 +40,7 @@ from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import authoring_inputs, profiler, proposals, sources
+from ariadne import authoring_inputs, execution, profiler, proposals, sources
 from ariadne.sources import Registry, Source
 
 # Operator-owned approval state, ignored via the repo-LOCAL exclude file G2
@@ -555,8 +555,11 @@ def inputs(
     operator's HOST-root document boundary; a candidate's committed
     ``documents:`` section is never consulted) and the candidate's Seed Notes
     evidence from the recorded candidate revision. Bounded by the shared
-    input-evidence limits; digests are stable across calls (same bytes, same
-    digest)."""
+    input-evidence limits; the profiling run itself is bounded by the
+    HOST-owned profiling ceilings (spec0035 §8): one total finite time budget
+    across setup/sampling/statistics/FK and a complete-profile payload
+    ceiling, with a request sample_rows never above the host ceiling.
+    Digests are stable across calls (same bytes, same digest)."""
     project = Path(project).resolve()
     record = proposals._load_record(project, proposal)
     revision = record["candidate_revision"]
@@ -577,10 +580,23 @@ def inputs(
     if resolved is not None:
         assert digest is not None
         approval = _effective_grant(project, resolved, digest, proposal, revision)
+        # spec0035 §8: the HOST-owned profiling ceilings govern every
+        # agent-facing profiling run. Approval still precedes everything; the
+        # request-ceiling check refuses BEFORE any source access, and the run
+        # draws one total finite time budget under the complete-payload bound.
+        limits = authoring_inputs.project_profiling_limits(project)
+        if sample_rows is not None and sample_rows > limits["sample_rows"]:
+            raise ValueError(
+                f"sample_rows={sample_rows} exceeds the operator profiling ceiling "
+                f"{limits['sample_rows']} — a request cannot exceed the host profiling "
+                "ceilings (spec0035 §8); nothing was opened"
+            )
         profile = profiler.profile(
             registry=identity_registry(approval["sources"], approval.get("storage_bindings")),
             sample_rows=sample_rows,
             selector=selector,
+            budget=execution.DeadlineBudget(limits["execution_seconds"]),
+            payload_bytes=limits["response_bytes"],
         )
     seed_notes = None
     notes_blob = proposals._read_blob(project, revision, authoring_inputs.SEED_NOTES_REL.as_posix())

@@ -60,6 +60,7 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     document_evidence,
     effective_inspection_limits,
     project_inspection_limits,
+    project_profiling_limits,
 )
 from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issue #41)
     _EVIDENCE_SUMMARY_KEYS,
@@ -2251,8 +2252,18 @@ def refresh_schema(
     approval = authoring_sources._effective_grant(project, resolved, digest, proposal, current)
     storage_bindings = approval.get("storage_bindings") or {}
     binding_digest = approval.get("approval_digest") if storage_bindings else None
+    # spec0035 §8: refresh's profiling work draws the HOST-owned profiling
+    # ceilings — one total finite budget across setup/statistics/FK and a
+    # complete-profile payload bound — so an expired budget or oversize
+    # profile refuses BEFORE any refreshed fact is written. The later page
+    # content checks are additional, never a replacement for bounded
+    # statistics collection.
+    profiling_limits = project_profiling_limits(project)
+    profiling_budget = execution.DeadlineBudget(profiling_limits["execution_seconds"])
+    profiling_payload = profiler.PayloadBound(profiling_limits["response_bytes"])
     owned = execution.DuckDBExecution(
-        authoring_sources.identity_registry(approval["sources"], storage_bindings)
+        authoring_sources.identity_registry(approval["sources"], storage_bindings),
+        budget=profiling_budget,
     )
     try:
         con, catalog = owned.con, owned.catalog
@@ -2272,11 +2283,20 @@ def refresh_schema(
                 matched[
                     (table["source"], table.get("catalog"), table.get("schema"), table["name"])
                 ] = table
-            source_profile = profiler._profile_source(con, {**entry, "tables": matching})
+            source_profile = profiler._profile_source(
+                con,
+                {**entry, "tables": matching},
+                budget=profiling_budget,
+                payload=profiling_payload,
+            )
             for table in source_profile["tables"].values():
                 profiles[table["resource"]] = table
     finally:
         owned.close()
+    # spec0035 §8: the COMPLETE measured profile value must fit the operator
+    # payload ceiling before any page edit — no generated fact is persisted
+    # from over-bound or expired measurements.
+    profiling_payload.check_complete(profiles)
     missing = [
         asset
         for asset in requested
