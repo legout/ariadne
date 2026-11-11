@@ -139,9 +139,15 @@ queries refuse until the owner reconfirms setup for the restored target,
 and dependent queries keep refusing until a fresh reviewed contribution has
 been admitted on the restored destination — the restored association still
 binds the old publication destination, and no receipt or admission history
-is rewritten to fake readiness. Source identities are revalidated against
-the restored repository: where the resolved identity differs, real native
-Source Approval through the existing review surface is required before work
+is rewritten to fake readiness. This readiness gate is restoration-scoped:
+ordinary workspaces (no restore record at the current destination) keep
+their existing native query contract unchanged. The original publication
+does not need to stay online for the resume: readiness decisions read the
+private current descriptor only, and fresh source preparation, review,
+publication and admission work entirely against the restored repository and
+destination. Source identities are revalidated against the restored
+repository: where the resolved identity differs, real native Source
+Approval through the existing review surface is required before work
 resumes.
 
 | Printed path | Environment variable |

@@ -157,6 +157,15 @@ def _approve(reviewer: TestClient, fixture, task_id: str) -> str:
     return digest
 
 
+def _tree_digest(root: Path) -> str:
+    """Content digest of every persisted file under one directory."""
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def test_remote_original_backup_restores_without_remote_store(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1013,6 +1022,7 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
     assert restored.analytics_project_path == second_root / "authoring-repo"
     assert (second_root / "analytics-project").exists() is False
     assert restored.authoring_path == second_root / "authoring-repo" / "knowledge"
+    assert restored.authoring_path is not None
     restored_authoring = restored.authoring_path
     assert restored.private_profile_path is not None
     restored_profile = restored.private_profile_path
@@ -1134,6 +1144,25 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
     with pytest.raises(ReviewError):
         restored_review.decide(reviewer, guide_task_id, outstanding_guide, "approve")
 
+    # While the original publication is still available, the imported
+    # historical admission fully validates; its persisted bytes are then
+    # compared unchanged after the whole resume (F2: the unavailable old
+    # publication must never alter historical admission artifacts).
+    admission.validate_admission_record(restored_analytics.project, baseline_record)
+    historical_snapshot = restored_analytics.project / baseline_record["snapshot"]
+    historical_before = _tree_digest(historical_snapshot)
+
+    # The ORIGINAL published tree goes away entirely (actual rename in the
+    # temp fixture — no mock): readiness decisions and the whole fresh
+    # resume below must never depend on the old publication being online.
+    destination.rename(tmp_path / "published-taken-away")
+    assert not destination.exists()
+    with pytest.raises(AnalyticsError, match="fresh reviewed contribution"):
+        restored_analytics.query_data(
+            contributor, "retail", source_task, "get_metric", {"name": "revenue"}
+        )
+    assert opened == []
+
     # Resume: a genuinely new source gets REAL native Source Approval and a
     # fresh data grant through the existing review surface.
     prepared2 = restored_analytics.prepare_data_source(
@@ -1160,7 +1189,9 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
         "c5-policy-post",
         policy_bytes,
     )
-    _current, snapshot2 = admission.resolve_admission(restored_analytics.project)
+    restored_current = admission.load_current(restored_analytics.project)
+    assert restored_current is not None
+    snapshot2 = restored_analytics.project / restored_current["snapshot"]
     model2 = (snapshot2 / "semantic_layer/models/retail_sales.yml").read_text(encoding="utf-8")
     changed2 = model2.replace("orders.main.orders", "orders_sqlite.main.entries").replace(
         "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)",
@@ -1216,4 +1247,144 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
     assert (
         restored.published_path / PRIVATE_OPERATIONS_DIR / "receipts" / f"{baseline_revision}.json"
     ).read_bytes() == baseline_receipt
-    admission.validate_admission_record(restored_analytics.project, baseline_record)
+    assert _tree_digest(historical_snapshot) == historical_before
+
+
+def test_native_admitted_query_does_not_require_authoring_attachment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """F1: an ordinary native admitted workspace queries WITHOUT any W
+    authoring-setup attachment.
+
+    The public query contract is: existing native admission + exact native
+    Source Approval + the caller's data grant (A docs how-to-shared-workspace-data
+    §5; W public query tool). No owner ever confirmed a W authoring setup in
+    this workspace, and no restore happened — so no restoration-specific
+    readiness requirement may leak into the query (spec0035 §5 recovery is
+    restoration-scoped; AC15 governs only restored roots).
+    Hand oracle: baseline orders rows 100 + 50 completed (25 cancelled
+    excluded by the metric expression) = 150.
+    """
+    fixtures = _analytics_fixtures
+    project, api, started, _revision = fixtures._native_baseline(tmp_path / "baseline")
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    native_review = api.review_proposal(started["proposal"])
+    destination = tmp_path / "published"
+    private = tmp_path / "private"
+    (private / "registry").mkdir(parents=True)
+    (private / "artifacts").mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": fixtures.NAMESPACE,
+                "source_registry": str(private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(private / "artifacts")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall = admission.overall_review(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        destination=destination,
+        expected_current="none",
+        private_profile=profile,
+        scope=("internal",),
+    )
+    admission.admit_revision(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        confirmed_by="human:synthetic-baseline-owner",
+        overall_preview=overall,
+        confirmed_overall_digest=overall["digest"],
+        private_profile=profile,
+    )
+    bindings = tmp_path / "analytics-bindings.json"
+    bindings.write_text(
+        json.dumps(
+            {
+                "orders": [
+                    {"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = WorkspaceConfig(
+        workspace_id="workspace-native-query",
+        external_url="https://workspace.test",
+        published_path=destination,
+        published_version=native_review["revision"],
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=fixtures.NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    reviewer = Actor(tenant_id="local", object_id="reviewer")
+    state = WorkspaceState(config.state_path)
+    for actor in (contributor, reviewer):
+        state.create_local_user(actor.object_id)
+        state.grant(config.workspace_id, actor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    state.grant(config.workspace_id, reviewer, "review")
+    # Deliberately NO state.record_setup: the workspace has never confirmed a
+    # W authoring attachment (the F1 subject).
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+    review = ReviewService(
+        state,
+        workspace_id=config.workspace_id,
+        authoring_path=project / "knowledge",
+        profile_path=profile,
+        private_root=config.operational_root,
+        destination=destination,
+        analytics=analytics,
+    )
+    prepared = analytics.prepare_data_source(
+        contributor,
+        retry_key="f1-orders",
+        project="retail",
+        source="orders",
+        table="orders",
+        business_questions=["What is completed revenue in EUR?"],
+    )
+    task = prepared["task_id"]
+    # The baseline fixture already holds the EXACT native Source Approval for
+    # the admitted declaration, so preparation goes straight to the caller's
+    # data grant (existing reuse contract) — no second source approval.
+    assert prepared["status"] == "pending_data_grant"
+    grant_stage = review.get(reviewer, task)
+    granted = review.decide(reviewer, task, grant_stage.action_digest, "approve")
+    assert granted["status"] == "data_granted"
+
+    opened: list[list] = []
+    real_builder = execution.build_connection
+
+    def spy(registry_, **kwargs):
+        opened.append([source.path for source in registry_.sources])
+        return real_builder(registry_, **kwargs)
+
+    monkeypatch.setattr(execution, "build_connection", spy)
+    monkeypatch.setattr(native_sources, "build_connection", spy)
+
+    result = analytics.query_data(
+        contributor, "retail", task, "get_metric", {"name": "revenue"}
+    )
+    assert result["rows"] == [{"revenue": 150.0}]  # 100 + 50 completed; cancelled excluded
+    assert result["pinned"]["commit"] == native_review["revision"]
+    assert len(opened) == 1  # exactly the sanctioned source resolution

@@ -15,6 +15,7 @@ from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from ariadne.contribution_review import check_contribution_commit, review_contribution
 from ariadne.query import QueryRuntime
+from lumio_wiki.ariadne_context import SnapshotUnavailableError
 from lumio_wiki.authoring_journey import (
     CandidateRequest,
     CandidateSourceRecord,
@@ -195,19 +196,35 @@ class AnalyticsService:
                 "the current analytics target and private binding need owner setup"
             )
 
-    def _verify_admission_target(self, record: dict) -> None:
-        """Refuse queries whose admitted association targets another destination.
+    def _restored_target(self) -> bool:
+        """True when the CURRENT destination is a restored root.
 
-        A fresh-root restore moves the published destination while the
-        restored current record still names the old one (spec0035 §5
-        recovery; AC15). Owner setup confirmation alone is not enough: until
-        a fresh reviewed contribution is admitted on the restored target,
-        dependent SQL refuses here with the concrete prerequisites — before
-        any source is opened. The strict native Context check alone would
-        fail opaquely off-host or verify against the still-present old root.
-        Ordinary workspaces admit against the configured destination, so the
-        comparison is a no-op there and no other contract changes.
+        Presence of the private restore record the R4 recovery boundary
+        stamps after a completed restore (spec0034 §12.5) selects the
+        restoration-specific readiness case. The record authorizes nothing
+        by itself — it only selects the owner-prerequisite gate below; a
+        workspace without it keeps its existing native query contract
+        unchanged (F1).
         """
+        return (
+            Path(self.config.published_path) / PRIVATE_OPERATIONS_DIR / "restore.json"
+        ).is_file()
+
+    def _verify_restored_query_ready(self, record: dict | None) -> None:
+        """Restoration-specific query readiness (spec0035 §5 recovery; AC15).
+
+        Only a restored root requires the fresh owner setup confirmation AND
+        a current association bound to THIS destination before dependent
+        SQL; the prerequisites are decided from the structural current
+        descriptor BEFORE any full verification or old-publication IO, so
+        the refusal stays actionable even when the original publication is
+        offline. The descriptor is never treated as a validated query-ready
+        association: full verification stays in resolve_admission, and a
+        malformed operator record keeps raising its human-resolution error.
+        """
+        if record is None or not self._restored_target():
+            return
+        self._require_attachment()
         manifest = record.get("bound_release")
         if not isinstance(manifest, dict):
             return
@@ -461,7 +478,14 @@ class AnalyticsService:
                     )
                 try:
                     record, _snapshot = admission.resolve_admission(self.project)
-                except ValueError:
+                except (ValueError, SnapshotUnavailableError):
+                    # A restored root's imported association can point at an
+                    # offline original publication (spec0035 §5): declaration
+                    # reuse cannot be evaluated against it, so preparation
+                    # selects the fresh-authoring path. Identity corruption,
+                    # retention, scope and Source Approval failures still
+                    # raise — only the concrete availability recovery is
+                    # caught here.
                     record = None
                 reused = record is not None and self._declarations_present(
                     record["commit"], entries, storages
@@ -654,13 +678,16 @@ class AnalyticsService:
         request: dict,
     ) -> dict:
         self._project(project)
-        # Restored-target readiness before any grant or runtime work: the
-        # owner reconfirms setup, and the current association must bind THIS
-        # destination — a restored old association refuses before SQL
-        # (spec0035 §5; AC15), even when the old root would still verify.
-        self._require_attachment()
+        # The current descriptor is read STRUCTURALLY for the restoration-
+        # specific readiness decision only — never as query authorization.
+        # Ordinary workspaces (no restore record at the current destination)
+        # keep their existing native query contract unchanged (F1), and a
+        # restored old association refuses with actionable prerequisites
+        # before SQL (spec0035 §5; AC15) even when the old publication is
+        # offline.
+        current_record = admission.load_current(self.project)
+        self._verify_restored_query_ready(current_record)
         record, _snapshot = admission.resolve_admission(self.project)
-        self._verify_admission_target(record)
         self._grant(
             actor,
             source_task_id,
