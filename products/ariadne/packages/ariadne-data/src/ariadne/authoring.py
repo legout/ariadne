@@ -1157,8 +1157,11 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             if finalize_blob is not None
             else None
         )
+        native_finalize_errors: list[str] = []
         if finalize_route is not None and finalize_route.get("support_revision", 1) >= 2:
-            native_specs = context.finalize_native_candidate(worktree_root)
+            native_specs, native_finalize_errors = context.finalize_native_candidate(
+                worktree_root
+            )
             if native_specs:
                 # the caller HOLDS the proposal lock: submit through the
                 # lock-held batch body (re-acquiring would deadlock) after
@@ -1266,6 +1269,10 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             except Exception as exc:
                 context_errors = [f"context integration: {type(exc).__name__}: {exc}"]
             errors.extend(context_errors)
+            # owner-a3: a Computation evidence claim that cannot bind the
+            # CURRENT resolved sanctioned definition (authored stale or
+            # unbound) refuses alongside the retained gates
+            errors.extend(native_finalize_errors)
             # validate() carries no report at all only when a graph is declared
             # without models (the load owns that failure): the structural
             # outcome owns it explicitly. A context-only candidate (K4, issue

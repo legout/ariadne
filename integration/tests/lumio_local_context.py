@@ -2466,6 +2466,8 @@ P1_CASES = [
     pytest.param("multifact-uncited", id="refusal-multifact-uncited"),
     pytest.param("restricted-computation", id="restricted-computation-no-leak"),
     pytest.param("changed-computation", id="changed-computation-evidence"),
+    pytest.param("authored-evidence", id="authored-computation-evidence-binding"),
+    pytest.param("derived-dependency", id="derived-computation-dependency-evidence"),
 ]
 # Each refusal must name its §10 identifier: the unknown check id, the known
 # check id that never executes for the bound operation (with the operation),
@@ -2573,6 +2575,137 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     status_resource = table_resource(**P1_STATUS_ASSET)
     collection = collection_resource("orders", "orders", "main")
     authored = _p1_bindings(orders_resource, status_resource)
+
+    if case == "authored-evidence":
+        # owner-approved bounded completion, survivor 1: an AUTHORED
+        # Computation's earned check binds to the CURRENT resolved sanctioned
+        # definition — evidence eligibility never bypasses on a missing
+        # core-generated marker. The finalize never rewrites authored bytes:
+        # obsolete evidence REFUSES for human resolution.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        revision = validated["revision"]
+        from ariadne.render import render
+        from ariadne.semantic_graph import load_graph
+
+        graph = load_graph(tree / "semantic_layer")
+        sanctioned = render(graph.models["retail_sales"], metric="revenue").strip()
+        comp = tree / "knowledge" / "computations" / "revenue.md"
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        meta["ariadne_profile"]["native"]["dataset_sources"] = ["orders.main.orders"]
+        body = body + "\n\n```sql\n" + sanctioned + "\n```\n"
+        write_page(comp, meta, body)
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        eligible = api.validate_proposal(started["proposal"], revision)
+        assert eligible["ok"] is True, eligible["errors"]
+        # the sanctioned definition changes: the predecessor check cannot apply
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        changed = api.edit_proposal(
+            started["proposal"],
+            eligible["revision"],
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text().replace(
+                    "THEN amount ELSE 0 END", "THEN amount ELSE 0.0 END"
+                ),
+            },
+        )
+        refused = api.validate_proposal(started["proposal"], changed["revision"])
+        assert refused["ok"] is False
+        diagnostics = "; ".join(refused["errors"])
+        for token in ("revenue", "predecessor check cannot apply"):
+            assert token in diagnostics, (case, token, diagnostics)
+        assert "an-independent-oracle" in comp.read_text()  # authored bytes never rewritten
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    if case == "derived-dependency":
+        # owner-approved bounded completion, survivor 2: a generated DERIVED
+        # metric's earned check binds to its RESOLVED sanctioned definition —
+        # a base metric change reaches it through the dependency closure even
+        # when its own expression string and dataset sources are unchanged.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        first = api.validate_proposal(started["proposal"], revision)
+        assert first["ok"] is True, first["errors"]
+        revision = first["revision"]
+        comp = tree / "knowledge" / "computations" / "revenue_plus_one.md"
+        assert comp.is_file(), "the finalize must generate the derived Computation"
+        assert (
+            "CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END" in comp.read_text()
+        ), "the generated page records the RESOLVED dependency, not the raw expression"
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-derived-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        body = body + "\nCURATED-DERIVED-NARRATIVE\n"
+        write_page(comp, meta, body)
+        title_before = meta["title"]
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        unchanged = api.validate_proposal(started["proposal"], revision)
+        assert unchanged["ok"] is True, unchanged["errors"]
+        assert unchanged["revision"] == revision, (
+            "an unchanged resolved definition keeps the attested bytes byte-stable"
+        )
+        # the BASE metric changes; the derived metric's own expression string
+        # and dataset_sources stay identical — its resolved SQL does not
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        changed = api.edit_proposal(
+            started["proposal"],
+            unchanged["revision"],
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text().replace(
+                    "THEN amount ELSE 0 END", "THEN amount ELSE 0.0 END"
+                ),
+            },
+        )
+        refreshed = api.validate_proposal(started["proposal"], changed["revision"])
+        assert refreshed["ok"] is True, refreshed["errors"]
+        meta, body = page_parts(comp)
+        native = meta["ariadne_profile"]["native"]
+        assert native["attestation"] == "pending"
+        assert "attester" not in native  # the predecessor check cannot apply
+        assert "ELSE 0.0 END" in body  # the resolved dependency updated
+        assert "ELSE 0 END" not in body  # the predecessor SQL is gone
+        assert "CURATED-DERIVED-NARRATIVE" in body  # unrelated curation preserved
+        assert native["dataset_sources"] == ["orders.main.orders"]  # own source list unchanged
+        assert meta["title"] == title_before
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
 
     if case == "multifact-uncited":
         # F1 (review fix): a genuinely cross-fact composed definition — graph

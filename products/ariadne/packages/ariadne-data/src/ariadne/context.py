@@ -799,31 +799,54 @@ def _computation_matches(page: Path, name: str, info: dict) -> bool:
     )
 
 
-def finalize_native_candidate(staging: Path) -> list[dict]:
+def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
     """The revision-2 native finalize derivation (spec0035 §6 C2 cutover): the
     deterministic generated Computation content of the governed metric set as
     producer-native ``knowledge/computations`` page specs for the ONE native
     batch writer — no classic ``context_layer`` finalization, no classic index
-    generation. A native Computation page binds the CURRENT sanctioned
-    definition, never merely the same ``model::metric`` identity (the
-    preserved classic ``_computation_matches``/source-only-attestation
-    principles): a core-generated page whose recorded SQL and dataset
-    sources still match the model keeps its bytes verbatim — earned
-    attestation states included — while a CHANGED definition refreshes the
-    derived facts (SQL fence, runtime, dataset sources) and clears the
-    predecessor's obsolete attester/check down to the honest ``attestation:
-    pending`` through the same atomic native batch, preserving the page's
-    unrelated authored frontmatter and curated narrative. Authored pages
-    (without the core-generated provenance marker) are reviewed candidate
-    content and are never rewritten here. A governed metric with NO native
-    Computation page receives the honest generated page (``attestation:
-    pending``, no invented Policy edges). Unparseable model drafts generate
-    nothing — the validation gate owns the structural failure, exactly like
-    the classic pass. Returns ``[{path, content}]``; an empty list is the
-    no-op."""
+    generation. Evidence binding is DEFINITION- AND DEPENDENCY-COMPLETE for
+    authored and generated pages alike (owner-approved bounded completion of
+    the preserved classic ``_computation_matches``/source-only-attestation
+    principles): the CURRENT resolved sanctioned definition of every governed
+    metric comes from the EXISTING compiler (``render`` embeds the full
+    dependency closure, so a base-metric or field-mapping change reaches
+    derived metrics whose own expression string and dataset sources never
+    moved) — no new SQL/KB parser, no whole-tree digest, no data/source
+    access. A core-generated page still recording that exact resolved SQL and
+    dataset sources keeps its bytes verbatim, earned attestation included; a
+    generated page whose recorded definition no longer matches refreshes the
+    derived facts and clears the predecessor's obsolete attester/check down
+    to honest ``attestation: pending`` through the same atomic native batch,
+    preserving unrelated authored frontmatter and curated narrative. An
+    AUTHORED page is never rewritten by the finalize: one WITHOUT an
+    evidence claim (no attester, ``attestation`` absent/pending) claims
+    nothing and stays untouched, while one CARRYING an earned check that no
+    longer matches — or that never recorded — the current resolved definition
+    REFUSES validation with a named diagnostic for human resolution (an
+    unbound historical check is never quietly trusted). Unparseable model
+    drafts derive nothing — the validation gate owns the structural failure,
+    exactly like the classic pass. Returns ``(specs, errors)``; empty specs
+    is the no-op."""
     models, all_parsed = _model_index(staging)
     if not models or not all_parsed:
-        return []
+        return [], []
+    from ariadne.render import render
+    from ariadne.semantic_graph import load_graph
+
+    try:
+        graph = load_graph(staging / "semantic_layer")
+    except Exception:
+        graph = None  # the structural gate owns the loader failure
+    rendered: dict[str, str] = {}
+    if graph is not None:
+        for name, info in models.items():
+            envelope = graph.models.get(info["model"])
+            if envelope is None:
+                continue
+            try:
+                rendered[name] = render(envelope, metric=name).strip()
+            except Exception:
+                continue  # the compile gate owns the structural failure
     comps_dir = staging / "knowledge" / "computations"
     existing: dict[str, tuple[str, str]] = {}
     if comps_dir.is_dir():
@@ -842,38 +865,43 @@ def finalize_native_candidate(staging: Path) -> list[dict]:
             if isinstance(core_ref, dict) and core_ref.get("kind") == "semantic":
                 existing[str(core_ref.get("id"))] = (page.name, raw)
     specs: list[dict] = []
+    errors: list[str] = []
     for name, info in sorted(models.items()):
+        sanctioned = rendered.get(name)
         page = existing.get(f"{info['model']}::{name}")
         if page is None:
+            if sanctioned is not None:
+                specs.append(
+                    {
+                        "path": f"knowledge/computations/{name}.md",
+                        "content": _build_native_computation_page(name, info, sanctioned),
+                    }
+                )
+            continue  # no resolvable definition: the compile gate owns the failure
+        rel_name, raw = page
+        state, refusal = _native_computation_state(raw, name, info, sanctioned)
+        if refusal is not None:
+            errors.append(refusal)
+        if state == "stale" and sanctioned is not None:
             specs.append(
                 {
-                    "path": f"knowledge/computations/{name}.md",
-                    "content": _build_native_computation_page(name, info),
+                    "path": f"knowledge/computations/{rel_name}",
+                    "content": _refresh_native_computation_page(raw, name, info, sanctioned),
                 }
             )
-            continue
-        rel_name, raw = page
-        state = _native_computation_state(raw, name, info)
-        if state != "stale":
-            continue  # authored pages are never rewritten; current pages keep their bytes
-        specs.append(
-            {
-                "path": f"knowledge/computations/{rel_name}",
-                "content": _refresh_native_computation_page(raw, name, info),
-            }
-        )
-    return specs
+    return specs, errors
 
 
-def _native_computation_state(text: str, name: str, info: dict) -> str:
-    """``authored`` (no core-generated provenance marker: reviewed candidate
-    content, never rewritten by the finalize pass), ``current`` (generated
-    and still recording the exact sanctioned definition: SQL fence and
-    dataset sources match — bytes stay, earned evidence included) or
-    ``stale`` (generated but the recorded definition no longer matches: the
-    derived facts refresh and obsolete evidence clears). An unparseable page
-    is treated as authored — the page gate owns malformed pages and the
-    finalize never rewrites bytes it cannot parse."""
+def _native_computation_state(
+    text: str, name: str, info: dict, sanctioned: str | None
+) -> tuple[str, str | None]:
+    """``authored`` (skip: no evidence claim, an eligible claim, or bytes the
+    finalize never touches), ``stale`` (core-generated and no longer matching
+    the resolved definition: refresh) or ``refuse`` (an authored evidence
+    claim that cannot apply). ``sanctioned`` is the CURRENT resolved
+    sanctioned SQL of the metric from the existing compiler — the same
+    dependency-closure identity the compile gate sanctions; identity, marker
+    or raw own-expression strings alone are never definition proof."""
     from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
         parse_frontmatter,
     )
@@ -881,34 +909,73 @@ def _native_computation_state(text: str, name: str, info: dict) -> str:
     try:
         full, body, _start = parse_frontmatter(text, name)
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
-        return "authored"
+        return "authored", None
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
     native = profile.get("native") if isinstance(profile, dict) else None
     native = native if isinstance(native, dict) else {}
-    marker = f"model-{info['model']}"
-    if not any(
-        isinstance(source, dict) and source.get("id") == marker
+    generated = any(
+        isinstance(source, dict) and source.get("id") == f"model-{info['model']}"
         for source in native.get("sources") or []
-    ):
-        return "authored"
+    )
+    claims_evidence = "attester" in native or native.get("attestation") not in (
+        None,
+        "pending",
+    )
     fence = _SQL_FENCE_RE.search(body or "")
-    if (
-        native.get("dataset_sources") == list(info["dataset_sources"])
-        and fence is not None
-        and fence.group(1).strip() == info["expression"].strip()
-    ):
-        return "current"
-    return "stale"
+    recorded_sources = native.get("dataset_sources")
+    recorded_definition = fence is not None or isinstance(recorded_sources, list)
+    if generated:
+        if sanctioned is None:
+            return "authored", None  # the compile gate owns the definition failure
+        matches = (
+            fence is not None
+            and fence.group(1).strip() == sanctioned
+            and recorded_sources == list(info["dataset_sources"])
+        )
+        return ("current", None) if matches else ("stale", None)
+    if not claims_evidence:
+        return "authored", None  # pending/absent attestation claims nothing
+    if sanctioned is None:
+        return "authored", None  # the compile gate owns the definition failure
+    if not recorded_definition:
+        return "authored", (
+            f"knowledge/computations/{name}.md (its core_ref names"
+            f" {info['model']}::{name}): the page carries an independent"
+            " attestation bound to no recorded sanctioned definition (no"
+            " attested SQL fence or dataset sources) — an unbound historical"
+            " check is never trusted for the current executable bytes; record"
+            " the attested definition or withdraw the claim"
+        )
+    matches = (
+        fence is not None
+        and fence.group(1).strip() == sanctioned
+        and (
+            not isinstance(recorded_sources, list)
+            or recorded_sources == list(info["dataset_sources"])
+        )
+    )
+    if matches:
+        return "authored", None  # eligible: the earned check binds the current definition
+    return "authored", (
+        f"knowledge/computations/{name}.md (its core_ref names"
+        f" {info['model']}::{name}): the recorded independent attestation was"
+        " earned for a DIFFERENT sanctioned definition — the predecessor check"
+        " cannot apply to the current executable bytes; re-attest against the"
+        " current definition or withdraw the claim (the finalize never"
+        " rewrites authored content)"
+    )
 
 
-def _refresh_native_computation_page(text: str, name: str, info: dict) -> str:
+def _refresh_native_computation_page(
+    text: str, name: str, info: dict, sanctioned: str
+) -> str:
     """The surgical refresh of one STALE core-generated Computation page: the
-    derived facts (sanctioned SQL fence, runtime, dataset sources) update to
-    the current definition and the predecessor's obsolete attester/check is
-    cleared down to the honest ``attestation: pending`` — a prior numerical
-    check is never carried onto executable bytes it did not check. Every
-    other byte of the page (identity, authored envelope, lifecycle,
-    sources, unrelated curated narrative) is preserved verbatim."""
+    derived facts (resolved sanctioned SQL fence, runtime, dataset sources)
+    update to the current definition and the predecessor's obsolete
+    attester/check is cleared down to the honest ``attestation: pending`` — a
+    prior numerical check is never carried onto executable bytes it did not
+    check. Every other byte of the page (identity, authored envelope,
+    lifecycle, sources, unrelated curated narrative) is preserved verbatim."""
     from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
         parse_frontmatter,
     )
@@ -922,7 +989,7 @@ def _refresh_native_computation_page(text: str, name: str, info: dict) -> str:
     native["attestation"] = "pending"
     native["runtime"] = "duckdb"
     native["dataset_sources"] = list(info["dataset_sources"])
-    new_fence = "```sql\n" + info["expression"].strip() + "\n```"
+    new_fence = "```sql\n" + sanctioned + "\n```"
     match = _SQL_FENCE_RE.search(body or "")
     if match is not None:
         body = body[: match.start()] + new_fence + body[match.end() :]
@@ -932,16 +999,19 @@ def _refresh_native_computation_page(text: str, name: str, info: dict) -> str:
     return f"---\n{front}\n---\n\n{body}"
 
 
-def _build_native_computation_page(name: str, info: dict) -> str:
+def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> str:
     """One honest generated native Computation page (spec0035 §6): the same
     sanctioned-SQL provenance the classic finalize pass produced, as a
     producer-native Computation profile anchored by its exact core_ref
-    semantic identity. Deterministic from the gate-checked model — no
-    wall-clock stamp, an unchanged retry is byte-identical. The page claims
-    no independent attestation (``attestation: pending``), no governing
-    Policy edge and no curated meaning: the authored metric page owns the
-    narrative; this page exists so the governed answer still discloses the
-    sanctioned computation and its honest attestation state."""
+    semantic identity. The recorded SQL fence is the metric's CURRENT
+    RESOLVED sanctioned definition from the existing compiler (full
+    dependency closure — never the raw own-expression string), so evidence
+    binds the exact executable bytes. Deterministic from the gate-checked
+    model — no wall-clock stamp, an unchanged retry is byte-identical. The
+    page claims no independent attestation (``attestation: pending``), no
+    governing Policy edge and no curated meaning: the authored metric page
+    owns the narrative; this page exists so the governed answer still
+    discloses the sanctioned computation and its honest attestation state."""
     semantic_id = f"{info['model']}::{name}"
     model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
     meta = {
@@ -982,7 +1052,7 @@ def _build_native_computation_page(name: str, info: dict) -> str:
         "expected-value oracle is cited (compile and grain checks are not "
         "independent numeric attestation). "
         "Business rules: cited metric page.\n\n"
-        "```sql\n" + info["expression"].strip() + "\n```\n"
+        "```sql\n" + sanctioned + "\n```\n"
     )
     return f"---\n{front}\n---\n\n{body}"
 
