@@ -862,3 +862,38 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
         )
     assert "pgsecret" not in str(nfkc_error.value)
     assert opened == []
+
+    # Nonempty PG destination ENV values are significant VERBATIM (libpq
+    # takes the getenv result as-is; only "" stays unset): a database or
+    # role named with significant whitespace is a DIFFERENT valid target
+    # than its trimmed form, so switching between them requires its own
+    # approval and is recorded without trimming (spec 0025 §4 exact current
+    # effective dbname/user binding).
+    monkeypatch.setenv(_PG_ENV, "host=db-a.internal user=owner")
+    monkeypatch.setenv("PGDATABASE", "app")
+    approved_db = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_db["storage_bindings"]["postgres:pg"]["dbname"] == "app"
+    monkeypatch.setenv("PGDATABASE", "app ")  # one significant trailing space
+    with pytest.raises(ValueError, match="NO operator approval"):
+        api.inputs(started["proposal"])  # the 'app' grant does not cover 'app '
+    assert opened == []
+    approved_db_ws = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_db_ws["storage_bindings"]["postgres:pg"]["dbname"] == "app "
+    assert approved_db_ws["approval_digest"] != approved_db["approval_digest"]
+    # same raw ENV branch for the role: PGUSER keeps significant characters;
+    # the 'owner ' role is a different target than any approved role, so a
+    # fresh approval records it verbatim and no earlier grant covers it
+    monkeypatch.setenv(_PG_ENV, "host=db-a.internal dbname=app")
+    monkeypatch.setenv("PGUSER", "owner ")
+    approved_user_ws = api.approve_sources(
+        started["proposal"], proposed["revision"], proposed["source_digest"]
+    )
+    assert approved_user_ws["storage_bindings"]["postgres:pg"]["user"] == "owner "
+    monkeypatch.setenv("PGUSER", "other-role")
+    with pytest.raises(ValueError, match="NO operator approval"):
+        api.inputs(started["proposal"])  # no grant covers dbname 'app ' + 'other-role'
+    assert opened == []

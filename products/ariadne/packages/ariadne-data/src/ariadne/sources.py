@@ -897,8 +897,12 @@ def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict
         if keyword in targets:
             continue
         env_value = os.environ.get(env_name)
-        if env_value and env_value.strip():
-            targets[keyword] = env_value.strip()
+        if env_value:
+            # nonempty PG destination environment values are significant
+            # VERBATIM (libpq connects with the getenv result as-is; only
+            # "" stays unset) — whitespace is a valid target character and
+            # is never trimmed away (spec 0025 §4 exact effective binding)
+            targets[keyword] = env_value
     user = targets.get("user")
     if user is None:
         user = _pg_os_user(source, variable)
