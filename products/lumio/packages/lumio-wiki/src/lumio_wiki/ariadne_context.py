@@ -1172,7 +1172,9 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
             f"{where} method must be a mapping with exactly {{operation, arguments}}"
         )
     else:
-        if method["operation"] not in _ANSWER_EXAMPLE_OPERATIONS:
+        if not isinstance(method["operation"], str) or (
+            method["operation"] not in _ANSWER_EXAMPLE_OPERATIONS
+        ):
             errors.append(
                 f"{where} method.operation must be one of "
                 f"{sorted(_ANSWER_EXAMPLE_OPERATIONS)} (never standalone SQL)"

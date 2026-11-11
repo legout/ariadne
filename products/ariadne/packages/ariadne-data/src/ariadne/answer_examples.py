@@ -12,7 +12,7 @@ the optional MCP adapter, issue #21) shares; the operator review command
 - ``save_candidate_example`` validates one explicit submission, derives a
   bounded historical answer excerpt and full-result digest, verifies cited
   knowledge pages against the exact selected Git revision, then authors ONE
-  native ``knowledge/answer_examples/`` Compiled Page (producer-owned
+  native ``knowledge/answer-examples/`` Compiled Page (producer-owned
   ``ariadne_profile`` kind ``answer_example``) through the shared native
   page-batch writer — the same proposal lock/revision discipline and human
   Git admission as every authored artifact. No second Example store or index
@@ -284,7 +284,11 @@ def _page_markdown(record: dict, example_id: str) -> bytes:
     )
     front = {
         "id": f"entity:{example_id}",
-        "title": question,
+        # the canonical title carries the generated identity: two Examples of
+        # the same question are two distinct pages under the writer's
+        # declared-title addressing, never a title collision; the question's
+        # exact bytes stay in native.question and the body heading.
+        "title": f"{question} ({example_id})",
         "entity_types": ["answer-example"],
         "tags": ["answer-example"],
         "summary": interpretation,
@@ -483,134 +487,85 @@ def _is_stale(meta: dict, served_root: Path) -> bool:
     return False
 
 
-def validate_example_record(meta: dict, body: str, admitted_root: Path) -> None:
-    """Validate a newly authored Example against the selected Git candidate."""
-    if meta.get("status") != "draft":
-        raise ValueError(
-            f"the candidate Example must have draft status, not {meta.get('status')!r}"
-        )
-    for key in ("question", "interpretation"):
-        value = meta.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"the candidate Example needs a non-empty string {key!r}")
-    method = meta.get("method")
-    operation = method.get("operation") if isinstance(method, dict) else None
-    arguments = method.get("arguments") if isinstance(method, dict) else None
-    if operation not in OPERATIONS or not isinstance(arguments, dict) or not arguments:
-        raise ValueError(
-            "the candidate Example must record operation 'get_metric' or 'define_metric' "
-            "with its structured 'arguments' (never standalone SQL)"
-        )
-    missing = [
-        key
-        for key in _OPERATION_ARGUMENTS[operation]
-        if not isinstance(arguments.get(key), str) or not arguments[key].strip()
-    ]
-    if missing:
-        raise ValueError(
-            f"the candidate Example's {operation!r} method is missing structured "
-            f"arguments (missing or non-string: {', '.join(missing)})"
-        )
-    validated_sql_provenance(meta, "the candidate Example")
-    if _ANSWER_EVIDENCE_RE.search(body) is None:
-        raise ValueError(
-            "the candidate Example must keep its bounded historical answer evidence "
-            "(captured excerpt and full structured-result digest) in the page body"
-        )
-    excerpt = re.search(r"````json\n(.*?)\n````", body, re.DOTALL)
-    if excerpt is None:
-        raise ValueError("the candidate Example's answer excerpt block is missing")
-    if len(excerpt.group(1).encode("utf-8")) > MAX_EXCERPT_BYTES:
-        raise ValueError(
-            f"the candidate Example's answer excerpt is over the {MAX_EXCERPT_BYTES}-byte "
-            "bound — submit a fresh bounded revision"
-        )
-    sources = meta.get("sources")
-    if not isinstance(sources, list):
-        raise ValueError("'sources' must be the recorded list of metric/Policy digests")
-    for entry in sources:
-        path = entry.get("path") if isinstance(entry, dict) else None
-        sha256 = entry.get("sha256") if isinstance(entry, dict) else None
-        if (
-            not isinstance(path, str)
-            or not path.strip()
-            or not path.endswith(".md")
-            or not isinstance(sha256, str)
-            or not _SHA256_RE.fullmatch(sha256)
-        ):
-            raise ValueError(
-                "each recorded citation must be a metric/Policy page "
-                "(context_layer/metrics|policies/*.md) with its sha256 digest"
-            )
-        if _resolve_citation(path, admitted_root)["sha256"] != sha256:
-            raise ValueError(f"recorded citation {path!r} does not match the selected Git revision")
-
-
 def validate_candidate_records(project: Path, record: dict, candidate_root: Path) -> list[str]:
-    """Check new/edited Examples against this candidate; preserve admitted history."""
+    """Core meaning checks over the candidate's SDK-parsed answer_example
+    pages, BEFORE admission (spec0035 C4): a new or changed record carries the
+    per-operation required structured arguments, stays within the
+    whole-encoded-page bound, keeps valid system-derived SQL provenance and
+    its bounded body evidence, and cites only metric/Policy pages that exist
+    at this exact candidate with matching digests. Unchanged admitted history
+    (exact baseline bytes) is never re-judged: a historical Example may be
+    stale, and its file is never rewritten or rejected for it. System-owned
+    claim forgery is already refused at the write gate
+    (``proposals._refuse_forged_claims``); the producer stays structural-only.
+    SDK-parsed profiles only — never a second KB parser."""
+    from lumio_wiki import load_knowledge_base
+
     from . import proposals
 
-    examples_root = candidate_root / EXAMPLES_DIR
-    paths = (
-        {
-            f"{EXAMPLES_DIR}/{path.name}": path
-            for path in sorted(examples_root.glob("*.md"))
-            if path.is_file() and path.name not in ("index.md", "log.md")
-        }
-        if examples_root.is_dir()
-        else {}
-    )
+    kb_root = candidate_root / "knowledge"
+    if not kb_root.is_dir():
+        return []
+    kb, _report = load_knowledge_base(kb_root)
     baseline = record.get("expected_baseline")
-    baseline_paths: set[str] = set()
-    if baseline is not None:
-        baseline_paths = {
-            rel
-            for rel in proposals._git(
-                ["ls-tree", "-r", "--name-only", baseline, "--", EXAMPLES_DIR], project
-            ).stdout.splitlines()
-            if rel.startswith(f"{EXAMPLES_DIR}/")
-            and rel.count("/") == 1
-            and rel.endswith(".md")
-            and PurePosixPath(rel).name not in ("index.md", "log.md")
-        }
-    errors = [
-        f"{rel}: previously admitted answer-example history may not be deleted"
-        for rel in sorted(baseline_paths - paths.keys())
-    ]
-    for rel, path in paths.items():
-        data = path.read_bytes()
+    revision = record.get("candidate_revision")
+    if not isinstance(revision, str):
+        errors: list[str] = ["the candidate record carries no candidate revision"]
+        return errors
+    errors = []
+    for page in kb.pages:
+        profile = page.ariadne_profile
+        if profile is None or profile.kind != "answer_example":
+            continue
+        rel = f"knowledge/{page.path}"
+        data = (candidate_root / rel).read_bytes()
         if baseline is not None and proposals._read_blob(project, baseline, rel) == data:
-            continue  # unchanged admission evidence may now be stale history
-        try:
-            text = data.decode("utf-8")
-            match = _FRONTMATTER_RE.match(text)
-            if match is None:
-                raise ValueError("frontmatter is missing or malformed")
-            meta = yaml.safe_load(match.group(1))
-            if not isinstance(meta, dict) or meta.get("type") != "answer_example":
-                raise ValueError("the candidate page is not an answer_example record")
-            if len(data) > MAX_RECORD_BYTES:
-                raise ValueError(f"record exceeds the {MAX_RECORD_BYTES}-byte bound")
-            forged = sorted(
-                {"id", "verified", "review", "stale", "superseded", "superseded_by", "attested"}
-                & meta.keys()
+            continue  # unchanged admitted history may now be stale history
+        native = profile.native or {}
+        method = native.get("method")
+        operation = method.get("operation") if isinstance(method, dict) else None
+        arguments = method.get("arguments") if isinstance(method, dict) else None
+        if operation not in OPERATIONS or not isinstance(arguments, dict) or not arguments:
+            errors.append(
+                f"{rel}: method must record operation {list(OPERATIONS)} with "
+                "structured arguments"
             )
-            if forged:
-                raise ValueError(f"system-owned Example claim(s) are not authored: {forged}")
-            submitter = meta.get("submitter")
-            if (
-                not isinstance(submitter, dict)
-                or not isinstance(submitter.get("identity"), str)
-                or not submitter["identity"].strip()
-                or not isinstance(submitter.get("attestation"), str)
-                or not submitter["attestation"].strip()
-            ):
-                raise ValueError(
-                    "the submitter identity and business-meaning attestation are required"
+        else:
+            missing = [
+                key
+                for key in _OPERATION_ARGUMENTS[operation]
+                if not isinstance(arguments.get(key), str) or not arguments[key].strip()
+            ]
+            if missing:
+                errors.append(
+                    f"{rel}: the {operation!r} method is missing structured arguments "
+                    f"(missing or non-string: {', '.join(missing)})"
                 )
-            validate_example_record(meta, match.group(2), candidate_root)
-        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
-            errors.append(f"{rel}: {exc}")
+        if len(data) > MAX_RECORD_BYTES:
+            errors.append(f"{rel}: record exceeds the {MAX_RECORD_BYTES}-byte bound")
+        try:
+            validated_sql_provenance(native, rel)
+        except ValueError as exc:
+            errors.append(str(exc))
+        if _ANSWER_EVIDENCE_RE.search(page.body) is None:
+            errors.append(
+                f"{rel}: the bounded historical answer evidence (captured excerpt "
+                "and full structured-result digest) must stay in the page body"
+            )
+        for entry in native.get("citations") or []:
+            cited = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(cited, str) or not cited:
+                errors.append(f"{rel}: a recorded citation carries no path")
+                continue
+            try:
+                verified = _verify_citation(project, revision, cited)
+            except ValueError as exc:
+                errors.append(f"{rel}: {exc}")
+                continue
+            if entry.get("sha256") != verified["sha256"]:
+                errors.append(
+                    f"{rel}: recorded citation {cited!r} does not match this candidate's bytes"
+                )
     return errors
 
 
@@ -724,7 +679,17 @@ def search_candidate(
     include_history: bool = False,
     include_sql: bool = False,
 ) -> list[dict]:
-    """Read one recorded candidate commit directly; never a worktree or source."""
+    """Read one recorded candidate revision through the public SDK capture
+    (exact commit, typed parsed pages), select by the parsed producer kind —
+    never a physical category, a filename-derived identity or a native.type
+    gate — and rank with the KnowledgeBase's own lexical search over the
+    already-authorized candidate set. Operator authoring plane: reachable
+    only with the same capability that saved the candidate (the CLI
+    ``--project`` surface / a server toolset that also exposes Example
+    save). Draft labels, the exact revision and the SQL opt-in are
+    preserved; nothing is executed."""
+    from lumio_wiki.git_authoring import capture_revision
+
     from . import proposals
 
     project = Path(project).resolve()
@@ -736,41 +701,53 @@ def search_candidate(
             f"revision {revision} is not proposal {proposal}'s recorded current candidate "
             f"{record['candidate_revision']} — re-read the candidate before searching"
         )
-    paths = proposals._git(
-        ["ls-tree", "-r", "--name-only", revision, "--", f"knowledge/{EXAMPLES_DIR}"], project
-    ).stdout.splitlines()
-    records = []
-    for rel in sorted(paths):
-        if (
-            not rel.startswith(f"knowledge/{EXAMPLES_DIR}/")
-            or rel.count("/") != 2
-            or not rel.endswith(".md")
-            or PurePosixPath(rel).name in ("index.md", "log.md")
-        ):
-            continue
-        blob = proposals._read_blob(project, revision, rel)
-        if blob is None:
-            continue
-        if len(blob) > MAX_RECORD_BYTES:
-            raise ValueError(f"{rel}: candidate record exceeds the {MAX_RECORD_BYTES}-byte bound")
-        match = _FRONTMATTER_RE.match(blob.decode("utf-8"))
-        if match is None:
-            continue
-        try:
-            front = yaml.safe_load(match.group(1))
-        except yaml.YAMLError:
-            continue
-        native = ((front or {}).get("ariadne_profile") or {}).get("native")
-        if isinstance(native, dict) and native.get("type") == "answer_example":
-            records.append(
-                (rel, native, "draft", _candidate_is_stale(native, project, revision, proposals))
+    captured = capture_revision(project / "knowledge", revision)
+    selected = [
+        page
+        for page in captured.kb.pages
+        if page.ariadne_profile is not None and page.ariadne_profile.kind == "answer_example"
+    ]
+    if not selected:
+        return []
+    ranked = []
+    for result in captured.kb.search_pages(query, limit=len(selected), pages=selected):
+        page = result.page
+        meta = page.ariadne_profile.native or {}
+        stale = _candidate_is_stale(meta, project, revision, proposals)
+        if stale and not include_history:
+            continue  # stale history never occupies a result slot by default
+        submitter = meta.get("submitter")
+        submitter = submitter if isinstance(submitter, dict) else {}
+        ranked.append(
+            (
+                0 if not stale else 1,
+                -result.score,
+                page.path,
+                {
+                    "id": page.id,
+                    "entity_id": page.id,
+                    "status": "draft",
+                    "stale": stale,
+                    "question": meta.get("question"),
+                    "interpretation": meta.get("interpretation"),
+                    "method": meta.get("method"),
+                    "provenance": {
+                        "submitter": submitter.get("identity"),
+                        "generated": (meta.get("answer") or {}).get("captured"),
+                        "sources": meta.get("citations") or [],
+                    },
+                    "path": f"knowledge/{page.path}",
+                    "proposal": proposal,
+                    "revision": revision,
+                },
+                meta,
             )
-    return _rank_records(
-        records,
-        query,
-        limit,
-        include_history,
-        include_sql,
-        proposal=proposal,
-        revision=revision,
-    )
+        )
+    ranked.sort(key=lambda item: item[:3])
+    selected_hits = ranked[:limit]
+    if include_sql:
+        for *_, hit, meta in selected_hits:
+            hit["provenance"]["sql"] = validated_sql_provenance(
+                meta, f"answer example {hit['id']!r}"
+            )
+    return [hit for *_, hit, _meta in selected_hits]

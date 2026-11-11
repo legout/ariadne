@@ -71,19 +71,28 @@ def _candidate_page(project, saved):
     return worktree_of(root, saved["proposal"]) / saved["path"]
 
 
-def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path, capsys):
-    """The exact submitted SQL is opt-in historical evidence, not executable input
+def _record_revision(project, proposal):
+    from ariadne import proposals
 
-    spec0035 C4 native journey: one revision-4 integrated release admits the
-    retail knowledge (metric + Policies + the answer_examples category); an
-    explicit CLI save authors ONE native knowledge/answer_examples page
-    through the shared candidate writer; ordinary search stays admitted-only;
-    the explicit candidate preview labels the draft; opt-in returns the exact
-    submitted SQL verbatim; and no step ever opens the DuckDB source."""
-    import json
+    return proposals._load_record(project, proposal)["candidate_revision"]
 
+
+def _cli_for(project):
+    from ariadne.cli import main as cli
+
+    def cli_run(*args, stdin=None):
+        return cli([*args, "--project", str(project)], stdin=stdin)
+
+    return cli_run
+
+
+def _example_release(root):
+    """One admitted revision-4 integrated release carrying the retail metric,
+    both Policies, the finalize computations category and the answer-examples
+    category/entity type — the shared native Example baseline (extracted
+    owned-fixture helper; expectations stay independently authored constants)."""
     import yaml
-    from integration.tests.lumio_metric_mvp import (  # pyright: ignore[reportMissingImports] — qualified test env is external
+    from integration.tests.lumio_metric_mvp import (
         CONTROL,
         NAMESPACE,
         activate,
@@ -95,10 +104,9 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
 
     from ariadne import admission
     from ariadne.authoring import AuthoringProject
-    from ariadne.cli import main as cli
     from tests.test_git_authoring import approved, run_git, worktree_of
 
-    project = content_project(tmp_path / "project")
+    project = content_project(root)
     # The revision-4 integrated selector validates the WHOLE candidate under
     # the producer contract: the scaffolded classic context_layer bundle is
     # retired — the same pure-native base the proven revision-2/3 journeys use.
@@ -115,15 +123,6 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-
-    def record_revision(proposal):
-        from ariadne import proposals
-
-        return proposals._load_record(project, proposal)["candidate_revision"]
-
-    # Candidate 1: the revision-4 integrated opt-in (frozen rev-3 query set
-    # plus the answer_example profile and the two Example operations) with the
-    # authored metric-binding inventory, and the answer_examples KB category.
     tree = worktree_of(project, started["proposal"])
     # The proven candidate edit: the reference page's typed profile cites a
     # catalog resource outside this project's approved registry — strip the
@@ -159,7 +158,7 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         f"namespace: {NAMESPACE}\nprofile: ariadne-context/1\n"
         + yaml.safe_dump({"support_revision": 4, "policy_bindings": bindings}, sort_keys=False)
     )
-    previous = record_revision(started["proposal"])
+    previous = _record_revision(project, started["proposal"])
     run_git(tree, "add", "-f", "--", "knowledge")
     run_git(tree, "add", "--", "context_integration.yaml")
     run_git(tree, "commit", "-q", "-m", "human: revision-4 answer-example candidate")
@@ -168,10 +167,30 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     validated = api.validate_proposal(started["proposal"], revision)
     assert validated["ok"] is True, validated["errors"]
     review = api.review_proposal(started["proposal"])
-    activate(project, review, preview(project, review, tmp_path / "published"))
+    activate(project, review, preview(project, review, Path(root) / "published"))
+    return project, api, review
 
-    def cli_run(*args, stdin=None):
-        return cli([*args, "--project", str(project)], stdin=stdin)
+
+def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path, capsys):
+    """The exact submitted SQL is opt-in historical evidence, not executable input
+
+    spec0035 C4 native journey: one revision-4 integrated release admits the
+    retail knowledge (metric + Policies + the answer-examples category); an
+    explicit CLI save authors ONE native knowledge/answer-examples page
+    through the shared candidate writer; ordinary search stays admitted-only;
+    the explicit candidate preview labels the draft; opt-in returns the exact
+    submitted SQL verbatim; and no step ever opens the DuckDB source."""
+    import hashlib
+    import io
+    import json
+
+    import yaml
+    from integration.tests.lumio_metric_mvp import activate, preview
+
+    from tests.test_git_authoring import worktree_of
+
+    project, api, review = _example_release(tmp_path / "project")
+    cli_run = _cli_for(project)
 
     db_path = project / "data" / "orders.duckdb"
     db_before = db_path.read_bytes()
@@ -193,8 +212,6 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         "source": "submitted_result.sql",
         "text": _EXACT_SQL,
     }
-    import hashlib
-
     assert native["answer"]["result_digest"] == hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -235,7 +252,7 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         preview(
             project,
             example_review,
-            tmp_path / "published",
+            tmp_path / "project" / "published",
             review["revision"],
         ),
     )
@@ -424,3 +441,352 @@ def test_define_metric_examples_retain_only_the_actual_operation_arguments(proje
     metadata = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
     assert metadata["method"]["operation"] == "define_metric"
     assert metadata["method"]["arguments"]["source"] == "demo.main.orders"
+
+
+def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, capsys):
+    """F1: an actual CLI save, CLI admitted/candidate search and the MCP save
+    tool never construct the source builder — a boundary sentinel on
+    ``DuckDBExecution`` trips on any construction (the sentinel is boundary
+    proof, not a mock of the code under test). The boundary is restored
+    before the human admission, which legitimately needs validation."""
+    import asyncio
+    import io
+    import json
+
+    from ariadne import execution, serve
+    from ariadne.query import QueryRuntime
+
+    project, api, review = _example_release(tmp_path / "project")
+    cli_run = _cli_for(project)
+    db_path = project / "data" / "orders.duckdb"
+    db_before = db_path.read_bytes()
+
+    def _sentinel(self, *args, **kwargs):
+        raise AssertionError("the source builder was constructed during Example save/search")
+
+    monkeypatch.setattr(execution.DuckDBExecution, "__init__", _sentinel)
+
+    submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    saved = json.loads(capsys.readouterr().out)
+
+    assert cli_run("search-examples", "gross margin region") == 0
+    assert json.loads(capsys.readouterr().out) == []
+    selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
+    assert cli_run("search-examples", "gross margin region", *selectors) == 0
+    hits = json.loads(capsys.readouterr().out)
+    assert len(hits) == 1 and hits[0]["status"] == "draft"
+
+    app = serve.build_app(QueryRuntime, project=str(project))
+
+    async def _mcp_save():
+        return await app.call_tool("save_example", {"submission": submission})
+
+    def _payload(result):
+        # a plain dict return is exactly one JSON text block: no structured
+        # content wrapper (the observed native form, per the proven journey)
+        assert not getattr(result, "is_error", False)
+        blocks = list(getattr(result, "content", ()))
+        assert len(blocks) == 1 and blocks[0].type == "text"
+        return json.loads(blocks[0].text)
+
+    mcp_saved = _payload(asyncio.run(_mcp_save()))
+    assert mcp_saved["status"] == "draft" and mcp_saved["id"] != saved["id"]
+    assert db_path.read_bytes() == db_before
+
+    monkeypatch.undo()  # restore the boundary: human admission legitimately validates
+    validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+
+
+def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, capsys):
+    """F2: the same question saved into the same candidate revision and again
+    after admission creates distinct drafts — the generated identity suffixes
+    the Entity id and the canonical title, the writer's identity guard holds,
+    and the original native question bytes are preserved verbatim in every
+    persisted record; nothing is overwritten."""
+    import io
+    import json
+
+    import yaml
+    from integration.tests.lumio_metric_mvp import activate, preview
+
+    from tests.test_git_authoring import worktree_of
+
+    project, api, review = _example_release(tmp_path / "project")
+    cli_run = _cli_for(project)
+    submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert (
+        cli_run(
+            "save-example",
+            "--proposal",
+            first["proposal"],
+            "--expected-revision",
+            first["candidate_revision"],
+            stdin=io.StringIO(json.dumps(submission)),
+        )
+        == 0
+    )
+    second = json.loads(capsys.readouterr().out)
+    assert second["id"] != first["id"]
+    assert second["proposal"] == first["proposal"]
+
+    def _persisted(saved):
+        page = worktree_of(project, saved["proposal"]) / saved["path"]
+        front = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
+        native = front["ariadne_profile"]["native"]
+        return front["title"], native["question"]
+
+    title1, question1 = _persisted(first)
+    title2, question2 = _persisted(second)
+    assert title1 != title2  # unique canonical titles carry the generated identity
+    assert first["id"] in title1 and second["id"] in title2
+    assert question1 == question2 == submission["question"]  # exact original bytes
+
+    # after admission: the next same-question save is a fresh draft, still no overwrite
+    current = _record_revision(project, first["proposal"])
+    validated = api.validate_proposal(first["proposal"], current)
+    assert validated["ok"] is True, validated["errors"]
+    example_review = api.review_proposal(first["proposal"])
+    activate(
+        project,
+        example_review,
+        preview(
+            project,
+            example_review,
+            tmp_path / "project" / "published",
+            review["revision"],
+        ),
+    )
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    third = json.loads(capsys.readouterr().out)
+    assert third["id"] not in (first["id"], second["id"])
+    assert third["proposal"] != first["proposal"]
+    title3, _question3 = _persisted(third)
+    assert title3 not in (title1, title2)
+
+
+def test_native_example_candidate_preview_uses_persisted_identity(tmp_path):
+    """F3: the explicit candidate preview selects parsed producer kinds
+    through the public SDK capture — a valid answer_example page under ANOTHER
+    declared category, whose persisted Entity id differs from its filename
+    stem and whose native block carries no type key, is found by identity,
+    never by path/filename/type matching."""
+    import hashlib
+    import json
+
+    from ariadne import answer_examples, proposals
+    from tests.test_git_authoring import approved
+
+    project, api, review = _example_release(tmp_path / "project")
+    result_literal = {
+        "metric": "revenue",
+        "governed": True,
+        "columns": ["region"],
+        "rows": [{"region": "EMEA"}],
+    }
+    captured_text = json.dumps(result_literal, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(captured_text.encode()).hexdigest()
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = _record_revision(project, started["proposal"])
+    front = {
+        "id": "entity:persisted-example-identity",
+        "title": "Saved order example",
+        "entity_types": ["answer-example"],
+        "tags": ["answer-example"],
+        "summary": "Persisted identity probe.",
+        "lifecycle": "draft",
+        "visibility": "public",
+        "sources": [{"id": "src-explicit-submission", "title": "Explicit user submission"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "answer_example",
+            "native": {
+                "title": "Saved order example",
+                "description": "Persisted identity probe.",
+                "tags": ["answer-example"],
+                "sources": [],
+                "question": "What is the order number format?",
+                "interpretation": "A composite globally unique order number.",
+                "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+                "submitter": {
+                    "identity": "expert:dana",
+                    "attestation": "Confirmed against the observed result.",
+                },
+                "citations": [],
+                "answer": {
+                    "captured": "2026-11-11T00:00:00+00:00",
+                    "excerpt": captured_text,
+                    "result_digest": digest,
+                },
+            },
+        },
+    }
+    import yaml
+
+    body = (
+        "# What is the order number format?\n\n"
+        "Historical evidence only — never a cached answer.\n\n"
+        f"Captured answer excerpt (2026-11-11T00:00:00+00:00; full structured-result "
+        f"digest `{digest}`):\n\n````json\n{captured_text}\n````\n"
+    )
+    page = "---\n" + yaml.safe_dump(front, sort_keys=False, allow_unicode=True) + "---" + body
+    proposals.edit_page_batch(
+        project,
+        started["proposal"],
+        revision,
+        [{"path": "knowledge/references/saved-order-example.md", "content": page}],
+    )
+    new_revision = _record_revision(project, started["proposal"])
+    hits = answer_examples.search_candidate(
+        project,
+        "order number format",
+        proposal=started["proposal"],
+        revision=new_revision,
+    )
+    assert len(hits) == 1
+    hit = hits[0]
+    assert hit["entity_id"] == "entity:persisted-example-identity"  # persisted, not filename
+    assert hit["id"] == "entity:persisted-example-identity"
+    assert hit["path"] == "knowledge/references/saved-order-example.md"  # another declared category
+    assert hit["status"] == "draft"
+    assert hit["proposal"] == started["proposal"] and hit["revision"] == new_revision
+    assert "sql" not in hit["provenance"]
+    assert "rows" not in hit
+
+
+def test_native_example_edits_keep_core_validation(tmp_path):
+    """F4: generic native page edits cannot smuggle invalid Example records
+    past candidate validation — a record missing its required structured
+    argument, an oversize encoded page, and a changed citation with a forged
+    digest each refuse BEFORE admission on the same candidate boundary; a
+    forged system-owned claim already refuses at the write gate."""
+    import copy
+    import hashlib
+    import json
+
+    import pytest
+    import yaml
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    from ariadne import proposals
+    from tests.test_git_authoring import approved
+
+    project, api, review = _example_release(tmp_path / "project")
+    result_literal = {
+        "metric": "revenue",
+        "governed": True,
+        "columns": ["region"],
+        "rows": [{"region": "EMEA"}],
+    }
+    captured_text = json.dumps(result_literal, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(captured_text.encode()).hexdigest()
+    base_native = {
+        "type": "answer_example",
+        "title": "Validation probe",
+        "description": "Candidate validation probe.",
+        "tags": ["answer-example"],
+        "sources": [{"id": "src-explicit-submission", "title": "Explicit user submission"}],
+        "question": "What is the order number format?",
+        "interpretation": "A composite globally unique order number.",
+        "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+        "submitter": {
+            "identity": "expert:dana",
+            "attestation": "Confirmed against the observed result.",
+        },
+        "citations": [{"path": "metrics/retail-revenue.md", "sha256": digest}],
+        "answer": {
+            "captured": "2026-11-11T00:00:00+00:00",
+            "excerpt": captured_text,
+            "result_digest": digest,
+        },
+    }
+
+    def _probe_page(native):
+        front = {
+            "id": "entity:validation-probe",
+            "title": "Validation probe",
+            "entity_types": ["answer-example"],
+            "tags": ["answer-example"],
+            "summary": "Candidate validation probe.",
+            "lifecycle": "draft",
+            "visibility": "public",
+            "sources": [{"id": "src-explicit-submission", "title": "Explicit user submission"}],
+            "ariadne_profile": {
+                "version": 1,
+                "kind": "answer_example",
+                "native": native,
+            },
+        }
+        body = (
+            "# Validation probe\n\n"
+            "Historical evidence only — never a cached answer.\n\n"
+            f"Captured answer excerpt ({native['answer']['captured']}; full "
+            f"structured-result digest `{native['answer']['result_digest']}`):\n\n"
+            f"````json\n{native['answer']['excerpt']}\n````\n"
+        )
+        return "---\n" + yaml.safe_dump(front, sort_keys=False, allow_unicode=True) + "---" + body
+
+    def _fresh():
+        started = api.start_proposal()
+        approved(api, project, started)
+        return started, _record_revision(project, started["proposal"])
+
+    def _edit(started, revision, native, name):
+        return proposals.edit_page_batch(
+            project,
+            started["proposal"],
+            revision,
+            [{"path": f"knowledge/answer-examples/{name}.md", "content": _probe_page(native)}],
+        )
+
+    # (a) missing required structured argument: the edit lands (structurally
+    # valid), candidate validation refuses before any admission
+    started, revision = _fresh()
+    broken = copy.deepcopy(base_native)
+    # non-empty structured arguments that miss the operation's REQUIRED key:
+    # the SDK structural gate passes them, Core candidate validation refuses
+    broken["method"]["arguments"] = {"dimensions": ["region"]}
+    _edit(started, revision, broken, "probe-a")
+    new_revision = _record_revision(project, started["proposal"])
+    validated = api.validate_proposal(started["proposal"], new_revision)
+    assert validated["ok"] is False
+    assert any("missing structured arguments" in e for e in validated["errors"]), validated
+
+    # (b) an oversize encoded record (>64 KiB SQL) refuses before admission
+    started, revision = _fresh()
+    broken = copy.deepcopy(base_native)
+    broken["sql_provenance"] = {"source": "submitted_result.sql", "text": "-- " + "x" * 70_000}
+    try:
+        _edit(started, revision, broken, "probe-b")
+        new_revision = _record_revision(project, started["proposal"])
+        validated = api.validate_proposal(started["proposal"], new_revision)
+        assert validated["ok"] is False
+        assert any("65536-byte bound" in e for e in validated["errors"]), validated
+    except GitAuthoringError as exc:
+        assert "content" in str(exc)  # the shared pre-write content boundary
+
+    # (c) a changed citation with a forged digest refuses before admission
+    started, revision = _fresh()
+    broken = copy.deepcopy(base_native)
+    broken["citations"] = [{"path": "metrics/retail-revenue.md", "sha256": "0" * 64}]
+    _edit(started, revision, broken, "probe-c")
+    new_revision = _record_revision(project, started["proposal"])
+    validated = api.validate_proposal(started["proposal"], new_revision)
+    assert validated["ok"] is False
+    assert any("does not match this candidate's bytes" in e for e in validated["errors"]), validated
+
+    # (d) a forged system-owned claim refuses at the write gate: the frozen
+    # answer_example structural schema names the forged field (verified) and
+    # no validated page ever reaches admission
+    started, revision = _fresh()
+    broken = copy.deepcopy(base_native)
+    broken["verified"] = [{"by": "someone"}]
+    with pytest.raises(GitAuthoringError, match="unsupported answer_example field"):
+        _edit(started, revision, broken, "probe-d")

@@ -328,6 +328,29 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
         print(json.dumps(result, default=_json_default))
         return 0
+    if args.command in ("save-example", "search-examples"):
+        # F1 (spec0035 C4): source-free Example authoring/discovery — the
+        # query runtime (the only public path that opens a source connection)
+        # is never constructed for Example save/search; the explicit candidate
+        # preview already returned above without any runtime.
+        if args.command == "save-example":
+            assert definition is not None
+            result = discovery.save_example(
+                definition,
+                proposal=args.proposal,
+                expected_revision=args.expected_revision,
+            )
+        else:
+            result = asyncio.run(
+                discovery.search_examples(
+                    args.query,
+                    limit=args.limit,
+                    include_history=args.include_history,
+                    include_sql=args.include_sql,
+                )
+            )
+        print(json.dumps(result, default=_json_default))
+        return 0
     discovery._refuse_unsupported(args.command.replace("-", "_"))
     limits = query_results.load_host_query_limits(args.project)
     runtime = QueryRuntime.open_project(

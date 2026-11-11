@@ -482,6 +482,30 @@ class _DiscoverySession:
             )
         return [*entries, hint]
 
+    def save_example(
+        self,
+        submission: dict,
+        *,
+        proposal: str | None = None,
+        expected_revision: str | None = None,
+    ) -> dict:
+        """Save one explicit Example as an unadmitted native candidate —
+        source-free: the managed save rides this discovery session and the
+        source builder is never constructed for authoring (spec0035 C4)."""
+        self._refuse_unsupported("save_example")
+        if self._managed is None or self._project is None:
+            raise ValueError("Git Example authoring requires a managed --project")
+        self._recheck_pinned()
+        from ariadne import answer_examples
+
+        return answer_examples.save_candidate_example(
+            submission,
+            self._project,
+            self._managed["commit"],
+            proposal=proposal,
+            expected_revision=expected_revision,
+        )
+
     async def search_examples(
         self,
         query: str,

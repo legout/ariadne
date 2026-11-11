@@ -2135,3 +2135,41 @@ def test_scoped_s3_navigation_requires_exact_private_admission(tmp_path):
         pinned2, expected2, aurora_path, metadata_store=metadata
     )
     assert aurora_v2.content == aurora_v2_text
+
+
+def test_answer_example_operation_reports_structural_errors():
+    """F5 (spec0035 C4): a malformed method.operation — a list or a mapping —
+    yields named field-path diagnostics through the public parse gate, never
+    a TypeError from frozenset membership. The base record is independently
+    authored from the producer contract; only the operation value varies."""
+    from lumio_wiki.ariadne_context import parse_ariadne_profile
+
+    native = {
+        "type": "answer_example",
+        "title": "Saved order example",
+        "description": "Persisted identity probe.",
+        "tags": ["answer-example"],
+        "sources": [],
+        "question": "What is the order number format?",
+        "interpretation": "A composite globally unique order number.",
+        "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+        "submitter": {"identity": "expert:dana", "attestation": "Confirmed."},
+        "citations": [{"path": "metrics/revenue.md", "sha256": "a" * 64}],
+        "answer": {
+            "captured": "2026-11-11T00:00:00+00:00",
+            "excerpt": '{"metric":"revenue"}',
+            "result_digest": "b" * 64,
+        },
+    }
+    ok, clean = parse_ariadne_profile(
+        {"version": 1, "kind": "answer_example", "native": dict(native)}, where="probe.md"
+    )
+    assert ok is not None and clean == []
+    for malformed in (["get_metric"], {"name": "revenue"}):
+        broken = dict(native)
+        broken["method"] = {"operation": malformed, "arguments": {"name": "revenue"}}
+        profile, errors = parse_ariadne_profile(
+            {"version": 1, "kind": "answer_example", "native": broken}, where="probe.md"
+        )
+        assert profile is None
+        assert any("method.operation must be one of" in e for e in errors), errors

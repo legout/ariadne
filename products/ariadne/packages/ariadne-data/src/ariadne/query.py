@@ -74,7 +74,6 @@ from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[report
 # roots; examples never touch compilation, execution or governed context.
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
-    answer_examples,
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
     proposals,  # AC10: the shared retired-format refusal in the project-open path
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
@@ -1312,20 +1311,11 @@ class _QueryRuntimeSession(_DiscoverySession):
         proposal: str | None = None,
         expected_revision: str | None = None,
     ) -> dict:
-        """Save one explicit Example as an unadmitted Git proposal candidate."""
-        self._refuse_unsupported("save_example")
-        self._discard_request_budget()
-        if self._managed is not None:
-            if self._project is None:
-                raise ValueError("Git Example authoring requires a managed --project")
-            return answer_examples.save_candidate_example(
-                submission,
-                self._project,
-                self._managed["commit"],
-                proposal=proposal,
-                expected_revision=expected_revision,
-            )
-        raise ValueError("a Git admission is required for Example authoring")
+        """Source-free delegation (spec0035 C4): Example authoring rides the
+        discovery session — the source builder is never constructed for it."""
+        return super().save_example(
+            submission, proposal=proposal, expected_revision=expected_revision
+        )
 
     async def search_examples(
         self,
