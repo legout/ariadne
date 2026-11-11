@@ -1832,3 +1832,95 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
         request_path.write_text(json.dumps(unknown_key), encoding="utf-8")
         with pytest.raises(AuthoringJourneyError):
             load_candidate_request(request_path)
+
+    # Direct public structured-SDK regression (spec0010 §3.1): repeated Source
+    # ID across distinct verbatim records refuses BEFORE any registration,
+    # retention or authored write — the first original is never quietly lost
+    # to a last-wins originals mapping.
+    import shutil
+
+    from lumio_wiki.authoring_journey import CandidateRequest, CandidateSourceRecord
+    from lumio_wiki.authoring_journey import ingest_candidate as sdk_ingest_candidate
+    from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
+
+    sdk_kb_root = tmp_path / "sdk-kb"
+    shutil.copytree(project, sdk_kb_root)
+    sdk_private = tmp_path / "sdk-private"
+    (sdk_private / "registry").mkdir(parents=True)
+    (sdk_private / "artifacts").mkdir()
+    sdk_profile = sdk_private / "profile.json"
+    sdk_profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(sdk_private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(sdk_private / "artifacts")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sdk_resources = resolve_private_profile(
+        load_private_profile(sdk_profile, kb_root=sdk_kb_root / "knowledge"),
+        kb_root=sdk_kb_root / "knowledge",
+        needs=frozenset({"registry", "artifacts"}),
+    )
+    registry_before = sorted(
+        str(p.relative_to(sdk_private)) for p in sdk_private.rglob("*") if p.is_file()
+    )
+    sdk_status_before = _git(sdk_kb_root, "status", "--porcelain")
+    shared_id = "verbatim-shared"
+    sdk_original_a = tmp_path / "sdk-original-a.md"
+    sdk_original_a.write_bytes(doc_lf_text.encode("utf-8"))
+    sdk_original_b = tmp_path / "sdk-original-b.md"
+    sdk_original_b.write_bytes(doc_crlf_text.encode("utf-8"))
+    sdk_authored = tmp_path / "sdk-authored"
+    sdk_authored.mkdir()
+    sdk_page_a = sdk_authored / "sdk-page-a.md"
+    sdk_page_a.write_text(
+        verbatim_page("entity:sdk-page-a", "SDK Page A", shared_id, doc_lf_text),
+        encoding="utf-8",
+    )
+    sdk_page_b = sdk_authored / "sdk-page-b.md"
+    sdk_page_b.write_text(
+        verbatim_page("entity:sdk-page-b", "SDK Page B", shared_id, doc_crlf_text),
+        encoding="utf-8",
+    )
+    duplicate_request = CandidateRequest(
+        schema_version=1,
+        base_revision=native_review["revision"],
+        sources=[
+            CandidateSourceRecord(
+                source_id=shared_id,
+                original_path=str(sdk_original_a),
+                expected_digest=hashlib.sha256(doc_lf_text.encode("utf-8")).hexdigest(),
+                intent="new",
+                verbatim_page="sdk-page-a.md",
+                expected_text_digest=hashlib.sha256(doc_lf_text.encode("utf-8")).hexdigest(),
+            ),
+            CandidateSourceRecord(
+                source_id=shared_id,
+                original_path=str(sdk_original_b),
+                expected_digest=hashlib.sha256(doc_crlf_text.encode("utf-8")).hexdigest(),
+                intent="new",
+                verbatim_page="sdk-page-b.md",
+                expected_text_digest=hashlib.sha256(doc_crlf_text.encode("utf-8")).hexdigest(),
+            ),
+        ],
+        pages=[str(sdk_page_a), str(sdk_page_b)],
+    )
+    with pytest.raises(AuthoringJourneyError, match="duplicate source record"):
+        sdk_ingest_candidate(
+            sdk_kb_root / "knowledge",
+            duplicate_request,
+            source_registry=sdk_resources.source_registry,
+            artifact_store=sdk_resources.artifact_store,
+        )
+    registry_after = sorted(
+        str(p.relative_to(sdk_private)) for p in sdk_private.rglob("*") if p.is_file()
+    )
+    assert registry_after == registry_before, "the refused candidate registered originals"
+    assert _git(sdk_kb_root, "status", "--porcelain") == sdk_status_before, (
+        "the refused candidate wrote authored content"
+    )

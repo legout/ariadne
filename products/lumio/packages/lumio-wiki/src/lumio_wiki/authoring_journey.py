@@ -555,6 +555,19 @@ def ingest_candidate(
             "default required policy",
             code="invalid_retention_policy",
         )
+    # Loader-equivalent Source identity uniqueness (spec0010 §3.1): repeated
+    # Source IDs across the WHOLE source-record collection — distinct verbatim
+    # selectors or mixed verbatim/distilled records — refuse BEFORE any
+    # private registration, retention or authored write; originals are never
+    # silently overwritten (last-wins).
+    seen_source_ids: set[str] = set()
+    for source in request.sources:
+        if source.source_id in seen_source_ids:
+            raise AuthoringJourneyError(
+                f"duplicate source record for {source.source_id!r}",
+                code="invalid_candidate_request",
+            )
+        seen_source_ids.add(source.source_id)
     kb_path = Path(kb_root).resolve()
     manifest = _load_authoring_manifest(kb_path)
     if manifest is None:
