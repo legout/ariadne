@@ -2267,7 +2267,12 @@ def refresh_schema(
     )
     try:
         con, catalog = owned.con, owned.catalog
-        declared = _declared_columns(con, catalog)
+        # spec0035 §8: declared catalog metadata SQL is measurement work —
+        # it runs under the SAME shared profiling budget guard (never a new
+        # or reset deadline), so an attached catalog's information_schema
+        # read cannot outlive the operator's time ceiling unwatched
+        with profiling_budget.guard(con):
+            declared = _declared_columns(con, catalog)
         # profile ONLY the requested tables (bounded, explicit refresh work)
         profiles: dict[str, dict] = {}
         matched: dict[tuple, dict] = {}

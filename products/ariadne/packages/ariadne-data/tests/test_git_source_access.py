@@ -1062,6 +1062,79 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     with pytest.raises(profiler.ProfilingPayloadExceeded, match="statistic serializes"):
         api.inputs(started["proposal"])
 
+    # --- two further approved sources for the reviewer's concrete scenarios:
+    # one CJK-statistic table (real CLI escaping) and one wide ASCII table
+    # (bounded collection against the remaining shared budget)
+    (project / "ariadne.yaml").write_text(
+        "# operator host config (no profiling section)\n", encoding="utf-8"
+    )
+    cjk_con = duckdb.connect()
+    cjk_con.execute("CREATE TABLE notes (id INTEGER, note VARCHAR)")
+    cjk_con.executemany("INSERT INTO notes VALUES (?, ?)", [(1, "一" * 6000)])
+    cjk_con.execute(f"COPY notes TO '{project / 'data' / 'cjk.parquet'}' (FORMAT PARQUET)")
+    cjk_con.close()
+    wide_con = duckdb.connect()
+    wide_con.execute(
+        "CREATE TABLE wide_t (c0 VARCHAR, c1 VARCHAR, c2 VARCHAR, c3 VARCHAR, "
+        "c4 VARCHAR, c5 VARCHAR, c6 VARCHAR, c7 VARCHAR)"
+    )
+    wide_con.executemany(
+        "INSERT INTO wide_t VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [tuple("x" * 30_000 for _ in range(8))],
+    )
+    wide_con.execute(f"COPY wide_t TO '{project / 'data' / 'wide.parquet'}' (FORMAT PARQUET)")
+    wide_con.close()
+    reproposed = api.propose_sources(
+        started["proposal"],
+        settled_revision,
+        [
+            {"name": "cjk", "type": "parquet", "path": "data/cjk.parquet"},
+            {"name": "wide", "type": "parquet", "path": "data/wide.parquet"},
+        ],
+    )
+    api.approve_sources(started["proposal"], reproposed["revision"], reproposed["source_digest"])
+    settled_revision = reproposed["revision"]
+
+    # --- Unicode ACTUAL CLI accounting (independent oracle: authoring_cli.py
+    # prints the inputs result with json.dumps DEFAULT escaping): 6,000
+    # U+4E00 chars serialize as 72,000 bytes of \uXXXX escapes for min+max
+    # alone — over the default 65,536 ceiling. Accounting that uses a
+    # smaller encoding would return a successful over-ceiling profile.
+    with pytest.raises(profiler.ProfilingPayloadExceeded, match="payload"):
+        api.inputs(started["proposal"], selector=("cjk", "cjk"))
+
+    # --- bounded collection BEFORE fetch: 8 columns x 30,000 ASCII chars
+    # = 480,000 lower-bound serialized bytes, far over the default ceiling's
+    # remaining budget. The refusal must fire before ANY min/max statistic
+    # transfers ("nothing was transferred"), not after collecting the whole
+    # table's stats into Python (an eventual refusal alone proves nothing).
+    with pytest.raises(profiler.ProfilingPayloadExceeded, match="nothing was transferred"):
+        api.inputs(started["proposal"], selector=("wide", "wide"))
+
+    # --- refresh over an ATTACHED catalog whose declared-metadata SQL must
+    # run under the SAME shared profiling budget (native duckdb attach, so
+    # _declared_columns really executes information_schema SQL — parquet
+    # file views skip it): expired budget refuses before any page write
+    native_db = write_native_catalog(project / "data" / "warehouse.duckdb")
+    nat = api.propose_sources(
+        started["proposal"],
+        settled_revision,
+        [{"name": "warehouse", "type": "duckdb", "path": "data/warehouse.duckdb"}],
+    )
+    api.approve_sources(started["proposal"], nat["revision"], nat["source_digest"])
+    settled_revision = nat["revision"]
+    native_measured = api.inputs(started["proposal"], selector=("warehouse", "orders"))
+    native_row = native_measured["profile"]["sources"][0]["tables"]["orders"]
+    native_asset = {
+        "source": native_row["source"],
+        "catalog": native_row["catalog"],
+        "schema": native_row["schema"],
+        "table": native_row["table"],
+    }
+    assert str(native_db) == native_measured["profile"]["sources"][0]["tables"]["orders"][
+        "resource"
+    ] or native_row["source"] == "warehouse"
+
     # --- expired budget on inputs: explicit deadline refusal, no partial
     real_clock = execution._deadline_clock
     opens_before_deadline = len(connection_spy)
@@ -1069,12 +1142,13 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
         "# operator host config (no profiling section)\n", encoding="utf-8"
     )
 
-    def spent_clock():
-        # deterministic, no sleeps: the first two clock reads are real time
-        # (budget creation + the setup deadline), every later read jumps
-        # 10,000s — the budget expires after approved setup completes and
-        # BEFORE any profiling statement, mid-operation, never a race
-        reads = iter([_time.monotonic(), _time.monotonic()])
+    def spent_clock(real_reads: int = 2):
+        # deterministic, no sleeps: the first `real_reads` clock reads are
+        # real time (budget creation, the setup deadline, and — with 3 —
+        # the post-setup expiry check), every later read jumps 10,000s — the
+        # budget expires mid-operation at the next guarded statement, never
+        # a race
+        reads = iter([_time.monotonic()] * real_reads)
         return lambda: next(reads, _time.monotonic() + 10_000)
 
     execution._deadline_clock = spent_clock()
@@ -1088,6 +1162,17 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
             api.refresh_schema(started["proposal"], settled_revision, [asset])
         assert branch_of(project, started["proposal"]) == settled_revision
         assert tracked_dirty(project, started["proposal"]) == ""
+
+        # --- attached-catalog refresh under an expired budget: the clock
+        # stays real through budget creation, setup and the post-setup check
+        # (three reads), then expires — the catalog metadata phase is the
+        # next guarded statement under the SAME shared budget, and no page
+        # is written
+        execution._deadline_clock = spent_clock(real_reads=3)
+        with pytest.raises(execution.DeadlineExhausted, match="deadline"):
+            api.refresh_schema(started["proposal"], settled_revision, [native_asset])
+        assert branch_of(project, started["proposal"]) == settled_revision
+        assert tracked_dirty(project, started["proposal"]) == ""
     finally:
         execution._deadline_clock = real_clock
 
@@ -1095,4 +1180,4 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     # refused before any profiling statement — never a partial measurement;
     # the earlier pre-open refusals (request over ceiling, invalid config)
     # opened nothing at all, asserted at their own checkpoints above
-    assert len(connection_spy) == opens_before_deadline + 2
+    assert len(connection_spy) == opens_before_deadline + 3
