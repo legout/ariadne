@@ -210,6 +210,33 @@ class AnalyticsService:
             Path(self.config.published_path) / PRIVATE_OPERATIONS_DIR / "restore.json"
         ).is_file()
 
+    def _offline_original_recovery_permitted(self) -> bool:
+        """True only for the offline ORIGINAL-publication recovery case.
+
+        SnapshotUnavailableError also wraps real corruption (canonical
+        size/digest/fingerprint mismatches and location.resolve failures),
+        so recovery selection in prepare_data_source requires BOTH the
+        current-destination restore marker (R4 recovery boundary) AND a
+        structural current descriptor recording a LOCAL publication
+        destination different from THIS configured restored destination —
+        i.e. an imported association whose original publication can be
+        offline. An ordinary workspace and a restored workspace already
+        readmitted to its current target keep the strict failure; the
+        persistent marker alone never selects recovery. A missing or
+        malformed structural descriptor is not permission: its
+        human-resolution error propagates. The descriptor only selects
+        fresh-authoring recovery and never validates query authorization.
+        """
+        if not self._restored_target():
+            return False
+        current = admission.load_current(self.project)
+        manifest = current.get("bound_release") if isinstance(current, dict) else None
+        destination = manifest.get("destination") if isinstance(manifest, dict) else None
+        if not isinstance(destination, str) or destination.startswith("s3://"):
+            return False
+        configured = Path(self.config.published_path).resolve()
+        return Path(destination).resolve() != configured
+
     def _verify_restored_query_ready(self, record: dict | None) -> None:
         """Restoration-specific query readiness (spec0035 §5 recovery; AC15).
 
@@ -478,15 +505,20 @@ class AnalyticsService:
                     )
                 try:
                     record, _snapshot = admission.resolve_admission(self.project)
-                except (ValueError, SnapshotUnavailableError):
-                    # A restored root's imported association can point at an
-                    # offline original publication (spec0035 §5): declaration
-                    # reuse cannot be evaluated against it, so preparation
-                    # selects the fresh-authoring path. Identity corruption,
-                    # retention, scope and Source Approval failures still
-                    # raise — only the concrete availability recovery is
-                    # caught here.
+                except ValueError:
                     record = None
+                except SnapshotUnavailableError:
+                    # SnapshotUnavailableError also wraps corruption, so the
+                    # fresh-authoring selection is permitted ONLY for the
+                    # offline ORIGINAL-publication case: a restored root whose
+                    # structural descriptor binds a LOCAL destination different
+                    # from this configured restored destination. Corruption of
+                    # an ordinary workspace's publication or of a restored
+                    # workspace's CURRENT publication still raises.
+                    if self._offline_original_recovery_permitted():
+                        record = None
+                    else:
+                        raise
                 reused = record is not None and self._declarations_present(
                     record["commit"], entries, storages
                 )

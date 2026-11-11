@@ -13,6 +13,7 @@ from urllib.parse import quote
 import pytest
 from ariadne import admission, authoring_sources, execution
 from ariadne import sources as native_sources
+from lumio_wiki.ariadne_context import SnapshotUnavailableError
 from lumio_wiki.artifact_store import (
     ArtifactUnavailable,
     LocalDirectoryArtifactStore,
@@ -27,7 +28,7 @@ from lumio_wiki.git_authoring import (
     publish_revision,
     rollback_publication,
 )
-from lumio_wiki.location import PublishedFilesystemLocation
+from lumio_wiki.location import VERSIONS_DIR_NAME, PublishedFilesystemLocation
 from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
 from lumio_wiki.source_inspection import (
     SourceInspectionError,
@@ -1249,6 +1250,37 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
     ).read_bytes() == baseline_receipt
     assert _tree_digest(historical_snapshot) == historical_before
 
+    # F2-R1: the persistent restore marker does NOT swallow corruption of the
+    # CURRENT publication. The restored workspace is now readmitted to THIS
+    # destination, so the exact same canonical size/digest mismatch predicate
+    # as the ordinary corruption test must still propagate the real SDK
+    # failure — recovery selection is only for an imported LOCAL destination
+    # DIFFERENT from this restored destination (the offline ORIGINAL case).
+    current_pointer = PublishedFilesystemLocation(restored.published_path).read_pointer()
+    assert current_pointer == published["native_candidate"]
+    current_manifest = json.loads(
+        (restored.published_path / VERSIONS_DIR_NAME / current_pointer / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    current_target = next(
+        entry for entry in current_manifest["files"] if entry["path"].endswith(".md")
+    )
+    current_canonical = (
+        restored.published_path / VERSIONS_DIR_NAME / current_pointer / current_target["path"]
+    )
+    with current_canonical.open("ab") as handle:
+        handle.write(b" corruption")
+    with pytest.raises(SnapshotUnavailableError, match="could not be resolved and verified"):
+        restored_analytics.prepare_data_source(
+            contributor,
+            retry_key="c5-orders-post-corrupt",
+            project="retail",
+            source="orders_sqlite",
+            table="entries",
+            business_questions=["What is completed revenue in EUR?"],
+        )
+
 
 def test_native_admitted_query_does_not_require_authoring_attachment(
     tmp_path: Path, monkeypatch
@@ -1388,3 +1420,140 @@ def test_native_admitted_query_does_not_require_authoring_attachment(
     assert result["rows"] == [{"revenue": 150.0}]  # 100 + 50 completed; cancelled excluded
     assert result["pinned"]["commit"] == native_review["revision"]
     assert len(opened) == 1  # exactly the sanctioned source resolution
+
+
+def test_native_source_preparation_preserves_publication_corruption(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """F2-R1: corrupt published canonical bytes stay a hard failure.
+
+    A real natively admitted, never-restored workspace with the exact native
+    Source Approval prepares normally (control leg). After ONE canonical file
+    in the published version is actually corrupted against its manifest
+    (size and digest mismatch), the public prepare_data_source must PROPAGATE
+    the real SDK SnapshotUnavailableError from the written integrity contract
+    (PublishedFilesystemLocation.materialize verifies size and sha-256 per
+    manifest entry) — never swallow it into the fresh-authoring path or
+    return pending_source_approval. SnapshotUnavailableError is not an
+    availability-only discriminator: ariadne_context wraps location.resolve
+    corruption there, so only the offline ORIGINAL-publication recovery case
+    may select fresh authoring (spec0035 §5 recovery boundary).
+    """
+    fixtures = _analytics_fixtures
+    project, api, started, _revision = fixtures._native_baseline(tmp_path / "baseline")
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    native_review = api.review_proposal(started["proposal"])
+    destination = tmp_path / "published"
+    private = tmp_path / "private"
+    (private / "registry").mkdir(parents=True)
+    (private / "artifacts").mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": fixtures.NAMESPACE,
+                "source_registry": str(private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(private / "artifacts")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall = admission.overall_review(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        destination=destination,
+        expected_current="none",
+        private_profile=profile,
+        scope=("internal",),
+    )
+    admission.admit_revision(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        confirmed_by="human:synthetic-baseline-owner",
+        overall_preview=overall,
+        confirmed_overall_digest=overall["digest"],
+        private_profile=profile,
+    )
+    bindings = tmp_path / "analytics-bindings.json"
+    bindings.write_text(
+        json.dumps(
+            {
+                "orders": [
+                    {"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = WorkspaceConfig(
+        workspace_id="workspace-native-corruption",
+        external_url="https://workspace.test",
+        published_path=destination,
+        published_version=native_review["revision"],
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=fixtures.NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    state = WorkspaceState(config.state_path)
+    state.create_local_user(contributor.object_id)
+    state.grant(config.workspace_id, contributor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+
+    # Valid control first: preparation against the intact admission reuses
+    # the existing native declaration (exact native Source Approval is in
+    # the baseline fixture) and reaches the caller's data grant.
+    prepared = analytics.prepare_data_source(
+        contributor,
+        retry_key="f2r1-orders-control",
+        project="retail",
+        source="orders",
+        table="orders",
+        business_questions=["What is completed revenue in EUR?"],
+    )
+    assert prepared["status"] == "pending_data_grant"
+
+    # Corrupt ONE actual published canonical file (append bytes): the real
+    # SDK size/digest verification failure becomes SnapshotUnavailableError.
+    pointer = PublishedFilesystemLocation(destination).read_pointer()
+    assert pointer == native_review["revision"]
+    manifest = json.loads(
+        (destination / VERSIONS_DIR_NAME / pointer / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    target = next(
+        entry for entry in manifest["files"] if entry["path"].endswith(".md")
+    )
+    canonical = destination / VERSIONS_DIR_NAME / pointer / target["path"]
+    with canonical.open("ab") as handle:
+        handle.write(b" corruption")
+
+    # The integrity refusal must propagate: preparation must NOT convert the
+    # corrupt publication into a fresh successful pending_source_approval
+    # workflow (F2-R1 defect), and the operation must not report reuse.
+    with pytest.raises(SnapshotUnavailableError, match="could not be resolved and verified"):
+        analytics.prepare_data_source(
+            contributor,
+            retry_key="f2r1-orders-corrupt",
+            project="retail",
+            source="orders",
+            table="orders",
+            business_questions=["What is completed revenue in EUR?"],
+        )
