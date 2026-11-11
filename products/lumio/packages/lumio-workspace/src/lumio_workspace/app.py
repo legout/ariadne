@@ -1019,8 +1019,16 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                 )
             if control is not None:
                 raise WorkspaceError("a complete control candidate requires enrichment_task_id")
-            analytics = analytics_service(required=False)
-            if analytics is not None:
+            if source_task_id is not None or core_edits:
+                # Explicit data/Core change requests keep the grant and joint
+                # whole-change review route; analytics configuration alone
+                # must not capture ordinary knowledge contributions (AC12).
+                analytics = analytics_service(required=False)
+                if analytics is None:
+                    raise WorkspaceError(
+                        "analytics source tasks and Core edits require explicit "
+                        "analytics enablement"
+                    )
                 if source_task_id is None:
                     raise WorkspaceError(
                         "integrated analytics contribution requires an exact source-task grant"
@@ -1032,10 +1040,6 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                     sources=sources,
                     pages=pages,
                     core_edits=core_edits or [],
-                )
-            if source_task_id is not None or core_edits:
-                raise WorkspaceError(
-                    "analytics source tasks and Core edits require explicit analytics enablement"
                 )
             return contribution_service().prepare(
                 actor,

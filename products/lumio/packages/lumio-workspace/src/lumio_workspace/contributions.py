@@ -259,6 +259,10 @@ class ContributionService:
         if not sources or not pages:
             raise ContributionError("at least one source and one page are required")
         self._require_attachment()
+        # The CURRENT integrated context gates the retention exception before
+        # any conversion, upload processing, or private-store setup (AC12,
+        # spec0034 §12.4); the standalone document-only waiver never applies.
+        self._resources()
         checked_pages = []
         for item in pages:
             try:

@@ -21,11 +21,12 @@ from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
-from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState
+from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState, create_app
 from lumio_workspace.analytics import AnalyticsError, AnalyticsService
 from lumio_workspace.intake import IntakeService
 from lumio_workspace.review import ReviewError, ReviewService, render_review
 from lumio_workspace.setup import current_attachment_digest
+from starlette.testclient import TestClient
 
 NAMESPACE = "urn:demo:retail"
 FILTER_EXPRESSION = "SUM(amount) FILTER (WHERE status = 'completed')"
@@ -1043,3 +1044,369 @@ def test_xlsx_conversion_requires_approved_source_and_caller_grant(tmp_path, mon
         assert again["profile"] == profiled["profile"]
         assert stored["conversion"][0]["conversion_status"] == "converted_authorized"
     assert len(conversion_calls) == 1
+
+
+def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
+    """AC12/spec0035 §2: with analytics configured, a knowledge contributor
+    without an unrelated analytics data grant submits an authored runbook
+    through the native knowledge route; a separate human publishes it; no
+    analytical connection opens and the prior Bound Release stays unchanged.
+    An executable/Core-edit variant cannot take the knowledge-only route, and
+    the integrated context refuses the standalone retention waiver before any
+    conversion or private-store setup (spec0034 §12.4)."""
+
+    project, api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    # The fixture's own admitted baseline gains a 'procedures' routing entry
+    # so the runbook routes honestly; the shared CONTROL stays untouched.
+    control = project / "knowledge" / "lumio.yaml"
+    control.write_text(
+        CONTROL.replace(
+            "categories:\n  - name: policies\n  - name: metrics\n",
+            "categories:\n  - name: policies\n  - name: metrics\n  - name: procedures\n",
+        ).replace(
+            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n",
+            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n"
+            "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
+            "artifact. Its referent is the artifact itself, not a person, organization, "
+            "service, or business object mentioned in it.\"\n"
+            "  predicates:\n    documented-by:\n"
+            "      subject_types:\n        - knowledge-artifact\n",
+        ),
+        encoding="utf-8",
+    )
+    _git(project, "add", "knowledge/lumio.yaml")
+    _git(project, "commit", "-q", "-m", "fixture: procedures category")
+    proposal = api.start_proposal()
+    resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
+    assert resolved is not None and digest is not None
+    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    native_review = api.review_proposal(proposal["proposal"])
+    destination = tmp_path / "published"
+    private = tmp_path / "private"
+    registry = private / "registry"
+    artifacts = private / "artifacts"
+    registry.mkdir(parents=True)
+    artifacts.mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(registry),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(artifacts)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall = admission.overall_review(
+        project,
+        proposal["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        destination=destination,
+        expected_current="none",
+        private_profile=profile,
+        scope=("internal",),
+    )
+    admission.admit_revision(
+        project,
+        proposal["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        confirmed_by="human:synthetic-baseline-owner",
+        overall_preview=overall,
+        confirmed_overall_digest=overall["digest"],
+        private_profile=profile,
+    )
+    admitted_before = admission.load_current(project)
+    assert admitted_before is not None
+    bound_release_commit = admitted_before["commit"]
+
+    bindings = private / "source-bindings.json"
+    bindings.write_text("{}", encoding="utf-8")
+    config = WorkspaceConfig(
+        workspace_id="workspace-knowledge-only",
+        external_url="https://workspace.test",
+        published_path=destination,
+        published_version=native_review["revision"],
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    state = WorkspaceState(config.state_path)
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    reviewer = Actor(tenant_id="local", object_id="reviewer")
+    owner = Actor(tenant_id="local", object_id="owner")
+    for actor in (contributor, reviewer, owner):
+        state.create_local_user(actor.object_id)
+        state.grant(config.workspace_id, actor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    state.grant(config.workspace_id, reviewer, "review")
+    state.grant(config.workspace_id, owner, "setup")
+    attachment = current_attachment_digest(target=config.authoring_path, profile_path=profile)
+    state.record_setup(
+        config.workspace_id,
+        owner,
+        "synthetic-knowledge-setup",
+        kind="existing",
+        target=config.authoring_path,
+        namespace=NAMESPACE,
+        base_revision=native_review["revision"],
+        attachment_digest=attachment,
+    )
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+    review = ReviewService(
+        state,
+        workspace_id=config.workspace_id,
+        authoring_path=config.authoring_path,
+        profile_path=profile,
+        private_root=config.operational_root,
+        destination=destination,
+        analytics=analytics,
+    )
+    expires = 1_800_000_000
+    contributor_token = state.issue_local_credential("contributor", "api", expires_at=expires)[1]
+
+    opened: list[list[str]] = []
+    real_builder = execution.build_connection
+
+    def spy(registry_arg, **kwargs):
+        opened.append([source.path for source in registry_arg.sources])
+        return real_builder(registry_arg, **kwargs)
+
+    monkeypatch.setattr(execution, "build_connection", spy)
+    monkeypatch.setattr(native_sources, "build_connection", spy)
+
+    def call_contribution(http_client, token: str, arguments: dict) -> dict:
+        response = http_client.post(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-06-18",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "prepare_contribution", "arguments": arguments},
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["result"]
+
+    runbook_original = (
+        b"# Team Runbook\n\nDeploy the retail report: open the dashboard, filter to "
+        b"completed orders, export EUR revenue.\n"
+    )
+    upload = intake.save(
+        config.workspace_id,
+        contributor,
+        "team-runbook-original",
+        "team-runbook.md",
+        "runbook-upload-one",
+        runbook_original,
+    )
+    runbook_page = (
+        "---\n"
+        "id: entity:team-runbook\n"
+        "title: Team Runbook\n"
+        "entity_types: [knowledge-artifact]\n"
+        "tags: [operations]\n"
+        "summary: How the retail report is produced and shared.\n"
+        "category: procedures\n"
+        "type: runbook\n"
+        "durability_rationale: Report production steps stay binding until tooling changes.\n"
+        "lifecycle: approved\n"
+        "visibility: internal\n"
+        "sources:\n  - id: team-runbook-original\n    title: Team runbook original\n"
+        "---\n\n"
+        "# Team Runbook\n\nProduce the retail report from the dashboard.\n\n"
+        "Cancelled orders never enter the report: see [[Cancelled Orders]].\n"
+        "Where this fits: [[Team Report Overview]].\n"
+    )
+    overview_page = (
+        "---\n"
+        "id: entity:team-report-overview\n"
+        "title: Team Report Overview\n"
+        "entity_types: [knowledge-artifact]\n"
+        "tags: [operations]\n"
+        "summary: Where the recurring retail report production is documented.\n"
+        "category: procedures\n"
+        "type: overview\n"
+        "durability_rationale: Teams keep navigating to the production steps.\n"
+        "lifecycle: approved\n"
+        "visibility: internal\n"
+        "synthetic: true\n"
+        "claims:\n"
+        "  - id: claim:team-report-overview-runbook\n"
+        "    predicate: documented-by\n"
+        "    status: accepted\n"
+        "    object: entity:team-runbook\n"
+        "    evidence:\n      - section: Overview\n"
+        "---\n\n"
+        "# Team Report Overview\n\n## Overview\n\nThe production steps: [[Team Runbook]].\n"
+    )
+
+    app = create_app(config)
+    with TestClient(app, base_url="https://workspace.test") as client:
+        # Knowledge-only request: no source task, no Core edits. Analytics is
+        # configured, but an unrelated data grant must not be required.
+        result = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "knowledge-only-runbook-one",
+                "sources": [{"upload_id": upload["upload_id"], "intent": "new"}],
+                "pages": [
+                    {"filename": "team-runbook.md", "markdown": runbook_page},
+                    {"filename": "team-report-overview.md", "markdown": overview_page},
+                ],
+            },
+        )
+        assert result["isError"] is False, result
+        prepared = result["structuredContent"]
+        assert prepared["status"] == "pending_review"
+        assert prepared["native_base"] == native_review["revision"]
+        assert "native_proposal" not in prepared
+        task_id = prepared["task_id"]
+
+        # A different human approves and natively publishes the candidate.
+        context = review.get(reviewer, task_id)
+        published = review.decide(reviewer, task_id, context.action_digest, "approve")
+        assert published["status"] == "published"
+        assert published["publication_outcome"] == "activated"
+
+        published_pages = list(destination.rglob("team_runbook.md"))
+        assert published_pages, "the runbook page is missing from the published tree"
+        assert "Produce the retail report" in published_pages[0].read_text(encoding="utf-8")
+
+        # No analytical connection ever opened.
+        assert opened == []
+        # The prior Core admission is byte/state unchanged; no blank release.
+        admitted_after = admission.load_current(project)
+        assert admitted_after is not None
+        assert admitted_after["commit"] == bound_release_commit
+
+        # An executable edit cannot ride the knowledge-only route: it keeps
+        # the analytics grant route and is refused without an exact grant.
+        refused = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "executable-variant-one",
+                "sources": [{"upload_id": upload["upload_id"], "intent": "new"}],
+                "pages": [{"filename": "team-runbook.md", "markdown": runbook_page}],
+                "core_edits": [{"kind": "model", "name": "retail_sales", "content": MODEL}],
+            },
+        )
+        assert refused["isError"] is True
+        assert refused["content"][0]["text"].endswith(
+            "integrated analytics contribution requires an exact source-task grant"
+        )
+        assert (
+            state.get_operation(
+                config.workspace_id,
+                contributor,
+                "prepare_contribution",
+                "executable-variant-one",
+            )
+            is None
+        )
+
+    # The same integrated context refuses the standalone retention waiver
+    # BEFORE any conversion, upload processing, or private-store setup.
+    guard_private = tmp_path / "guard-private"
+    guard_profile = guard_private / "profile.json"
+    guard_profile.parent.mkdir(parents=True)
+    guard_profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(guard_private / "registry"),
+                "retention": "disabled",
+                "artifact_store": {"kind": "local", "root": str(guard_private / "artifacts")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    guard_bindings = guard_private / "source-bindings.json"
+    guard_bindings.write_text("{}", encoding="utf-8")
+    guard_config = WorkspaceConfig(
+        workspace_id="workspace-knowledge-guard",
+        external_url="https://workspace.test",
+        published_path=tmp_path / "published-guard",
+        published_version=None,
+        state_path=tmp_path / "guard-state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=guard_profile,
+        private_root=tmp_path / "guard-operations",
+        namespace=NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=guard_bindings,
+    )
+    guard_state = WorkspaceState(guard_config.state_path)
+    guard_contributor = Actor(tenant_id="local", object_id="contributor")
+    guard_owner = Actor(tenant_id="local", object_id="owner")
+    for actor in (guard_contributor, guard_owner):
+        guard_state.create_local_user(actor.object_id)
+        guard_state.grant(guard_config.workspace_id, actor)
+    guard_state.grant(guard_config.workspace_id, guard_contributor, "contribute")
+    guard_state.grant(guard_config.workspace_id, guard_owner, "setup")
+    guard_attachment = current_attachment_digest(
+        target=guard_config.authoring_path, profile_path=guard_profile
+    )
+    guard_state.record_setup(
+        guard_config.workspace_id,
+        guard_owner,
+        "synthetic-guard-setup",
+        kind="existing",
+        target=guard_config.authoring_path,
+        namespace=NAMESPACE,
+        base_revision=native_review["revision"],
+        attachment_digest=guard_attachment,
+    )
+    guard_token = guard_state.issue_local_credential("contributor", "api", expires_at=expires)[1]
+    guard_app = create_app(guard_config)
+    with TestClient(guard_app, base_url="https://workspace.test") as guard_client:
+        guard_result = call_contribution(
+            guard_client,
+            guard_token,
+            {
+                "retry_key": "retention-guard-one",
+                "sources": [{"upload_id": "never-loaded-upload", "intent": "new"}],
+                "pages": [{"filename": "team-runbook.md", "markdown": runbook_page}],
+            },
+        )
+        assert guard_result["isError"] is True
+        assert "standalone-only exception" in guard_result["content"][0]["text"]
+        # The guard fired before any upload load/conversion or store setup.
+        assert not (guard_private / "artifacts").exists()
+        assert not (guard_private / "registry").exists()
+        assert not (guard_config.operational_root / "extractions").exists()
+        assert (
+            guard_state.get_operation(
+                guard_config.workspace_id,
+                guard_contributor,
+                "prepare_contribution",
+                "retention-guard-one",
+            )
+            is None
+        )
+    assert opened == []
