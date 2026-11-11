@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
+from ariadne import admission, authoring_sources, execution
+from ariadne import sources as native_sources
 from lumio_wiki.artifact_store import (
     ArtifactUnavailable,
     LocalDirectoryArtifactStore,
@@ -18,6 +20,7 @@ from lumio_wiki.artifact_store import (
     retain_artifact,
 )
 from lumio_wiki.git_authoring import (
+    PRIVATE_OPERATIONS_DIR,
     ConfirmationRefused,
     GitAuthoringError,
     preview_publication,
@@ -31,11 +34,19 @@ from lumio_wiki.source_inspection import (
     read_local_published_bindings,
 )
 from lumio_wiki.source_registry import SourceRegistry
-from lumio_workspace import create_app
+from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState, create_app
+from lumio_workspace.analytics import AnalyticsError, AnalyticsService
+from lumio_workspace.contributions import ContributionService
+from lumio_workspace.intake import IntakeService
 from lumio_workspace.operations import OperationsError, quiesced_backup, restore
 from lumio_workspace.operations import main as operations_main
+from lumio_workspace.review import ReviewError, ReviewService
+from lumio_workspace.setup import current_attachment_digest
 from starlette.testclient import TestClient
 
+_analytics_fixtures = importlib.import_module(
+    "products.lumio.packages.lumio-workspace.tests.test_workspace_analytics"
+)
 _review = importlib.import_module(
     "products.lumio.packages.lumio-workspace.tests.test_workspace_review"
 )
@@ -750,3 +761,459 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     )
     assert bindings_line in escaped_output
     assert systemd_parse(bindings_line) == str(escaped_bindings)
+
+
+def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """AC15: one shared authoring/analytics repository restores ONCE and
+    resumes only after fresh native admission.
+
+    The knowledge authoring working tree and the Ariadne analytics project
+    are the SAME physical Git working tree (spec0035 §2), so backup/restore
+    must materialize one repository with both worktree roles relinked, and
+    dependent writes/queries must refuse with actionable prerequisites until
+    the owner reconfirms setup AND a fresh reviewed contribution is admitted
+    on the restored destination. Reading old pages — or the strict SDK
+    verifying the old root that is deliberately still present on this host —
+    never substitutes for that admission (spec0035 §5 recovery; hand oracle:
+    orders rows 10 + 20 = 30, see c5/c5-report.md).
+    """
+    fixtures = _analytics_fixtures
+    project, api, started, _revision = fixtures._native_baseline(tmp_path / "baseline")
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    native_review = api.review_proposal(started["proposal"])
+    destination = tmp_path / "published"
+    private = tmp_path / "private"
+    registry = private / "registry"
+    artifacts = private / "artifacts"
+    registry.mkdir(parents=True)
+    artifacts.mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": fixtures.NAMESPACE,
+                "source_registry": str(registry),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(artifacts)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall = admission.overall_review(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        destination=destination,
+        expected_current="none",
+        private_profile=profile,
+        scope=("internal",),
+    )
+    admission.admit_revision(
+        project,
+        started["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        confirmed_by="human:synthetic-baseline-owner",
+        overall_preview=overall,
+        confirmed_overall_digest=overall["digest"],
+        private_profile=profile,
+    )
+
+    baseline_authoring = project / "knowledge"
+    bindings = tmp_path / "analytics-bindings.json"
+    bindings.write_text(
+        json.dumps(
+            {
+                "orders_sqlite": [
+                    {"name": "orders_sqlite", "type": "sqlite", "path": "data/orders.sqlite"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixtures._sqlite(
+        project / "data" / "orders.sqlite", [(1, 10, "completed"), (2, 20, "completed")]
+    )
+    config = WorkspaceConfig(
+        workspace_id="workspace-c5-restore",
+        external_url="https://workspace.test",
+        published_path=destination,
+        published_version=native_review["revision"],
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=baseline_authoring,
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=fixtures.NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    reviewer = Actor(tenant_id="local", object_id="reviewer")
+    owner = Actor(tenant_id="local", object_id="owner")
+    state = WorkspaceState(config.state_path)
+    for actor in (contributor, reviewer, owner):
+        state.create_local_user(actor.object_id)
+        state.grant(config.workspace_id, actor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    state.grant(config.workspace_id, reviewer, "review")
+    state.grant(config.workspace_id, owner, "setup")
+    state.record_setup(
+        config.workspace_id,
+        owner,
+        "c5-baseline-setup",
+        kind="existing",
+        target=baseline_authoring,
+        namespace=fixtures.NAMESPACE,
+        base_revision=native_review["revision"],
+        attachment_digest=current_attachment_digest(
+            target=baseline_authoring, profile_path=profile
+        ),
+    )
+    state.save_browser_session("c5-restore-session", {"member": "reviewer"}, expires_at=2**31)
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+    review = ReviewService(
+        state,
+        workspace_id=config.workspace_id,
+        authoring_path=baseline_authoring,
+        profile_path=profile,
+        private_root=config.operational_root,
+        destination=destination,
+        analytics=analytics,
+    )
+
+    # An ordinary pending knowledge contribution BEFORE the backup: this
+    # public flow registers the AUTHORING task-worktree role
+    # (private/worktrees/<task>) in the shared repository.
+    knowledge_service = ContributionService(
+        state,
+        intake,
+        workspace_id=config.workspace_id,
+        external_url=config.external_url,
+        authoring_path=baseline_authoring,
+        profile_path=profile,
+        destination=destination,
+        analytics_enabled=True,
+    )
+    policy_bytes = b"# Cancelled Orders\n\nOnly completed orders enter EUR revenue.\n"
+    guide_bytes = b"# Restore Runbook original\n\nRestart the worker safely.\n"
+    guide_upload = intake.save(
+        config.workspace_id,
+        contributor,
+        "restore-runbook-source",
+        "restore-runbook.md",
+        "c5-guide-pre",
+        guide_bytes,
+    )
+    guide = knowledge_service.prepare(
+        contributor,
+        retry_key="c5-guide-pre",
+        sources=[{"upload_id": guide_upload["upload_id"], "intent": "new"}],
+        pages=[
+            {
+                "filename": "restore-runbook.md",
+                "markdown": _review._attributed_page(
+                    "Restore Runbook", ["restore-runbook-source"]
+                ).replace(
+                    # the shared-root baseline control file configures
+                    # 'policies'/'metrics' categories only
+                    "category: procedures",
+                    "category: policies",
+                ),
+            }
+        ],
+    )
+    guide_task_id = guide["task_id"]
+
+    # A pending analytics contribution prepared BEFORE the backup registers
+    # the analytics proposal-worktree role and leaves an outstanding review
+    # action that must die.
+    prepared = analytics.prepare_data_source(
+        contributor,
+        retry_key="c5-orders-pre",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["What is completed revenue in EUR?"],
+    )
+    source_task = prepared["task_id"]
+    assert prepared["status"] == "pending_source_approval"
+    approval_stage = review.get(reviewer, source_task)
+    review.decide(reviewer, source_task, approval_stage.action_digest, "approve")
+    grant_stage = review.get(reviewer, source_task)
+    granted = review.decide(reviewer, source_task, grant_stage.action_digest, "approve")
+    assert granted["status"] == "data_granted"
+    analytics.profile_data_source(contributor, source_task)
+    uploaded = intake.save(
+        config.workspace_id,
+        contributor,
+        "human-cancellation-rule",
+        "cancelled-orders.md",
+        "c5-policy-pre",
+        policy_bytes,
+    )
+    _record, snapshot = admission.resolve_admission(project)
+    model = (snapshot / "semantic_layer/models/retail_sales.yml").read_text(encoding="utf-8")
+    changed_model = model.replace("orders.main.orders", "orders_sqlite.main.entries").replace(
+        "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)",
+        fixtures.FILTER_EXPRESSION,
+    )
+    pending = analytics.prepare_contribution(
+        contributor,
+        retry_key="c5-resume-pre",
+        source_task_id=source_task,
+        sources=[{"upload_id": uploaded["upload_id"], "intent": "new"}],
+        pages=[
+            {
+                "filename": "cancelled-orders.md",
+                "markdown": fixtures.WORKSPACE_POLICY.replace(
+                    "Cancelled orders are excluded.", fixtures.POLICY_ADDITION
+                ),
+            }
+        ],
+        core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
+    )
+    contribution_task = pending["task_id"]
+    review.get(reviewer, contribution_task)
+    outstanding_guide = review.get(reviewer, guide_task_id).action_digest
+
+    # Immutability captures: exact receipt/admission/approval state before
+    # the backup travels.
+    baseline_revision = native_review["revision"]
+    baseline_receipt = (
+        destination / PRIVATE_OPERATIONS_DIR / "receipts" / f"{baseline_revision}.json"
+    ).read_bytes()
+    baseline_record = admission.load_current(project)
+    assert baseline_record is not None
+    baseline_resolved, baseline_digest = authoring_sources.candidate_sources(
+        project, started["candidate_revision"]
+    )
+    baseline_approval = authoring_sources.approval_state(
+        project, baseline_resolved, baseline_digest
+    )
+    assert baseline_approval.get("approved") is True
+    baseline_head = _git(project, "rev-parse", "HEAD")
+
+    backup_root = quiesced_backup(config, tmp_path / "workspace-backup")
+    manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["shared_analytics_root"] is True
+
+    second_root = tmp_path / "restored-data-root"
+    restored = restore(backup_root, second_root, replace(config, published_version=None))
+    # The analytics project must resolve INTO the single restored repository
+    # — never into a second materialized copy that advances independently.
+    assert restored.analytics_project_path == second_root / "authoring-repo"
+    assert (second_root / "analytics-project").exists() is False
+    assert restored.authoring_path == second_root / "authoring-repo" / "knowledge"
+    restored_authoring = restored.authoring_path
+    assert restored.private_profile_path is not None
+    restored_profile = restored.private_profile_path
+    assert _git(second_root / "authoring-repo", "rev-parse", "HEAD") == baseline_head
+    registered = sorted(
+        entry
+        for entry in (second_root / "authoring-repo" / ".git" / "worktrees").iterdir()
+        if entry.is_dir()
+    )
+    assert registered
+    relinked_private = 0
+    relinked_analytics = 0
+    for entry in registered:
+        gitdir = Path((entry / "gitdir").read_text(encoding="utf-8").strip())
+        assert gitdir.exists(), f"registration {entry.name} lost its worktree"
+        if gitdir.parent.parent == second_root / "private" / "worktrees":
+            relinked_private += 1
+        elif gitdir.parent.parent == (
+            second_root / "authoring-repo" / ".ariadne" / "worktrees"
+        ):
+            relinked_analytics += 1
+    assert relinked_private >= 1  # authoring task-worktree role preserved
+    assert relinked_analytics >= 1  # analytics proposal-worktree role preserved
+
+    restored_state = WorkspaceState(restored.state_path)
+    assert restored_state.load_browser_session("c5-restore-session") is None
+    restored_intake = IntakeService(restored_state, restored.operational_root)
+    restored_analytics = AnalyticsService(restored, restored_state, restored_intake)
+    restored_review = ReviewService(
+        restored_state,
+        workspace_id=restored.workspace_id,
+        authoring_path=restored_authoring,
+        profile_path=restored_profile,
+        private_root=restored.operational_root,
+        destination=restored.published_path,
+        analytics=restored_analytics,
+    )
+
+    # Boundary sentinel over the REAL execution builder: every pre-admission
+    # query leg must refuse before any source is opened.
+    opened: list[list] = []
+    real_builder = execution.build_connection
+
+    def spy(registry_, **kwargs):
+        opened.append([source.path for source in registry_.sources])
+        return real_builder(registry_, **kwargs)
+
+    monkeypatch.setattr(execution, "build_connection", spy)
+    monkeypatch.setattr(native_sources, "build_connection", spy)
+
+    # Before the owner reconfirms the restored target, dependent writes and
+    # queries refuse with actionable prerequisites — before any SQL.
+    with pytest.raises(ReviewError, match="owner setup"):
+        restored_review.get(reviewer, guide_task_id)
+    with pytest.raises(AnalyticsError, match="need owner setup"):
+        restored_analytics.prepare_contribution(
+            contributor,
+            retry_key="c5-resume-blocked",
+            source_task_id=source_task,
+            sources=[{"upload_id": uploaded["upload_id"], "intent": "new"}],
+            pages=[],
+            core_edits=[],
+        )
+    with pytest.raises(AnalyticsError, match="need owner setup"):
+        restored_analytics.query_data(
+            contributor, "retail", source_task, "get_metric", {"name": "revenue"}
+        )
+    assert opened == []
+
+    # After owner reconfirmation but BEFORE a fresh admission, the old
+    # association must STILL refuse — even though the original root is still
+    # present on this host and the strict SDK would verify it there.
+    restored_state.record_setup(
+        restored.workspace_id,
+        owner,
+        "c5-restored-attach",
+        kind="existing",
+        target=restored_authoring,
+        namespace=fixtures.NAMESPACE,
+        base_revision=baseline_head,
+        attachment_digest=current_attachment_digest(
+            target=restored_authoring, profile_path=restored_profile
+        ),
+    )
+    with pytest.raises(AnalyticsError, match="fresh reviewed contribution"):
+        restored_analytics.query_data(
+            contributor, "retail", source_task, "get_metric", {"name": "revenue"}
+        )
+    assert opened == []
+
+    # Source identity is revalidated against the restored repo — bytes are
+    # content-identical, but the resolved identity embeds the restored
+    # absolute paths, so the revalidation honestly reports the old approval
+    # ABSENT: no silent reuse. The resumed contribution below therefore
+    # obtains a REAL native Source Approval on the restored root through the
+    # existing review surface before any dependent write or query resumes.
+    restored_resolved, restored_digest = authoring_sources.candidate_sources(
+        restored_analytics.project, started["candidate_revision"]
+    )
+    restored_approval = authoring_sources.approval_state(
+        restored_analytics.project, restored_resolved, restored_digest
+    )
+    assert restored_approval.get("approved") is False
+    assert restored_approval.get("state") == "absent"
+
+    # The pre-restore ANALYTICS contribution proposal belongs to the
+    # ORIGINAL project root: ariadne's project-identity guard refuses to
+    # resume it on the restored repository — old pre-restore work must be
+    # redone as a fresh reviewed contribution, never silently continued.
+    with pytest.raises(ValueError, match="no proposal"):
+        restored_review.get(reviewer, contribution_task)
+
+    # The pending knowledge contribution resolves through the RELINKED
+    # authoring worktree, and its pre-restore review action can never
+    # activate: restored action rows are gone, so the outstanding digest
+    # refuses while the recomputed context carries a fresh digest.
+    replay = restored_review.get(reviewer, guide_task_id)
+    assert replay.action_digest != outstanding_guide
+    with pytest.raises(ReviewError):
+        restored_review.decide(reviewer, guide_task_id, outstanding_guide, "approve")
+
+    # Resume: a genuinely new source gets REAL native Source Approval and a
+    # fresh data grant through the existing review surface.
+    prepared2 = restored_analytics.prepare_data_source(
+        contributor,
+        retry_key="c5-orders-post",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["What is completed revenue in EUR?"],
+    )
+    task2 = prepared2["task_id"]
+    assert prepared2["status"] == "pending_source_approval"
+    approval2 = restored_review.get(reviewer, task2)
+    restored_review.decide(reviewer, task2, approval2.action_digest, "approve")
+    grant2 = restored_review.get(reviewer, task2)
+    decided2 = restored_review.decide(reviewer, task2, grant2.action_digest, "approve")
+    assert decided2["status"] == "data_granted"
+    restored_analytics.profile_data_source(contributor, task2)
+    uploaded2 = restored_intake.save(
+        restored.workspace_id,
+        contributor,
+        "human-cancellation-rule",
+        "cancelled-orders.md",
+        "c5-policy-post",
+        policy_bytes,
+    )
+    _current, snapshot2 = admission.resolve_admission(restored_analytics.project)
+    model2 = (snapshot2 / "semantic_layer/models/retail_sales.yml").read_text(encoding="utf-8")
+    changed2 = model2.replace("orders.main.orders", "orders_sqlite.main.entries").replace(
+        "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)",
+        fixtures.FILTER_EXPRESSION,
+    )
+    candidate2 = restored_analytics.prepare_contribution(
+        contributor,
+        retry_key="c5-resume-post",
+        source_task_id=task2,
+        sources=[{"upload_id": uploaded2["upload_id"], "intent": "new"}],
+        pages=[
+            {
+                "filename": "cancelled-orders.md",
+                "markdown": fixtures.WORKSPACE_POLICY.replace(
+                    "Cancelled orders are excluded.", fixtures.POLICY_ADDITION
+                ),
+            }
+        ],
+        core_edits=[{"kind": "model", "name": "retail_sales", "content": changed2}],
+    )
+    submission = restored_review.get(reviewer, candidate2["task_id"])
+    submitted = restored_review.decide(
+        reviewer, candidate2["task_id"], submission.action_digest, "approve"
+    )
+    assert submitted["status"] == "pending_publication"
+    assert submitted["validation"]["ok"] is True
+    publication_context = restored_review.get(reviewer, candidate2["task_id"])
+    published = restored_review.decide(
+        reviewer, candidate2["task_id"], publication_context.action_digest, "approve"
+    )
+    assert published["status"] == "published"
+    assert published["publication_outcome"] == "activated"
+
+    # The resumed query uses the EXACT new knowledge/analytics association:
+    # hand oracle 10 + 20 = 30 (c5/c5-report.md), pinned to the new record.
+    result = restored_analytics.query_data(
+        contributor, "retail", task2, "get_metric", {"name": "revenue"}
+    )
+    assert result["rows"] == [{"revenue": 30.0}]
+    assert result["pinned"]["commit"] == published["native_candidate"]
+    assert result["context"]["bound_release"] == published["bound_release"]
+    new_record, _snapshot3 = admission.resolve_admission(restored_analytics.project)
+    assert new_record["commit"] == published["native_candidate"]
+    assert (
+        Path(new_record["bound_release"]["destination"]).resolve()
+        == restored.published_path.resolve()
+    )
+    assert PublishedFilesystemLocation(restored.published_path).read_pointer() == (
+        published["native_candidate"]
+    )
+
+    # Historical admissions and receipts are untouched by the new publication.
+    assert (
+        restored.published_path / PRIVATE_OPERATIONS_DIR / "receipts" / f"{baseline_revision}.json"
+    ).read_bytes() == baseline_receipt
+    admission.validate_admission_record(restored_analytics.project, baseline_record)

@@ -195,6 +195,36 @@ class AnalyticsService:
                 "the current analytics target and private binding need owner setup"
             )
 
+    def _verify_admission_target(self, record: dict) -> None:
+        """Refuse queries whose admitted association targets another destination.
+
+        A fresh-root restore moves the published destination while the
+        restored current record still names the old one (spec0035 §5
+        recovery; AC15). Owner setup confirmation alone is not enough: until
+        a fresh reviewed contribution is admitted on the restored target,
+        dependent SQL refuses here with the concrete prerequisites — before
+        any source is opened. The strict native Context check alone would
+        fail opaquely off-host or verify against the still-present old root.
+        Ordinary workspaces admit against the configured destination, so the
+        comparison is a no-op there and no other contract changes.
+        """
+        manifest = record.get("bound_release")
+        if not isinstance(manifest, dict):
+            return
+        destination = manifest.get("destination")
+        if not isinstance(destination, str) or destination.startswith("s3://"):
+            return
+        configured = Path(self.config.published_path).resolve()
+        if Path(destination).resolve() == configured:
+            return
+        raise AnalyticsError(
+            "the current admission binds knowledge published at "
+            f"{destination}, not this workspace's destination {configured}; "
+            "owner setup confirmation alone does not move the association — "
+            "prepare a fresh reviewed contribution and admit it on the "
+            "restored destination before querying"
+        )
+
     def _operation(self, actor: Actor, action: str, task_id: str) -> Operation:
         operation = self.state.get_operation(self.workspace_id, actor, action, task_id)
         if operation is None:
@@ -624,7 +654,13 @@ class AnalyticsService:
         request: dict,
     ) -> dict:
         self._project(project)
+        # Restored-target readiness before any grant or runtime work: the
+        # owner reconfirms setup, and the current association must bind THIS
+        # destination — a restored old association refuses before SQL
+        # (spec0035 §5; AC15), even when the old root would still verify.
+        self._require_attachment()
         record, _snapshot = admission.resolve_admission(self.project)
+        self._verify_admission_target(record)
         self._grant(
             actor,
             source_task_id,

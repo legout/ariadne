@@ -124,6 +124,26 @@ this restore does not understand refuses with an explicit supported-format
 message; historical (schema 1, local-store) backups restore exactly as
 before.
 
+A workspace whose knowledge authoring repository and Ariadne analytics
+project are the SAME physical Git working tree is backed up once: the
+manifest records `shared_analytics_root` and the repository travels as a
+copy of the authoring repo alone. Restore materializes that ONE repository
+and rebases the analytics project onto it — the knowledge subtree and the
+`.ariadne/worktrees` proposal worktrees live inside the single checkout,
+and the private task worktrees are relinked alongside them. Genuinely
+distinct configured roots keep traveling as separate copies, exactly as
+before.
+
+A restored root is not write or query ready by itself. Dependent writes and
+queries refuse until the owner reconfirms setup for the restored target,
+and dependent queries keep refusing until a fresh reviewed contribution has
+been admitted on the restored destination — the restored association still
+binds the old publication destination, and no receipt or admission history
+is rewritten to fake readiness. Source identities are revalidated against
+the restored repository: where the resolved identity differs, real native
+Source Approval through the existing review surface is required before work
+resumes.
+
 | Printed path | Environment variable |
 | --- | --- |
 | `state_path=` | `LUMIO_WORKSPACE_STATE_PATH` |

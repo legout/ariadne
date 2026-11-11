@@ -94,6 +94,10 @@ class WorkspaceLayout:
     registry_root: Path
     artifact_root: Path | None
     analytics_project: Path | None
+    #: True when the analytics project IS the authoring repository — one
+    #: physical Git working tree hosting the knowledge subtree and the
+    #: Ariadne project (spec0035 §2). Backup copies it once.
+    shared_analytics_root: bool
     analytics_bindings: Path | None
     #: The resolved adapters (registry plus artifact store) and whether the
     #: artifact store is remote. A remote store has no local root; backup
@@ -120,6 +124,11 @@ class WorkspaceLayout:
             raise OperationsError(
                 "the private profile must resolve a source registry and artifact store"
             )
+        analytics_project = (
+            Path(config.analytics_project_path)
+            if config.analytics_project_path is not None
+            else None
+        )
         return cls(
             workspace_id=config.workspace_id,
             state_path=Path(config.state_path),
@@ -130,10 +139,10 @@ class WorkspaceLayout:
             profile_path=Path(config.private_profile_path),
             registry_root=Path(registry_root),
             artifact_root=None if artifact_root is None else Path(artifact_root),
-            analytics_project=(
-                Path(config.analytics_project_path)
-                if config.analytics_project_path is not None
-                else None
+            analytics_project=analytics_project,
+            shared_analytics_root=(
+                analytics_project is not None
+                and analytics_project.resolve() == Path(repo).resolve()
             ),
             analytics_bindings=(
                 Path(config.analytics_source_bindings_path)
@@ -360,7 +369,7 @@ def quiesced_backup(config: WorkspaceConfig, backup_root: Path) -> Path:
             raise OperationsError(
                 "the private profile must resolve a source registry and artifact store"
             )
-        if layout.analytics_project is not None:
+        if layout.analytics_project is not None and not layout.shared_analytics_root:
             shutil.copytree(layout.analytics_project, staging / _ANALYTICS_PROJECT)
         if layout.analytics_bindings is not None:
             _copy_file(layout.analytics_bindings, staging / _ANALYTICS_BINDINGS)
@@ -370,6 +379,8 @@ def quiesced_backup(config: WorkspaceConfig, backup_root: Path) -> Path:
             "authoring_subtree": layout.authoring_subtree,
             **inventory,
         }
+        if layout.shared_analytics_root:
+            manifest["shared_analytics_root"] = True
         (staging / _MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     staging.rename(backup_root)
     return backup_root
@@ -385,6 +396,36 @@ def _relink_registered_worktrees(repo_root: Path, worktrees_root: Path) -> None:
             continue
         moved = worktrees_root / registered.name
         if not moved.is_dir():
+            shutil.rmtree(registered)
+            continue
+        (registered / "gitdir").write_text(f"{moved / '.git'}\n", encoding="utf-8")
+        (moved / ".git").write_text(f"gitdir: {registered}\n", encoding="utf-8")
+
+
+def _relink_shared_root_worktrees(repo_root: Path, worktree_roots: list[Path]) -> None:
+    """Relink BOTH worktree roles of one shared authoring/analytics repository.
+
+    The same registrations serve authoring task worktrees under the private
+    tree and analytics proposal worktrees under ``.ariadne/worktrees``
+    inside the repository. Matching by name across each role's root keeps
+    every registration whose worktree directory traveled with the backup;
+    a single-root match would destroy the other role's registrations.
+    """
+    registered_root = repo_root / ".git" / "worktrees"
+    if not registered_root.is_dir():
+        return
+    for registered in sorted(registered_root.iterdir()):
+        if not registered.is_dir():
+            continue
+        moved = next(
+            (
+                root / registered.name
+                for root in worktree_roots
+                if (root / registered.name).is_dir()
+            ),
+            None,
+        )
+        if moved is None:
             shutil.rmtree(registered)
             continue
         (registered / "gitdir").write_text(f"{moved / '.git'}\n", encoding="utf-8")
@@ -484,6 +525,9 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
 
     ``config`` carries the operator's launch facts (identity, external URL,
     publication pin); only durable data and its paths come from the backup.
+    A backup whose manifest records ``shared_analytics_root`` materializes
+    the ONE authoring/analytics repository once and rebases the analytics
+    project onto that restored checkout (spec0035 §2/§5 recovery).
     """
     backup_root = Path(backup_root)
     target_root = Path(target_root)
@@ -498,6 +542,7 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
         )
     if manifest.get("workspace_id") != config.workspace_id:
         raise OperationsError("the backup belongs to a different workspace")
+    shared = bool(manifest.get("shared_analytics_root"))
     if target_root.exists() and any(target_root.iterdir()):
         raise OperationsError("the restore target must be a new or empty data root")
     _refuse_unfinished_backup_activation(backup_root)
@@ -515,7 +560,7 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
         _restore_store_records(backup_root, target_root, manifest)
     else:
         shutil.copytree(backup_root / _ARTIFACTS, target_root / _ARTIFACTS)
-    if config.analytics_project_path is not None:
+    if config.analytics_project_path is not None and not shared:
         if not (backup_root / _ANALYTICS_PROJECT).is_dir():
             raise OperationsError("the configured analytics project is absent from this backup")
         shutil.copytree(backup_root / _ANALYTICS_PROJECT, target_root / _ANALYTICS_PROJECT)
@@ -525,14 +570,27 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
     ):
         _copy_file(backup_root / _ANALYTICS_BINDINGS, target_root / _ANALYTICS_BINDINGS)
 
-    _relink_registered_worktrees(
-        target_root / _AUTHORING_REPO, target_root / _PRIVATE / "worktrees"
-    )
-    if config.analytics_project_path is not None:
-        _relink_registered_worktrees(
-            target_root / _ANALYTICS_PROJECT,
-            target_root / _ANALYTICS_PROJECT / ".ariadne" / "worktrees",
+    if shared:
+        # One physical repository hosts the knowledge subtree and the
+        # Ariadne project (spec0035 §2): relink both worktree roles against
+        # the single restored checkout instead of splitting the repo into
+        # independently advancing copies.
+        _relink_shared_root_worktrees(
+            target_root / _AUTHORING_REPO,
+            [
+                target_root / _PRIVATE / "worktrees",
+                target_root / _AUTHORING_REPO / ".ariadne" / "worktrees",
+            ],
         )
+    else:
+        _relink_registered_worktrees(
+            target_root / _AUTHORING_REPO, target_root / _PRIVATE / "worktrees"
+        )
+        if config.analytics_project_path is not None:
+            _relink_registered_worktrees(
+                target_root / _ANALYTICS_PROJECT,
+                target_root / _ANALYTICS_PROJECT / ".ariadne" / "worktrees",
+            )
     _rebase_profile(target_root, schema)
     _invalidate_restored_actions(target_root / _STATE)
     _write_restored_root_record(backup_root, target_root, manifest)
@@ -544,7 +602,9 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
         private_root=target_root / _PRIVATE,
         published_path=target_root / _PUBLISHED,
         analytics_project_path=(
-            target_root / _ANALYTICS_PROJECT if config.analytics_project_path is not None else None
+            (target_root / _AUTHORING_REPO if shared else target_root / _ANALYTICS_PROJECT)
+            if config.analytics_project_path is not None
+            else None
         ),
         analytics_source_bindings_path=(
             target_root / _ANALYTICS_BINDINGS
