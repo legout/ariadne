@@ -71,36 +71,145 @@ def _candidate_page(project, saved):
     return worktree_of(root, saved["proposal"]) / saved["path"]
 
 
-def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(project, capsys):
-    """The exact submitted SQL is opt-in historical evidence, not executable input."""
-    root, db = project
-    db_before = db.read_bytes()
+def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path, capsys):
+    """The exact submitted SQL is opt-in historical evidence, not executable input
+
+    spec0035 C4 native journey: one revision-4 integrated release admits the
+    retail knowledge (metric + Policies + the answer_examples category); an
+    explicit CLI save authors ONE native knowledge/answer_examples page
+    through the shared candidate writer; ordinary search stays admitted-only;
+    the explicit candidate preview labels the draft; opt-in returns the exact
+    submitted SQL verbatim; and no step ever opens the DuckDB source."""
+    import json
+
+    import yaml
+    from integration.tests.lumio_metric_mvp import (  # pyright: ignore[reportMissingImports] — qualified test env is external
+        CONTROL,
+        NAMESPACE,
+        activate,
+        content_project,
+        page_parts,
+        preview,
+        write_page,
+    )
+
+    from ariadne import admission
+    from ariadne.authoring import AuthoringProject
+    from ariadne.cli import main as cli
+    from tests.test_git_authoring import approved, run_git, worktree_of
+
+    project = content_project(tmp_path / "project")
+    # The revision-4 integrated selector validates the WHOLE candidate under
+    # the producer contract: the scaffolded classic context_layer bundle is
+    # retired — the same pure-native base the proven revision-2/3 journeys use.
+    run_git(project, "rm", "-q", "-r", "--", "context_layer")
+    run_git(
+        project,
+        "commit",
+        "-q",
+        "-m",
+        "human: pure native knowledge baseline",
+        "--",
+        "context_layer",
+    )
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+
+    def record_revision(proposal):
+        from ariadne import proposals
+
+        return proposals._load_record(project, proposal)["candidate_revision"]
+
+    # Candidate 1: the revision-4 integrated opt-in (frozen rev-3 query set
+    # plus the answer_example profile and the two Example operations) with the
+    # authored metric-binding inventory, and the answer_examples KB category.
+    tree = worktree_of(project, started["proposal"])
+    # The proven candidate edit: the reference page's typed profile cites a
+    # catalog resource outside this project's approved registry — strip the
+    # profile as a visible Git candidate edit (an ordinary page thereafter),
+    # never an input conversion.
+    reference = tree / "knowledge/references/order-number.md"
+    ref_meta, ref_body = page_parts(reference)
+    del ref_meta["ariadne_profile"]
+    write_page(reference, ref_meta, ref_body)
+    control = tree / "knowledge" / "lumio.yaml"
+    control.write_text(
+        CONTROL.replace(
+            "  - name: metrics\n",
+            "  - name: metrics\n  - name: computations\n  - name: answer-examples\n",
+        ).replace(
+            "    metric: {}\n",
+            "    metric: {}\n    computation: {}\n    answer-example: {}\n",
+        )
+    )
+    bindings = {
+        "version": 1,
+        "bindings": [
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:retail-return-policy"},
+                "operations": ["get_metric"],
+                "enforcement": None,
+            }
+        ],
+    }
+    (tree / "context_integration.yaml").write_text(
+        "version: 1\nmode: integrated\nsubtree: knowledge\n"
+        f"namespace: {NAMESPACE}\nprofile: ariadne-context/1\n"
+        + yaml.safe_dump({"support_revision": 4, "policy_bindings": bindings}, sort_keys=False)
+    )
+    previous = record_revision(started["proposal"])
+    run_git(tree, "add", "-f", "--", "knowledge")
+    run_git(tree, "add", "--", "context_integration.yaml")
+    run_git(tree, "commit", "-q", "-m", "human: revision-4 answer-example candidate")
+    revision = run_git(tree, "rev-parse", "HEAD").strip()
+    admission.reconcile(project, started["proposal"], previous, revision)
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    activate(project, review, preview(project, review, tmp_path / "published"))
+
+    def cli_run(*args, stdin=None):
+        return cli([*args, "--project", str(project)], stdin=stdin)
+
+    db_path = project / "data" / "orders.duckdb"
+    db_before = db_path.read_bytes()
     result = {**_SMALL_RESULT, "sql": _EXACT_SQL}
     submission = _submission(result)
-    assert run_cli(project, "save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
-    assert saved["path"].startswith("answer_examples/")
+    assert saved["path"] == f"knowledge/answer-examples/{saved['id']}.md"
 
-    page = _candidate_page(project, saved)
-    metadata = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
-    assert metadata["sql_provenance"] == {
+    page = worktree_of(project, saved["proposal"]) / saved["path"]
+    front = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
+    assert front["ariadne_profile"]["kind"] == "answer_example"
+    assert front["entity_types"] == ["answer-example"]
+    assert front["id"] == f"entity:{saved['id']}"
+    native = front["ariadne_profile"]["native"]
+    assert native["sql_provenance"] == {
         "source": "submitted_result.sql",
         "text": _EXACT_SQL,
     }
+    import hashlib
+
+    assert native["answer"]["result_digest"] == hashlib.sha256(
+        json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
     # Ordinary search is admitted-only; candidate search is explicit and labeled.
-    assert run_cli(project, "search-examples", "gross margin region") == 0
+    assert cli_run("search-examples", "gross margin region") == 0
     assert json.loads(capsys.readouterr().out) == []
     selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
-    assert run_cli(project, "search-examples", "gross margin region", *selectors) == 0
+    assert cli_run("search-examples", "gross margin region", *selectors) == 0
     default = json.loads(capsys.readouterr().out)
     assert len(default) == 1 and default[0]["status"] == "draft"
     assert "rows" not in default[0] and "sql" not in default[0]["provenance"]
 
     assert (
-        run_cli(
-            project,
+        cli_run(
             "search-examples",
             "gross margin region",
             *selectors,
@@ -113,8 +222,44 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(project, 
         "source": "submitted_result.sql",
         "text": _EXACT_SQL,
     }
-    assert db.read_bytes() == db_before
-    assert not (root / "staging").exists()
+    assert db_path.read_bytes() == db_before
+    assert not (project / "staging").exists()
+
+    # Mandatory human admission of the Example candidate — save never auto-publishes.
+    validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    example_review = api.review_proposal(saved["proposal"])
+    activate(
+        project,
+        example_review,
+        preview(
+            project,
+            example_review,
+            tmp_path / "published",
+            review["revision"],
+        ),
+    )
+
+    assert cli_run("search-examples", "gross margin region") == 0
+    admitted = json.loads(capsys.readouterr().out)
+    assert len(admitted) == 1 and admitted[0]["status"] == "stable"
+    hit = admitted[0]
+    # the admitted Example pins the NEW active Bound Release (post-admission manifest)
+    manifest = json.loads((project / ".ariadne" / "current.json").read_text())["bound_release"]
+    assert hit["entity_id"] == f"entity:{saved['id']}"
+    assert hit["published_version"] == example_review["revision"]
+    assert hit["bound_release"] == manifest["digest"]
+    assert hit["stale"] is False
+    assert "sql" not in hit["provenance"]
+    assert "rows" not in hit
+    assert cli_run("search-examples", "gross margin region", "--include-sql") == 0
+    admitted_sql = json.loads(capsys.readouterr().out)
+    assert admitted_sql[0]["provenance"]["sql"] == {
+        "source": "submitted_result.sql",
+        "text": _EXACT_SQL,
+    }
+    assert db_path.read_bytes() == db_before
+    assert not (project / "staging").exists()
 
 
 def test_oversize_excerpt_and_sql_refuse_before_creating_a_candidate(project, capsys):

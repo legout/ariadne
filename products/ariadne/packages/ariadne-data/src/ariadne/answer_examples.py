@@ -1,23 +1,28 @@
-"""Separate OKF store for explicitly submitted answer examples (issue #19).
+"""Native Answer Example authoring and candidate retrieval (issue #19 → spec0035 C4).
 
-ADR-0015 / spec 2026-09-29-0007 revision 1: an Answer Example is an explicitly
-submitted OKF record of a question, its intended meaning, the Ariadne method
+ADR-0029 / shared spec0035 §4 with Ariadne spec 2026-09-29-0007 revision 1
+and spec 2026-10-13-0023 revision 2: an Answer Example is an explicitly
+submitted record of a question, its intended meaning, the Ariadne method
 that answered it and a bounded historical answer — a labeled reference for
 finding and checking a method, never a governed definition, a Policy or an
-answer cache. This module is the transport-neutral core the runtime (and the
-optional MCP adapter, issue #21) shares; the operator review command (issue
-#20) is deliberately not here.
+answer cache. This module is the transport-neutral core the runtime (and
+the optional MCP adapter, issue #21) shares; the operator review command
+(issue #20) is deliberately not here.
 
 - ``save_candidate_example`` validates one explicit submission, derives a
   bounded historical answer excerpt and full-result digest, verifies cited
-  bytes against the exact selected Git revision, then writes one Example to a
-  revision-checked proposal commit. No durable staging store exists.
-- ``search_admitted`` reads only the admitted snapshot; ``search_candidate``
-  reads one explicitly selected recorded proposal revision. Neither executes
-  queries or returns saved rows. ``include_sql=True`` adds the exact submitted
-  SQL provenance to selected hits; SQL never ranks or executes. Examples stay
-  outside ``context_layer/`` and share human Git Admission with all authored
-  artifacts.
+  knowledge pages against the exact selected Git revision, then authors ONE
+  native ``knowledge/answer_examples/`` Compiled Page (producer-owned
+  ``ariadne_profile`` kind ``answer_example``) through the shared native
+  page-batch writer — the same proposal lock/revision discipline and human
+  Git admission as every authored artifact. No second Example store or index
+  exists.
+- Admitted Examples are searched through the pinned scoped SDK views
+  (``lumio_context.search_examples``); ``search_candidate`` reads one
+  explicitly selected recorded proposal revision as labeled draft history.
+  Neither executes queries or returns saved rows. ``include_sql=True`` adds
+  the exact submitted SQL provenance to selected hits; SQL never ranks or
+  executes.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from typing import Any
 
 import yaml
 
-EXAMPLES_DIR = "answer_examples"  # ADR-0015: the separate per-project OKF store
+EXAMPLES_DIR = "answer-examples"  # the native knowledge/ category slug of one Example
 MAX_EXCERPT_BYTES = 8 * 1024  # spec: the timestamped answer excerpt bound
 MAX_RECORD_BYTES = 64 * 1024  # spec: the whole encoded record bound
 # spec 2026-10-13-0023 §2: the fixed provenance descriptor — the submitted
@@ -130,7 +135,7 @@ def _resolve_citation(ref: str, served_root: Path) -> dict:
     return {"path": ref, "sha256": _sha256_hex(resolved.read_bytes())}
 
 
-def _normalize_submission(submission: Any, served_root: Path) -> dict:
+def _normalize_submission(submission: Any) -> dict:
     """Validate one explicit submission into the canonical record fields."""
     if not isinstance(submission, dict):
         raise ValueError("save-example expects a submission object")
@@ -195,34 +200,43 @@ def _normalize_submission(submission: Any, served_root: Path) -> dict:
     if cited is None:  # absent and explicit null both mean no citations
         cited = []
     if not isinstance(cited, list) or not all(isinstance(ref, str) and ref for ref in cited):
-        raise ValueError("'sources' must be a list of served metric/Policy paths")
-    record["sources"] = [_resolve_citation(ref, served_root) for ref in cited]
+        raise ValueError("'sources' must be a list of knowledge page paths")
+    record["sources"] = cited  # verified against the exact selected revision at save
     return record
 
 
 def _example_id(question: str, captured: datetime) -> str:
     slug = "-".join(_SLUG_TOKEN_RE.findall(question.lower()))[:48].rstrip("-")
-    return f"{slug or 'example'}-{captured:%Y%m%dT%H%M%S}"
+    # lowercase digits only: the id becomes the Entity slug (entity:<id>),
+    # which must begin and end with a letter or digit (KB slug rule)
+    return f"{slug or 'example'}-{captured.strftime('%Y%m%d%H%M%S')}"
 
 
-def _record_markdown(record: dict) -> bytes:
-    """One OKF v0.2 answer-example page: structured frontmatter (question,
-    interpretation, parameters, method, cited sources with digests,
-    self-declared submitter) plus the bounded answer excerpt as fenced
-    evidence. Saved prose and the snapshot are evidence only — never an
-    execution shortcut, never an instruction to an agent."""
-    front = {key: value for key, value in record.items() if key != "answer"}
-    answer = record["answer"]
-    heading = " ".join(record["question"].split())  # one heading line, whatever was asked
-    return (
-        f"---\n{yaml.safe_dump(front, sort_keys=False, allow_unicode=True)}---\n\n"
-        f"# {heading}\n\n"
-        "Historical evidence only — never a cached answer; rerun the recorded "
-        "method on current data before reuse.\n\n"
-        f"Captured answer excerpt ({answer['captured']}; full structured-result "
-        f"digest `{answer['result_digest']}`):\n\n"
-        f"````json\n{answer['excerpt']}\n````\n"
-    ).encode()
+def _verify_citation(project: Path, revision: str, ref: str) -> dict:
+    """One cited knowledge page: a KB-relative ``.md`` path whose exact bytes
+    exist at the selected revision and whose producer kind is a metric or a
+    Policy (spec rev 1: only served metrics/Policies may back an Example
+    dependency; the digest is recorded with it — no guessed or fabricated
+    citation is ever recorded)."""
+    from . import proposals
+
+    pure = PurePosixPath(ref)
+    if pure.is_absolute() or "\\" in ref or ref.startswith("-") or ".." in pure.parts:
+        raise ValueError(f"cited path {ref!r} escapes the selected revision")
+    if not ref.endswith(".md"):
+        raise ValueError(f"cited path must be a knowledge page: {ref!r}")
+    blob = proposals._read_blob(project, revision, f"knowledge/{ref}")
+    if blob is None:
+        raise ValueError(f"cited path does not exist in the selected revision: {ref!r}")
+    from lumio_wiki import parse_frontmatter
+
+    meta, _body, _line = parse_frontmatter(blob.decode("utf-8"), pure.name)
+    kind = ((meta or {}).get("ariadne_profile") or {}).get("kind")
+    if kind not in ("metric", "policy"):
+        raise ValueError(
+            f"cited page must be a metric or Policy page: {ref!r} (producer kind {kind!r})"
+        )
+    return {"path": ref, "sha256": _sha256_hex(blob)}
 
 
 def _frontmatter(path: Path) -> dict | None:
@@ -248,25 +262,66 @@ def _write_candidate_index(directory: Path) -> None:
     (directory / "index.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def _page_markdown(record: dict, example_id: str) -> bytes:
+    """One native ``knowledge/answer_examples/`` Compiled Page: the shared
+    page frontmatter (stable Entity id, canonical title, controlled entity
+    type, scoped visibility) plus the producer-owned ``answer_example``
+    profile carrying the retained spec0007/0023 native families, and the
+    bounded answer excerpt as fenced body evidence. Saved prose and the
+    snapshot are evidence only — never an execution shortcut, never an
+    instruction to an agent."""
+    native = dict(record)
+    native["type"] = "answer_example"
+    question = " ".join(record["question"].split())  # one heading line, whatever was asked
+    interpretation = " ".join(record["interpretation"].split())
+    native.update(
+        {
+            "title": question,
+            "description": interpretation,
+            "tags": ["answer-example"],
+            "sources": [],
+        }
+    )
+    front = {
+        "id": f"entity:{example_id}",
+        "title": question,
+        "entity_types": ["answer-example"],
+        "tags": ["answer-example"],
+        "summary": interpretation,
+        "lifecycle": "draft",
+        "visibility": "public",
+        "sources": [{"id": "src-explicit-submission", "title": "Explicit user submission"}],
+        "ariadne_profile": {"version": 1, "kind": "answer_example", "native": native},
+    }
+    answer = record["answer"]
+    return (
+        f"---\n{yaml.safe_dump(front, sort_keys=False, allow_unicode=True)}---\n\n"
+        f"# {question}\n\n"
+        "Historical evidence only — never a cached answer; rerun the recorded "
+        "method on current data before reuse.\n\n"
+        f"Captured answer excerpt ({answer['captured']}; full structured-result "
+        f"digest `{answer['result_digest']}`):\n\n"
+        f"````json\n{answer['excerpt']}\n````\n"
+    ).encode()
+
+
 def save_candidate_example(
     submission: Any,
     project: str | Path,
-    served_root: str | Path,
     base_revision: str,
     *,
     proposal: str | None = None,
     expected_revision: str | None = None,
 ) -> dict:
-    """Save one explicit Example as a commit in a proposal, never a file-store draft."""
+    """Save one explicit Example as a native knowledge page in a candidate —
+    the same proposal lock/revision discipline and human Git admission as
+    every authored artifact; never an admitted page, never an executed query."""
     from . import proposals
 
     if (proposal is None) != (expected_revision is None):
         raise ValueError("--proposal and --expected-revision are required together")
     project = Path(project).resolve()
-    citation_root = Path(served_root)
-    record = _normalize_submission(submission, citation_root)
-    selected_revision = base_revision
-    proposal_record = None
+    record = _normalize_submission(submission)
     if proposal is not None:
         proposal_record = proposals._load_record(project, proposal)
         selected_revision = proposal_record["candidate_revision"]
@@ -277,17 +332,13 @@ def save_candidate_example(
                 "nothing was written"
             )
         base_revision = proposal_record["base_revision"]
-    for citation in record["sources"]:
-        resolved = (citation_root.resolve() / citation["path"]).resolve()
-        root = citation_root.resolve()
-        if not resolved.is_relative_to(root):
-            raise ValueError(f"citation {citation['path']!r} escapes the selected snapshot")
-        rel = resolved.relative_to(root).as_posix()
-        blob = proposals._read_blob(project, selected_revision, rel)
-        if blob is None or _sha256_hex(blob) != citation["sha256"]:
-            raise ValueError(
-                f"citation {citation['path']!r} does not match the selected candidate revision"
-            )
+    else:
+        selected_revision = proposals._validate_revision(project, base_revision)
+    # Citations bind the EXACT selected revision bytes (spec rev 1): every
+    # cited path must resolve to a metric or Policy page of that revision.
+    record["citations"] = [
+        _verify_citation(project, selected_revision, ref) for ref in record.pop("sources")
+    ]
 
     now = datetime.now(UTC)
     captured = now.isoformat(timespec="seconds")
@@ -297,35 +348,20 @@ def save_candidate_example(
         raise ValueError(
             f"answer excerpt exceeds the {MAX_EXCERPT_BYTES}-byte bound — submit a smaller result"
         )
-    record.update(
-        {
-            "type": "answer_example",
-            "status": "draft",
-            "generated": captured,
-            "answer": {
-                "captured": captured,
-                "excerpt": excerpt,
-                "result_digest": _sha256_hex(_canonical(result).encode("utf-8")),
-            },
-        }
-    )
-    page = _record_markdown(record)
-    if len(page) > MAX_RECORD_BYTES:
-        raise ValueError(
-            f"encoded example record is {len(page)} bytes, over the "
-            f"{MAX_RECORD_BYTES}-byte bound — submit a smaller record"
-        )
+    record["answer"] = {
+        "captured": captured,
+        "excerpt": excerpt,
+        "result_digest": _sha256_hex(_canonical(result).encode("utf-8")),
+    }
     base_id = _example_id(record["question"], now)
     tracked = proposals._git(
-        ["ls-tree", "-r", "--name-only", selected_revision, "--", EXAMPLES_DIR], project
+        ["ls-tree", "-r", "--name-only", selected_revision, "--", f"knowledge/{EXAMPLES_DIR}"],
+        project,
     ).stdout.splitlines()
     existing = {
         PurePosixPath(rel).stem
         for rel in tracked
-        if rel.startswith(f"{EXAMPLES_DIR}/")
-        and rel.count("/") == 1
-        and rel.endswith(".md")
-        and PurePosixPath(rel).name not in ("index.md", "log.md")
+        if rel.endswith(".md") and PurePosixPath(rel).name not in ("index.md", "log.md")
     }
     example_id = base_id
     suffix = 2
@@ -333,6 +369,12 @@ def save_candidate_example(
         example_id = f"{base_id}-{suffix}"
         suffix += 1
 
+    page = _page_markdown(record, example_id)
+    if len(page) > MAX_RECORD_BYTES:
+        raise ValueError(
+            f"encoded example record is {len(page)} bytes, over the "
+            f"{MAX_RECORD_BYTES}-byte bound — submit a smaller record"
+        )
     created_proposal = proposal is None
     if created_proposal:
         started = proposals.start_proposal(project, base_revision=selected_revision)
@@ -341,8 +383,16 @@ def save_candidate_example(
         base_revision = started["base_revision"]
     assert proposal is not None and expected_revision is not None
     try:
-        result_record = proposals.add_answer_example(
-            project, proposal, expected_revision, example_id, page.decode("utf-8")
+        result_record = proposals.edit_page_batch(
+            project,
+            proposal,
+            expected_revision,
+            [
+                {
+                    "path": f"knowledge/{EXAMPLES_DIR}/{example_id}.md",
+                    "content": page.decode("utf-8"),
+                }
+            ],
         )
     except Exception as exc:
         if not created_proposal and isinstance(exc, ValueError):
@@ -380,7 +430,7 @@ def save_candidate_example(
         "base_revision": base_revision,
         "candidate_revision": result_record["revision"],
         "status": "draft",
-        "path": result_record["path"],
+        "path": result_record["paths"][0],
     }
 
 
@@ -593,11 +643,15 @@ def _rank_records(
         submitter = submitter if isinstance(submitter, dict) else {}
         provenance = {
             "submitter": submitter.get("identity"),
-            "generated": meta.get("generated"),
-            "sources": meta.get("sources") or [],
+            "generated": (meta.get("answer") or {}).get("captured"),
+            "sources": meta.get("citations") or [],
         }
+        stem = PurePosixPath(path).stem
         hit = {
-            "id": PurePosixPath(path).stem,
+            "id": stem,
+            # the persisted page's stable Entity identity (entity:<file stem>,
+            # the save convention); admitted hits carry the SDK-read value
+            "entity_id": f"entity:{stem}",
             "status": status,
             "stale": stale,
             "question": meta.get("question"),
@@ -620,10 +674,10 @@ def _rank_records(
 
 
 def _candidate_is_stale(meta: dict, project: Path, revision: str, proposals) -> bool:
-    sources = meta.get("sources") or []
-    if not isinstance(sources, list):
+    citations = meta.get("citations") or []
+    if not isinstance(citations, list):
         return True
-    for entry in sources:
+    for entry in citations:
         if not isinstance(entry, dict):
             return True
         path = entry.get("path")
@@ -631,23 +685,9 @@ def _candidate_is_stale(meta: dict, project: Path, revision: str, proposals) -> 
         if not isinstance(path, str) or not isinstance(digest, str):
             return True
         pure = PurePosixPath(path)
-        if pure.is_absolute() or "\\" in path or path.startswith("-"):
+        if pure.is_absolute() or "\\" in path or path.startswith("-") or ".." in pure.parts:
             return True
-        parts: list[str] = []
-        for part in pure.parts:
-            if part in ("", "."):
-                continue
-            if part == "..":
-                if not parts:
-                    return True
-                parts.pop()
-            else:
-                parts.append(part)
-        citation_kind = "/".join(parts[:2]) + "/" if len(parts) >= 2 else ""
-        if len(parts) < 3 or citation_kind not in _CITATION_KINDS or not parts[-1].endswith(".md"):
-            return True
-        rel = "/".join(parts)
-        blob = proposals._read_blob(project, revision, rel)
+        blob = proposals._read_blob(project, revision, f"knowledge/{path}")
         if blob is None or _sha256_hex(blob) != digest:
             return True
     return False
@@ -697,13 +737,13 @@ def search_candidate(
             f"{record['candidate_revision']} — re-read the candidate before searching"
         )
     paths = proposals._git(
-        ["ls-tree", "-r", "--name-only", revision, "--", EXAMPLES_DIR], project
+        ["ls-tree", "-r", "--name-only", revision, "--", f"knowledge/{EXAMPLES_DIR}"], project
     ).stdout.splitlines()
     records = []
     for rel in sorted(paths):
         if (
-            not rel.startswith(f"{EXAMPLES_DIR}/")
-            or rel.count("/") != 1
+            not rel.startswith(f"knowledge/{EXAMPLES_DIR}/")
+            or rel.count("/") != 2
             or not rel.endswith(".md")
             or PurePosixPath(rel).name in ("index.md", "log.md")
         ):
@@ -717,12 +757,13 @@ def search_candidate(
         if match is None:
             continue
         try:
-            meta = yaml.safe_load(match.group(1))
+            front = yaml.safe_load(match.group(1))
         except yaml.YAMLError:
             continue
-        if isinstance(meta, dict) and meta.get("type") == "answer_example":
+        native = ((front or {}).get("ariadne_profile") or {}).get("native")
+        if isinstance(native, dict) and native.get("type") == "answer_example":
             records.append(
-                (rel, meta, "draft", _candidate_is_stale(meta, project, revision, proposals))
+                (rel, native, "draft", _candidate_is_stale(native, project, revision, proposals))
             )
     return _rank_records(
         records,

@@ -65,12 +65,30 @@ A profiled page adds an optional typed `ariadne_profile` envelope:
 | Field | Profile-v1 contract |
 | :--- | :--- |
 | `version` | Exact integer 1; no coercion or latest-version dispatch. |
-| `kind` | One of `dataset`, `table`, `reference`, `policy`, `metric`, `computation`, `skill`. Kind is application metadata, not a global Lumio ontology type. |
+| `kind` | One of `dataset`, `table`, `reference`, `policy`, `metric`, `computation`, `skill`, `answer_example`. Kind is application metadata, not a global Lumio ontology type. |
 | `native` | Losslessly retained supported Ariadne OKF metadata; its existing nested `ariadne` extension/evidence, source-qualified field scope and identifiers are not flattened or guessed. Body remains the native Compiled Page body, not a second body copy. |
 | `required_policies` | Explicit list of exact `{namespace, entity_id}` references, mandatory even when empty for metric and Policy pages. It is distinct from native/canonical provenance sources. |
 | `metric_ref` | Required for metric pages: exact native model/metric identity. No generated replacement ID or title match. |
 | `core_ref` | Explicit native Resource or semantic identity when the page annotates an Ariadne-owned artifact; required for dataset/table/computation annotations. No executable definition is copied into Lumio. |
 | `ontology_refs` | Optional explicit declared namespace/identifier/immutable-revision references; no title-derived equivalence. |
+
+**`answer_example` kind (approved C4 producer extension).** Shared
+specification 0035 (Lumio-owned Context Layer, task C4) adds the
+`answer_example` producer kind to this existing kind table; Ariadne
+specifications 0007 (saved answer examples) and 0023 (Answer Example SQL
+provenance) remain the retained field/meaning oracles for its `native`
+metadata (question, interpretation, structured method, optional
+parameters/project, self-declared submitter attestation, digest citations,
+system-derived exact `sql_provenance`, and the bounded historical answer
+with its result digest). The producer contract here is structural only:
+Lumio validates shapes, string and size bounds, and the fixed
+`submitted_result.sql` provenance descriptor; it never imports Ariadne,
+never executes stored or submitted SQL, never admits metrics, never treats
+Example citations as required Policies or joins, and never presents a saved
+historical answer as a current result. Analytical meaning, citation-digest
+verification, consent and the system-owned/reserved field boundary stay
+Core (Ariadne) authority. No new envelope fields, versions or second
+Example index are introduced by this kind.
 
 The `native` slot supports the existing Ariadne metadata families in the
 source contracts below: typed page/resource identity, structured provenance,

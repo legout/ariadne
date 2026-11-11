@@ -60,7 +60,7 @@ def digest(value):
 # join revision 3's frozen table only; the SUPPORT default and the frozen
 # revision-1/2 tables never change, so older matching admissions keep their
 # own contracts and never silently gain operations.
-IMPLEMENTED_PROFILE_REVISIONS = (1, 2, 3)
+IMPLEMENTED_PROFILE_REVISIONS = (1, 2, 3, 4)
 _INTEGRATED_OPERATIONS = (
     "get_metric",
     "query_metrics",
@@ -70,6 +70,13 @@ _INTEGRATED_OPERATIONS = (
 )
 #: The revision-3 (#84) query-expanded operations (spec0032 §10.3).
 _REVISION3_OPERATIONS = ("query_detail", "query_records", "define_metric")
+#: The spec0035 C4 (#112) producer extension: revision 4 joins the frozen
+#: revision-3 query operations with the answer_example producer profile and
+#: the two Example operations; the SUPPORT default and the frozen
+#: revision-1/2/3 tables never change, so older matching admissions keep
+#: their own contracts and never silently gain them.
+_REVISION4_PROFILES = ("answer_example",)
+_REVISION4_OPERATIONS = ("save_example", "search_examples")
 #: The §10.2 existing-check catalog: each id names the check that actually
 #: executes, with exactly the operations it executes for (the current-source
 #: symbol is binding; implementations add no entries). Response/transport
@@ -105,6 +112,14 @@ def capability_table(revision: int) -> dict:
         # older matching admissions never silently gain operations.
         operations = [*operations, *_REVISION3_OPERATIONS]
         unsupported = [op for op in unsupported if op not in _REVISION3_OPERATIONS]
+    if revision >= 4:
+        # spec0035 C4 (#112): the answer_example producer profile and the two
+        # Example operations join THIS revision's frozen table only; the
+        # SUPPORT default and the immutable revision-1/2/3 tables stay
+        # untouched, so older matching admissions never silently gain them.
+        profiles = [*profiles, *_REVISION4_PROFILES]
+        operations = [*operations, *_REVISION4_OPERATIONS]
+        unsupported = [op for op in unsupported if op not in _REVISION4_OPERATIONS]
     return {
         "storage": SUPPORT["storage"],
         "profiles": profiles,
@@ -1912,6 +1927,111 @@ def search_context(manifest, query, limit=10):
             }
         )
     return hits
+
+
+def search_examples(manifest, query, limit=10, include_history=False, include_sql=False):
+    """Search admitted Answer Examples in the pinned Bound Release through
+    the scoped SDK views (spec0035 §4, AC8/14): visibility scope applies
+    before matching, the producer ``answer_example`` kind filters the typed
+    scoped view BEFORE ranking and limiting, staleness is evaluated at read
+    time against the pinned cited bytes, and the exact submitted SQL provenance
+    is opt-in only. Search never executes SQL and never returns a saved
+    historical number as a current answer — reuse always reruns the recorded
+    method through the governed runtime (fresh recalculation is C7's)."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import answer_examples
+
+    listing, read, search = _navigation_gate()
+    location, expected, metadata_store = _navigation_identity(manifest)
+
+    def _listing():
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return listing(location, expected)
+        return listing(location, expected, metadata_store=metadata_store)
+
+    def _read(path):
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return read(location, expected, path)
+        return read(location, expected, path, metadata_store=metadata_store)
+
+    def _search(query, page_limit):
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return search(location, expected, query, limit=page_limit, kinds=("answer_example",))
+        return search(
+            location,
+            expected,
+            query,
+            limit=page_limit,
+            metadata_store=metadata_store,
+            kinds=("answer_example",),
+        )
+
+    # Kind filtering happens inside the SDK scoped view BEFORE matching,
+    # ranking and limiting; the search limit is the actual visible Example
+    # count, so staleness exclusion (a Core read-time meaning check) keeps
+    # its pre-limit semantics exactly like the retired store's ranking.
+    total = sum(1 for page in _listing() if page.kind == "answer_example")
+    if not total:
+        return []
+    results = _search(query, total)
+    if not results:
+        return []
+    ranked = []
+    for hit in results:
+        page = hit.page
+        meta = disclose_native(page.native)
+        citations = meta.get("citations") or []
+        stale = False
+        for entry in citations:
+            try:
+                cited = _read(str(entry.get("path")))
+            except (ValueError, KeyError, OSError, TypeError):
+                stale = True  # a missing/hidden/unreadable citation is stale
+                break
+            if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get(
+                "sha256"
+            ):
+                stale = True
+                break
+        if stale and not include_history:
+            continue  # stale history never occupies a result slot by default
+        submitter = meta.get("submitter") or {}
+        provenance = {
+            "submitter": submitter.get("identity"),
+            "generated": (meta.get("answer") or {}).get("captured"),
+            "sources": citations,
+        }
+        ranked.append(
+            (
+                0 if not stale else 1,
+                -hit.score,
+                page.path,
+                {
+                    "id": page.entity_id,
+                    "status": "stable",
+                    "stale": stale,
+                    "question": meta.get("question"),
+                    "interpretation": meta.get("interpretation"),
+                    "method": meta.get("method"),
+                    "provenance": provenance,
+                    "path": page.path,
+                    "entity_id": page.entity_id,
+                    "published_version": page.published_version,
+                    "citation": page.citation,
+                    "bound_release": manifest["digest"],
+                },
+                meta,
+            )
+        )
+    ranked.sort(key=lambda item: item[:3])
+    selected = ranked[:limit]
+    if include_sql:
+        for *_, hit, meta in selected:
+            hit["provenance"]["sql"] = answer_examples.validated_sql_provenance(
+                meta, f"answer example {hit['id']!r}"
+            )
+    return [hit for *_, hit, _meta in selected]
 
 
 def resolve_term(

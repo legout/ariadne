@@ -512,13 +512,19 @@ class _DiscoverySession:
             )
         if self._managed is not None:
             self._recheck_pinned()
-            return answer_examples.search_admitted(
-                self.context_dir.parent,
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context
+
+            assert self._managed is not None
+            result = lumio_context.search_examples(
+                self._managed["bound_release"],
                 query,
                 limit=limit,
                 include_history=include_history,
                 include_sql=include_sql,
             )
+            self._refuse_oversized_response(result)
+            return result
         if self._source_free:
             return []
         raise ValueError("Examples are available only from a Git admission or explicit candidate")

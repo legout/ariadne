@@ -1321,7 +1321,6 @@ class _QueryRuntimeSession(_DiscoverySession):
             return answer_examples.save_candidate_example(
                 submission,
                 self._project,
-                self.context_dir.parent,
                 self._managed["commit"],
                 proposal=proposal,
                 expected_revision=expected_revision,

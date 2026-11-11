@@ -11,7 +11,7 @@ commit recorded in spec 0009).
 
 Support boundary (v1, frozen with this module's committed result):
 
-- Envelope: exact integer ``version: 1``, one of the seven native kinds,
+- Envelope: exact integer ``version: 1``, one of the eight native kinds,
   ``native`` metadata, typed ``required_policies`` edges (mandatory — even
   when empty — on metric and policy pages), ``metric_ref`` (required on
   metric pages), ``core_ref`` (required on dataset/table/computation pages)
@@ -84,7 +84,16 @@ ARIADNE_EXTENSION_VERSION = 1
 #: The supported profile kinds (native OKF page types; application metadata,
 #: not a Lumio ontology type).
 ARIADNE_PROFILE_KINDS = frozenset(
-    {"dataset", "table", "reference", "policy", "metric", "computation", "skill"}
+    {
+        "dataset",
+        "table",
+        "reference",
+        "policy",
+        "metric",
+        "computation",
+        "skill",
+        "answer_example",
+    }
 )
 
 #: Kinds whose pages MUST declare ``required_policies`` (even when empty).
@@ -105,6 +114,10 @@ NATIVE_REQUIRED_FIELDS = {
     "policy": _NATIVE_BASE_REQUIRED + ("status",),
     "metric": _NATIVE_BASE_REQUIRED + ("status", "governed_by", "dimensions", "grain"),
     "computation": _NATIVE_BASE_REQUIRED + ("status",),
+    # spec0035 C4: the retained spec0007 required families; optional
+    # parameters/project/sql_provenance validate exactly when supplied.
+    "answer_example": _NATIVE_BASE_REQUIRED
+    + ("question", "interpretation", "method", "submitter", "answer"),
 }
 
 _ENVELOPE_KEYS = frozenset(
@@ -122,7 +135,16 @@ _ENVELOPE_KEYS = frozenset(
 # -- The frozen supported native families (Ariadne specs 0010/0011/0024). ---
 
 NATIVE_TYPES = frozenset(
-    {"dataset", "table", "reference", "policy", "metric", "computation", "skill"}
+    {
+        "dataset",
+        "table",
+        "reference",
+        "policy",
+        "metric",
+        "computation",
+        "skill",
+        "answer_example",
+    }
 )
 REFERENCE_ROLES = ("term", "identifier", "enum", "join")
 MAPPING_FAMILIES = ("equality", "prefix", "lookup")
@@ -160,9 +182,37 @@ NATIVE_KEYS = frozenset(
         "ariadne_evidence",
         "observed_value_columns",
         "dataset_sources",
+        # spec0035 C4: the producer-owned Answer Example families (structural
+        # only; Ariadne specs 0007/0023 keep their meanings, Core keeps the
+        # analytical meaning/consent/provenance authority).
+        "question",
+        "interpretation",
+        "method",
+        "parameters",
+        "project",
+        "submitter",
+        "citations",
+        "sql_provenance",
+        "answer",
     }
 )
 NATIVE_SOURCE_KEYS = frozenset({"id", "title", "url", "resource"})
+
+# -- The producer-owned Answer Example families (spec0035 C4; retained field
+# -- meanings live in Ariadne specs 0007/0023 — validated structurally only). --
+
+#: The only structured methods an Example may record (never standalone SQL).
+_ANSWER_EXAMPLE_OPERATIONS = frozenset({"get_metric", "define_metric"})
+#: spec0023 §2: the fixed provenance descriptor — the submitted result
+#: envelope's sql field, never a verified execution origin.
+_ANSWER_EXAMPLE_SQL_SOURCE = "submitted_result.sql"
+#: spec0007: the timestamped answer excerpt bound (UTF-8 bytes).
+_ANSWER_EXAMPLE_EXCERPT_BYTES = 8 * 1024
+_ANSWER_EXAMPLE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_ANSWER_EXAMPLE_KEYS = frozenset(
+    {"question", "interpretation", "method", "submitter", "answer"}
+)
+_ANSWER_EXAMPLE_OPTIONAL_KEYS = frozenset({"parameters", "project", "citations", "sql_provenance"})
 _EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
 _REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
 _MAPPING_KEYS = frozenset(
@@ -1077,6 +1127,8 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
                 f"{where} computation pages require 'attester' or the honest "
                 "'attestation: pending' state"
             )
+    if kind == "answer_example" or native_type == "answer_example":
+        errors.extend(_answer_example_native_errors(where, native))
     if "ariadne" in native:
         block = native["ariadne"]
         if kind == "reference" or native_type == "reference":
@@ -1092,6 +1144,119 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
             )
     if "ariadne_evidence" in native:
         errors.extend(_evidence_errors(f"{where} ariadne_evidence", native["ariadne_evidence"]))
+    return errors
+
+
+def _answer_example_native_errors(where: str, native: dict) -> list[str]:
+    """Structural validation of the producer-owned Answer Example families
+    (spec0035 C4). The retained field meanings are Ariadne specs 0007/0023;
+    this gate checks shapes, string types and the published size bound only —
+    never meaning, consent, citation resolution or execution authority, which
+    stay Core-side. Pure: no I/O."""
+    errors: list[str] = []
+    unknown = sorted(
+        set(native)
+        - _ANSWER_EXAMPLE_KEYS
+        - _ANSWER_EXAMPLE_OPTIONAL_KEYS
+        - set(NATIVE_REQUIRED_FIELDS["answer_example"])
+        - {"type"}
+    )
+    if unknown:
+        errors.append(f"{where} carries unsupported answer_example field(s) {unknown}")
+    for key in ("question", "interpretation"):
+        if not _non_empty_str(native.get(key)):
+            errors.append(f"{where} {key} must be a non-empty string")
+    method = native.get("method")
+    if not isinstance(method, dict) or set(method) != {"operation", "arguments"}:
+        errors.append(
+            f"{where} method must be a mapping with exactly {{operation, arguments}}"
+        )
+    else:
+        if method["operation"] not in _ANSWER_EXAMPLE_OPERATIONS:
+            errors.append(
+                f"{where} method.operation must be one of "
+                f"{sorted(_ANSWER_EXAMPLE_OPERATIONS)} (never standalone SQL)"
+            )
+        arguments = method["arguments"]
+        if (
+            not isinstance(arguments, dict)
+            or not arguments
+            or not all(_json_shaped(value) for value in arguments.values())
+        ):
+            errors.append(
+                f"{where} method.arguments must be a non-empty mapping of "
+                "JSON-shaped structured values (the arguments the named operation takes)"
+            )
+    if "parameters" in native and not _json_shaped(native["parameters"]):
+        errors.append(f"{where} parameters must be a JSON-shaped mapping")
+    if "project" in native and not _non_empty_str(native["project"]):
+        errors.append(f"{where} project must be a non-empty string")
+    submitter = native.get("submitter")
+    if not isinstance(submitter, dict) or set(submitter) != {"identity", "attestation"}:
+        errors.append(
+            f"{where} submitter must be a mapping with exactly {{identity, attestation}}"
+        )
+    elif not _non_empty_str(submitter["identity"]) or not _non_empty_str(
+        submitter["attestation"]
+    ):
+        errors.append(
+            f"{where} submitter identity and attestation must be non-empty strings"
+        )
+    citations = native.get("citations")
+    if not isinstance(citations, list):
+        errors.append(f"{where} citations must be a list of {{path, sha256}} mappings")
+    else:
+        for index, entry in enumerate(citations):
+            if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                errors.append(
+                    f"{where} citations[{index}] must be exactly {{path, sha256}}"
+                )
+                continue
+            if not _non_empty_str(entry["path"]):
+                errors.append(f"{where} citations[{index}].path must be a non-empty string")
+            if not isinstance(entry["sha256"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
+                entry["sha256"]
+            ):
+                errors.append(
+                    f"{where} citations[{index}].sha256 must be a 64-hex digest"
+                )
+    if "sql_provenance" in native:
+        provenance = native["sql_provenance"]
+        if not isinstance(provenance, dict) or set(provenance) != {"source", "text"}:
+            errors.append(
+                f"{where} sql_provenance must be a mapping with exactly {{source, text}}"
+            )
+        else:
+            if provenance["source"] != _ANSWER_EXAMPLE_SQL_SOURCE:
+                errors.append(
+                    f"{where} sql_provenance.source must be the fixed descriptor "
+                    f"{_ANSWER_EXAMPLE_SQL_SOURCE!r} (never a verified execution origin)"
+                )
+            if not isinstance(provenance["text"], str) or not provenance["text"].strip():
+                errors.append(
+                    f"{where} sql_provenance.text must be a non-whitespace string"
+                )
+    answer = native.get("answer")
+    if not isinstance(answer, dict) or set(answer) != {"captured", "excerpt", "result_digest"}:
+        errors.append(
+            f"{where} answer must be a mapping with exactly "
+            "{captured, excerpt, result_digest}"
+        )
+    else:
+        if not _non_empty_str(answer["captured"]):
+            errors.append(f"{where} answer.captured must be a non-empty string")
+        excerpt = answer["excerpt"]
+        if not isinstance(excerpt, str):
+            errors.append(f"{where} answer.excerpt must be a string")
+        elif len(excerpt.encode("utf-8")) > _ANSWER_EXAMPLE_EXCERPT_BYTES:
+            errors.append(
+                f"{where} answer.excerpt exceeds the "
+                f"{_ANSWER_EXAMPLE_EXCERPT_BYTES}-byte bound"
+            )
+        if not isinstance(answer["result_digest"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
+            answer["result_digest"]
+        ):
+            errors.append(f"{where} answer.result_digest must be a 64-hex digest")
     return errors
 
 
@@ -2337,6 +2502,7 @@ def search_published_context_pages(
     *,
     limit: int = 10,
     metadata_store: Any = None,
+    kinds: Sequence[str] | None = None,
 ) -> tuple[PublishedContextSearchHit, ...]:
     """Search exactly the visible pages of one verified immutable version.
 
@@ -2345,10 +2511,13 @@ def search_published_context_pages(
     :func:`list_published_context_pages`. Normalization, ranking,
     deterministic ties, query limits and completeness accounting are the
     native page search over the scope-filtered page set — no second ranking
-    engine. Each kept hit adds a separately labeled verbatim canonical
-    excerpt with inclusive 1-based line numbers and the actual fence-aware
-    section when available; metadata-only matches cite the real canonical
-    metadata passage.
+    engine. ``kinds`` optionally restricts the ranked set to the named
+    producer profile kinds (``unprofiled`` included) BEFORE matching,
+    ranking and limiting — a producer view filter over the same typed scoped
+    view, never a separate index. Each kept hit adds a separately labeled
+    verbatim canonical excerpt with inclusive 1-based line numbers and the
+    actual fence-aware section when available; metadata-only matches cite
+    the real canonical metadata passage.
     """
     from lumio_wiki.page_search import search_pages
 
@@ -2356,6 +2525,16 @@ def search_published_context_pages(
         location, expected, metadata_store=metadata_store
     )
     visible = _scoped_visible_pages(snapshot, expected.scope)
+    if kinds is not None:
+        requested = frozenset(kinds)
+        if not requested or not all(isinstance(kind, str) and kind for kind in requested):
+            raise ValueError("kinds must be a non-empty sequence of producer kind strings")
+        visible = [
+            page
+            for page in visible
+            if (page.ariadne_profile.kind if page.ariadne_profile else "unprofiled")
+            in requested
+        ]
     canonical_content = snapshot.knowledge_base.canonical_pages
     hits: list[PublishedContextSearchHit] = []
     for result in search_pages(visible, query, limit=limit):
