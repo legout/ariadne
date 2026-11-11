@@ -790,3 +790,131 @@ def test_native_example_edits_keep_core_validation(tmp_path):
     broken["verified"] = [{"by": "someone"}]
     with pytest.raises(GitAuthoringError, match="unsupported answer_example field"):
         _edit(started, revision, broken, "probe-d")
+
+
+def test_native_example_history_deletion_refuses(tmp_path, capsys):
+    """F4 history (owner completion): a previously admitted native Example
+    cannot vanish from a subsequent candidate — page removal is refused by
+    public Core validation with a named diagnostic carrying the persisted
+    identity and baseline path (identity-keyed via the public SDK capture,
+    never a filename guess, never a floating HEAD)."""
+    import io
+    import json
+
+    from integration.tests.lumio_metric_mvp import activate, preview, reconcile_knowledge
+
+    from tests.test_git_authoring import approved, worktree_of
+
+    project, api, review = _example_release(tmp_path / "project")
+    cli_run = _cli_for(project)
+    submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    saved = json.loads(capsys.readouterr().out)
+    current = _record_revision(project, saved["proposal"])
+    validated = api.validate_proposal(saved["proposal"], current)
+    assert validated["ok"] is True, validated["errors"]
+    example_review = api.review_proposal(saved["proposal"])
+    activate(
+        project,
+        example_review,
+        preview(
+            project,
+            example_review,
+            tmp_path / "project" / "published",
+            review["revision"],
+        ),
+    )
+
+    # a subsequent Git candidate removes the admitted Example page
+    started = api.start_proposal()
+    approved(api, project, started)
+    tree = worktree_of(project, started["proposal"])
+    (tree / saved["path"]).unlink()
+    revision = reconcile_knowledge(
+        project, started["proposal"], _record_revision(project, started["proposal"])
+    )
+    validated = api.validate_proposal(started["proposal"], revision)
+    assert validated["ok"] is False
+    assert any(
+        "history may not be removed" in e and f"entity:{saved['id']}" in e
+        for e in validated["errors"]
+    ), validated["errors"]
+
+
+def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, capsys):
+    """F4 body (owner completion): the fenced JSON excerpt in the page BODY is
+    required and stays within the 8 KiB UTF-8 bound — independent of the
+    caption line, of the structured native.answer.excerpt and of the 64 KiB
+    whole-page bound. A valid control validates cleanly BEFORE any malformed
+    body, so the named refusals are attributable."""
+    import io
+    import json
+    import re
+
+    from ariadne import proposals
+    from tests.test_git_authoring import approved, worktree_of
+
+    project, api, review = _example_release(tmp_path / "project")
+    cli_run = _cli_for(project)
+    submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+
+    # valid control: the CLI save validates cleanly before any malformed body
+    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    saved = json.loads(capsys.readouterr().out)
+    current = _record_revision(project, saved["proposal"])
+    control = api.validate_proposal(saved["proposal"], current)
+    assert control["ok"] is True, control["errors"]
+
+    base_text = (worktree_of(project, saved["proposal"]) / saved["path"]).read_text(
+        encoding="utf-8"
+    )
+    oversize_excerpt = "é" * 5000  # 10000 UTF-8 bytes, 5000 characters (<8192 chars)
+    variant_missing = base_text.split("````json")[0]  # caption retained, fence removed
+    variant_oversize = re.sub(
+        r"````json\n.*?\n````",
+        "````json\n" + oversize_excerpt + "\n````",
+        base_text,
+        flags=re.DOTALL,
+    )
+    assert variant_missing != base_text and variant_oversize != base_text
+    assert (
+        "Captured answer excerpt" in variant_missing
+        and "Captured answer excerpt" in variant_oversize
+    )
+    assert len(oversize_excerpt.encode("utf-8")) > 8192 and len(oversize_excerpt) < 8192
+    assert len(variant_oversize.encode("utf-8")) < 65536
+
+    # (a) a missing fenced excerpt refuses even with the caption retained
+    started = api.start_proposal()
+    approved(api, project, started)
+    revision = _record_revision(project, started["proposal"])
+    proposals.edit_page_batch(
+        project,
+        started["proposal"],
+        revision,
+        [{"path": saved["path"], "content": variant_missing}],
+    )
+    new_revision = _record_revision(project, started["proposal"])
+    validated = api.validate_proposal(started["proposal"], new_revision)
+    assert validated["ok"] is False
+    assert any("answer excerpt block is missing" in e for e in validated["errors"]), validated
+    assert not any("missing structured arguments" in e for e in validated["errors"])
+
+    # (b) a body excerpt over the 8 KiB UTF-8 bound refuses even with a small
+    # native.answer.excerpt and a whole page under the 64 KiB record bound
+    started_b = api.start_proposal()
+    approved(api, project, started_b)
+    revision_b = _record_revision(project, started_b["proposal"])
+    proposals.edit_page_batch(
+        project,
+        started_b["proposal"],
+        revision_b,
+        [{"path": saved["path"], "content": variant_oversize}],
+    )
+    new_revision_b = _record_revision(project, started_b["proposal"])
+    validated_b = api.validate_proposal(started_b["proposal"], new_revision_b)
+    assert validated_b["ok"] is False
+    assert any("8192-byte bound" in e for e in validated_b["errors"]), validated_b
+    assert not any("missing structured arguments" in e for e in validated_b["errors"])

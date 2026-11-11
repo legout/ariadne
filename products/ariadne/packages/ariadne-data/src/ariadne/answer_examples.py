@@ -498,7 +498,13 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
     stale, and its file is never rewritten or rejected for it. System-owned
     claim forgery is already refused at the write gate
     (``proposals._refuse_forged_claims``); the producer stays structural-only.
-    SDK-parsed profiles only — never a second KB parser."""
+    SDK-parsed profiles only — never a second KB parser. Two retained
+    spec0007 obligations are restored over the SDK-parsed bodies: previously
+    admitted Example history (typed baseline identities from the exact
+    expected-baseline commit via the public ``capture_revision``) cannot be
+    removed from a candidate — including by dropping the profile — and the
+    bounded historical evidence in the page body must keep its fenced JSON
+    excerpt within the 8 KiB UTF-8 bound."""
     from lumio_wiki import load_knowledge_base
 
     from . import proposals
@@ -513,10 +519,27 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
         errors: list[str] = ["the candidate record carries no candidate revision"]
         return errors
     errors = []
+    # previously admitted Example history, captured from the EXACT
+    # expected-baseline commit through the public SDK: typed pages keyed by
+    # their actual producer identity (Entity id) — never a filename guess,
+    # never a floating HEAD or latest pointer
+    baseline_examples: dict[str, Any] = {}
+    if baseline is not None:
+        from lumio_wiki.git_authoring import capture_revision
+
+        # the baseline commit lives in the PROJECT repository — the candidate
+        # root here may be a temporary validation bundle outside any Git repo
+        captured_baseline = capture_revision(project / "knowledge", baseline)
+        for page in captured_baseline.kb.pages:
+            profile = page.ariadne_profile
+            if profile is not None and profile.kind == "answer_example":
+                baseline_examples[page.id] = page
+    candidate_examples: dict[str, str] = {}
     for page in kb.pages:
         profile = page.ariadne_profile
         if profile is None or profile.kind != "answer_example":
             continue
+        candidate_examples[page.id] = page.path
         rel = f"knowledge/{page.path}"
         data = (candidate_root / rel).read_bytes()
         if baseline is not None and proposals._read_blob(project, baseline, rel) == data:
@@ -552,6 +575,18 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
                 f"{rel}: the bounded historical answer evidence (captured excerpt "
                 "and full structured-result digest) must stay in the page body"
             )
+        # the retained spec0007 body contract: the fenced JSON excerpt itself
+        # must be present and stays within the 8 KiB UTF-8 bound — independent
+        # of the structured native.answer.excerpt and of the 64 KiB whole-page
+        # bound (byte-bound, not character-bound)
+        excerpt_match = re.search(r"````json\n(.*?)\n````", page.body, re.DOTALL)
+        if excerpt_match is None:
+            errors.append(f"{rel}: the candidate Example's answer excerpt block is missing")
+        elif len(excerpt_match.group(1).encode("utf-8")) > MAX_EXCERPT_BYTES:
+            errors.append(
+                f"{rel}: the candidate Example's answer excerpt is over the "
+                f"{MAX_EXCERPT_BYTES}-byte bound — submit a fresh bounded revision"
+            )
         for entry in native.get("citations") or []:
             cited = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(cited, str) or not cited:
@@ -566,6 +601,15 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
                 errors.append(
                     f"{rel}: recorded citation {cited!r} does not match this candidate's bytes"
                 )
+    # admitted history cannot vanish from a candidate — including by dropping
+    # the Example profile: the identity set is compared, so a removed page or
+    # a stripped profile both refuse with the persisted identity named
+    for entity_id in sorted(set(baseline_examples) - set(candidate_examples)):
+        baseline_page = baseline_examples[entity_id]
+        errors.append(
+            f"knowledge/{baseline_page.path}: previously admitted answer-example history "
+            f"may not be removed from the candidate ({entity_id})"
+        )
     return errors
 
 
