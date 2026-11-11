@@ -194,7 +194,25 @@ def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
 
 
 def _graph_citation_errors(tree: Path) -> list[str]:
-    """Require each multi-fact metric to cite an admitted, contained Policy."""
+    """Require each multi-fact metric to cite an admitted, contained Policy.
+
+    Route-aware (spec0035 §6, C2): a revision-2 integrated candidate proves
+    its governing Policies through producer-owned native metadata and the
+    producer's actual Policy Closure (:func:`_native_graph_policy_errors`);
+    the classic context_layer page gate remains only for legacy candidates
+    until C6 and never executes on the supported new route."""
+    selector_blob = tree / "context_integration.yaml"
+    if selector_blob.is_file():
+        try:
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            selected = lumio_context.validated_selector(
+                yaml.safe_load(selector_blob.read_bytes().decode("utf-8"))
+            )
+        except (OSError, ValueError, yaml.YAMLError):
+            selected = None  # the candidate gate owns a malformed selector
+        if selected is not None and selected.get("support_revision", 1) >= 2:
+            return _native_graph_policy_errors(tree, selected["namespace"])
     if not (tree / "semantic_layer" / "graph.yml").is_file():
         return []
     try:
@@ -236,6 +254,53 @@ def _graph_citation_errors(tree: Path) -> list[str]:
                     "context_layer/policies/ — a citation outside the Policy "
                     "directory fails multi-fact admission"
                 )
+    return errors
+
+
+def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
+    """The native governing-Policy proof for a revision-2 candidate (issue #30
+    proof retargeted to native knowledge, spec0035 §5/§6): every graph
+    metric's producer-native metric page must carry its REQUIRED Policy
+    Closure as resolvable, contained producer-owned policy references — a
+    dangling, non-Policy or wrong-namespace required policy refuses
+    validation through the producer's own closure diagnostics. A metric
+    whose authored closure is empty requires no Policy (never an invented
+    obligation); the authored policy_bindings classification of nonempty
+    closures is the §10.1 gate's own proof."""
+    if not (tree / "semantic_layer" / "graph.yml").is_file():
+        return []
+    try:
+        graph = load_graph(tree / "semantic_layer")
+    except Exception:
+        return []  # the validator's graph diagnostics already failed the candidate
+    try:
+        from lumio_wiki import load_knowledge_base
+
+        kb, _report = load_knowledge_base(tree / "knowledge")
+    except Exception:
+        return []  # the producer page/candidate gates own a malformed KB
+    metric_pages = {}
+    for page in kb.pages:
+        profile = page.ariadne_profile
+        if profile is not None and profile.kind == "metric" and profile.metric_ref is not None:
+            metric_pages.setdefault(profile.metric_ref.metric, page)
+    from lumio_wiki.ariadne_context import policy_closure
+
+    errors: list[str] = []
+    for name in sorted(graph.metrics):
+        page = metric_pages.get(name)
+        if page is None:
+            errors.append(
+                f"knowledge: graph metric '{name}' has no producer-native metric page "
+                "— its governed multi-fact definition must exist as a native metric "
+                "page carrying its governing Policy closure"
+            )
+            continue
+        _closure, diagnostics = policy_closure(
+            kb.pages, page.ariadne_profile, namespace=namespace
+        )
+        for diagnostic in diagnostics:
+            errors.append(f"knowledge/{page.path}: {diagnostic.message}")
     return errors
 
 
@@ -1055,10 +1120,40 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             source_digest=source_digest,
             approval=approval,
         )
-        context.finalize_candidate(worktree_root)
-        final = (
-            proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE) or current
+        # C2 (spec0035 §6): the supported revision-2 route never executes the
+        # classic context_layer finalization — its generated Computation
+        # content is derived for the ONE native batch writer instead; the
+        # classic pass remains only for legacy candidates until C6.
+        finalize_blob = proposals._read_blob(project, current, "context_integration.yaml")
+        finalize_route = (
+            lumio_context.validated_selector(yaml.safe_load(finalize_blob.decode("utf-8")))
+            if finalize_blob is not None
+            else None
         )
+        if finalize_route is not None and finalize_route.get("support_revision", 1) >= 2:
+            native_specs = context.finalize_native_candidate(worktree_root)
+            if native_specs:
+                # the caller HOLDS the proposal lock: submit through the
+                # lock-held batch body (re-acquiring would deadlock) after
+                # the same public batch guards ran on the generated specs
+                proposals.check_page_batch(native_specs)
+                final = proposals._edit_page_batch_locked(
+                    project,
+                    proposal,
+                    record,
+                    current,
+                    worktree_root,
+                    [(spec["path"], spec["content"]) for spec in native_specs],
+                    core_generated=True,
+                )["revision"]
+            else:
+                final = current
+        else:
+            context.finalize_candidate(worktree_root)
+            final = (
+                proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE)
+                or current
+            )
         with tempfile.TemporaryDirectory(prefix="ariadne-candidate-") as tmp:
             root = Path(tmp)
             tree = root / "bundle"
@@ -2172,28 +2267,32 @@ def _refresh_native_profiles(
             )
     for spec in specs:
         proposals.check_artifact_content(f"generated page {spec['resource']!r}", spec["text"])
-    revision = current
-    pages: list[dict] = []
-    changed_any = False
-    for spec in specs:  # revision-checked complete page edits, core-generated
-        out = proposals.edit_proposal(
-            project, proposal, revision, spec["path"], spec["text"], core_generated=True
-        )
-        revision = out["revision"]
-        changed_any = changed_any or out["changed"]
-        pages.append(
-            {
-                "resource": spec["resource"],
-                "path": spec["path"],
-                "kind": spec["kind"],
-                "changed": out["changed"],
-                "changes": spec["flags"],
-            }
-        )
+    # the complete Table/Dataset update submits as ONE native batch (C2,
+    # spec0035 §2/§6): the public writer validates the whole candidate
+    # before any byte, stages only the written identities and commits once —
+    # no sequential per-page commits, no partially refreshed candidate.
+    batch = proposals.edit_page_batch(
+        project,
+        proposal,
+        current,
+        [{"path": spec["path"], "content": spec["text"]} for spec in specs],
+        core_generated=True,
+    )
+    written = set(batch["paths"])
+    pages = [
+        {
+            "resource": spec["resource"],
+            "path": spec["path"],
+            "kind": spec["kind"],
+            "changed": batch["changed"] and spec["path"] in written,
+            "changes": spec["flags"],
+        }
+        for spec in specs
+    ]
     return {
         "proposal": proposal,
-        "revision": revision,
-        "changed": changed_any,
+        "revision": batch["revision"],
+        "changed": batch["changed"],
         "pages": pages,
         "assets": requested,
         "source_digest": source_digest,

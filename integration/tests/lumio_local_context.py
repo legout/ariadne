@@ -1898,6 +1898,11 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
 
     project = content_project(root)
+    # parent-dispositioned fixture adaptation (C2): the revision-2 project is
+    # PURE native — the scaffolded classic context_layer bundle (the hybrid
+    # graph-admission proof pages) is removed at the base; the governing
+    # Policy proof lives in producer-native metadata and PolicyClosure.
+    run_git(project, "rm", "-q", "-r", "--", "context_layer")
     con = duckdb.connect(str(project / "data" / "orders.duckdb"))
     # test-fixture DDL over test-local column constants
     # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
@@ -1917,20 +1922,10 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     )
     (project / "semantic_layer" / "models" / "status_lookup.yml").write_text(P1_LOOKUP_MODEL)
     (project / "semantic_layer" / "graph.yml").write_text(P1_GRAPH)
-    (project / "context_layer" / "metrics" / "label_count.md").write_text(P1_LOOKUP_OKF_METRIC_PAGE)
-    (project / "context_layer" / "metrics" / "revenue_plus_one.md").write_text(
-        P1_DERIVED_OKF_METRIC_PAGE
-    )
     unused_files: list[str] = []
     if unused_alias:
         (project / "semantic_layer" / "models" / "zz_unused_orders.yml").write_text(P1_UNUSED_MODEL)
-        (project / "context_layer" / "metrics" / "unused_order_count.md").write_text(
-            P1_UNUSED_OKF_METRIC_PAGE
-        )
-        unused_files = [
-            "semantic_layer/models/zz_unused_orders.yml",
-            "context_layer/metrics/unused_order_count.md",
-        ]
+        unused_files = ["semantic_layer/models/zz_unused_orders.yml"]
     (project / "context_integration.yaml").write_text(_p1_selector_text(bindings))
     run_git(
         project,
@@ -1939,8 +1934,6 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
         "semantic_layer/graph.yml",
         "semantic_layer/models/retail_sales.yml",
         "semantic_layer/models/status_lookup.yml",
-        "context_layer/metrics/label_count.md",
-        "context_layer/metrics/revenue_plus_one.md",
         "context_integration.yaml",
         *unused_files,
     )
@@ -2621,8 +2614,9 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         ),
     )
     tree = worktree_of(project, started["proposal"])
-    context_mirror = tree / "context_layer" / "tables" / "orders.md"
-    mirror_before = context_mirror.read_bytes()
+    # the pure revision-2 candidate carries no classic context_layer bundle:
+    # the C2 cutover never writes or reads one (spec0035 §2/§6)
+    assert not (tree / "context_layer").exists()
 
     revision = _p1_kb_candidate(project, api, started, revision, unused_alias=True)
 
@@ -2675,10 +2669,8 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     assert len(dataset_pages) == 1
     dataset_native = page_parts(dataset_pages[0])[0]["ariadne_profile"]["native"]
     assert sorted(dataset_native["ariadne"]["tables"]) == sorted([orders_resource, status_resource])
-    # no maintained context_layer mirror: the pre-existing OKF page bytes are
-    # untouched and refresh added no context_layer page
-    assert context_mirror.read_bytes() == mirror_before
-    assert not (tree / "context_layer" / "datasets").exists()
+    # no maintained context_layer mirror: refresh added no classic bundle page
+    assert not (tree / "context_layer").exists()
 
     # the handwritten curated marker survives a real second inspection
     # (authored summary/meaning preservation, §6) — and the #83 review-fix

@@ -799,6 +799,105 @@ def _computation_matches(page: Path, name: str, info: dict) -> bool:
     )
 
 
+def finalize_native_candidate(staging: Path) -> list[dict]:
+    """The revision-2 native finalize derivation (spec0035 §6 C2 cutover): the
+    deterministic generated Computation content of the governed metric set as
+    producer-native ``knowledge/computations`` page specs for the ONE native
+    batch writer — no classic ``context_layer`` finalization, no classic index
+    generation. Existing native Computation pages are authored/reviewed
+    candidate content and stay byte-for-byte untouched (curated bodies and
+    earned attestation states are never regenerated); only a governed metric
+    with NO native Computation page receives the honest generated page
+    (``attestation: pending``, no invented Policy edges). Unparseable model
+    drafts generate nothing — the validation gate owns the structural
+    failure, exactly like the classic pass. Returns ``[{path, content}]``;
+    an empty list is the no-op."""
+    models, all_parsed = _model_index(staging)
+    if not models or not all_parsed:
+        return []
+    comps_dir = staging / "knowledge" / "computations"
+    existing: set[str] = set()
+    if comps_dir.is_dir():
+        from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+            parse_frontmatter,
+        )
+
+        for page in sorted(comps_dir.glob("*.md")):
+            try:
+                full, _body, _start = parse_frontmatter(
+                    page.read_text(encoding="utf-8"), page.name
+                )
+            except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
+                continue
+            profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+            core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
+            if isinstance(core_ref, dict) and core_ref.get("kind") == "semantic":
+                existing.add(str(core_ref.get("id")))
+    return [
+        {
+            "path": f"knowledge/computations/{name}.md",
+            "content": _build_native_computation_page(name, info),
+        }
+        for name, info in sorted(models.items())
+        if f"{info['model']}::{name}" not in existing
+    ]
+
+
+def _build_native_computation_page(name: str, info: dict) -> str:
+    """One honest generated native Computation page (spec0035 §6): the same
+    sanctioned-SQL provenance the classic finalize pass produced, as a
+    producer-native Computation profile anchored by its exact core_ref
+    semantic identity. Deterministic from the gate-checked model — no
+    wall-clock stamp, an unchanged retry is byte-identical. The page claims
+    no independent attestation (``attestation: pending``), no governing
+    Policy edge and no curated meaning: the authored metric page owns the
+    narrative; this page exists so the governed answer still discloses the
+    sanctioned computation and its honest attestation state."""
+    semantic_id = f"{info['model']}::{name}"
+    model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
+    meta = {
+        "id": "entity:"
+        + semantic_id.replace("::", "-").replace("_", "-").lower()
+        + "-computation",
+        "entity_types": ["computation"],
+        "tags": ["computation"],
+        "title": f"sanctioned SQL — {semantic_id}",
+        "summary": "Sanctioned computation: SQL, runtime, attester.",
+        "lifecycle": "draft",
+        "visibility": "public",
+        "sources": [model_source],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "computation",
+            "core_ref": {"kind": "semantic", "id": semantic_id},
+            "required_policies": [],
+            "native": {
+                "type": "computation",
+                "status": "draft",
+                "title": f"sanctioned SQL — {semantic_id}",
+                "description": "Sanctioned computation: SQL, runtime, attester.",
+                "tags": ["computation"],
+                "attestation": "pending",
+                "sources": [model_source],
+                "runtime": "duckdb",
+                "dataset_sources": list(info["dataset_sources"]),
+            },
+        },
+    }
+    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+    body = (
+        "# Sanctioned computation\n\n"
+        f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
+        "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
+        "command (`ariadne get-metric`); independent attestation pending — no "
+        "expected-value oracle is cited (compile and grain checks are not "
+        "independent numeric attestation). "
+        "Business rules: cited metric page.\n\n"
+        "```sql\n" + info["expression"].strip() + "\n```\n"
+    )
+    return f"---\n{front}\n---\n\n{body}"
+
+
 def finalize_candidate(staging: Path) -> None:
     """The deterministic finalize pass for Git-backed proposals (issue #36/G4,
     spec §4: generated artifact content is finalized BEFORE the candidate

@@ -1275,6 +1275,8 @@ def edit_page_batch(
     proposal: str,
     expected_revision: str,
     pages: list,
+    *,
+    core_generated: bool = False,
 ) -> dict:
     """Apply ONE complete knowledge-page batch through the PUBLIC native
     writer inside the existing proposal lock/revision discipline (AC4,
@@ -1291,17 +1293,14 @@ def edit_page_batch(
     no-op, the shared pre-write content boundary, the forged system-owned
     claim boundary per page and the untracked-draft refusal. OSI/model draft
     edits keep their separate :func:`edit_proposal` handling — this seam is
-    only for ``knowledge/`` pages."""
-    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
-        load_knowledge_base,
-        parse_frontmatter,
-    )
-    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
-        GitAuthoringError,
-        write_pages_into_worktree,
-    )
-    from lumio_wiki.ingest import ProposedPage  # pyright: ignore[reportMissingImports]
+    only for ``knowledge/`` pages.
 
+    ``core_generated=True`` is the CORE-AUTHORED regeneration seam of the
+    explicit schema refresh and the revision-2 native finalize (spec0035 §6):
+    deterministic Core generation may change the system-owned claims
+    (``ariadne_profile`` native families, ``core_ref``) it derives against
+    operator-approved inputs. It is never caller-facing — the public
+    ``AuthoringProject.edit_pages_batch`` surface never forwards it."""
     project = Path(project).resolve()
     pairs = check_page_batch(pages)
     _load_record(project, proposal)  # identity/belonging errors surface early
@@ -1316,94 +1315,131 @@ def edit_page_batch(
                 f"batch expected {expected_revision} — re-read the candidate and retry "
                 "with the current candidate revision; nothing was written"
             )
-        # spec0035 C1 fix (F3): the producer-owned page identity decides where
-        # a title actually lives. A path-addressed batch entry whose declared
-        # canonical title/alias resolves to a DIFFERENT recorded page (an
-        # identity mix-up would otherwise write the wrong page while staging
-        # the addressed one) refuses BEFORE any write or claim check — the
-        # addressed path and the native destination must be the same page.
-        kb, kb_report = load_knowledge_base(worktree_root / "knowledge")
-        by_title: dict = {}
-        by_alias: dict = {}
-        by_path: dict = {}
-        if kb_report.is_valid:
-            for page in kb.pages:
-                if not page.path:
-                    continue
-                by_title[page.title] = page
-                by_path[page.path] = page
-                for alias in page.aliases:
-                    by_alias[alias] = page
-        identical = True
-        proposed: list = []
-        for rel, content in pairs:
-            base_content = _read_blob(project, current, rel)
-            if base_content is not None and base_content == content.encode("utf-8"):
-                continue  # an identical page edit contributes no change
-            identical = False
-            if not (worktree_root / rel).exists():
-                _refuse_untracked_new_artifact(project, worktree_root, rel, current)
-            meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
-            title = meta.get("title") if isinstance(meta, dict) else None
-            if not isinstance(title, str) or not title.strip():
-                raise ValueError(
-                    f"page {rel!r} carries no non-empty canonical title — the "
-                    "native writer addresses every page by its declared title"
-                )
-            kb_rel = PurePosixPath(rel).relative_to("knowledge").as_posix()
-            recorded = by_title.get(title) or by_alias.get(title)
-            occupant = by_path.get(kb_rel)
-            if recorded is not None and recorded.path != kb_rel:
-                raise ValueError(
-                    f"page {rel!r} declares canonical title {title!r}, which resolves "
-                    f"to the recorded page knowledge/{recorded.path} — a path-addressed "
-                    "batch cannot redirect or relabel a page (aliases resolve the same "
-                    "way): address its recorded identity or author the change through "
-                    "review; nothing was written"
-                )
-            if recorded is None and occupant is not None and occupant.title != title:
-                raise ValueError(
-                    f"page {rel!r} is the recorded page of {occupant.title!r} but the "
-                    f"batch declares {title!r} — a path-addressed batch cannot relabel "
-                    "a page to a different identity: address the recorded title or "
-                    "author the change through review; nothing was written"
-                )
-            _refuse_forged_claims(rel, content, base_content)
-            proposed.append(ProposedPage(relative_path=kb_rel, title=title, markdown=content))
-        if identical:
-            return {
-                "proposal": proposal,
-                "revision": current,
-                "changed": False,
-                "paths": [rel for rel, _content in pairs],
-                "count": len(pairs),
-            }  # identical batch: no commit, candidate unchanged
-        # The complete candidate validates as ONE batch before any byte: a
-        # dangling reference or invalid metadata refuses with the worktree,
-        # branch and record untouched (the writer restores any partial state).
-        try:
-            result = write_pages_into_worktree(
-                worktree_root / "knowledge",
-                proposed,
-                operation="ariadne candidate page batch",
-            )
-        except GitAuthoringError:
-            raise
-        _require_git_identity(project)
-        # Stage ONLY the returned intended paths (literal pathspecs), then
-        # commit; the recorded candidate revision updates AFTER the commit —
-        # a core-authored commit the record never saw is the interrupted
-        # transition signature the coherence gate refuses for the human.
-        intended = [f"knowledge/{kb_path}" for kb_path in result.written]
-        literal = [_literal(rel) for rel in intended]
-        _git(["add", "-f", "--", *literal], worktree_root)
-        _git(
-            ["commit", "-m", f"ariadne: page batch ({len(intended)} pages)", "--", *literal],
+        return _edit_page_batch_locked(
+            project,
+            proposal,
+            record,
+            current,
             worktree_root,
+            pairs,
+            core_generated=core_generated,
         )
-        new_revision = _git(["rev-parse", "HEAD"], worktree_root).stdout.strip()
-        record["candidate_revision"] = new_revision
-        _store_record(project, record)
+
+
+def _edit_page_batch_locked(
+    project: Path,
+    proposal: str,
+    record: dict,
+    current: str,
+    worktree_root: Path,
+    pairs: list[tuple[str, str]],
+    *,
+    core_generated: bool = False,
+) -> dict:
+    """The lock-held body of :func:`edit_page_batch`. Callers that ALREADY
+    hold the proposal lock — the revision-2 finalize pass inside
+    ``validate_proposal`` — submit their generated batch through here with
+    their authoritative record and revision; the lock is never re-acquired
+    (a non-reentrant re-lock inside the finalize would deadlock)."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        load_knowledge_base,
+        parse_frontmatter,
+    )
+    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
+        GitAuthoringError,
+        write_pages_into_worktree,
+    )
+    from lumio_wiki.ingest import ProposedPage  # pyright: ignore[reportMissingImports]
+
+    # spec0035 C1 fix (F3): the producer-owned page identity decides where
+    # a title actually lives. A path-addressed batch entry whose declared
+    # canonical title/alias resolves to a DIFFERENT recorded page (an
+    # identity mix-up would otherwise write the wrong page while staging
+    # the addressed one) refuses BEFORE any write or claim check — the
+    # addressed path and the native destination must be the same page.
+    kb, kb_report = load_knowledge_base(worktree_root / "knowledge")
+    by_title: dict = {}
+    by_alias: dict = {}
+    by_path: dict = {}
+    if kb_report.is_valid:
+        for page in kb.pages:
+            if not page.path:
+                continue
+            by_title[page.title] = page
+            by_path[page.path] = page
+            for alias in page.aliases:
+                by_alias[alias] = page
+    identical = True
+    proposed: list = []
+    for rel, content in pairs:
+        base_content = _read_blob(project, current, rel)
+        if base_content is not None and base_content == content.encode("utf-8"):
+            continue  # an identical page edit contributes no change
+        identical = False
+        if not (worktree_root / rel).exists():
+            _refuse_untracked_new_artifact(project, worktree_root, rel, current)
+        meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+        title = meta.get("title") if isinstance(meta, dict) else None
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(
+                f"page {rel!r} carries no non-empty canonical title — the "
+                "native writer addresses every page by its declared title"
+            )
+        kb_rel = PurePosixPath(rel).relative_to("knowledge").as_posix()
+        recorded = by_title.get(title) or by_alias.get(title)
+        occupant = by_path.get(kb_rel)
+        if recorded is not None and recorded.path != kb_rel:
+            raise ValueError(
+                f"page {rel!r} declares canonical title {title!r}, which resolves "
+                f"to the recorded page knowledge/{recorded.path} — a path-addressed "
+                "batch cannot redirect or relabel a page (aliases resolve the same "
+                "way): address its recorded identity or author the change through "
+                "review; nothing was written"
+            )
+        if recorded is None and occupant is not None and occupant.title != title:
+            raise ValueError(
+                f"page {rel!r} is the recorded page of {occupant.title!r} but the "
+                f"batch declares {title!r} — a path-addressed batch cannot relabel "
+                "a page to a different identity: address the recorded title or "
+                "author the change through review; nothing was written"
+            )
+        if not core_generated:
+            _refuse_forged_claims(rel, content, base_content)
+        proposed.append(ProposedPage(relative_path=kb_rel, title=title, markdown=content))
+    if identical:
+        return {
+            "proposal": proposal,
+            "revision": current,
+            "changed": False,
+            "paths": [rel for rel, _content in pairs],
+            "count": len(pairs),
+        }  # identical batch: no commit, candidate unchanged
+    # The complete candidate validates as ONE batch before any byte: a
+    # dangling reference or invalid metadata refuses with the worktree,
+    # branch and record untouched (the writer restores any partial state).
+    try:
+        result = write_pages_into_worktree(
+            worktree_root / "knowledge",
+            proposed,
+            operation="ariadne candidate page batch",
+        )
+    except GitAuthoringError:
+        raise
+    _require_git_identity(project)
+    # Stage ONLY the returned intended paths (literal pathspecs), then
+    # commit; the recorded candidate revision updates AFTER the commit —
+    # a core-authored commit the record never saw is the interrupted
+    # transition signature the coherence gate refuses for the human.
+    intended = [f"knowledge/{kb_path}" for kb_path in result.written]
+    literal = [_literal(rel) for rel in intended]
+    _git(["add", "-f", "--", *literal], worktree_root)
+    _git(
+        ["commit", "-m", f"ariadne: page batch ({len(intended)} pages)", "--", *literal],
+        worktree_root,
+    )
+    new_revision = _git(["rev-parse", "HEAD"], worktree_root).stdout.strip()
+    record["candidate_revision"] = new_revision
+    _store_record(project, record)
     return {
         "proposal": proposal,
         "revision": new_revision,
