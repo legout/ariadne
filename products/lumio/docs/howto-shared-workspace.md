@@ -63,6 +63,37 @@ For this synthetic local configuration, the server-only private profile at the s
 }
 ```
 
+Central original storage uses the same private profile with the existing
+private S3-compatible artifact store instead of a local directory. The
+connection declaration stays server-side and names credential environment
+variables, never values:
+
+```json
+{
+  "artifact_store": {
+    "kind": "s3",
+    "bucket": "WORKSPACE_ORIGINALS_BUCKET",
+    "prefix": "workspace-originals",
+    "endpoint": "https://S3_ENDPOINT",
+    "region": "us-east-1",
+    "url_style": "path",
+    "credentials": {
+      "access_key_id_env": "WORKSPACE_S3_ACCESS_KEY_ID",
+      "secret_access_key_env": "WORKSPACE_S3_SECRET_ACCESS_KEY"
+    }
+  }
+}
+```
+
+The S3 store serves contribution, publication, exact original opening, and
+status through the existing private adapter — the registry remains the
+server-managed private state, and S3 never replaces it. No bucket/IAM
+provisioning is implied, and S3-compatible providers are not claimed
+equivalent. Backups of an S3-backed workspace enumerate exactly the
+registered versions and bound private records (howto-workspace-operations.md
+§4), and restore materializes them into a new local store without copying
+the remote connection (§5).
+
 Keep the profile, Source Registry, artifact store, operational directory, originals, and credentials outside the content repository and inaccessible to Pi. An existing adopted target must have a valid committed native Authoring Revision, `lumio.yaml`, `.lumio-authoring.yaml`, a matching namespace, and resolvable private registry/artifact resources. Its published destination must come from native admission of that actual history; setup does not invent ancestry or publish a baseline. New-empty setup requires the explicit namespace and refuses any non-required retention. A nonempty unadopted target is refused as `adoption_required` without mutation; this guide does not provide native adoption for it.
 
 ### Standalone retention exception (owner-confirmed, document-only)

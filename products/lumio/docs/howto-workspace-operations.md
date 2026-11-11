@@ -42,7 +42,7 @@ tooling in `lumio_workspace.operations` treats it as these roles:
 | Authoring repository | `authoring-repo/` | the Git authoring truth, including task branches and worktree metadata |
 | Private profile | `profile.json` | source registry and artifact store references, retention |
 | Source registry | `registry/` | private source history and bindings |
-| Artifact store | `artifacts/` | private original bytes |
+| Artifact store | `artifacts/` (local) or a private S3-compatible store | private original bytes and private binding/publication records |
 | Published destination | `published/` | immutable version trees, admission receipts, current pointer |
 | Analytics (when enabled) | `analytics-project/`, `analytics-bindings.json` | the configured execution project and operator source bindings |
 
@@ -76,6 +76,25 @@ versions and receipts, and SQLite **together**, copied under the activation
 locks. Move it to separate storage; a backup on the same volume as the data
 root shares its failure domain.
 
+SQLite is captured as one consistent snapshot through the database backup
+API, so committed transactions in a write-ahead log are included and the
+service's stopped-writes state needs no sidecar files.
+
+When the private profile configures an **S3-compatible artifact store**, the
+backup enumerates exactly what the registry records and what the store
+reports as bound versions — never a bucket-wide scan — through the store's
+supported identity-oriented APIs, and materializes them under `store/` in
+the backup (`store/artifacts/<source-id>/<hash>`, `store/bindings/`,
+`store/publications/`, `store/activations/`). Retained original bytes are
+copied digest-verified; a required version whose bytes are unavailable,
+denied, or corrupt **aborts the backup before any final manifest exists**.
+Each bound Published Version's binding manifest is copied; publication
+records and activation receipts are copied when the store holds them and
+their absence is recorded honestly. Versions the registry marks unretained
+are inventoried as unretained (`unretained_source_versions`) — an absence,
+never treated as corruption. The manifest carries `schema_version: 2` and
+the exact inventory; a remote-key list without bytes is never a backup.
+
 ## 5. Restore into a data root
 
 Restore always materializes a **fresh** data root (the target must be new or
@@ -89,6 +108,21 @@ python -m lumio_workspace.operations restore --backup-root /private/backups/work
 The command prints the rebased launch paths; put them into the environment
 file, then start the service against the new root. The printed paths map to
 exactly these environment variables:
+
+A backup of an S3-backed workspace (`schema_version: 2`) materializes its
+originals and private records into a **new local artifact store** at
+`<target-root>/artifacts` through the local adapter's create-only,
+digest-verified seam, and the restored profile declares that local store —
+the remote endpoint is deliberately not copied into the restored
+configuration, because reconnecting or migrating back to it is an explicit
+operator step, never an implied consequence of restore. Every byte of the
+copied store records — original artifacts, binding manifests, publication
+records, activation receipts, and the source registry — travels verbatim,
+so exact historical identities are preserved; restore verifies each
+artifact's digest and refuses a corrupt backup loudly. A manifest schema
+this restore does not understand refuses with an explicit supported-format
+message; historical (schema 1, local-store) backups restore exactly as
+before.
 
 | Printed path | Environment variable |
 | --- | --- |
@@ -119,6 +153,20 @@ worktrees; it does not — and is not intended to — make pre-existing proposal
 records loadable from the moved project. This is an honest boundary of the
 restore recipe, not a data-loss claim: the project's Git history and
 worktrees are intact, and new proposals at the restored root work normally.
+
+**Bounded restore disposition (spec0034 §12.5):** restore preflights the
+backup before creating the target — if the backup's active pointer names an
+admission whose activation never completed, restore refuses (recover at the
+source root and take a new backup). A completed restore stamps
+`<published>/.lumio-publication/restore.json`, binding the exact resolved
+destination and the exact imported receipt bytes; only that record lets
+already-activated imported history pass the moved-destination receipt check
+at the restored root (pinned reads, exact original opening, rollback).
+Copied markers, altered imports, and pending imports grant nothing, and an
+old destination's confirmation cannot activate or recover anything at the
+restored target — new writes need owner setup reconfirmation plus a fresh
+reviewed confirmation, and same-version re-admission cannot overwrite an
+imported receipt.
 
 Restore performs, in order:
 
