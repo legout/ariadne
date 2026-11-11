@@ -40,16 +40,8 @@ from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages  # noqa: E501
-    authoring_inputs,
-    profiler,
-    proposals,
-    sources,
-)
-from ariadne.sources import (  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages  # noqa: E501
-    Registry,
-    Source,
-)
+from ariadne import authoring_inputs, profiler, proposals, sources
+from ariadne.sources import Registry, Source
 
 # Operator-owned approval state, ignored via the repo-LOCAL exclude file G2
 # already maintains: outside every candidate commit, never staged (plan §2).
