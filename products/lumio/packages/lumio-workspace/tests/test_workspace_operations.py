@@ -19,6 +19,8 @@ from lumio_wiki.artifact_store import (
 )
 from lumio_wiki.git_authoring import (
     ConfirmationRefused,
+    GitAuthoringError,
+    preview_publication,
     publish_revision,
     rollback_publication,
 )
@@ -363,6 +365,39 @@ def test_remote_original_backup_restores_without_remote_store(
             old_alpha_confirmation,
         )
     assert read_local_published_bindings(restored.published_path, version_b) == imported_before
+    assert PublishedFilesystemLocation(restored.published_path).read_pointer() == version_b
+
+    # F1 (review finding 1): a FRESH preview/confirm of the ACTIVE imported
+    # revision (B, pointer-equal) refuses BEFORE any sealed/store/receipt
+    # mutation — sealed bytes, imported receipt, store binding, and pointer
+    # stay exactly as restored, and historical reads keep working.
+    fresh_review = preview_publication(
+        restored.authoring_path,
+        version_b,
+        restored.published_path,
+        version_b,
+        source_registry=restored_resources.source_registry,
+        artifact_store=restored_resources.artifact_store,
+        retention_required=True,
+    )
+    assert fresh_review.review_digest != old_beta_confirmation
+    imported_before_fresh = read_local_published_bindings(restored.published_path, version_b)
+    store_binding_before = restored_store.get_binding_manifest(version_b)
+    with pytest.raises(GitAuthoringError, match="outside the bounded restore disposition"):
+        publish_revision(
+            restored.authoring_path,
+            version_b,
+            restored.published_path,
+            version_b,
+            fresh_review.review_digest,
+            source_registry=restored_resources.source_registry,
+            artifact_store=restored_resources.artifact_store,
+            retention_required=True,
+        )
+    assert read_local_published_bindings(restored.published_path, version_b) == (
+        imported_before_fresh
+    )
+    assert restored_store.get_binding_manifest(version_b) == store_binding_before
     assert PublishedFilesystemLocation(restored.published_path).read_pointer() == version_b
 
     with (

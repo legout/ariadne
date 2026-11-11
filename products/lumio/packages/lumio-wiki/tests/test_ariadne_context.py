@@ -45,6 +45,7 @@ from lumio_wiki.ariadne_context import (
 from lumio_wiki.artifact_store import InMemoryArtifactStore
 from lumio_wiki.git_authoring import (
     GitAuthoringError,
+    build_restored_root_record,
     ingest_into_worktree,
     merge_entities_in_worktree,
     preview_publication,
@@ -58,6 +59,7 @@ from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.knowledge_base import load_knowledge_base
 from lumio_wiki.location import FilesystemLocation, PublishedFilesystemLocation
 from lumio_wiki.s3_location import S3Location, S3Manifest, _get_bytes
+from lumio_wiki.source_inspection import read_local_published_bindings
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
@@ -535,6 +537,37 @@ def test_ariadne_context_journey(tmp_path):
     )
     assert first_policy.content == fixture_policy.decode()
     assert "# Retail Return Policy" in first_policy.content
+
+    # --- Bounded restore disposition (spec0034 §12.5): the standalone
+    # source-inspection seam accepts a qualifying moved-target restore
+    # record, while the shared public Context API stays strict irrespective
+    # of any marker — the expected Context identity is unchanged. The marker
+    # is genuinely qualifying: public builder, real imported receipt bytes,
+    # exact resolved live destination, deterministic binding. ---
+    moved = tmp_path / "published-moved"
+    shutil.copytree(destination, moved)
+    moved_receipts = moved / ".lumio-publication" / "receipts"
+    record = build_restored_root_record(
+        destination=moved,
+        workspace_id="context-journey",
+        restored_at="2026-11-11T00:00:00+00:00",
+        # Provenance only — never a substitute for the destination/import
+        # verification the record's consumers perform.
+        source_backup_manifest_sha256=hashlib.sha256(
+            (moved / "versions" / revision / "manifest.json").read_bytes()
+        ).hexdigest(),
+        imported_versions={
+            path.stem: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(moved_receipts.glob("*.json"))
+        },
+    )
+    (moved / ".lumio-publication" / "restore.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    standalone_receipt, _standalone_sealed = read_local_published_bindings(moved, revision)
+    assert standalone_receipt.activated is True
+    with pytest.raises(UnadmittedInputError):
+        open_published_context(PublishedFilesystemLocation(moved, version=revision), expected)
 
 
 # ---------------------------------------------------------------------------

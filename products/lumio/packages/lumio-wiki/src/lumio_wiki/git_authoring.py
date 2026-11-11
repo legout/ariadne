@@ -2370,10 +2370,15 @@ def publish_revision(
     sealed_raw = msgspec.json.encode(sealed)
 
     with mutation_lock(destination_path):
+        # Moved-imported same-version re-admission refuses BEFORE any
+        # version/sealed/store mutation, under the destination lock
+        # (spec0034 §12.5): a refusal must never rewrite imported sealed
+        # provenance or leave a partially mutated restored target.
+        _refuse_moved_imported_receipt_overwrite(destination_path, version)
         location = PublishedFilesystemLocation(destination_path)
         observed = location.read_pointer()
         _check_pointer_expectation(observed, expected_current, version)
-        _reconcile_active_receipt(destination_path, observed)
+        _reconcile_active_receipt(destination_path, observed, restored_destination=True)
         version_dir = published_version_path(destination_path, version)
         receipt_path = _receipt_path(destination_path, version)
         locked_retry = _retry_admitted_publication(
@@ -2436,7 +2441,6 @@ def publish_revision(
             adoption=review.adoption,
         )
         raw_receipt = msgspec.json.encode(receipt)
-        _refuse_moved_imported_receipt_overwrite(destination_path, version)
         _receipts_dir(destination_path).mkdir(parents=True, exist_ok=True)
         atomic_write_bytes(receipt_path, raw_receipt)
         _verify_written(receipt_path, raw_receipt)
@@ -2626,7 +2630,9 @@ def _refuse_moved_imported_receipt_overwrite(destination: Path, version: str) ->
         )
 
 
-def _reconcile_active_receipt(destination: Path, version: str | None) -> None:
+def _reconcile_active_receipt(
+    destination: Path, version: str | None, *, restored_destination: bool = False
+) -> None:
     """Persist an already-observed activation before a later pointer transition."""
     if version is None:
         return
@@ -2638,8 +2644,8 @@ def _reconcile_active_receipt(destination: Path, version: str | None) -> None:
         raise GitAuthoringError(
             f"the active Published Version {version!r} does not match its admission receipt"
         )
-    if receipt.destination != str(destination) and not _tolerates_moved_destination(
-        receipt, version, destination
+    if receipt.destination != str(destination) and not (
+        restored_destination and _tolerates_moved_destination(receipt, version, destination)
     ):
         raise GitAuthoringError(
             f"the active Published Version {version!r} does not match its admission receipt"
@@ -2854,7 +2860,11 @@ class RollbackReview(msgspec.Struct, frozen=True):
 
 
 def _verify_version_complete(
-    destination: Path, version: str, expected_fingerprint: str | None = None
+    destination: Path,
+    version: str,
+    expected_fingerprint: str | None = None,
+    *,
+    restored_destination: bool = False,
 ) -> tuple[Any, PublicationReceipt, SealedSourceReferences]:
     """Verify one immutable version completely; return (manifest, receipt).
 
@@ -2896,8 +2906,8 @@ def _verify_version_complete(
             f"the admission receipt for {version!r} does not agree with its "
             f"published manifest; refusing over inconsistent records"
         )
-    if receipt.destination != str(destination.resolve()) and not _tolerates_moved_destination(
-        receipt, version, destination
+    if receipt.destination != str(destination.resolve()) and not (
+        restored_destination and _tolerates_moved_destination(receipt, version, destination)
     ):
         raise GitAuthoringError(
             f"the admission receipt for {version!r} does not agree with its "
@@ -2920,7 +2930,9 @@ def _rollback_review(
 ) -> RollbackReview:
     """Build the rollback review (and its digest) from verified facts only."""
     version = validate_published_version(version)
-    manifest, receipt, sealed = _verify_version_complete(destination, version)
+    manifest, receipt, sealed = _verify_version_complete(
+        destination, version, restored_destination=True
+    )
     expected = _normalize_expected(expected_current)
     observed = PublishedFilesystemLocation(destination).read_pointer()
     _check_pointer_expectation(observed, expected_current, version)
@@ -3205,7 +3217,9 @@ def rollback_publication(
                     "is configured; rollback is refused until the exact bound "
                     "artifacts can be verified"
                 )
-            _manifest, _receipt, sealed = _verify_version_complete(destination_path, review.version)
+            _manifest, _receipt, sealed = _verify_version_complete(
+                destination_path, review.version, restored_destination=True
+            )
             snapshot = PublishedFilesystemLocation(
                 destination_path, version=review.version
             ).resolve()
@@ -3215,7 +3229,7 @@ def rollback_publication(
                 _coverage_entries(snapshot.pages, sealed.bindings),
             )
         active_version = PublishedFilesystemLocation(destination_path).read_pointer()
-        _reconcile_active_receipt(destination_path, active_version)
+        _reconcile_active_receipt(destination_path, active_version, restored_destination=True)
         atomic_write_bytes(published_pointer_path(destination_path), _pointer_bytes(review.version))
         return PublishedFilesystemLocation(destination_path).read_manifest(review.version)
 
