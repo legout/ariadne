@@ -275,17 +275,84 @@ class ContributionService:
             checked_pages.append((filename, *_page(filename, markdown)))
         checked_sources = []
         conversion = []
+        verbatim_claims: set[str] = set()
         for item in sources:
             upload_id = item.get("upload_id") if isinstance(item, dict) else None
             intent = item.get("intent") if isinstance(item, dict) else None
             if not isinstance(upload_id, str) or intent not in {"new", "update"}:
                 raise ContributionError("each source requires upload_id and new/update intent")
+            verbatim = item.get("verbatim", False) if isinstance(item, dict) else False
+            if verbatim not in (True, False):
+                raise ContributionError(
+                    "verbatim must be a boolean when present", code="invalid_verbatim_flag"
+                )
             operation, path = self.intake.load(self.workspace_id, actor, upload_id)
             if operation.source_id is None:
                 raise ContributionError("uploaded source identity is unavailable")
-            _material, facts = self.intake.extract(self.workspace_id, actor, upload_id)
+            material, facts = self.intake.extract(self.workspace_id, actor, upload_id)
             conversion.append(facts)
-            checked_sources.append((operation, path, intent))
+            verbatim_page: str | None = None
+            expected_text_digest: str | None = None
+            if verbatim:
+                # Managed verbatim preparation (spec0010 §3.1): the actual
+                # native extraction record from the original bytes is the
+                # conversion truth; the digest below is only a caller
+                # expectation the producer re-checks against the candidate.
+                if facts["incomplete"]:
+                    raise ContributionError(
+                        f"the extraction of {operation.source_id!r} is incomplete; "
+                        "verbatim intake requires the complete converted text and "
+                        "never substitutes or clips it",
+                        code="verbatim_incomplete_extraction",
+                    )
+                citing = [
+                    entry
+                    for entry in checked_pages
+                    if any(
+                        declared.get("id") == operation.source_id
+                        for declared in (entry[2].get("sources") or [])
+                        if isinstance(declared, dict)
+                    )
+                ]
+                if not citing:
+                    raise ContributionError(
+                        f"no authored page cites verbatim source {operation.source_id!r}",
+                        code="verbatim_source_unpaired",
+                    )
+                if len(citing) > 1 or citing[0][0] in verbatim_claims:
+                    raise ContributionError(
+                        f"verbatim page for {operation.source_id!r} is claimed ambiguously",
+                        code="verbatim_page_ambiguous",
+                    )
+                selected_page = citing[0][0]
+                page_markdown = citing[0][1]
+                if not page_markdown.startswith("---"):
+                    raise ContributionError(
+                        f"the verbatim page {citing[0][0]!r} is missing frontmatter",
+                        code="verbatim_delimiter_form",
+                    )
+                delimiter = page_markdown.find("\n---", 3)
+                if delimiter == -1 or not page_markdown[delimiter + 4 :].startswith("\n"):
+                    raise ContributionError(
+                        f"the verbatim page {citing[0][0]!r} must close its frontmatter "
+                        "with a canonical LF delimiter",
+                        code="verbatim_delimiter_form",
+                    )
+                # The managed body seam mirrors the producer's exact delimiter
+                # rule: one structural closing-delimiter LF, nothing stripped.
+                authored_body = page_markdown[delimiter + 5 :]
+                record_text = material["text"]
+                if authored_body != record_text:
+                    raise ContributionError(
+                        f"the authored body of {citing[0][0]!r} differs from the actual "
+                        "native extraction record; verbatim intake refuses instead of "
+                        "substituting",
+                        code="verbatim_body_mismatch",
+                    )
+                verbatim_page = selected_page
+                verbatim_claims.add(selected_page)
+                expected_text_digest = hashlib.sha256(record_text.encode("utf-8")).hexdigest()
+            checked_sources.append((operation, path, intent, verbatim_page, expected_text_digest))
         input_digest = _digest(
             {
                 "requested_base": base_revision,
@@ -295,8 +362,15 @@ class ContributionService:
                         "source_id": operation.source_id,
                         "sha256": operation.response["sha256"],
                         "intent": intent,
+                        **(
+                            {"verbatim": True, "expected_text_digest": expected_text_digest}
+                            if _verbatim_page is not None
+                            else {}
+                        ),
                     }
-                    for operation, _path, intent in checked_sources
+                    for operation, _path, intent, _verbatim_page, expected_text_digest in (
+                        checked_sources
+                    )
                 ],
                 "pages": [
                     {"filename": filename, "sha256": hashlib.sha256(markdown.encode()).hexdigest()}
@@ -366,9 +440,13 @@ class ContributionService:
                             original_path=str(path),
                             expected_digest=source.response["sha256"],
                             intent=intent,
+                            verbatim_page=verbatim_page,
+                            expected_text_digest=expected_text_digest,
                         )
-                        for source, path, intent in checked_sources
-                    ],
+                            for source, path, intent, verbatim_page, expected_text_digest in (
+                                checked_sources
+                            )
+                        ],
                     pages=checked_pages,
                     conversion=conversion,
                 )

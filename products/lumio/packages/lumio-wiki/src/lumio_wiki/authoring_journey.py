@@ -248,12 +248,20 @@ def extract_source(source_path: str | Path, *, output_dir: str | Path) -> Extrac
 
 
 class CandidateSourceRecord(msgspec.Struct, frozen=True):
-    """One declared original: explicit identity, local bytes, intent."""
+    """One declared original: explicit identity, local bytes, intent.
+
+    The optional verbatim fields (spec0010 §3.1) select one authored request
+    page for exact converted-body preservation, independently of ``intent``;
+    ``expected_text_digest`` is a caller expectation checked against the
+    candidate body, not authentication of conversion provenance.
+    """
 
     source_id: str
     original_path: str
     expected_digest: str
     intent: str  # "new" | "update"
+    verbatim_page: str | None = None
+    expected_text_digest: str | None = None
 
 
 class CandidateRequest(msgspec.Struct, frozen=True):
@@ -342,15 +350,16 @@ def load_candidate_request(path: str | Path) -> CandidateRequest:
     sources: list[CandidateSourceRecord] = []
     seen_ids: set[str] = set()
     for item in raw_sources:
-        if not isinstance(item, dict) or set(item) != {
-            "source_id",
-            "original_path",
-            "expected_digest",
-            "intent",
-        }:
+        if not isinstance(item, dict):
             raise AuthoringJourneyError(
-                "each source record needs exactly source_id, original_path, "
-                "expected_digest and intent",
+                "each source record must be an object", code="invalid_candidate_request"
+            )
+        required = {"source_id", "original_path", "expected_digest", "intent"}
+        allowed = required | {"verbatim_page", "expected_text_digest"}
+        if not required <= set(item) or not set(item) <= allowed:
+            raise AuthoringJourneyError(
+                "each source record needs source_id, original_path, expected_digest "
+                "and intent, and only the known optional verbatim fields",
                 code="invalid_candidate_request",
             )
         source_id = _require_text(item["source_id"], "source_id")
@@ -372,12 +381,31 @@ def load_candidate_request(path: str | Path) -> CandidateRequest:
                 f"intent for {source_id!r} must be 'new' or 'update'",
                 code="invalid_candidate_request",
             )
+        verbatim_page = item.get("verbatim_page")
+        if verbatim_page is not None and (
+            not isinstance(verbatim_page, str) or not verbatim_page.strip()
+        ):
+            raise AuthoringJourneyError(
+                f"verbatim_page for {source_id!r} must be a non-empty string when present",
+                code="invalid_candidate_request",
+            )
+        expected_text = item.get("expected_text_digest")
+        if expected_text is not None and (
+            not isinstance(expected_text, str) or not _HEX64.fullmatch(expected_text)
+        ):
+            raise AuthoringJourneyError(
+                f"expected_text_digest for {source_id!r} must be 64 lowercase hex "
+                "characters when present",
+                code="invalid_candidate_request",
+            )
         sources.append(
             CandidateSourceRecord(
                 source_id=source_id,
                 original_path=_require_text(item["original_path"], "original_path"),
                 expected_digest=expected,
                 intent=intent,
+                verbatim_page=verbatim_page,
+                expected_text_digest=expected_text,
             )
         )
     raw_pages = payload["pages"]
@@ -588,19 +616,59 @@ def ingest_candidate(
     candidate_pages: list[ProposedPage] = []
     page_entities: list[tuple[ProposedPage, str]] = []
     existing_pages_by_title = {page.title: page for page in kb.pages}
+    # Explicit verbatim preservation (spec0010 §3.1): each selected Source
+    # names exactly one authored request page; every selected page must cite
+    # its paired Source ID. Refusals guess nothing.
+    verbatim_by_page: dict[str, CandidateSourceRecord] = {}
+    request_page_names = [Path(page_path).name for page_path in request.pages]
+    for source in request.sources:
+        if (source.verbatim_page is None) != (source.expected_text_digest is None):
+            raise AuthoringJourneyError(
+                f"verbatim source {source.source_id!r} needs both its selected page "
+                "and its expected text digest",
+                code="verbatim_binding_incomplete",
+            )
+        if source.verbatim_page is None:
+            continue
+        if not _HEX64.fullmatch(source.expected_text_digest or ""):
+            raise AuthoringJourneyError(
+                f"expected_text_digest for {source.source_id!r} must be 64 lowercase "
+                "hex characters",
+                code="invalid_candidate_request",
+            )
+        matches = [name for name in request_page_names if name == source.verbatim_page]
+        if not matches:
+            raise AuthoringJourneyError(
+                f"verbatim source {source.source_id!r} selects unknown request page "
+                f"{source.verbatim_page!r}",
+                code="verbatim_page_unknown",
+            )
+        if len(matches) > 1 or source.verbatim_page in verbatim_by_page:
+            raise AuthoringJourneyError(
+                f"verbatim page {source.verbatim_page!r} is selected ambiguously",
+                code="verbatim_page_ambiguous",
+            )
+        verbatim_by_page[source.verbatim_page] = source
     for page_path in page_paths:
         if not page_path.is_file():
             raise AuthoringJourneyError(
                 f"an authored page file does not exist: {page_path.name}",
                 code="missing_page",
             )
+        selected = verbatim_by_page.get(page_path.name)
         try:
-            markdown = page_path.read_text(encoding="utf-8")
+            # A verbatim page is read without universal-newline translation so
+            # the converted body keeps its exact newline form (spec0010 §3.1).
+            markdown = page_path.read_text(
+                encoding="utf-8", newline="" if selected is not None else None
+            )
         except (OSError, UnicodeDecodeError) as exc:
             raise AuthoringJourneyError(
                 f"an authored page could not be read: {exc}", code="missing_page"
             ) from exc
-        pages = _extract_page_records(markdown, page_path.name, kb)
+        pages = _extract_page_records(
+            markdown, page_path.name, kb, complete_page=selected is not None
+        )
         routing_issues = [
             issue for issue in _validate_page_routing(pages, kb) if issue.severity == "error"
         ]
@@ -637,6 +705,46 @@ def ingest_candidate(
                     code="entity_identity_conflict",
                 )
             page_entities.append((page, entity_id))
+        if selected is not None:
+            # Exact converted-body expectation (spec0010 §3.1): the canonical
+            # closing delimiter contributes exactly ONE structural LF, which
+            # is removed for comparison; actual source-leading blank lines
+            # stay untouched, and the digest is the caller's expectation
+            # checked against bytes — never conversion authentication.
+            if not markdown.startswith("---"):
+                raise AuthoringJourneyError(
+                    f"the verbatim page {page_path.name!r} is missing frontmatter",
+                    code="verbatim_delimiter_form",
+                )
+            delimiter = markdown.find("\n---", 3)
+            if delimiter == -1:
+                raise AuthoringJourneyError(
+                    f"the verbatim page {page_path.name!r} has an unclosed frontmatter",
+                    code="verbatim_delimiter_form",
+                )
+            body = markdown[delimiter + 4 :]
+            if not body.startswith("\n"):
+                raise AuthoringJourneyError(
+                    f"the verbatim page {page_path.name!r} must close its frontmatter "
+                    "with a canonical LF delimiter",
+                    code="verbatim_delimiter_form",
+                )
+            content = body[1:]
+            if hashlib.sha256(content.encode("utf-8")).hexdigest() != (
+                selected.expected_text_digest
+            ):
+                raise AuthoringJourneyError(
+                    f"the verbatim page {page_path.name!r} does not match its declared "
+                    "converted text; verbatim intake refuses instead of substituting",
+                    code="verbatim_body_mismatch",
+                )
+            for page in pages:
+                if selected.source_id not in _declared_source_ids(page.markdown):
+                    raise AuthoringJourneyError(
+                        f"the selected verbatim page {page.relative_path!r} does not cite "
+                        f"its paired Source {selected.source_id!r}",
+                        code="verbatim_source_unpaired",
+                    )
         candidate_pages.extend(pages)
 
     control = None

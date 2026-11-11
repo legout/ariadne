@@ -67,7 +67,7 @@ class ReviewContext:
     authoring: AuthoringReview
     publication: PublicationReview
     resources: ResolvedPrivateSources
-    source_availability: dict[tuple[str, str], bool | None]
+    source_availability: dict[tuple[str, str], bool | None] | None
     source_impact: list[dict]
     binding: dict
     source_inspection_permitted: bool
@@ -234,6 +234,12 @@ class ReviewService:
                     code="setup_required",
                 )
             resources = self.publication.resources()
+            # Current separate inspect_source permission precedes any
+            # inspection-specific availability probing or private registry
+            # metadata lookup (spec0035 §3, spec0034 §12.3/AC13).
+            inspection_permitted = self.state.permits(
+                self.workspace_id, actor, "inspect_source"
+            )
             # Preserve the native submission ancestry check independently of
             # the complete effective review against the admitted publication.
             self._authoring(task_kb, repo_root, submission_base, candidate, resources)
@@ -269,7 +275,11 @@ class ReviewService:
             publication = self.publication.preview(
                 task_kb, candidate, expected_current, resources
             )
-            availability = self._source_availability(captured, resources)
+            availability = (
+                self._source_availability(captured, resources)
+                if inspection_permitted
+                else None
+            )
             source_impact: list[dict] = []
             proposed_sources: dict[str, str] = {}
             if operation.response.get("kind") == "enrichment" or operation.response.get(
@@ -348,7 +358,7 @@ class ReviewService:
             availability,
             source_impact,
             binding,
-            self.state.permits(self.workspace_id, actor, "inspect_source"),
+            inspection_permitted,
             "",
         )
 
@@ -649,6 +659,18 @@ def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
     may_inspect = context.source_inspection_permitted
     for source in page.sources:
         digest = context.captured.manifest.bindings.get(page.id, {}).get(source.id)
+        if context.source_availability is None:
+            # Plain review: no availability probing and no private registry
+            # metadata — one static authorization-required state regardless
+            # of original presence (spec0034 §12.3/AC13). Authored attribution
+            # and the reviewed manifest binding stay visible.
+            facts = [
+                f"attribution: {source.title or 'unknown'}",
+                f"source version: {digest or 'unbound'}",
+                "source inspection requires separate authorization",
+            ]
+            items.append(f"<li>{html.escape('; '.join(facts))}</li>")
+            continue
         version = registry.find_version(source.id, digest) if digest and registry else None
         available = context.source_availability.get((page.id, source.id))
         availability = {
@@ -973,6 +995,15 @@ def render_review(
         else:
             for source in captured.sources:
                 source_id = source.id
+                if context.source_availability is None:
+                    # Plain review: one static authorization-required state,
+                    # never a presence-conditioned link or label (spec0035 §3,
+                    # spec0034 §12.3/AC13).
+                    support.append(
+                        f"{html.escape(source_id)} "
+                        "(source inspection requires separate authorization)"
+                    )
+                    continue
                 availability = context.source_availability.get((captured.id, source_id))
                 label = {
                     None: "public-only or no retained original",

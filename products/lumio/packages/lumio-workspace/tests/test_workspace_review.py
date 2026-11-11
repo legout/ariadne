@@ -559,10 +559,17 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert "<unsafe>&review" not in review.text
         assert config.published_path.as_posix() in review.text
         assert candidate in review.text
+        # Plain review (current capability lacks inspect_source): one static
+        # authorization-required state — no presence-conditioned link or
+        # availability label, regardless of the retained original (spec0035
+        # §3, spec0034 §12.3/AC13).
         assert (
             f'href="/review/{task_id}/source/runbook-source/'
-            'entity%3Arestart-worker-runbook"' in review.text
+            'entity%3Arestart-worker-runbook"' not in review.text
         )
+        assert "verified retained original" not in review.text
+        assert "original unavailable" not in review.text
+        assert "source inspection requires separate authorization" in review.text
         stale_digest = _digest(review.text)
 
         api_only.headers["Authorization"] = f"Bearer {fixture.reviewer_api}"
@@ -589,6 +596,26 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         original = reviewer.get(source_url)
         assert original.status_code == 200, original.text
         assert "&lt;unsafe&gt;&amp;review" in original.text
+
+        # With current inspect_source the same review page discloses the exact
+        # availability and the inspection link (inspector behavior unchanged);
+        # revocation returns the plain static state on the next request.
+        inspector_review = reviewer.get(f"/review/{task_id}")
+        assert inspector_review.status_code == 200, inspector_review.text
+        assert (
+            f'href="/review/{task_id}/source/runbook-source/'
+            'entity%3Arestart-worker-runbook"' in inspector_review.text
+        )
+        assert "verified retained original" in inspector_review.text
+        fixture.state.revoke(config.workspace_id, fixture.reviewer, "inspect_source")
+        revoked_review = reviewer.get(f"/review/{task_id}")
+        assert revoked_review.status_code == 200, revoked_review.text
+        assert "verified retained original" not in revoked_review.text
+        assert (
+            f'href="/review/{task_id}/source/runbook-source/'
+            'entity%3Arestart-worker-runbook"' not in revoked_review.text
+        )
+        assert "source inspection requires separate authorization" in revoked_review.text
 
         # A real native concurrent activation makes the first browser action stale.
         profile = load_private_profile(

@@ -1410,3 +1410,425 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
             is None
         )
     assert opened == []
+
+
+def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypatch):
+    """AC5/spec0010 §3.1: explicit verbatim documents publish their exact
+    converted bodies — leading/trailing blank lines, LF/CRLF form and literal
+    page-break markers inside fenced code — while the distilled default stays
+    unchanged; mismatch, incomplete extraction and ambiguous binding refuse
+    without a partial authored candidate."""
+
+    from lumio_wiki.authoring_journey import AuthoringJourneyError, load_candidate_request
+
+    project, api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    control = project / "knowledge" / "lumio.yaml"
+    control.write_text(
+        CONTROL.replace(
+            "categories:\n  - name: policies\n  - name: metrics\n",
+            "categories:\n  - name: policies\n  - name: metrics\n  - name: procedures\n",
+        ).replace(
+            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n",
+            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n"
+            "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
+            "artifact. Its referent is the artifact itself, not a person, organization, "
+            "service, or business object mentioned in it.\"\n",
+        ),
+        encoding="utf-8",
+    )
+    _git(project, "add", "knowledge/lumio.yaml")
+    _git(project, "commit", "-q", "-m", "fixture: procedures category")
+    proposal = api.start_proposal()
+    resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
+    assert resolved is not None and digest is not None
+    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    native_review = api.review_proposal(proposal["proposal"])
+    destination = tmp_path / "published"
+    private = tmp_path / "private"
+    (private / "registry").mkdir(parents=True)
+    (private / "artifacts").mkdir()
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(private / "artifacts")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall = admission.overall_review(
+        project,
+        proposal["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        destination=destination,
+        expected_current="none",
+        private_profile=profile,
+        scope=("internal",),
+    )
+    admission.admit_revision(
+        project,
+        proposal["proposal"],
+        native_review["revision"],
+        native_review["review_digest"],
+        confirmed_by="human:synthetic-baseline-owner",
+        overall_preview=overall,
+        confirmed_overall_digest=overall["digest"],
+        private_profile=profile,
+    )
+    admitted_before = admission.load_current(project)
+    assert admitted_before is not None
+    bound_release_commit = admitted_before["commit"]
+
+    bindings = private / "source-bindings.json"
+    bindings.write_text("{}", encoding="utf-8")
+    config = WorkspaceConfig(
+        workspace_id="workspace-verbatim",
+        external_url="https://workspace.test",
+        published_path=destination,
+        published_version=native_review["revision"],
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=project / "knowledge",
+        private_profile_path=profile,
+        private_root=tmp_path / "operations",
+        namespace=NAMESPACE,
+        analytics_project_id="retail",
+        analytics_project_path=project,
+        analytics_source_bindings_path=bindings,
+    )
+    state = WorkspaceState(config.state_path)
+    assert config.authoring_path is not None and config.private_profile_path is not None
+    contributor = Actor(tenant_id="local", object_id="contributor")
+    reviewer = Actor(tenant_id="local", object_id="reviewer")
+    owner = Actor(tenant_id="local", object_id="owner")
+    for actor in (contributor, reviewer, owner):
+        state.create_local_user(actor.object_id)
+        state.grant(config.workspace_id, actor)
+    state.grant(config.workspace_id, contributor, "contribute")
+    state.grant(config.workspace_id, reviewer, "review")
+    state.grant(config.workspace_id, owner, "setup")
+    attachment = current_attachment_digest(target=config.authoring_path, profile_path=profile)
+    state.record_setup(
+        config.workspace_id,
+        owner,
+        "synthetic-verbatim-setup",
+        kind="existing",
+        target=config.authoring_path,
+        namespace=NAMESPACE,
+        base_revision=native_review["revision"],
+        attachment_digest=attachment,
+    )
+    intake = IntakeService(state, config.operational_root)
+    analytics = AnalyticsService(config, state, intake)
+    review = ReviewService(
+        state,
+        workspace_id=config.workspace_id,
+        authoring_path=config.authoring_path,
+        profile_path=profile,
+        private_root=config.operational_root,
+        destination=destination,
+        analytics=analytics,
+    )
+    expires = 1_800_000_000
+    contributor_token = state.issue_local_credential("contributor", "api", expires_at=expires)[1]
+
+    opened: list[list[str]] = []
+    real_builder = execution.build_connection
+
+    def spy(registry_arg, **kwargs):
+        opened.append([source.path for source in registry_arg.sources])
+        return real_builder(registry_arg, **kwargs)
+
+    monkeypatch.setattr(execution, "build_connection", spy)
+    monkeypatch.setattr(native_sources, "build_connection", spy)
+
+    def call_contribution(http_client, token, arguments):
+        response = http_client.post(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-06-18",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "prepare_contribution", "arguments": arguments},
+            },
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["result"]
+
+    # Independently authored originals: leading/trailing blank lines, a literal
+    # page-break marker inside a fenced code block, and a CRLF document.
+    doc_lf_text = (
+        "\n\nRunbook with an exact body.\n\n```text\n"
+        "<!-- lumio: page-break -->\n```\n\nTrailing example.\n\n"
+    )
+    doc_crlf_text = "Windows runbook.\r\n\r\nSecond line.\r\n\r\n"
+    upload_lf = intake.save(
+        config.workspace_id,
+        contributor,
+        "verbatim-lf",
+        "verbatim-lf.md",
+        "verbatim-upload-lf",
+        doc_lf_text.encode("utf-8"),
+    )
+    upload_crlf = intake.save(
+        config.workspace_id,
+        contributor,
+        "verbatim-crlf",
+        "verbatim-crlf.md",
+        "verbatim-upload-crlf",
+        doc_crlf_text.encode("utf-8"),
+    )
+
+    def verbatim_page(entity_id, title, source_id, text, extra_sources=""):
+        return (
+            "---\n"
+            f"id: {entity_id}\n"
+            f"title: {title}\n"
+            "entity_types: [knowledge-artifact]\n"
+            "tags: [operations]\n"
+            "summary: Exact verbatim conversion.\n"
+            "category: procedures\n"
+            "type: runbook\n"
+            "durability_rationale: Exact converted bodies stay binding.\n"
+            "lifecycle: approved\n"
+            "visibility: internal\n"
+            f"sources:\n  - id: {source_id}\n    title: {source_id} original\n"
+            f"{extra_sources}"
+            "---\n"
+            + text
+        )
+
+    lf_page = verbatim_page(
+        "entity:verbatim-lf", "Verbatim LF Runbook", "verbatim-lf", doc_lf_text
+    )
+    crlf_page = verbatim_page(
+        "entity:verbatim-crlf", "Verbatim CRLF Runbook", "verbatim-crlf", doc_crlf_text
+    )
+
+    # The strict public JSON loader learns the new optional fields (validated
+    # after the managed journey below so the failing-first red surfaces the
+    # actual body mangling first, not only the missing loader contract).
+
+    app = create_app(config)
+    with TestClient(app, base_url="https://workspace.test") as client:
+        # Body mismatch: the authored body differs from the actual native
+        # extraction record text — refuse before any operation is created.
+        mismatch_upload = intake.save(
+            config.workspace_id,
+            contributor,
+            "verbatim-mismatch",
+            "verbatim-mismatch.md",
+            "verbatim-upload-mismatch",
+            doc_lf_text.encode("utf-8"),
+        )
+        mismatch_page = verbatim_page(
+            "entity:verbatim-mismatch",
+            "Verbatim Mismatch",
+            "verbatim-mismatch",
+            doc_lf_text + "tampered\n",
+        )
+        mismatch = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "verbatim-mismatch-one",
+                "sources": [
+                    {"upload_id": mismatch_upload["upload_id"], "intent": "new", "verbatim": True}
+                ],
+                "pages": [
+                    {"filename": "verbatim-mismatch.md", "markdown": mismatch_page}
+                ],
+            },
+        )
+        assert mismatch["isError"] is True
+        assert state.get_operation(
+            config.workspace_id, contributor, "prepare_contribution", "verbatim-mismatch-one"
+        ) is None
+
+        # Incomplete (bounded) extraction refuses verbatim intake entirely.
+        huge_text = "A" * 201_000
+        huge_upload = intake.save(
+            config.workspace_id,
+            contributor,
+            "verbatim-huge",
+            "verbatim-huge.md",
+            "verbatim-upload-huge",
+            huge_text.encode("utf-8"),
+        )
+        huge_page = verbatim_page(
+            "entity:verbatim-huge", "Verbatim Huge", "verbatim-huge", huge_text
+        )
+        huge = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "verbatim-huge-one",
+                "sources": [
+                    {"upload_id": huge_upload["upload_id"], "intent": "new", "verbatim": True}
+                ],
+                "pages": [{"filename": "verbatim-huge.md", "markdown": huge_page}],
+            },
+        )
+        assert huge["isError"] is True
+        assert state.get_operation(
+            config.workspace_id, contributor, "prepare_contribution", "verbatim-huge-one"
+        ) is None
+
+        # Ambiguous binding: one page claimed by two verbatim sources refuses.
+        amb_upload_a = intake.save(
+            config.workspace_id,
+            contributor,
+            "amb-a",
+            "amb-a.md",
+            "verbatim-upload-amb-a",
+            doc_lf_text.encode("utf-8"),
+        )
+        amb_upload_b = intake.save(
+            config.workspace_id,
+            contributor,
+            "amb-b",
+            "amb-b.md",
+            "verbatim-upload-amb-b",
+            doc_lf_text.encode("utf-8"),
+        )
+        amb_page = verbatim_page(
+            "entity:verbatim-amb",
+            "Verbatim Ambiguous",
+            "amb-a",
+            doc_lf_text,
+            extra_sources="  - id: amb-b\n    title: amb-b original\n",
+        )
+        ambiguous = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "verbatim-ambiguous-one",
+                "sources": [
+                    {"upload_id": amb_upload_a["upload_id"], "intent": "new", "verbatim": True},
+                    {"upload_id": amb_upload_b["upload_id"], "intent": "new", "verbatim": True},
+                ],
+                "pages": [{"filename": "verbatim-amb.md", "markdown": amb_page}],
+            },
+        )
+        assert ambiguous["isError"] is True
+        assert state.get_operation(
+            config.workspace_id, contributor, "prepare_contribution", "verbatim-ambiguous-one"
+        ) is None
+
+        # Mixed candidate: two verbatim documents plus one ordinary distilled
+        # page, reviewed by a separate human and published natively.
+        distilled_page = (
+            "---\n"
+            "id: entity:distilled-notes\n"
+            "title: Distilled Notes\n"
+            "entity_types: [knowledge-artifact]\n"
+            "tags: [operations]\n"
+            "summary: Distilled conversion notes.\n"
+            "category: procedures\n"
+            "type: notes\n"
+            "durability_rationale: Distilled notes need no exact preservation.\n"
+            "lifecycle: approved\n"
+            "visibility: internal\n"
+            "synthetic: true\n"
+            "---\n\n"
+            "Distilled notes body.\n\n"
+        )
+        result = call_contribution(
+            client,
+            contributor_token,
+            {
+                "retry_key": "verbatim-two-docs",
+                "sources": [
+                    {"upload_id": upload_lf["upload_id"], "intent": "new", "verbatim": True},
+                    {"upload_id": upload_crlf["upload_id"], "intent": "new", "verbatim": True},
+                ],
+                "pages": [
+                    {"filename": "verbatim-lf.md", "markdown": lf_page},
+                    {"filename": "verbatim-crlf.md", "markdown": crlf_page},
+                    {"filename": "distilled-notes.md", "markdown": distilled_page},
+                ],
+            },
+        )
+        assert result["isError"] is False, result
+        prepared = result["structuredContent"]
+        assert prepared["status"] == "pending_review"
+        assert "native_proposal" not in prepared
+        task_id = prepared["task_id"]
+
+        context = review.get(reviewer, task_id)
+        published = review.decide(reviewer, task_id, context.action_digest, "approve")
+        assert published["status"] == "published"
+        assert published["publication_outcome"] == "activated"
+
+        # Byte-exact published bodies: leading/trailing blank lines, CRLF form
+        # and the literal fenced marker all survive.
+        for filename, expected_text in (
+            ("verbatim_lf_runbook.md", doc_lf_text),
+            ("verbatim_crlf_runbook.md", doc_crlf_text),
+        ):
+            files = list(destination.rglob(filename))
+            assert files, f"{filename} missing from the published tree"
+            raw = files[0].read_bytes().decode("utf-8")
+            end = raw.find("\n---", 3)
+            assert end != -1
+            assert raw[end + 4 :] == "\n" + expected_text
+        lf_published = next(iter(destination.rglob("verbatim_lf_runbook.md")))
+        assert "<!-- lumio: page-break -->" in lf_published.read_bytes().decode("utf-8")
+
+        # The distilled default keeps its documented trimming transform.
+        distilled_files = list(destination.rglob("distilled_notes.md"))
+        assert distilled_files, "distilled page missing from the published tree"
+        distilled_raw = distilled_files[0].read_bytes().decode("utf-8")
+        assert distilled_raw.endswith("Distilled notes body.")
+        assert not distilled_raw.endswith("\n")
+
+        assert opened == []
+        admitted_after = admission.load_current(project)
+        assert admitted_after is not None
+        assert admitted_after["commit"] == bound_release_commit
+
+        # The strict public JSON loader learns the new optional fields: valid
+        # roundtrip, invalid digest shape and unknown keys still refuse.
+        request_payload = {
+            "schema_version": 1,
+            "base_revision": "0" * 40,
+            "sources": [
+                {
+                    "source_id": "s",
+                    "original_path": "/tmp/x.md",
+                    "expected_digest": "a" * 64,
+                    "intent": "new",
+                    "verbatim_page": "p.md",
+                    "expected_text_digest": "b" * 64,
+                }
+            ],
+            "pages": ["p.md"],
+        }
+        request_path = tmp_path / "request.json"
+        request_path.write_text(json.dumps(request_payload), encoding="utf-8")
+        loaded = load_candidate_request(request_path)
+        assert loaded.sources[0].verbatim_page == "p.md"
+        assert loaded.sources[0].expected_text_digest == "b" * 64
+        bad_digest = json.loads(json.dumps(request_payload))
+        bad_digest["sources"][0]["expected_text_digest"] = "Z" * 64
+        request_path.write_text(json.dumps(bad_digest), encoding="utf-8")
+        with pytest.raises(AuthoringJourneyError):
+            load_candidate_request(request_path)
+        unknown_key = json.loads(json.dumps(request_payload))
+        unknown_key["sources"][0]["bogus"] = 1
+        request_path.write_text(json.dumps(unknown_key), encoding="utf-8")
+        with pytest.raises(AuthoringJourneyError):
+            load_candidate_request(request_path)
