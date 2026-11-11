@@ -2463,6 +2463,9 @@ P1_CASES = [
     pytest.param("native-source-unapproved-scalar", id="refusal-native-source-unapproved-scalar"),
     pytest.param("native-source-escape-scalar", id="refusal-native-source-escape-scalar"),
     pytest.param("table-core-ref-wrong-kind", id="refusal-table-core-ref-wrong-kind"),
+    pytest.param("multifact-uncited", id="refusal-multifact-uncited"),
+    pytest.param("restricted-computation", id="restricted-computation-no-leak"),
+    pytest.param("changed-computation", id="changed-computation-evidence"),
 ]
 # Each refusal must name its §10 identifier: the unknown check id, the known
 # check id that never executes for the bound operation (with the operation),
@@ -2474,7 +2477,68 @@ P1_REFUSAL_TOKENS = {
     "missing-classification": ("entity:cancelled-orders",),
     "invented-obligation": ("entity:order-label-hygiene",),
     "wrong-revision-operation": ("query_detail",),
+    "multifact-uncited": ("revenue_plus_labels", "multi-fact definition"),
 }
+
+# F1 (review fix): a genuinely cross-fact composed definition (its graph
+# ownership spans the orders and order_status facts) whose native metric page
+# authors an EMPTY closure — the retained multi-fact governing-Policy
+# obligation must refuse regardless of the authored edge list.
+MULTIFACT_METRIC = """
+      - name: revenue_plus_labels
+        description: Cross-fact composed revenue and curated label count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: revenue + label_count
+"""
+
+MULTIFACT_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:revenue-plus-labels"\n'
+    "entity_types:\n"
+    "  - metric\n"
+    "tags:\n"
+    "  - retail\n"
+    "  - operations\n"
+    'title: "Composed Revenue And Labels (Metric)"\n'
+    'summary: "Cross-fact composed metric for the governing-Policy obligation."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    '  - id: "src-composed-metric"\n'
+    '    title: "Composed metric review, 2026-10-22"\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    '    model: "retail_sales"\n'
+    '    metric: "revenue_plus_labels"\n'
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    '    status: "stable"\n'
+    '    title: "Composed revenue and labels"\n'
+    '    description: "Cross-fact composed revenue and curated label count."\n'
+    "    tags:\n"
+    "      - operations\n"
+    "    stale_after: 2027-06-30\n"
+    "    sources:\n"
+    '      - id: "src-composed-metric"\n'
+    '        title: "Composed metric review, 2026-10-22"\n'
+    '    governed_by: "semantic_layer retail_sales::revenue_plus_labels"\n'
+    "    dimensions: []\n"
+    "    grain:\n"
+    "      primary_key: []\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n"
+    "\n"
+    "# Composed Revenue And Labels (Metric)\n"
+    "\n"
+    "Cross-fact composed metric composing the orders and order_status facts;\n"
+    "its governing-Policy obligation is the retained graph contract's, not an\n"
+    "authored edge.\n"
+)
 
 
 @pytest.mark.parametrize("case", P1_CASES)
@@ -2509,6 +2573,169 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     status_resource = table_resource(**P1_STATUS_ASSET)
     collection = collection_resource("orders", "orders", "main")
     authored = _p1_bindings(orders_resource, status_resource)
+
+    if case == "multifact-uncited":
+        # F1 (review fix): a genuinely cross-fact composed definition — graph
+        # ownership spans the orders and order_status facts — cannot erase its
+        # governing-Policy obligation with an authored empty closure: the
+        # retained multi-fact contract independently requires resolvable
+        # native Policy proof before validation/admission.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        revision = api.edit_proposal(
+            started["proposal"],
+            revision,
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text() + MULTIFACT_METRIC,
+            },
+        )["revision"]
+        (tree / "knowledge" / "metrics" / "revenue-plus-labels.md").write_text(
+            MULTIFACT_METRIC_PAGE
+        )
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        assert (
+            inspect_ariadne_candidate(
+                str(tree / "knowledge"), revision, namespace=NAMESPACE
+            ).diagnostics
+            == ()
+        ), "the refusal must come from the retained graph obligation, not producer malformation"
+        refused = api.validate_proposal(started["proposal"], revision)
+        assert refused["ok"] is False
+        diagnostics = "; ".join(refused["errors"])
+        for token in P1_REFUSAL_TOKENS[case]:
+            assert token in diagnostics, (case, token, diagnostics)
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    if case == "restricted-computation":
+        # F2 (review fix): a RESTRICTED matching Computation page must not
+        # reach public query signals — the computation signal resolves from
+        # the scope-filtered producer view only, so an out-of-scope page is
+        # generically absent, never disclosed.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        comp = tree / "knowledge" / "computations" / "revenue.md"
+        meta, body = page_parts(comp)
+        meta["visibility"] = "restricted"
+        meta["ariadne_profile"]["native"]["sources"] = [
+            {"id": "src-hidden-computation", "title": "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE"}
+        ]
+        write_page(comp, meta, body)
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        review = api.review_proposal(started["proposal"])
+        activate(project, review, preview(project, review, tmp_path / "published"))
+        runtime = QueryRuntime.open_project(project)
+        try:
+            explained = asyncio.run(runtime.get_metric("revenue"))
+        finally:
+            runtime.con.close()
+        leaked = json.dumps(explained)
+        assert "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE" not in leaked, leaked
+        assert "computations/revenue.md" not in leaked
+        assert "attestation" not in explained["context"]
+        return
+
+    if case == "changed-computation":
+        # F3 (review fix): the native generated Computation binds the CURRENT
+        # sanctioned definition — unchanged inputs keep its bytes (and any
+        # earned attester) verbatim; a changed expression refreshes the
+        # derived facts, clears the predecessor attester and stays honest-
+        # pending, preserving unrelated curated narrative.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        revision = validated["revision"]  # the finalize batch advanced the candidate
+        comp = tree / "knowledge" / "computations" / "label_count.md"
+        assert comp.is_file(), "the first validation must generate the Computation"
+        # a human earns an independent attester on the generated page and adds
+        # unrelated curated narrative; the sanctioned definition is unchanged
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        body = body + "\nCURATED-LABEL-COUNT-NARRATIVE\n"
+        write_page(comp, meta, body)
+        title_before = meta["title"]
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        unchanged = api.validate_proposal(started["proposal"], revision)
+        assert unchanged["ok"] is True, unchanged["errors"]
+        assert unchanged["revision"] == revision, (
+            "an unchanged definition preserves the attested bytes: no finalize commit"
+        )
+        assert b"an-independent-oracle" in comp.read_bytes()
+        # a CHANGED sanctioned definition cannot inherit the predecessor's
+        # attestation: derived facts refresh, evidence clears, curation stays
+        changed_model = api.edit_proposal(
+            started["proposal"],
+            unchanged["revision"],
+            {
+                "kind": "model",
+                "name": "status_lookup",
+                "content": P1_LOOKUP_MODEL.replace(
+                    "expression: COUNT(*)", "expression: COUNT(DISTINCT status)"
+                ),
+            },
+        )
+        refreshed = api.validate_proposal(started["proposal"], changed_model["revision"])
+        assert refreshed["ok"] is True, refreshed["errors"]
+        meta, body = page_parts(comp)
+        native = meta["ariadne_profile"]["native"]
+        assert "COUNT(DISTINCT status)" in body
+        assert "COUNT(*)" not in body
+        assert native["attestation"] == "pending"
+        assert "attester" not in native
+        assert native["dataset_sources"] == ["orders.main.order_status"]
+        assert "CURATED-LABEL-COUNT-NARRATIVE" in body
+        assert meta["title"] == title_before  # unrelated authored frontmatter preserved
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
 
     if case != "admission":
         # independent disposable candidates: one project/proposal and ONE

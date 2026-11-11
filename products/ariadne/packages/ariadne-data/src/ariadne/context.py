@@ -804,43 +804,132 @@ def finalize_native_candidate(staging: Path) -> list[dict]:
     deterministic generated Computation content of the governed metric set as
     producer-native ``knowledge/computations`` page specs for the ONE native
     batch writer — no classic ``context_layer`` finalization, no classic index
-    generation. Existing native Computation pages are authored/reviewed
-    candidate content and stay byte-for-byte untouched (curated bodies and
-    earned attestation states are never regenerated); only a governed metric
-    with NO native Computation page receives the honest generated page
-    (``attestation: pending``, no invented Policy edges). Unparseable model
-    drafts generate nothing — the validation gate owns the structural
-    failure, exactly like the classic pass. Returns ``[{path, content}]``;
-    an empty list is the no-op."""
+    generation. A native Computation page binds the CURRENT sanctioned
+    definition, never merely the same ``model::metric`` identity (the
+    preserved classic ``_computation_matches``/source-only-attestation
+    principles): a core-generated page whose recorded SQL and dataset
+    sources still match the model keeps its bytes verbatim — earned
+    attestation states included — while a CHANGED definition refreshes the
+    derived facts (SQL fence, runtime, dataset sources) and clears the
+    predecessor's obsolete attester/check down to the honest ``attestation:
+    pending`` through the same atomic native batch, preserving the page's
+    unrelated authored frontmatter and curated narrative. Authored pages
+    (without the core-generated provenance marker) are reviewed candidate
+    content and are never rewritten here. A governed metric with NO native
+    Computation page receives the honest generated page (``attestation:
+    pending``, no invented Policy edges). Unparseable model drafts generate
+    nothing — the validation gate owns the structural failure, exactly like
+    the classic pass. Returns ``[{path, content}]``; an empty list is the
+    no-op."""
     models, all_parsed = _model_index(staging)
     if not models or not all_parsed:
         return []
     comps_dir = staging / "knowledge" / "computations"
-    existing: set[str] = set()
+    existing: dict[str, tuple[str, str]] = {}
     if comps_dir.is_dir():
         from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
             parse_frontmatter,
         )
 
         for page in sorted(comps_dir.glob("*.md")):
+            raw = page.read_text(encoding="utf-8")
             try:
-                full, _body, _start = parse_frontmatter(
-                    page.read_text(encoding="utf-8"), page.name
-                )
+                full, _body, _start = parse_frontmatter(raw, page.name)
             except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
                 continue
             profile = full.get("ariadne_profile") if isinstance(full, dict) else None
             core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
             if isinstance(core_ref, dict) and core_ref.get("kind") == "semantic":
-                existing.add(str(core_ref.get("id")))
-    return [
-        {
-            "path": f"knowledge/computations/{name}.md",
-            "content": _build_native_computation_page(name, info),
-        }
-        for name, info in sorted(models.items())
-        if f"{info['model']}::{name}" not in existing
-    ]
+                existing[str(core_ref.get("id"))] = (page.name, raw)
+    specs: list[dict] = []
+    for name, info in sorted(models.items()):
+        page = existing.get(f"{info['model']}::{name}")
+        if page is None:
+            specs.append(
+                {
+                    "path": f"knowledge/computations/{name}.md",
+                    "content": _build_native_computation_page(name, info),
+                }
+            )
+            continue
+        rel_name, raw = page
+        state = _native_computation_state(raw, name, info)
+        if state != "stale":
+            continue  # authored pages are never rewritten; current pages keep their bytes
+        specs.append(
+            {
+                "path": f"knowledge/computations/{rel_name}",
+                "content": _refresh_native_computation_page(raw, name, info),
+            }
+        )
+    return specs
+
+
+def _native_computation_state(text: str, name: str, info: dict) -> str:
+    """``authored`` (no core-generated provenance marker: reviewed candidate
+    content, never rewritten by the finalize pass), ``current`` (generated
+    and still recording the exact sanctioned definition: SQL fence and
+    dataset sources match — bytes stay, earned evidence included) or
+    ``stale`` (generated but the recorded definition no longer matches: the
+    derived facts refresh and obsolete evidence clears). An unparseable page
+    is treated as authored — the page gate owns malformed pages and the
+    finalize never rewrites bytes it cannot parse."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        parse_frontmatter,
+    )
+
+    try:
+        full, body, _start = parse_frontmatter(text, name)
+    except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
+        return "authored"
+    profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+    native = profile.get("native") if isinstance(profile, dict) else None
+    native = native if isinstance(native, dict) else {}
+    marker = f"model-{info['model']}"
+    if not any(
+        isinstance(source, dict) and source.get("id") == marker
+        for source in native.get("sources") or []
+    ):
+        return "authored"
+    fence = _SQL_FENCE_RE.search(body or "")
+    if (
+        native.get("dataset_sources") == list(info["dataset_sources"])
+        and fence is not None
+        and fence.group(1).strip() == info["expression"].strip()
+    ):
+        return "current"
+    return "stale"
+
+
+def _refresh_native_computation_page(text: str, name: str, info: dict) -> str:
+    """The surgical refresh of one STALE core-generated Computation page: the
+    derived facts (sanctioned SQL fence, runtime, dataset sources) update to
+    the current definition and the predecessor's obsolete attester/check is
+    cleared down to the honest ``attestation: pending`` — a prior numerical
+    check is never carried onto executable bytes it did not check. Every
+    other byte of the page (identity, authored envelope, lifecycle,
+    sources, unrelated curated narrative) is preserved verbatim."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        parse_frontmatter,
+    )
+
+    full, body, _start = parse_frontmatter(text, name)
+    profile = full.get("ariadne_profile")
+    native = profile.get("native") if isinstance(profile, dict) else None
+    if not isinstance(native, dict):  # pragma: no cover — state() parsed it before
+        return text
+    native.pop("attester", None)
+    native["attestation"] = "pending"
+    native["runtime"] = "duckdb"
+    native["dataset_sources"] = list(info["dataset_sources"])
+    new_fence = "```sql\n" + info["expression"].strip() + "\n```"
+    match = _SQL_FENCE_RE.search(body or "")
+    if match is not None:
+        body = body[: match.start()] + new_fence + body[match.end() :]
+    else:
+        body = (body or "").rstrip() + "\n\n" + new_fence + "\n"
+    front = yaml.safe_dump(full, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front}\n---\n\n{body}"
 
 
 def _build_native_computation_page(name: str, info: dict) -> str:

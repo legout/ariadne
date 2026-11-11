@@ -1474,22 +1474,22 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
     consumed = [page, *binding.required_policies]
     now = _now if _now is not None else context._assessment_now()
     signals = [context._page_view(p.citation, disclose_native(p.native), now) for p in consumed]
-    computation = context._computation_meta(Path(context_dir), metric)
-    computation_label = f"computations/{metric}.md"
-    if (
-        computation is None
-        and int((manifest.get("selector") or {}).get("support_revision", 1) or 1) >= 2
-    ):
-        # C2 (spec0035 §6): the revision-2 supported route never generated
-        # classic context_layer computations — the computation signal is the
-        # pinned snapshot's producer-native Computation page, matched by its
-        # exact core_ref semantic identity through the producer's public
-        # frontmatter parse (never a Core KB parser).
-        native_found = _native_computation_meta(Path(context_dir).parent, model, metric)
+    computation = None
+    if int((manifest.get("selector") or {}).get("support_revision", 1) or 1) >= 2:
+        # C2 (spec0035 §5): the supported revision-2 route resolves the
+        # computation signal ONLY from the exact authorized producer view —
+        # the scope-filtered public ContextSnapshot — matched by its exact
+        # core_ref semantic identity through the producer's public parse.
+        # No classic context_layer read and no raw snapshot filesystem scan:
+        # an out-of-scope page is absent, never disclosed.
+        native_found = _native_computation_from_view(snapshot, model, metric)
         if native_found is not None:
-            computation_label, computation = native_found
-    if computation is not None:
-        signals.append(context._page_view(computation_label, computation, now))
+            computation = native_found[1]
+            signals.append(context._page_view(native_found[0], computation, now))
+    else:
+        computation = context._computation_meta(Path(context_dir), metric)
+        if computation is not None:
+            signals.append(context._page_view(f"computations/{metric}.md", computation, now))
     result = {
         "metric_page": page.content,
         "policies": [p.content for p in binding.required_policies],
@@ -1516,25 +1516,26 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
     return result
 
 
-def _native_computation_meta(root: Path, model: str, metric: str) -> tuple[str, dict] | None:
-    """The pinned snapshot's native Computation page for one governed metric
-    (revision-2 supported route; spec0035 §6): located by its exact core_ref
-    semantic identity and read through the producer's public frontmatter
-    parse — never a Core KB parser. Read problems are the same missing
-    caveat as the classic path: never a failure, never an invented
-    attestation. ``root`` is the materialized snapshot root (the runtime's
-    ``context_dir`` is its ``context_layer/`` subtree; the knowledge subtree
-    is the snapshot's sibling ``knowledge/``). Returns ``(page-relative
-    path, disclosed native envelope)``."""
+def _native_computation_from_view(snapshot, model: str, metric: str) -> tuple[str, dict] | None:
+    """The authorized snapshot's native Computation page for one governed
+    metric (revision-2 supported route; spec0035 §5): resolved ONLY from the
+    exact authorized producer view — the scope-filtered public
+    ``ContextSnapshot`` pages — matched by its exact core_ref semantic
+    identity through the producer's public frontmatter parse (never a Core
+    KB parser, never a raw snapshot filesystem scan). An out-of-scope page
+    is not in the view, so its existence, path, title, provenance or
+    evidence can never leak into the query signals; a missing or unreadable
+    page is the same generic absent-caveat as the legacy path — never a
+    failure, never an invented attestation. Returns ``(page-relative path,
+    native envelope)``."""
     from lumio_wiki import parse_frontmatter
 
-    comps = Path(root) / "knowledge" / "computations"
-    if not comps.is_dir():
-        return None
     wanted = f"{model}::{metric}"
-    for page in sorted(comps.glob("*.md")):
+    for page in snapshot.pages:
+        if page.kind != "computation":
+            continue
         try:
-            full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), page.name)
+            full, _body, _start = parse_frontmatter(page.content, page.path)
         except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
             continue
         profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1547,7 +1548,7 @@ def _native_computation_meta(root: Path, model: str, metric: str) -> tuple[str, 
             and core_ref.get("id") == wanted
         ):
             native = profile.get("native")
-            return f"computations/{page.name}", native if isinstance(native, dict) else {}
+            return page.path, native if isinstance(native, dict) else {}
     return None
 
 

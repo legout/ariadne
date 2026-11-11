@@ -259,14 +259,19 @@ def _graph_citation_errors(tree: Path) -> list[str]:
 
 def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     """The native governing-Policy proof for a revision-2 candidate (issue #30
-    proof retargeted to native knowledge, spec0035 §5/§6): every graph
-    metric's producer-native metric page must carry its REQUIRED Policy
-    Closure as resolvable, contained producer-owned policy references — a
-    dangling, non-Policy or wrong-namespace required policy refuses
-    validation through the producer's own closure diagnostics. A metric
-    whose authored closure is empty requires no Policy (never an invented
-    obligation); the authored policy_bindings classification of nonempty
-    closures is the §10.1 gate's own proof."""
+    proof retargeted to native knowledge, spec0035 §5/§6; multi-fact contract
+    spec0008): every graph metric's producer-native metric page must carry its
+    REQUIRED Policy Closure as resolvable, contained producer-owned policy
+    references — a dangling, non-Policy or wrong-namespace required policy
+    refuses validation through the producer's own closure diagnostics. The
+    obligation itself is derived from the GRAPH, never from the authored edge
+    list: a multi-fact definition (its owning-fact set spans more than one
+    dataset) requires a nonempty resolvable closure — an authored empty
+    ``required_policies`` cannot erase the retained governing-Policy proof —
+    while an ordinary single-fact metric with a genuinely empty closure
+    requires no Policy (never an invented obligation). The authored
+    policy_bindings classification of nonempty closures is the §10.1 gate's
+    own proof."""
     if not (tree / "semantic_layer" / "graph.yml").is_file():
         return []
     try:
@@ -279,6 +284,20 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
         kb, _report = load_knowledge_base(tree / "knowledge")
     except Exception:
         return []  # the producer page/candidate gates own a malformed KB
+
+    def owners_of(name: str) -> set[str]:
+        """The dataset-level owning-fact set of one metric (the same graph
+        resolution the §10.2 static inventory uses)."""
+        node = graph.metrics.get(name)
+        if node is None:
+            return set()
+        if node.owner is not None:
+            return {node.owner}
+        owners: set[str] = set()
+        for dep in node.deps:
+            owners |= owners_of(dep)
+        return owners
+
     metric_pages = {}
     for page in kb.pages:
         profile = page.ariadne_profile
@@ -296,11 +315,19 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
                 "page carrying its governing Policy closure"
             )
             continue
-        _closure, diagnostics = policy_closure(
+        closure, diagnostics = policy_closure(
             kb.pages, page.ariadne_profile, namespace=namespace
         )
         for diagnostic in diagnostics:
             errors.append(f"knowledge/{page.path}: {diagnostic.message}")
+        owner_datasets = owners_of(name)
+        if len(owner_datasets) > 1 and not closure:
+            errors.append(
+                f"knowledge/{page.path}: graph metric '{name}' is a multi-fact "
+                f"definition (it composes the facts {sorted(owner_datasets)}) — the "
+                "retained multi-fact contract requires a resolvable governing native "
+                "Policy citation; an authored empty closure cannot erase the obligation"
+            )
     return errors
 
 
