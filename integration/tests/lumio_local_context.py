@@ -3176,12 +3176,77 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
 
     # legacy and expanded admissions under the SAME candidate build keep
     # their respective frozen capability tables (§10.3: a legacy manifest is
-    # revision 1 without rewriting its bytes; no automatic upgrade)
-    from integration.tests.lumio_metric_mvp import ready
+    # revision 1 without rewriting its bytes; no automatic upgrade). The
+    # genuinely historical revision-1 candidate: the authored selector
+    # carries NEITHER §10.1 opt-in key (the exact legacy bytes), the KB
+    # holds only revision-1 supported policy/reference profiles and NO
+    # governed metric (AC2: context is reviewable before any metric
+    # exists), so the native finalize derivation is a genuine no-op — the
+    # admission never needs a revision-2 capability and its bytes are never
+    # rewritten.
+    from integration.tests.lumio_metric_mvp import (
+        BASELINE,
+        CONTROL,
+        SOURCE_REFERENCE_MANIFEST_BASENAME,
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+    from tests.test_contracts import contract_project
 
-    legacy_project, _legacy_api, legacy_review = ready(tmp_path / "legacy")
+    legacy_project = contract_project(tmp_path / "legacy")
+    run_git(legacy_project, "rm", "-q", "-r", "--", "context_layer")
+    run_git(legacy_project, "rm", "-q", "--", "semantic_layer/models/orders.yml")
+    legacy_kb = legacy_project / "knowledge"
+    for rel in ("policies/retail-return-policy.md", "references/order-number.md"):
+        target = legacy_kb / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((BASELINE / rel).read_bytes())
+    legacy_reference = legacy_kb / "references/order-number.md"
+    reference_meta, reference_body = page_parts(legacy_reference)
+    del reference_meta["ariadne_profile"]  # the proven plain-reference edit
+    write_page(legacy_reference, reference_meta, reference_body)
+    (legacy_kb / "lumio.yaml").write_text(CONTROL + "\n", encoding="utf-8")
+    (legacy_kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+    )
+    (legacy_project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:demo:retail\n"
+        "profile: ariadne-context/1\n",
+        encoding="utf-8",
+    )
+    run_git(
+        legacy_project,
+        "add",
+        "--",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(
+        legacy_project,
+        "commit",
+        "-q",
+        "-m",
+        "human: pre-metric knowledge context under the legacy integrated selector",
+    )
+    legacy_api = AuthoringProject(legacy_project)
+    legacy_started = legacy_api.start_proposal()
+    approved(legacy_api, legacy_project, legacy_started)
+    legacy_validated = legacy_api.validate_proposal(
+        legacy_started["proposal"], legacy_started["candidate_revision"]
+    )
+    assert legacy_validated["ok"] is True, legacy_validated["errors"]
+    # the no-op derivation rewrote nothing: the validated revision IS the
+    # candidate revision (a legacy manifest is never regenerated)
+    assert legacy_validated["revision"] == legacy_started["candidate_revision"]
+    legacy_review = legacy_api.review_proposal(legacy_started["proposal"])
+    assert legacy_review["source_approved"] is True
     activate(
-        legacy_project, legacy_review, preview(legacy_project, legacy_review, tmp_path / "legacy-p")
+        legacy_project,
+        legacy_review,
+        preview(legacy_project, legacy_review, tmp_path / "legacy-p"),
     )
     legacy_manifest = json.loads((legacy_project / ".ariadne" / "current.json").read_text())[
         "bound_release"
