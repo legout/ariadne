@@ -7,7 +7,7 @@ Raw text-to-SQL asks an agent to guess tables, joins, filters, and definitions. 
 - **Semantic Layer (OSI):** reviewed metric definitions, compiled to SQL and executed read-only by Ariadne.
 - **Context Layer (OKF):** business policies, source caveats, and terminology that explain how to interpret a result.
 
-Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, connect an agent through optional MCP, or add the separately distributed Ariadne Agent. A human remains responsible for source approval and for admitting the exact reviewed Git revision. Ariadne is not a BI dashboard or a high-concurrency metrics API.
+Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI, or connect an external host agent through the optional MCP server and the Ariadne skill surfaces. A human remains responsible for source approval and for admitting the exact reviewed Git revision. Ariadne is not a BI dashboard or a high-concurrency metrics API.
 
 ## Start locally
 

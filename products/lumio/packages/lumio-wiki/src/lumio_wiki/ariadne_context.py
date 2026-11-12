@@ -1382,7 +1382,7 @@ def _quality_period_errors(period: object, where: str) -> list[str]:
     if not isinstance(period, dict):
         return [f"{where} must be {{field, start, end}} or an explicit null"]
     errors: list[str] = []
-    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS)
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS, key=repr)
     if unknown:
         errors.append(f"{where} carries unsupported field(s) {unknown}")
     field = period.get("field")
@@ -1436,7 +1436,7 @@ def _table_quality_native_errors(
     if not isinstance(profile, dict):
         return [f"{where} must be a mapping"]
     errors: list[str] = []
-    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS, key=repr)
     if unknown:
         errors.append(
             f"{where} carries unsupported field(s) {unknown} — the profile is a "
@@ -1476,7 +1476,7 @@ def _table_quality_native_errors(
         if not isinstance(report, dict):
             errors.append(f"{spot} must be a mapping")
             continue
-        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS)
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS, key=repr)
         if unknown:
             errors.append(
                 f"{spot} carries unsupported field(s) {unknown} — the profile is a "
@@ -1532,7 +1532,7 @@ def _table_quality_native_errors(
         if not isinstance(scope, dict):
             errors.append(f"{spot} scope must be {{kind, description, population, period}}")
         else:
-            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS)
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS, key=repr)
             if unknown:
                 errors.append(f"{spot} scope carries unsupported field(s) {unknown}")
             if scope.get("kind") not in _QUALITY_SCOPE_KINDS:
@@ -1582,7 +1582,7 @@ def _table_quality_native_errors(
             if not isinstance(source_version, dict):
                 errors.append(f"{spot} source_version must be {{kind, value}}")
             else:
-                unknown = sorted(set(source_version) - _QUALITY_SOURCE_VERSION_KEYS)
+                unknown = sorted(set(source_version) - _QUALITY_SOURCE_VERSION_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{spot} source_version carries unsupported field(s) {unknown}")
                 if source_version.get("kind") not in _QUALITY_SOURCE_VERSION_KINDS:
@@ -1624,7 +1624,7 @@ def _table_quality_native_errors(
                 if not isinstance(check, dict):
                     errors.append(f"{check_spot} must be a mapping")
                     continue
-                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS)
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{check_spot} carries unsupported field(s) {unknown}")
                 missing = sorted(_QUALITY_CHECK_KEYS - set(check))
@@ -1683,7 +1683,7 @@ def _table_quality_native_errors(
             if not isinstance(watermark, dict):
                 errors.append(f"{spot} watermark must be a mapping")
             else:
-                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS)
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{spot} watermark carries unsupported field(s) {unknown}")
                 if watermark.get("kind") not in _QUALITY_WATERMARK_KINDS:

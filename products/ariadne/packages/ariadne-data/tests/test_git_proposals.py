@@ -1315,6 +1315,49 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     assert "!!set" in set_source_ids  # the raw variant reached the page text
     refuse(set_source_ids, "source_ids must be a nonempty list")
 
+    # D1 (C6 owner-a4, single-delta review): a non-list native sources SHAPE
+    # (an int where the producer grammar wants the source-record list)
+    # refuses at the same public batch seam with a NAMED sources-list
+    # diagnostic — the prewrite Core quality gate must not crash with a raw
+    # TypeError iterating the producer-parsed scalar before the named
+    # refusal can fire, and not with a misleading citation-resolution error
+    sources_scalar = _load_frontmatter_meta(with_quality("2026-01-15T00:00:00+00:00"))
+    sources_scalar["ariadne_profile"]["native"]["sources"] = 7
+    scalar_front = yaml.safe_dump(sources_scalar, sort_keys=False, allow_unicode=True).strip()
+    refuse(f"---\n{scalar_front}\n---\n\n# Orders\n", "sources must be a list")
+
+    # unsupported QUALITY keys of UNLIKE sortable types (an int and a string
+    # in the same mapping) reject with the named unsupported-field
+    # diagnostic at root AND nested report level — never a sorted() TypeError
+    mixed_root = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    mixed_root[7] = "seven"
+    mixed_root["unsupported"] = "extra"
+    refuse(with_quality_block(mixed_root), "unsupported field")
+    mixed_report = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    mixed_report["reports"][0][7] = "seven"
+    mixed_report["reports"][0]["unsupported"] = "extra"
+    refuse(with_quality_block(mixed_report), "unsupported field")
+
+    # the producer's INDEPENDENT structural gate shows the same type-safe
+    # named diagnostic: Core catches these first on the public batch path,
+    # so K's own caller is exercised through its public structural surface
+    from lumio_wiki.ariadne_context import native_metadata_errors
+
+    k_errors = native_metadata_errors(
+        "knowledge/tables/orders.md native",
+        {
+            "type": "table",
+            "title": "orders",
+            "description": "orders table",
+            "tags": ["table"],
+            "sources": [{"id": "catalog-demo-main-orders", "resource": resource}],
+            "resource": resource,
+            "ariadne_quality": mixed_root,
+        },
+        kind="table",
+    )
+    assert any("unsupported field" in error for error in k_errors)
+
     # the normalized-byte bound follows the RETAINED Core normalization
     # (default separators, insertion order) — a profile whose compact form
     # fits but whose normalized form does not refuses by name. The boundary

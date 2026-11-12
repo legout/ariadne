@@ -2865,7 +2865,7 @@ def _quality_period_errors(period: object, where: str) -> list[str]:
     if not isinstance(period, dict):
         return [f"{where} must be a period mapping or null (explicitly non-time-bounded)"]
     errors: list[str] = []
-    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS)
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS, key=repr)
     if unknown:
         errors.append(f"{where} carries unsupported field(s) {unknown}")
     error = _quality_text_error(period.get("field"), f"{where} field", QUALITY_MAX_ID_CHARS)
@@ -2943,7 +2943,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             f"{ARIADNE_QUALITY_VERSION}, got {version!r}"
         ]
     errors: list[str] = []
-    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS, key=repr)
     if unknown:
         errors.append(f"{rel}: ariadne_quality carries unsupported field(s) {unknown}")
     binding = meta.get("resource")
@@ -2953,9 +2953,18 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             "— a page without an established table binding cannot carry a quality "
             "report (an asset is never guessed from a display name)"
         )
+    sources = meta.get("sources")
+    if not isinstance(sources, list):
+        # D1 (C6 owner-a4): a non-list native sources shape is a NAMED
+        # pre-interpretation refusal — never a TypeError iteration crash on
+        # the producer-parsed scalar and never a misleading citation error
+        return errors + [
+            f"{rel}: native sources must be a list to carry ariadne_quality — "
+            "source_ids resolve against the page's declared source records"
+        ]
     citation_resources = {
         source["id"]: source.get("resource")
-        for source in meta.get("sources") or []
+        for source in sources
         # a citation id must be a string: a later-edited non-string id (e.g.
         # ``id: [owner-report]``) simply resolves to nothing — malformed, but
         # never an unhashable-key crash out of the advisory reader
@@ -2975,7 +2984,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
         if not isinstance(report, dict):
             errors.append(f"{where} must be a mapping")
             continue
-        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS)
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS, key=repr)
         if unknown:
             errors.append(
                 f"{where} carries unsupported field(s) {unknown} — the profile is a "
@@ -3031,7 +3040,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
         if not isinstance(scope, dict):
             errors.append(f"{where} scope must be {{kind, description, population, period}}")
         else:
-            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS)
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS, key=repr)
             if unknown:
                 errors.append(f"{where} scope carries unsupported field(s) {unknown}")
             if scope.get("kind") not in QUALITY_SCOPE_KINDS:
@@ -3077,7 +3086,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             if not isinstance(source_version, dict):
                 errors.append(f"{where} source_version must be {{kind, value}}")
             else:
-                unknown = sorted(set(source_version) - _QUALITY_VERSION_KEYS)
+                unknown = sorted(set(source_version) - _QUALITY_VERSION_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{where} source_version carries unsupported field(s) {unknown}")
                 if source_version.get("kind") not in QUALITY_VERSION_KINDS:
@@ -3117,7 +3126,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
                 if not isinstance(check, dict):
                     errors.append(f"{spot} must be a mapping")
                     continue
-                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS)
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{spot} carries unsupported field(s) {unknown}")
                 missing = sorted(_QUALITY_CHECK_KEYS - set(check))
@@ -3157,7 +3166,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
                     "{kind, value, field, meaning, units, timezone, observed_at}"
                 )
             else:
-                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS)
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{where} watermark carries unsupported field(s) {unknown}")
                 kind = watermark.get("kind")

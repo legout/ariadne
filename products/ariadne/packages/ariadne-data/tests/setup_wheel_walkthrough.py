@@ -56,8 +56,11 @@ def native_page(kind, title, resource, body):
     Entity identity, producer envelope, KB-relative citations). The TABLE page
     anchors its canonical ``core_ref`` resource identity WITHOUT the
     system-owned ``native.resource`` binding (an ordinary batch may introduce
-    core_ref, never the stamped resource facts); the POLICY page declares its
-    explicit (empty) required_policies closure like every policy/metric page."""
+    core_ref, never the stamped resource facts); non-table kinds cite their
+    document/Policy path as a DECLARED SOURCE resource — ``native.resource``
+    stays reserved to generated physical-table profiles with Core
+    provenance; the METRIC declares its dimensions/grain from the actual
+    MODEL (dimension field ``label``, dataset primary key ``id``)."""
     entity_id = "entity:" + title.lower().replace(" ", "-")
     policy_extra = ""
     if kind == "metric":
@@ -78,7 +81,18 @@ def native_page(kind, title, resource, body):
             "    kind: resource\n"
             f"    id: {resource}\n"
         )
-    native_resource = f"    resource: {resource}\n" if kind != "table" else ""
+    # the document/Policy path rides the DECLARED native source record —
+    # never the protected native.resource claim
+    source_resource = f"        resource: {resource}\n" if kind != "table" else ""
+    metric_native_extra = ""
+    if kind == "metric":
+        metric_native_extra = (
+            f"    governed_by: {resource}\n"
+            "    dimensions:\n      - label\n"
+            "    grain:\n"
+            "      primary_key:\n        - id\n"
+            '      cardinality_enforcement: "strict_1_to_1"\n'
+        )
     return (
         "---\n"
         f'id: "{entity_id}"\n'
@@ -105,12 +119,8 @@ def native_page(kind, title, resource, body):
         "    sources:\n"
         "      - id: rule\n"
         "        title: Owner rule\n"
-        + native_resource
-        + (
-            f"    governed_by: {resource}\n"
-            if kind == "metric" and resource
-            else ""
-        )
+        + source_resource
+        + metric_native_extra
         + "---\n\n"
         + f"# {title}\n\n"
         + body
@@ -351,6 +361,23 @@ def main():
             structured=True,
         )
         assert not (project / ".ariadne/current.json").exists()
+        # integrated admission goes through the composite preview the
+        # operator confirms (spec0032 §10): the preview is computed in-process
+        # (the walkthrough runs on the installed wheel's own API) and its
+        # exact digest rides the admit command alongside the operator-owned
+        # local publication destination
+        from ariadne import admission
+
+        published = root / "published"
+        composite = admission.overall_review(
+            project,
+            pid,
+            review["revision"],
+            review["review_digest"],
+            destination=str(published),
+            expected_current="none",
+            scope=["public"],
+        )
         command(
             "ariadne-admit",
             "--project",
@@ -361,6 +388,11 @@ def main():
             review["revision"],
             "--reviewed-digest",
             review["review_digest"],
+            "--context-destination",
+            str(published),
+            "--context-expected-current",
+            "none",
+            f"--overall-digest={composite['digest']}",
             "--confirm",
         )
         metrics = command("ariadne", "list-metrics", "--project", str(project), structured=True)

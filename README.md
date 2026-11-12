@@ -90,5 +90,6 @@ stay attached to their artifacts. No repository-wide license is implied by
 colocation.
 
 The private Lumio web application is a separate product, clearly distinct
-from this public foundation; the separately distributed Ariadne Agent is not
-part of the workspace either. Neither is required by any entry above.
+from this public foundation and not required by any entry above. The former
+separately distributed Ariadne Agent is retired: external host agents consume
+the skill/MCP surfaces instead ([ADR-0027](products/ariadne/project/adr/0027-host-agents-only.md)).

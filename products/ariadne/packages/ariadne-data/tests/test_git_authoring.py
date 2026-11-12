@@ -2680,16 +2680,17 @@ def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
     )
     assert code == 0
     first = json.loads(capsys.readouterr().out)
-    core = api.refresh_schema(
-        started["proposal"], started["candidate_revision"], [SALES_ASSET]
-    )
+    # the first CLI refresh COMMITTED the generated pages: the core call and
+    # every later refresh address the RETURNED candidate revision, never the
+    # started one (a stale revision refuses — authoring.py's coherence gate)
+    core = api.refresh_schema(started["proposal"], first["revision"], [SALES_ASSET])
     assert first["revision"] == core["revision"]
     assert {(p["resource"], p["kind"]) for p in first["pages"]} == {
         (p["resource"], p["kind"]) for p in core["pages"]
     }
     sales_entry = next(p for p in first["pages"] if p["kind"] == "table")
     assert sales_entry["changes"] == {
-        "added": ["order_id", "amount"],
+        "added": ["amount", "order_id"],  # sorted column identity (plan §2)
         "removed": [],
         "type_changed": [],
     }
@@ -2783,11 +2784,20 @@ def test_selected_column_evidence_family_states(tmp_path):
     from ariadne.author import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
-    write_parquet(
-        project / "data" / "sales" / "orders.parquet",
-        [(1, "EMEA"), (2, "AMER")],
-        ["order_id", "region"],
-    )
+    orders = project / "data" / "sales" / "orders.parquet"
+    # a real TIMESTAMP column via an explicit CAST (the shared write_parquet
+    # helper would leave a string column VARCHAR): the produced physical
+    # type must MATCH the declared selection type for the unsupported-
+    # representation outcome — spec0024 §3's literal vocabulary excludes
+    # timestamps while VARCHAR/INTEGER families stay supported
+    duckdb.connect().execute(
+        "COPY (SELECT CAST(order_id AS BIGINT) AS order_id, "
+        "CAST(region AS VARCHAR) AS region, "
+        "CAST(placed_at AS TIMESTAMP) AS placed_at "
+        "FROM (VALUES (1, 'EMEA', '2026-01-01 10:00:00'), "
+        "(2, 'AMER', '2026-01-02 11:30:00')) t(order_id, region, placed_at)) "
+        f"TO '{orders}' (FORMAT PARQUET)"
+    ).close()
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
@@ -2796,6 +2806,9 @@ def test_selected_column_evidence_family_states(tmp_path):
     sales_resource = _table_resource_of(SALES_ASSET)
     sales_rel = _generated_rel(sales_resource, "sales")
     worktree = worktree_of(project, proposal)
+    # each edit+refresh pair advances the candidate: the next edit addresses
+    # the ACTUAL returned revision, never a stale one
+    current = {"revision": first["revision"]}
 
     def refresh_with_selection(selection: dict) -> dict:
         text = (worktree / sales_rel).read_text(encoding="utf-8")
@@ -2804,9 +2817,12 @@ def test_selected_column_evidence_family_states(tmp_path):
         dumped = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
         _f, b = _page_split(text)
         revision = api.edit_pages_batch(
-            proposal, first["revision"], [{"path": sales_rel, "content": f"---\n{dumped}\n---{b}"}]
+            proposal,
+            current["revision"],
+            [{"path": sales_rel, "content": f"---\n{dumped}\n---{b}"}],
         )["revision"]
-        api.refresh_schema(proposal, revision, [SALES_ASSET])
+        refreshed = api.refresh_schema(proposal, revision, [SALES_ASSET])
+        current["revision"] = refreshed["revision"]
         return _load_frontmatter_meta((worktree / sales_rel).read_text(encoding="utf-8"))[
             "ariadne_profile"
         ]["native"]["ariadne"]["observations"]["value_evidence"]
@@ -2820,8 +2836,14 @@ def test_selected_column_evidence_family_states(tmp_path):
     }  # alphabetical value order at equal counts (deterministic evidence order)
     assert refresh_with_selection({"order_id": "VARCHAR"})["order_id"] == {
         "state": "unavailable",
+        "reason": "type_changed",
+    }  # BIGINT column declared VARCHAR: the authored type binds the
+    # representation and MISMATCHES — type_changed, never a coerced literal
+    assert refresh_with_selection({"placed_at": "TIMESTAMP"})["placed_at"] == {
+        "state": "unavailable",
         "reason": "unsupported_representation",
-    }  # BIGINT has no supported v1 literal representation as declared VARCHAR
+    }  # MATCHING TIMESTAMP declaration outside spec0024 §3's supported
+    # literal vocabulary (VARCHAR/ENUM/BOOLEAN/integer/float families)
     evidence = refresh_with_selection({"absent_column": "VARCHAR"})
     assert evidence["absent_column"] == {"state": "unavailable", "reason": "column_missing"}
     assert set(evidence) == {"absent_column"}  # only selected columns appear
@@ -2877,9 +2899,15 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     }
     assert "A" * 4500 not in (worktree / sales_rel).read_text(encoding="utf-8")
 
-    # (b) refusal half: 200 selected columns make even the status-only
-    # mapping ~10.6 KiB > 8 KiB — the refresh refuses, nothing moves
-    wide = [(f"c{i:03d}", "a" if i % 2 == 0 else "b") for i in range(200)]
+    # (b) refusal half: 80 selected LONG-NAMED columns make even the
+    # status-only mapping ≈ 9.2 KiB > 8 KiB (each unavailable entry carries
+    # its column name) — the refresh refuses, nothing moves. The fixture
+    # stays well under the profiler's 64 KiB payload ceiling (spec0035 §8):
+    # ~80 columns of short two-valued strings
+    wide = [
+        (f"order_line_{i:03d}" + "_detail" * 8, "a" if i % 2 == 0 else "b")
+        for i in range(80)
+    ]
     write_parquet(
         project / "data" / "sales" / "orders.parquet",
         [(1, *(v for _n, v in wide)), (2, *("b" if v == "a" else "a" for _n, v in wide))],
@@ -2896,22 +2924,56 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     assert (worktree / sales_rel).read_bytes() == before  # atomic: nothing written
     assert proposals._load_record(project, proposal)["candidate_revision"] == revision
 
-    # (c) artifact-bound atomicity: an authored bulk just under the
-    # 2,097,152-byte artifact bound plus regenerated facts exceeds it — the
-    # refresh refuses atomically, no page/revision moves
+    # (c) artifact-bound atomicity, MULTI-TABLE: the authored sales page —
+    # bulk in the CURATED BODY — stays BELOW the 2,097,152-byte artifact
+    # bound at the edit; the refresh's measured value evidence for a newly
+    # selected long-string column (two 2,800-char literals ≈ 5.7 KiB, under
+    # the 8 KiB evidence bound) grows past the remaining gap AT REFRESH —
+    # the whole multi-table request (earlier support member + oversized
+    # later sales member + dataset overviews) refuses atomically: no
+    # page/revision moves
+    bulk_a, bulk_b = "U" * 2_800, "V" * 2_800
+    write_parquet(
+        project / "data" / "sales" / "orders.parquet",
+        [
+            (1, *(v for _n, v in wide), bulk_a),
+            (2, *("b" if v == "a" else "a" for _n, v in wide), bulk_b),
+        ],
+        ["order_id", *(n for n, _v in wide), "bulk"],
+    )
+    support_first = api.refresh_schema(proposal, revision, [SUPPORT_ASSET])
+
+    def knowledge_bytes() -> dict[str, bytes]:
+        return {
+            path.relative_to(worktree / "knowledge").as_posix(): path.read_bytes()
+            for path in sorted((worktree / "knowledge").rglob("*.md"))
+        }
+
+    artifact_bound = 2_097_152
     text = (worktree / sales_rel).read_text(encoding="utf-8")
     meta = _load_frontmatter_meta(text)
-    meta["ariadne_profile"]["native"]["observed_value_columns"] = {"flag": "VARCHAR"}
-    meta["description"] = "authored bulk " + "y" * 2_096_800
-    dumped = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    meta["ariadne_profile"]["native"]["observed_value_columns"] = {"bulk": "VARCHAR"}
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
     _f, b = _page_split(text)
+    # literal arithmetic: the edited page lands ~4 KiB under the artifact
+    # bound; the refresh's measured evidence (2 × 2,800-char literals +
+    # structure ≈ 5.7 KiB) grows past the remaining gap — fail fast if the
+    # fixture arithmetic breaks
+    base_page = f"---\n{front}\n---{b}".encode()
+    padding = artifact_bound - 4_096 - len(base_page)
+    assert padding > 0, "fixture defect: the wide page left no room for authored bulk"
+    edited_page = f"---\n{front}\n---{b}authored bulk " + "y" * padding + "\n"
+    page_size = len(edited_page.encode("utf-8"))
+    assert artifact_bound - 5_120 <= page_size < artifact_bound
     revision = api.edit_pages_batch(
-        proposal, revision, [{"path": sales_rel, "content": f"---\n{dumped}\n---{b}"}]
+        proposal,
+        support_first["revision"],
+        [{"path": sales_rel, "content": edited_page}],
     )["revision"]
-    before = (worktree / sales_rel).read_bytes()
-    with pytest.raises(ValueError):
-        api.refresh_schema(proposal, revision, [SALES_ASSET])
-    assert (worktree / sales_rel).read_bytes() == before
+    before = knowledge_bytes()
+    with pytest.raises(ValueError, match="2097152-byte bound"):
+        api.refresh_schema(proposal, revision, [SUPPORT_ASSET, SALES_ASSET])
+    assert knowledge_bytes() == before  # atomic: no member/overview page moved
     assert proposals._load_record(project, proposal)["candidate_revision"] == revision
 
 
@@ -2926,6 +2988,8 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
 
     project = tmp_path / "proj"
     project.mkdir(parents=True, exist_ok=True)
+    (project / "data").mkdir(parents=True, exist_ok=True)  # duckdb creates the
+    # database FILE, never missing parent directories
     con = duckdb.connect(str(project / "data" / "lake.duckdb"))
     con.execute("CREATE TABLE uhuge (v UHUGEINT)")
     con.executemany("INSERT INTO uhuge VALUES (?)", [(7,), (8,), (7,)])
@@ -2974,13 +3038,15 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
             "context_integration.yaml")
     run_git(project, "commit", "-q", "-m", "human: native duckdb lake")
 
-    asset = {"source": "lake", "catalog": None, "schema": "main", "table": "uhuge"}
+    # spec0022 alias identity: an ATTACHED native duckdb catalog opens under
+    # its registered ALIAS ("lake"), never a file basename or no catalog
+    asset = {"source": "lake", "catalog": "lake", "schema": "main", "table": "uhuge"}
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
     proposal = started["proposal"]
     first = api.refresh_schema(proposal, started["candidate_revision"], [asset])
-    resource = table_resource("lake", None, "main", "uhuge")
+    resource = table_resource("lake", "lake", "main", "uhuge")
     rel = _generated_rel(resource, "lake")
     worktree = worktree_of(project, proposal)
 
@@ -3003,3 +3069,105 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
             {"value": 8, "count": 1},
         ],
     }  # exact integers from the hand-inserted 7, 8, 7 — never floats
+    for entry in evidence["v"]["top_values"]:
+        # dict equality alone accepts 7.0/8.0: the preserved invariant is the
+        # EXACT native integer (and bool is an int subclass — excluded too)
+        assert isinstance(entry["value"], int) and not isinstance(entry["value"], bool)
+
+
+def test_observation_facts_carry_the_effective_source_binding():
+    """C6 owner-a4 D3(f): native recovery of the deleted spec0025 §4 binding
+    unit (e19b962f test_context_schema:1722+). A profile-backed refresh's
+    observation facts carry the effective storage approval digest (endpoint
+    provenance): supplied binding A rides the GENERATED facts, binding B over
+    an A-bound page changes the facts and prevents reuse of A's timestamp,
+    and a binding-free build keeps its exact legacy facts unbound. The
+    production native builder (build_native_table_page — the same builder
+    refresh_schema drives at authoring.py:2112) read through the public
+    frontmatter parse; a hand-authored reader fixture proves nothing about
+    builder propagation. Synthetic measurement inputs are the deleted
+    original's literals."""
+    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import build_native_table_page
+
+    asset = {
+        "source": "sales",
+        "catalog": None,
+        "schema": "sales",
+        "table": "orders",
+        "resource": "ariadne://table/x",
+    }
+    columns = [
+        {
+            "column": "order_id",
+            "type": "INTEGER",
+            "nullable": False,
+            "default": None,
+            "comment": None,
+        }
+    ]
+    profile = {
+        "sampled": False,
+        "row_count": 2,
+        "primary_key_candidates": [],
+        "columns": {"order_id": {"null_count": 0, "distinct_count": 2}},
+    }
+
+    def observations(page_text: str) -> dict:
+        meta = _load_frontmatter_meta(page_text)
+        return meta["ariadne_profile"]["native"]["ariadne"]["observations"]
+
+    # profile-free (no supplied binding): the legacy facts carry no endpoint
+    # claim at all — unbound bytes stay unbound
+    unbound, _flags = build_native_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_meta=None,
+        existing_body="",
+        now="2026-10-14T00:00:00Z",
+    )
+    assert "source_binding" not in observations(unbound)
+
+    # supplied binding A is carried INTO the generated observation facts
+    bound, _flags = build_native_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_meta=None,
+        existing_body="",
+        now="2026-10-14T00:00:00Z",
+        source_binding="a" * 64,
+    )
+    bound_observations = observations(bound)
+    assert bound_observations["source_binding"] == "a" * 64
+    assert bound_observations["observed_at"] == "2026-10-14T00:00:00Z"
+
+    # binding B over the A-bound page: the facts CHANGE (B present, A gone)
+    # and the timestamp-reuse comparison sees different facts — B's build
+    # stamps the NEW instant, never silently reusing A's
+    rebound, _flags = build_native_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_meta=_load_frontmatter_meta(bound),
+        existing_body="",
+        now="2026-10-14T09:00:00Z",
+        source_binding="b" * 64,
+    )
+    rebound_observations = observations(rebound)
+    assert rebound_observations["source_binding"] == "b" * 64
+    assert rebound_observations["observed_at"] == "2026-10-14T09:00:00Z"  # no reuse
+
+    # the flip side: SAME measurements under the SAME binding A reuse the
+    # prior observation instant (identical inputs produce identical facts)
+    same, _flags = build_native_table_page(
+        asset=asset,
+        columns=columns,
+        profile=profile,
+        existing_meta=_load_frontmatter_meta(bound),
+        existing_body="",
+        now="2026-10-14T09:00:00Z",
+        source_binding="a" * 64,
+    )
+    assert observations(same)["observed_at"] == bound_observations["observed_at"]

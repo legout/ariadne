@@ -1071,12 +1071,19 @@ def test_canonical_resource_scheme_is_deterministic_and_credential_free():
     with pytest.raises(ValueError):
         parse_resource("ariadne://unknown/x")
 
-    # the filename slug caps at 48 chars; the appended digest keeps
-    # same-named assets in distinct sources distinct
-    long_name = "orders" + "_detail" * 8
-    a = table_resource("sales", None, "main", long_name)
-    b = table_resource("support", None, "main", long_name)
-    filename_a = generated_page_filename(a, "sales")
+    # the SOURCE slug caps at 48 chars and the appended 64-hex digest keeps
+    # same-named assets in long-named sources distinct: the documented
+    # filename contract is <source-slug>-<sha256(resource)>.md (one hyphen
+    # separator — there is no double-hyphen split)
+    import hashlib
+
+    long_source = "retail" + "_west" * 10  # 56 chars → the slug caps at 48
+    a = table_resource(long_source, None, "main", "orders")
+    b = table_resource("support", None, "main", "orders")
+    filename_a = generated_page_filename(a, long_source)
     filename_b = generated_page_filename(b, "support")
-    assert len(filename_a.split("--")[0]) <= 48
+    slug, digest = filename_a[: -len(".md")].rsplit("-", 1)
+    assert len(slug) <= 48  # the capped source slug, not the table name
+    assert digest == hashlib.sha256(a.encode("utf-8")).hexdigest()  # digest identity
+    assert len(digest) == 64
     assert filename_a != filename_b  # the digest preserves distinction

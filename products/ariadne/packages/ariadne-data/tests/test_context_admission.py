@@ -83,7 +83,10 @@ SEED_NOTES = (
 # The SPECIFIC missing-catalog error a metric request keeps on an admitted
 # context-only snapshot (spec 0010 §6: discovery/resolution work, metric
 # operations refuse, no absent model ever triggers a raw-SQL fallback).
-MISSING_CATALOG_MARK = "no governed metric catalog"
+# the specific missing-catalog refusal: list/get surfaces say "no admitted
+# metric catalog…", planner/CLI surfaces "no governed metric catalog: …" — both
+# name the missing CATALOG (never a raw-SQL fallback or a generic failure)
+MISSING_CATALOG_MARK = "metric catalog"
 
 
 @pytest.fixture(autouse=True)
@@ -501,7 +504,8 @@ def test_context_only_admission_resolves_hypotheses_without_confirming_them_or_c
     review = api.review_proposal(candidate["proposal"])
     assert review["revision"] == validated["revision"]
     assert review["report"]["ok"] is True
-    assert admit(project, review) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, destination=published) == 0
     current = read_current(project)
     assert current["commit"] == review["revision"]
     assert current["confirmed_mappings"] == []  # no selection = no confirmation
@@ -536,7 +540,10 @@ def test_context_only_admission_resolves_hypotheses_without_confirming_them_or_c
         asyncio.run(runtime.get_metric("order_number_count"))
     with pytest.raises(PlannerError, match=MISSING_CATALOG_MARK):
         asyncio.run(runtime.query_metrics({"metrics": ["order_number_count"]}))
-    with pytest.raises(PlannerError, match=MISSING_CATALOG_MARK):
+    # query_detail is EXPLICITLY unsupported on the integrated MVP support
+    # contract (the admitted bound release lists it under `unsupported`) — a
+    # specific named refusal, still never a raw-SQL fallback
+    with pytest.raises(ValueError, match="unsupported integrated MVP operation: query_detail"):
         asyncio.run(runtime.query_detail({"dataset": "orders", "fields": ["store_id"]}))
 
 
@@ -929,7 +936,7 @@ def test_admitted_hypothesis_keeps_honest_counterevidence_and_stays_unconfirmed(
     assert assertion["claim"] == "hypothesis" and assertion["confirmable"] is False
     assert assertion["receipts"][0]["outcome"] == "complete"  # completed, mismatching
 
-    assert admit(project, review) == 0
+    assert admit(project, review, destination=tmp_path / "published") == 0
     runtime = QueryRuntime.open_project(project)
     served = asyncio.run(runtime.resolve_term("local order number"))
     view = mapping_view(served, "local-order-number", "measured-mapping")
@@ -1066,8 +1073,10 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     proposal = review["proposal"]
     selection = "order-number:global-order-concatenation"
 
-    # admit with the selection: the assertion is confirmed
-    assert admit(project, review, confirm_mapping=[selection]) == 0
+    # admit with the selection: the assertion is confirmed (composite
+    # preview→confirm through the operator-owned destination, spec0032 §10)
+    published = tmp_path / "published"
+    assert admit(project, review, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
     runtime = QueryRuntime.open_project(project)
     served = asyncio.run(runtime.resolve_term("order number"))
@@ -1091,7 +1100,10 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     validated = api.validate_proposal(proposal, unrelated["revision"])
     assert validated["ok"] is True
     second = api.review_proposal(proposal)
-    assert admit(project, second) == 0  # NO selection
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection
     outcome = json.loads(capsys.readouterr().out)
     [retained] = outcome["retained_confirmations"]
     assert retained["selection"] == selection
@@ -1107,9 +1119,12 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # a CHANGED assertion (different cited evidence → different digest): the
     # prior confirmation cannot inherit and lapses without a new selection
     changed_page = yaml.safe_load(order_reference_page().split("---")[1])
-    changed_page["sources"].append(
-        {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
-    )
+    citation = {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
+    changed_page["sources"].append(citation)
+    # the native mapping's source_ids resolve against the page's NATIVE
+    # footnotes — the citation rides both the page citations and the native
+    # footnote list (the classic single-list append no longer suffices)
+    changed_page["ariadne_profile"]["native"]["sources"].append(dict(citation))
     changed_page["ariadne_profile"]["native"]["ariadne"]["mappings"][1][
         "source_ids"
     ] = ["orders-catalog"]
@@ -1122,7 +1137,10 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     validated = api.validate_proposal(proposal, changed["revision"])
     assert validated["ok"] is True
     third = api.review_proposal(proposal)
-    assert admit(project, third) == 0  # still no selection
+    assert (
+        admit(project, third, destination=published, expected=second["revision"])
+        == 0
+    )  # still no selection
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]
@@ -1137,7 +1155,16 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
 
     # a fresh selection of the CHANGED assertion confirms the new declaration
     fourth = api.review_proposal(proposal)
-    assert admit(project, fourth, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            fourth,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=third["revision"],
+        )
+        == 0
+    )
     confirmed = json.loads(capsys.readouterr().out)
     [recorded] = confirmed["confirmed_mappings"]
     assert recorded["selection"] == selection
@@ -1161,7 +1188,8 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     assert validated["ok"] is True
     first = api.review_proposal(candidate["proposal"])
     selection = "order-number:measured-assertion"
-    assert admit(project, first, confirm_mapping=[selection]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, first, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
 
     # re-measure the same declaration: a fresh receipt (different observed_at
@@ -1187,7 +1215,10 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     validated = api.validate_proposal(candidate["proposal"], edited["revision"])
     assert validated["ok"] is True
     second = api.review_proposal(candidate["proposal"])
-    assert admit(project, second) == 0  # no selection: the dependency changed
+    assert (
+        admit(project, second, destination=published, expected=first["revision"])
+        == 0
+    )  # no selection: the dependency changed
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     runtime = QueryRuntime.open_project(project)
@@ -1198,7 +1229,16 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
 
     # the fresh selection re-binds the re-measured evidence
     third = api.review_proposal(candidate["proposal"])
-    assert admit(project, third, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            third,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=second["revision"],
+        )
+        == 0
+    )
     rebound = QueryRuntime.open_project(project)
     served = asyncio.run(rebound.resolve_term("local order number"))
     assert (
@@ -1216,7 +1256,8 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     admission while every metric request writes the SPECIFIC missing-catalog
     error object (one JSON value/error, exit codes intact)."""
     project, _api, review = admitted_candidate(tmp_path)
-    assert admit(project, review) == 0  # the human admission of the exact revision
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, destination=published) == 0
     capsys.readouterr()  # the journey prints; clear before the CLI calls
 
     code = cli(["resolve-term", "order number", "--project", str(project)])
@@ -1293,7 +1334,7 @@ def test_asserted_claim_contradicted_by_its_own_cited_receipt_refuses(tmp_path, 
     hreview = hapi.review_proposal(hcandidate["proposal"])
     [hassertion] = hreview["mapping_assertions"]
     assert hassertion["claim"] == "hypothesis" and hassertion["confirmable"] is False
-    assert admit(hproject, hreview) == 0
+    assert admit(hproject, hreview, destination=tmp_path / "published-hypothesis") == 0
 
 
 def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, capsys):
@@ -1307,7 +1348,8 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     confirmation."""
     project, _api, review = admitted_candidate(tmp_path / "proj")
     selection = "order-number:global-order-concatenation"
-    assert admit(project, review, confirm_mapping=[selection]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
     [recorded] = read_current(project)["confirmed_mappings"]
     prior_digest = recorded["assertion_digest"]
@@ -1344,7 +1386,10 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     assert assertion["declaration"] == prior_assertion["declaration"]
     assert assertion["assertion_digest"] != prior_digest  # effective identity moved
 
-    assert admit(project, second) == 0  # NO selection: it must not inherit
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection: it must not inherit
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]
@@ -1400,7 +1445,13 @@ def test_expired_evidence_never_serves_as_current_confirmed_guidance(tmp_path, c
     validated = api.validate_proposal(candidate["proposal"], candidate["revision"])
     assert validated["ok"] is True
     review = api.review_proposal(candidate["proposal"])
-    assert admit(project, review, confirm_mapping=["order-number:measured-assertion"]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(
+        project,
+        review,
+        confirm_mapping=["order-number:measured-assertion"],
+        destination=published,
+    ) == 0
     capsys.readouterr()
     commit = read_current(project)["commit"]
 
@@ -1445,7 +1496,13 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     first = api.validate_proposal(candidate["proposal"], candidate["revision"])
     assert first["ok"] is True
     review = api.review_proposal(candidate["proposal"])
-    assert admit(project, review, confirm_mapping=["order-number:measured-assertion"]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(
+        project,
+        review,
+        confirm_mapping=["order-number:measured-assertion"],
+        destination=published,
+    ) == 0
     capsys.readouterr()
 
     # a later candidate of the same proposal, validated while fresh: the
@@ -1465,7 +1522,10 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
 
     aged_context_clock(monkeypatch, 26)  # past the budget BEFORE admitting
     second = api.review_proposal(review["proposal"])
-    assert admit(project, second) == 0  # NO selection: nothing may retain
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection: nothing may retain
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]

@@ -106,6 +106,23 @@ records keep explicit retired/superseded markers. The one-fix-pass validation bu
 for this addendum is the parent-approved node list in the C6 fix report
 (`c6/c6-fix-report.md`), not a new seven-node grant.
 
+Owner-authorized D1–D4 completion (owner-selected "Authorize bounded completion",
+2026-11-12, C6 owner-a4 completion capture; documentation only, no change to
+historical approvals, frozen verdicts or issue snapshots): with the first review
+and the single delta both returned fix-first and the independent review budget
+exhausted, the owner authorized ONE D1–D4-only completion pass on the single-delta
+findings of `c6-delta-review-report.md` (D1 prewrite named-shape refusal for
+quality-gate malformed sources/keys; D2 finishing the context-only composite-
+admission migration, the native review-case migration and the wheel walkthrough's
+SOURCE validity; D3 correcting the recovered refresh/revision/type-identity/bound/
+source-binding tests; D4 host-only README reconciliation) with the exact 20 parent-
+approved focused selectors, required scoped member Ruff and parent audit. The
+independent fix-first verdicts stay unchanged; no finding, safety or behavior
+waiver; NO third independent review — acceptance is the parent's actual audit of
+all criteria after execution. The full proposal and closure matrix live in the
+append-only C6 fix report; C6/C7 gate status and landing remain governed by actual
+evidenced criteria, not by this capture.
+
 ## C7 — Verify the assembled candidate once and hand it back
 
 Canonical task: [#115](https://github.com/legout/ariadne/issues/115). Source: AC1–AC15; depends on C1–C6 and accepted R0–R4, source-contract dispositions and a known final build. Produces one assembled CI/isolated-wheel/local-journey evidence set and coordinates R5's separately authorized live leg on that build. C7 can start final CI after C6; R5 waits for C6, not C7 completion. Missing live prerequisites remain live-unqualified.
