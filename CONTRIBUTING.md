@@ -85,9 +85,6 @@ remain the gates (see [products/lumio/docs/packaging.md](products/lumio/docs/pac
 
 ## Scope notes
 
-- `products/ariadne/packages/ariadne-agent/` is a separate development
-  environment, intentionally not a workspace member; its Tau dependencies
-  are external to this repository and are not qualified here.
 - Lint rules are component-scoped: the root rules govern the shared trees,
   Lumio's product-wide rules live in `products/lumio/.ruff.toml` and its
   native pytest selection in `products/lumio/pytest.ini`, the

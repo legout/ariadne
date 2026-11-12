@@ -3,8 +3,7 @@
 # development lockfile, shared dev tooling and the shared coordination test
 # selection. The four members are products/ariadne/packages/ariadne-data,
 # products/lumio/packages/lumio-wiki, products/lumio/packages/lumio-lancedb
-# and products/lumio/packages/lumio-workspace; the Agent keeps its own
-# separate environment and is not a workspace member.
+# and products/lumio/packages/lumio-workspace.
 # Product-native suites/lint run scoped from their product areas
 # (products/lumio/pytest.ini and .ruff.toml; the Core member's own config).
 [tool.uv]

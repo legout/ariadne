@@ -63,7 +63,7 @@ member locations moved.
 | Spec-0030-era path | Spec-0031 path |
 | --- | --- |
 | `packages/ariadne-data/` | `products/ariadne/packages/ariadne-data/` |
-| `ariadne-agent/` | `products/ariadne/packages/ariadne-agent/` (still a separate environment, not a workspace member) |
+| `ariadne-agent/` | `products/ariadne/packages/ariadne-agent/` (retired and removed 2026-11-12 — host agents only, [Ariadne ADR-0027](../products/ariadne/project/adr/0027-host-agents-only.md); historical mapping) |
 | `packages/lumio-wiki/` | `products/lumio/packages/lumio-wiki/` |
 | `packages/lumio-lancedb/` | `products/lumio/packages/lumio-lancedb/` |
 | `CONTEXT.md` | `products/ariadne/CONTEXT.md` (scope corrected to Ariadne ownership) |

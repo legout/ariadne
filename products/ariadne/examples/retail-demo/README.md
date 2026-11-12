@@ -13,4 +13,5 @@ business definitions through the normal proposal workflow.
 `mcp_client.py --project /absolute/path/to/admitted/project` demonstrates the
 optional Core MCP adapter and requires `ariadne-data[mcp]` in its environment.
 Its selected data project must already have the operator's valid admission.
-It does not install or certify the separately versioned Ariadne Agent/Tau stack.
+Host agents use the packaged skill and the Core CLI/MCP surfaces directly; no
+separately versioned Ariadne agent stack exists (retired 2026-11-12, ADR-0027).

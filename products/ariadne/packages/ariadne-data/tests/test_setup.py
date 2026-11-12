@@ -487,7 +487,7 @@ def test_skill_and_release_docs_operator_rules_and_distribution():
     assert "approve-sources" in how_to  # the human-only gate stays in the procedure guide
     cli = (Path(__file__).parents[3] / "docs" / "reference" / "cli.md").read_text()
     # hosts/adapters stay optional installs that change no governance gate
-    # (the ariadne-agent conversational host is out of the Git-only Core docs)
+    # (no Ariadne agent host exists — host agents only, ADR-0027)
     assert "Installing an adapter does not change the human governance gates" in cli
     explanation = (
         Path(__file__).parents[3] / "docs" / "explanations" / "how-ariadne-works.md"

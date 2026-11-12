@@ -323,6 +323,7 @@ owned by the tools. You can inspect every helper action in
 A different Core/SDK build requires genuine revalidation and fresh matching
 admission. S3 and LanceDB are optional later topics; the integrated knowledge
 binding in this tutorial's tested baseline pair is local-only (the Core 0.7.0 /
-Lumio 0.5.0 pair additionally offers the optional S3 Knowledge transport). The
-separately versioned Agent/Tau stack
-and private Lumio web application are not required or qualified by this tutorial.
+Lumio 0.5.0 pair additionally offers the optional S3 Knowledge transport). No
+separately versioned Agent/Tau stack is required or qualified by this tutorial
+(it was retired 2026-11-12 — host agents only, ADR-0027), and the private Lumio
+web application is not part of it.

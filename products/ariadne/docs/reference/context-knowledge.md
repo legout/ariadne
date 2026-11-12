@@ -109,8 +109,9 @@ The integrity-bound receipt reports the tested scope and outcome (`complete` or 
 
 The Analyst role resolves terms and queries; it does not edit, inspect, approve, or admit. The Authoring role works inside its selected proposal and may inspect and save hypotheses, but cannot approve sources, admit, enrich legacy pages, or mutate Git. MCP/native registrations do not widen these roles. Core exposes no legacy import
 or enrichment command; existing content must be explicitly reauthored through
-the supported Git proposal route. Agent/Tau compatibility is independently
-versioned and was not qualified by the Core 0.6.0 release.
+the supported Git proposal route. The retired Ariadne Agent/Tau stack was
+independently versioned and never qualified with these surfaces (retired
+2026-11-12 — host agents only, ADR-0027).
 
 ## Context-only validation
 

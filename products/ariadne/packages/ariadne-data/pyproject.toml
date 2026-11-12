@@ -82,8 +82,6 @@ addopts = "-q"
 venvPath = "../../../.."
 venv = ".venv"
 exclude = ["build", "**/.venv", "examples/trace-data/data/docs"]
-# The separately installed Agent keeps its own pyright configuration in
-# ariadne-agent/pyproject.toml (outside this workspace member).
 executionEnvironments = [
     { root = ".", extraPaths = ["src"] },
 ]
