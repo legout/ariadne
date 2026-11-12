@@ -53,26 +53,20 @@ from pathlib import Path
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
-    sys.path.insert(0, str(REPO_ROOT))
-
-import pytest  # noqa: E402
-from lumio_wiki.git_authoring import (  # noqa: E402
-    GitAuthoringError,
-)
-from lumio_wiki.source_references import (  # noqa: E402
+from lumio_wiki.git_authoring import GitAuthoringError
+from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
+    sys.path.insert(0, str(REPO_ROOT))
+
 from ariadne import admission, context  # noqa: E402
-from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import parse_resource, table_resource  # noqa: E402
-from tests.test_git_authoring import approved, run_git, worktree_of  # noqa: E402
 
 MONOREPO_ROOT = Path(__file__).resolve().parents[5]
 # The accepted producer bytes of the governing Policy fixture (independently
@@ -579,6 +573,9 @@ def _admit_project(tmp_path: Path, files: dict[str, str | bytes], *, name: str =
     from lumio_wiki.ariadne_context import (
         inspect_ariadne_candidate,
     )
+
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_authoring import approved, run_git, worktree_of
 
     project = tmp_path / name
     _write_files(project, files)
@@ -1107,6 +1104,10 @@ def _batch_table_page_markdown(resource: str, reports: list | None, mutator=None
 
 
 def _batch_project(tmp_path: Path, resource: str):
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_authoring import run_git, worktree_of
+
+
     """One real authoring project whose initial bundle carries the plain
     native table page; the batch matrix submits every variant against its
     proposal (the producer gate refuses before any byte, so the candidate
@@ -1164,6 +1165,8 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
     IDs, missing scope declarations, validity and count invariants fail the
     producer structural gate INSIDE the public native page batch — before any
     byte is written, never as a query refusal."""
+    import pytest
+
     period_backwards = {"start": "2026-09-01T00:00:00+00:00", "end": "2026-08-01T00:00:00+00:00"}
 
     def drop_tested_scope(meta: dict) -> None:

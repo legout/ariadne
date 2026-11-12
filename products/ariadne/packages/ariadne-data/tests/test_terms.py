@@ -795,10 +795,18 @@ def test_resolver_fails_explicitly_on_malformed_pages_and_requests(tmp_path):
         api.resolve_term(proposal, {"resource": "orders", "column": "id"})
     with pytest.raises(ValueError, match="positive integer"):
         api.resolve_term(proposal, "order number", part=0)
-    # a page the resolver does not own (non-reference/legacy) is skipped
+    # a page the resolver does not own (an ordinary page with NO structured
+    # reference profile — the proven plain-reference edit) is skipped: the
+    # authored legacy page is a valid v2 KB page, merely unstructured
+    legacy_meta = yaml.safe_load(order_reference_page().split("---", 2)[1])
+    del legacy_meta["ariadne_profile"]
+    legacy_page = (
+        f"---\n{yaml.safe_dump(legacy_meta, default_flow_style=False, sort_keys=False).strip()}"
+        "\n---\n\n# legacy order number\n"
+    )
     api, proposal = _candidate_with_pages(
         tmp_path / "quiet",
-        {"references/legacy.md": _page("reference", "legacy", "# legacy\n")},
+        {"references/legacy.md": legacy_page},
     )
     assert api.resolve_term(proposal, "order number")["matches"] == []
 

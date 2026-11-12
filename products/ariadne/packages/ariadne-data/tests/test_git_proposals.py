@@ -29,10 +29,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 from ariadne import proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
-from ariadne.context import (  # noqa: E402
-    QUALITY_MAX_TEXT_CHARS,
-    QUALITY_PROFILE_MAX_BYTES,
-)
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 MODEL_YML = """\
@@ -1159,6 +1155,7 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     batch writer before any byte is written (never a query refusal,
     spec §5/§7 AC6)."""
     from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import QUALITY_MAX_TEXT_CHARS, QUALITY_PROFILE_MAX_BYTES
 
     project, resource = git_project_with_generated_table_page(tmp_path)
     api = AuthoringProject(project)

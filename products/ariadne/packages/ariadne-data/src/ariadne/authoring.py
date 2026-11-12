@@ -458,9 +458,11 @@ class AuthoringProject:
         ``refresh_schema``, spec 0010 §4): reads go through the
         operator-APPROVED resolved source identity only, writes are
         revision-checked complete page edits, authored summary/column meaning
-        is preserved for identical column identity/type (removed or
-        type-changed columns keep their old meaning as reviewable history,
-        never a rename guess), and an identical refresh against identical
+        is preserved for identical column identity/type (the prior meaning
+        of removed or type-changed columns stays retained in the proposal's
+        curated page content and stays reviewable there together with the
+        refresh's change flags — never a rename guess, and there is no
+        generated history section), and an identical refresh against identical
         inputs is a no-op (the candidate revision does not move). Returns the
         resulting revision, the generated page identities and the schema-change
         flags. Refresh is never admission (K4 owns that)."""
@@ -482,7 +484,7 @@ class AuthoringProject:
         with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
             record = proposals._load_record(project, proposal)  # authoritative
             proposals._check_coherent(project, record)
-            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+            from ariadne import lumio_context
 
             result = resolve_term_entries(
                 lumio_context.candidate_term_entries(
@@ -2259,8 +2261,11 @@ def refresh_schema(
     connection builder is never called); every write is a revision-checked
     complete page edit (an identical refresh is a no-op and the candidate
     revision does not move); authored summary/column meaning is preserved for
-    identical column identity/type while removed/type-changed columns keep
-    their prior meaning as reviewable history; filename/resource collisions
+    identical column identity/type while the prior meaning of removed or
+    type-changed columns stays retained in the proposal's curated page
+    content — visible for review together with the refresh's change flags
+    and the review change inventory (spec0035's review-visibility contract;
+    there is no generated history section); filename/resource collisions
     refuse instead of overwriting. Returns the resulting revision, the
     generated page identities (resource + path + kind) and per-page
     schema-change flags. Refresh edits a candidate — it is never validation or

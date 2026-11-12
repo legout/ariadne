@@ -28,6 +28,7 @@ bundle shapes (tests/test_authoring.py); no second numeric oracle exists here
 import base64
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -2194,15 +2195,19 @@ def _page_split(text: str) -> tuple[str, str]:
     return "---" + _front + "---", body
 
 
-def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(tmp_path):
+def test_refresh_preserves_meaning_and_exposes_schema_changes_for_review(tmp_path):
     """R6-N1 (native recovery of the deleted combined refresh test, issue #41
-    [1]): same-named tables in distinct sources stay distinct resources/pages;
-    authored column meaning survives refresh only for identical column
-    identity/type; a removed column's meaning — a MULTILINE block complete —
-    moves into reviewable Schema history; a new column gets no guessed
-    meaning; a narrower refresh keeps still-represented dataset links; the
-    identical refresh is a no-op; a malformed authored selection refuses the
-    refresh before any write."""
+    [1], parent decision A): same-named tables in distinct sources stay
+    distinct resources/pages; authored column meaning survives refresh only
+    for identical column identity/type; a removed column's authored meaning —
+    a MULTILINE block complete — stays retained in the proposal's curated
+    page content and is exposed for review THROUGH THE PUBLIC REVIEW PATH
+    together with the current physical facts and change set (there is no
+    generated history section — spec0035 makes removed/changed meaning
+    visible for review); a new column gets no guessed meaning; a narrower
+    refresh keeps still-represented dataset links (the same-collection carry
+    is proven by its own focused test); the identical refresh is a no-op; a
+    malformed authored selection refuses the refresh before any write."""
     from ariadne.author import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
@@ -2270,6 +2275,28 @@ def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(t
     support_entry = next(p for p in second["pages"] if p["resource"] == support_resource)
     assert support_entry["changes"] == {"added": [], "removed": [], "type_changed": []}
 
+    # the PUBLIC REVIEW PATH exposes both halves of the retained review
+    # record (parent decision A: spec0035 review visibility, independently
+    # authored expected contents — never the refresh implementation's own
+    # output): the reviewed sales-page text carries the complete prior
+    # authored multiline meaning AND the current physical facts, and the
+    # change inventory names the changed page
+    review = api.review_proposal(proposal)
+    assert {"change": "A", "path": sales_rel} in review["changes"]
+    reviewed_sales = next(entry for entry in review["files"] if entry["resource"] == sales_rel)
+    assert reviewed_sales["complete"] is True and reviewed_sales["exhausted"] is False
+    reviewed_text = reviewed_sales["text"]
+    assert (
+        "- `amount` — net amount of the sale\n"
+        "  in source currency, taxes included\n" in reviewed_text
+    )  # the prior authored meaning, multiline block complete, stays reviewable
+    reviewed_native = _load_frontmatter_meta(reviewed_text)["ariadne_profile"]["native"]
+    assert {row["column"] for row in reviewed_native["ariadne"]["schema"]} == {
+        "order_id",
+        "qty",
+    }  # the current physical facts: the removed column is not presented as current
+    assert "`qty`" not in reviewed_text.split("---", 2)[2]  # no meaning attached to the new field
+
     # a NARROWER refresh (sales only) keeps the still-represented support link
     from ariadne.sources import collection_resource
 
@@ -2318,6 +2345,152 @@ def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(t
     assert (worktree / sales_rel).read_bytes() == before_bytes  # nothing was written
     still = proposals._load_record(project, proposal)["candidate_revision"]
     assert still == third["revision"]  # and no revision moved
+
+
+def _lake_collection_project(tmp_path: Path) -> Path:
+    """A Git data project over ONE attached sqlite catalog (the deleted base
+    fixture's supported multi-table source shape): one collection
+    ``lake.main`` carrying customers, orders and a never-refreshed audit
+    table, with a real native knowledge/ KB and revision-2 selector — the
+    shared-collection scenario the two-distinct-source evolution fixture
+    cannot prove."""
+    project = tmp_path / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    db = project / "lake.db"
+    con = sqlite3.connect(db)
+    try:
+        con.execute("CREATE TABLE customers (id INTEGER NOT NULL, name TEXT, note TEXT)")
+        con.execute(
+            "CREATE TABLE orders (order_id INTEGER NOT NULL, customer_id INTEGER, memo TEXT)"
+        )
+        con.execute("CREATE TABLE audit (event TEXT)")
+        con.executemany(
+            "INSERT INTO customers VALUES (?, ?, ?)",
+            [(1, "A", "n1"), (2, "B", "n2"), (3, "C", "n3")],
+        )
+        con.executemany(
+            "INSERT INTO orders VALUES (?, ?, ?)",
+            [(1, 1, "m"), (2, 2, "m"), (3, 3, "m"), (4, 1, "m")],
+        )
+        con.execute("INSERT INTO audit VALUES ('sweep')")
+        con.commit()
+    finally:
+        con.close()
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: lake\n    type: sqlite\n    path: lake.db\n",
+        encoding="utf-8",
+    )
+    (project / "data").mkdir(exist_ok=True)
+    (project / "data" / "seed_notes.md").write_text("# Notes\n", encoding="utf-8")
+    kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: tables\n"
+        "  - name: datasets\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    table: {}\n"
+        "    dataset: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:lake-collection-fixture"\nsources: {}\n'
+        "bindings: {}\n",
+        encoding="utf-8",
+    )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:lake-collection-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings: []\n",
+        encoding="utf-8",
+    )
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(project, "commit", "-q", "-m", "human: one sqlite lake collection")
+    return project
+
+
+LAKE_CUSTOMERS = {"source": "lake", "catalog": "lake", "schema": "main", "table": "customers"}
+LAKE_ORDERS = {"source": "lake", "catalog": "lake", "schema": "main", "table": "orders"}
+
+
+def test_narrower_native_refresh_keeps_other_tables_in_same_collection(tmp_path):
+    """R6 recovery of the deleted narrower_refresh_keeps_still_represented_
+    table_links invariant on the native route (issue #41 [4]): a Dataset
+    Overview's membership is the collection's EXISTING represented pages PLUS
+    the requested updates — a narrower refresh of ONE table of a SHARED
+    collection that really regenerates its page never drops the other
+    still-represented table's link, and a never-refreshed approved asset is
+    never asserted documented. Oracle: the literal authored asset identities."""
+    from ariadne.author import _load_frontmatter_meta
+    from ariadne.sources import collection_resource
+
+    project = _lake_collection_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    proposal = started["proposal"]
+    customers = _table_resource_of(LAKE_CUSTOMERS)
+    orders = _table_resource_of(LAKE_ORDERS)
+    assert customers != orders  # same collection, distinct tables
+    collection = collection_resource("lake", "lake", "main")
+    dataset_rel = _generated_rel(collection, "lake", kind="datasets")
+    worktree = worktree_of(project, proposal)
+
+    def overview_tables() -> set[str]:
+        overview = _load_frontmatter_meta((worktree / dataset_rel).read_text(encoding="utf-8"))
+        return set(overview["ariadne_profile"]["native"]["ariadne"]["tables"])
+
+    first = api.refresh_schema(
+        proposal, started["candidate_revision"], [LAKE_CUSTOMERS, LAKE_ORDERS]
+    )
+    assert first["changed"] is True
+    assert overview_tables() == {customers, orders}
+
+    # the narrower refresh must really REGENERATE the orders page: the source
+    # data changes first, so the overview rebuild runs while orders is the
+    # only requested member of the shared collection
+    con = sqlite3.connect(project / "lake.db")
+    try:
+        con.execute("INSERT INTO orders VALUES (5, 2, 'm2')")
+        con.commit()
+    finally:
+        con.close()
+    second = api.refresh_schema(proposal, first["revision"], [LAKE_ORDERS])
+    assert second["changed"] is True
+    # the still-represented customers link is CARRIED, never dropped
+    assert overview_tables() == {customers, orders}
+    orders_entry = next(p for p in second["pages"] if p["resource"] == orders)
+    assert orders_entry["changes"] == {"added": [], "removed": [], "type_changed": []}
+    overview_entry = next(p for p in second["pages"] if p["resource"] == collection)
+    assert overview_entry["changes"] == {"added": [], "removed": []}  # no false removal
+    # a never-refreshed approved asset is never asserted documented
+    audit = _table_resource_of(
+        {"source": "lake", "catalog": "lake", "schema": "main", "table": "audit"}
+    )
+    assert audit not in overview_tables()
+    assert not (worktree / _generated_rel(audit, "lake")).exists()
 
 
 def test_refresh_refuses_generated_target_collision_without_overwrite(tmp_path):
@@ -2541,12 +2714,16 @@ def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
     assert second["revision"] == first["revision"]
 
 
-def test_generated_body_sections_cannot_be_forged_or_dropped(tmp_path):
-    """C6 fix R6/C6 (native recovery of the deleted body-forgery test,
-    issue #41/K1): the core-owned BODY sections of an inherited native
-    generated table page (Schema, Observations, Schema history) are system
-    facts — an edit that changes or drops them refuses, while authored edits
-    outside the core-owned sections stay accepted."""
+def test_native_generated_facts_are_protected_while_curated_body_is_editable(tmp_path):
+    """R6 recovery of the deleted body-forgery invariant on the ACTUAL native
+    boundary (replacing the retired protected-Markdown representation): the
+    core-generated native facts (``ariadne_profile.native.ariadne`` schema/
+    observations) of an inherited generated table page are system-owned —
+    an edit that CHANGES them refuses, DROPPING them refuses, both before
+    any write — while an ordinary CURATED-BODY edit succeeds with the facts
+    unchanged (spec0032 §6: curated text stays curated, core-generated
+    portions keep their existing protections; refresh_schema is the only
+    legitimate regeneration path)."""
     from ariadne.author import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
@@ -2555,42 +2732,45 @@ def test_generated_body_sections_cannot_be_forged_or_dropped(tmp_path):
     approved(api, project, started)
     proposal = started["proposal"]
     first = api.refresh_schema(proposal, started["candidate_revision"], [SALES_ASSET])
-    sales_resource = _table_resource_of(SALES_ASSET)
-    sales_rel = _generated_rel(sales_resource, "sales")
+    sales_rel = _generated_rel(_table_resource_of(SALES_ASSET), "sales")
     worktree = worktree_of(project, proposal)
-    original = (worktree / sales_rel).read_text(encoding="utf-8")
-    front, body = _page_split(original)
+    page_path = worktree / sales_rel
+    original = page_path.read_text(encoding="utf-8")
+    original_meta = _load_frontmatter_meta(original)
+    original_facts = original_meta["ariadne_profile"]["native"]["ariadne"]
+    _front, original_body = _page_split(original)
 
-    # a CHANGED core-owned body section refuses at the public batch seam
-    forged_body = body.replace("| `order_id` | BIGINT |", "| `order_id` | INTEGER |")
-    assert forged_body != body
-    with pytest.raises(ValueError, match="core-generated section"):
-        api.edit_pages_batch(
-            proposal, first["revision"], [{"path": sales_rel, "content": front + forged_body}]
+    def submit(meta: dict, body: str) -> dict:
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        return api.edit_pages_batch(
+            proposal,
+            first["revision"],
+            [{"path": sales_rel, "content": f"---\n{front}\n---{body}"}],
         )
-    # DROPPING the section is the same forgery, never a bypass
-    dropped = body.split("## Schema", 1)[0] + body.split("## Observations", 1)[-1]
-    with pytest.raises(ValueError, match="core-generated section"):
-        api.edit_pages_batch(
-            proposal, first["revision"], [{"path": sales_rel, "content": front + dropped}]
-        )
-    # authored edits OUTSIDE the core-owned sections stay accepted
-    authored = api.edit_pages_batch(
-        proposal,
-        first["revision"],
-        [
-            {
-                "path": sales_rel,
-                "content": front + body.replace(
-                    "Summary: unknown — not yet authored.",
-                    "Summary: one row per sale.",
-                ),
-            }
-        ],
+
+    # CHANGING a generated fact refuses before any write
+    changed = _load_frontmatter_meta(original)
+    changed["ariadne_profile"]["native"]["ariadne"]["schema"][0]["type"] = "HYPERINTEGER"
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        submit(changed, original_body)
+    assert page_path.read_text(encoding="utf-8") == original  # nothing was written
+
+    # DROPPING the generated facts block is the same forgery, never a bypass
+    dropped = _load_frontmatter_meta(original)
+    del dropped["ariadne_profile"]["native"]["ariadne"]
+    with pytest.raises(ValueError, match="native trust/generated claim"):
+        submit(dropped, original_body)
+    assert page_path.read_text(encoding="utf-8") == original
+
+    # an ordinary CURATED-BODY edit succeeds with the facts unchanged
+    curated_body = original_body + "\nCurated operator note added after generation.\n"
+    edited = submit(original_meta, curated_body)
+    assert edited["changed"] is True
+    landed = _load_frontmatter_meta(page_path.read_text(encoding="utf-8"))
+    assert landed["ariadne_profile"]["native"]["ariadne"] == original_facts
+    assert "Curated operator note added after generation." in page_path.read_text(
+        encoding="utf-8"
     )
-    assert authored["changed"] is True
-    meta = _load_frontmatter_meta((worktree / sales_rel).read_text(encoding="utf-8"))
-    assert meta["ariadne_profile"]["native"]["ariadne"]["schema"]  # facts untouched
 
 
 def test_selected_column_evidence_family_states(tmp_path):
