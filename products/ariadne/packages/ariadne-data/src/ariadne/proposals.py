@@ -44,7 +44,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.context import _load, core_body_sections
+from ariadne.context import _load, _quality_profile_errors, core_body_sections
 from ariadne.ingest import _SECRET_PATTERNS
 from ariadne.lumio_context import knowledge_path  # pyright: ignore[reportMissingImports]
 from ariadne.sources import _DSN_PASSWORD_RE
@@ -1168,43 +1168,6 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
-def add_answer_example(
-    project: str | Path, proposal: str, expected_revision: str, example_id: str, content: str
-) -> dict:
-    """Commit one new Example at its generated artifact identity only.
-
-    This narrow seam shares proposal locking, revision checks and exact-path
-    staging with ordinary edits without making ``answer_examples/`` a general
-    authoring file surface. Existing identities are never overwritten.
-    """
-    project = Path(project).resolve()
-    example_id = check_artifact_name(example_id, what="answer example ID")
-    rel = f"answer_examples/{example_id}.md"
-    check_artifact_content(f"answer example {example_id!r}", content)
-    _load_record(project, proposal)
-    worktree = project / WORKTREES_REL / proposal
-    with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
-        record = _load_record(project, proposal)
-        _check_coherent(project, record)
-        current = record["candidate_revision"]
-        if expected_revision != current:
-            raise ValueError(
-                f"stale revision: proposal {proposal} is at candidate {current}, the "
-                f"save-example expected {expected_revision} — re-read the candidate "
-                "and retry with the current revision; nothing was written"
-            )
-        if _read_blob(project, current, rel) is not None:
-            raise ValueError(f"answer example {example_id!r} already exists in candidate {current}")
-        _require_git_identity(project)
-        _refuse_untracked_new_artifact(project, worktree, rel, current)
-        _safe_write(worktree, rel, content)
-        literal = _literal(rel)
-        _git(["add", "-f", "--", literal], worktree)
-        _git(["commit", "-m", f"ariadne: add answer example {example_id}", "--", literal], worktree)
-        revision = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
-        record["candidate_revision"] = revision
-        _store_record(project, record)
-    return {"proposal": proposal, "revision": revision, "changed": True, "path": rel}
 
 
 # ------------------------------------------------- native KB page batches
@@ -1370,6 +1333,24 @@ def _edit_page_batch_locked(
                 f"page {rel!r} carries no non-empty canonical title — the "
                 "native writer addresses every page by its declared title"
             )
+        # R1 (C6 fix, spec0009 §9 quality amendment): the retained Core
+        # authoring gate over the PRODUCER-PARSED flat native metadata — a
+        # table page carrying ariadne_quality passes K's structural check
+        # inside the batch writer AND Core's meaning/edit validation here,
+        # BEFORE any byte is written (the classic edit path lost this gate
+        # when the classic bundle retired; quality stays advisory metadata,
+        # never a query permission input).
+        profile = meta.get("ariadne_profile") if isinstance(meta, dict) else None
+        native = profile.get("native") if isinstance(profile, dict) else None
+        kind = profile.get("kind") if isinstance(profile, dict) else None
+        if (
+            isinstance(native, dict)
+            and "ariadne_quality" in native
+            and (kind == "table" or native.get("type") == "table")
+        ):
+            quality_errors = _quality_profile_errors(rel, native)
+            if quality_errors:
+                raise ValueError("; ".join(quality_errors))
         kb_rel = PurePosixPath(rel).relative_to("knowledge").as_posix()
         recorded = by_title.get(title) or by_alias.get(title)
         occupant = by_path.get(kb_rel)
@@ -1434,20 +1415,6 @@ def _edit_page_batch_locked(
     }
 
 
-# ------------------------------------------- G4 (issue #36): finalize + evidence
-
-# The ONLY paths the deterministic finalize pass may change in a worktree
-# (issue #36/G4): metric pages (mechanical enrichment), computation pages and
-# the bookkeeping index trees (spec §4). Any OTHER change at finalize time
-# marks an interrupted transition — human resolution, never a silent commit.
-_FINALIZE_PATH_RE = re.compile(
-    r"^(?:context_layer/metrics/[^/]+\.md"
-    r"|context_layer/computations/[^/]+\.md"
-    r"|context_layer(?:/[^/]+)*/index\.md"
-    r"|answer_examples/index\.md)$"
-)
-
-
 def scope_blobs(project: Path, revision: str) -> list[tuple[str, bytes]]:
     """The COMPLETE candidate-scope artifact bytes at one exact revision
     (issue #36/G4): every tracked path inside the snapshot scope — registry,
@@ -1492,40 +1459,6 @@ def refuse_untracked_scope(project: Path, record: dict) -> None:
                 )
 
 
-def commit_generated(project: Path, record: dict, *, message: str) -> str | None:
-    """Commit the finalize pass's changes in the proposal worktree: stage and
-    commit EXACTLY the service-generated paths that changed (each pinned as a
-    LITERAL pathspec, never ``git add .``), persist the new candidate revision
-    durably, and return it — or None when nothing changed (the deterministic
-    no-op: no commit, the candidate revision stays). CALLER holds the proposal
-    lock and ran :func:`_check_coherent` before the finalize pass; any change
-    outside the finalize-owned set is an interrupted transition refused for
-    human resolution."""
-    proposal = record["id"]
-    worktree = project / WORKTREES_REL / proposal
-    changed: list[str] = []
-    for line in _git(
-        ["status", "--porcelain", "--untracked-files=all"], worktree
-    ).stdout.splitlines():
-        if not line.strip():
-            continue
-        rel = line[3:].rsplit(" -> ", 1)[-1]
-        if _FINALIZE_PATH_RE.match(rel):
-            changed.append(rel)
-        else:
-            raise ValueError(
-                f"the worktree of proposal {proposal} carries the change {rel!r} outside "
-                "the generated-artifact paths the finalize pass owns" + _HUMAN_RESOLUTION
-            )
-    if not changed:
-        return None
-    _require_git_identity(project)
-    literal = [_literal(rel) for rel in changed]
-    _git(["add", "-f", "-A", "--", *literal], worktree)
-    _git(["commit", "-m", message, "--", *literal], worktree)
-    record["candidate_revision"] = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
-    _store_record(project, record)
-    return record["candidate_revision"]
 
 
 def _validation_path(project: Path, proposal: str, revision: str) -> Path:

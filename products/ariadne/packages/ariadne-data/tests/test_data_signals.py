@@ -58,11 +58,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages  # noqa: E402
-from lumio_wiki.git_authoring import (  # noqa: E402, pyright: ignore[reportMissingImports] — qualified test env provides the SDK
+import pytest  # noqa: E402
+from lumio_wiki.git_authoring import (  # noqa: E402
     GitAuthoringError,
 )
-from lumio_wiki.source_references import (  # noqa: E402, pyright: ignore[reportMissingImports] — qualified test env provides the SDK
+from lumio_wiki.source_references import (  # noqa: E402
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
     serialize_source_reference_manifest,
@@ -414,7 +414,8 @@ def _table_slug(resource: str) -> tuple[str, str, str, str]:
     """(source, catalog, schema, table) of one canonical table resource."""
     kind, parts = parse_resource(resource)
     assert kind == "table"
-    return tuple(parts)  # type: ignore[return-value]
+    source, catalog, schema, table = parts
+    return source, catalog, schema, table
 
 
 def _table_entity(resource: str) -> str:
@@ -575,7 +576,7 @@ def _admit_project(tmp_path: Path, files: dict[str, str | bytes], *, name: str =
     human commit → proposal → source approval → native validation (the
     finalize derivation commits the generated Computation) → review →
     composite confirmation → native admission → pinned runtime open."""
-    from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports] — qualified test env provides the SDK
+    from lumio_wiki.ariadne_context import (
         inspect_ariadne_candidate,
     )
 

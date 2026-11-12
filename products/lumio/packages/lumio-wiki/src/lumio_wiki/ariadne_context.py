@@ -1340,11 +1340,16 @@ _QUALITY_WATERMARK_KINDS = ("event_time", "ingestion_time", "snapshot_as_of", "o
 
 
 def _quality_aware_instant(value: object, where: str) -> tuple[datetime | None, list[str]]:
-    """Parse one OPTIONAL aware ISO-8601 instant. Naive datetimes, plain dates
-    and non-temporal values reject with a NAMED field diagnostic — never an
-    invented timezone and never a crash."""
+    """Parse one supplied aware ISO-8601 instant. Naive datetimes, plain
+    dates, non-temporal values and NULL reject with a NAMED field diagnostic
+    — never an invented timezone and never a crash. Callers that only validate
+    a genuinely optional field guard the call on the key's presence, exactly
+    like the retained Core gate."""
     if value is None:
-        return None, []
+        return None, [
+            f"{where} must be an aware instant (an ISO-8601 string or YAML "
+            "datetime with an explicit UTC offset) — null is not a declaration"
+        ]
     if isinstance(value, datetime):
         parsed = value
     elif isinstance(value, str) and value.strip():
@@ -1394,6 +1399,26 @@ def _quality_period_errors(period: object, where: str) -> list[str]:
     return errors
 
 
+def _quality_normalized_bytes(profile: dict) -> int:
+    """The retained Core normalized form of the profile (spec0009 §9: the
+    contract says NORMALIZED, not compact): aware datetimes and plain dates
+    become ISO-8601 strings, containers are rebuilt in order, and the JSON is
+    emitted with the default separators and insertion order — the same shape
+    the Core authoring gate measures. Pure; no Core import."""
+    def normalize(value: object) -> object:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return len(json.dumps(normalize(profile), ensure_ascii=False).encode("utf-8"))
+
+
 def _table_quality_native_errors(
     where: str, profile: object, *, resource: object, sources: object
 ) -> list[str]:
@@ -1411,15 +1436,6 @@ def _table_quality_native_errors(
     if not isinstance(profile, dict):
         return [f"{where} must be a mapping"]
     errors: list[str] = []
-    normalized = json.dumps(
-        disclose_native(profile), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    normalized_bytes = len(normalized.encode("utf-8"))
-    if normalized_bytes > QUALITY_MAX_BYTES:
-        errors.append(
-            f"{where} exceeds its {QUALITY_MAX_BYTES}-UTF-8-byte normalized bound "
-            f"(disclosed compact form is {normalized_bytes} bytes)"
-        )
     unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
     if unknown:
         errors.append(
@@ -1602,6 +1618,7 @@ def _table_quality_native_errors(
                 "are declared per report"
             )
         else:
+            check_ids: set[str] = set()
             for index, check in enumerate(checks):
                 check_spot = f"{spot} checks[{index}]"
                 if not isinstance(check, dict):
@@ -1620,6 +1637,12 @@ def _table_quality_native_errors(
                     errors.append(
                         f"{check_spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
                     )
+                elif identifier in check_ids:
+                    errors.append(
+                        f"{check_spot} duplicates check id {identifier!r} within the report"
+                    )
+                else:
+                    check_ids.add(identifier)
                 check_kind = check.get("kind")
                 if not isinstance(check_kind, str) or not check_kind.strip():
                     errors.append(f"{check_spot} kind must be a non-empty string")
@@ -1641,16 +1664,15 @@ def _table_quality_native_errors(
                         f"{QUALITY_MAX_TEXT_CHARS}-character bound"
                     )
                 tested_population = check.get("tested_population")
-                if tested_population is not None:
-                    if not isinstance(tested_population, str) or not tested_population.strip():
-                        errors.append(
-                            f"{check_spot} tested_population must be a non-empty string or null"
-                        )
-                    elif len(tested_population) > QUALITY_MAX_TEXT_CHARS:
-                        errors.append(
-                            f"{check_spot} tested_population exceeds its "
-                            f"{QUALITY_MAX_TEXT_CHARS}-character bound"
-                        )
+                if not isinstance(tested_population, str) or not tested_population.strip():
+                    errors.append(
+                        f"{check_spot} tested_population must be supplied non-empty text"
+                    )
+                elif len(tested_population) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{check_spot} tested_population exceeds its "
+                        f"{QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
                 errors.extend(
                     _quality_period_errors(
                         check.get("tested_period"), f"{check_spot} tested_period"
@@ -1675,7 +1697,7 @@ def _table_quality_native_errors(
                         watermark_value, f"{spot} watermark value"
                     )
                     errors.extend(value_errors)
-                elif watermark_value is not None and (
+                elif (
                     isinstance(watermark_value, bool)
                     or not isinstance(watermark_value, (int, float, str))
                     or (isinstance(watermark_value, float) and not math.isfinite(watermark_value))
@@ -1689,21 +1711,26 @@ def _table_quality_native_errors(
                     ("units", QUALITY_MAX_UNITS_CHARS),
                     ("timezone", QUALITY_MAX_UNITS_CHARS),
                 ):
-                    if key in watermark and watermark.get(key) is not None:
-                        wm_value = watermark.get(key)
-                        if not isinstance(wm_value, str) or not wm_value.strip():
-                            errors.append(
-                                f"{spot} watermark {key} must be a non-empty string or null"
-                            )
-                        elif len(wm_value) > cap:
-                            errors.append(
-                                f"{spot} watermark {key} exceeds its {cap}-character bound"
-                            )
-                if "observed_at" in watermark:
-                    _, wm_errors = _quality_aware_instant(
-                        watermark.get("observed_at"), f"{spot} watermark observed_at"
-                    )
-                    errors.extend(wm_errors)
+                    wm_value = watermark.get(key)
+                    if not isinstance(wm_value, str) or not wm_value.strip():
+                        errors.append(
+                            f"{spot} watermark {key} must be supplied non-empty text"
+                        )
+                    elif len(wm_value) > cap:
+                        errors.append(
+                            f"{spot} watermark {key} exceeds its {cap}-character bound"
+                        )
+                _, wm_errors = _quality_aware_instant(
+                    watermark.get("observed_at"), f"{spot} watermark observed_at"
+                )
+                errors.extend(wm_errors)
+    if not errors:
+        normalized_bytes = _quality_normalized_bytes(profile)
+        if normalized_bytes > QUALITY_MAX_BYTES:
+            errors.append(
+                f"{where} exceeds its {QUALITY_MAX_BYTES}-UTF-8-byte normalized bound "
+                f"(the normalized profile is {normalized_bytes} bytes)"
+            )
     return errors
 
 

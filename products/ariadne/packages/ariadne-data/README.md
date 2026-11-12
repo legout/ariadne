@@ -14,11 +14,11 @@ Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI
 Follow [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ariadne-local.md) for a complete
 worked example with three synthetic orders: **150 EUR recognized revenue and two
 completed orders**, returned with the governing policy and citations. It uses the
-historically tested published Core 0.6.0 / Lumio 0.4.0 pair (the current published
-pair is Core 0.8.0 / Lumio 0.6.0; the tutorial's section 8 separately covers its
-own older 0.7.0 / 0.5.0 query extension),
+historically tested published Core 0.6.0 / Lumio 0.4.0 pair (a historical
+pairing preserved as tutorial evidence — current guidance pairs Core 0.8.0
+with the Lumio SDK 0.7 line, which `ariadne-data` requires),
 ordinary Git and local files; no Docker, S3 or model key is needed. The [standalone tutorial](../../docs/tutorials/getting-started.md)
-remains available when you want Ariadne without Lumio.
+remains available for a purely local CLI-driven journey (no service, app or cloud).
 
 ## Documentation
 
@@ -40,8 +40,10 @@ contract identities
 alongside their knowledge identity; the contract itself does not become a portable
 cross-system identifier.
 
-**Lumio integration:** Lumio is an independent product developed alongside
-Ariadne in this shared repository; neither package requires the other.
+**Lumio foundation:** Lumio is an independent product developed alongside
+Ariadne in this shared repository; `ariadne-data` requires its compatible
+`lumio-wiki` SDK (the 0.7 line for Core 0.8), while `lumio-wiki` never
+requires Ariadne.
 [Lumio bound releases](../../../../integration/docs/reference/lumio-bound-releases.md)
 describe the optional integrated context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
@@ -56,8 +58,8 @@ Knowledge transport (`--context-destination s3://…` plus a declared
 records stay local to the admitting host. Git is the
 standard transport and sync never activates a release — `ariadne status`
 reports the local Git HEAD separately from the admitted release (see
-[the local Git how-to](../../../../integration/docs/how-to/lumio-git-local.md)); the SDK stays an optional
-dependency, unsupported integrated operations refuse, and exact build pairing is
+[the local Git how-to](../../../../integration/docs/how-to/lumio-git-local.md)); the Lumio SDK is a required
+dependency of Core, and exact build pairing is
 recorded per release rather than assumed from package versions.
 
 ## Source development

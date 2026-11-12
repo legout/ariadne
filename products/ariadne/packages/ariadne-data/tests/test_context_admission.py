@@ -123,8 +123,15 @@ def context_only_project(tmp_path: Path) -> Path:
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
     # C6 (spec0035 §6): the native authoring surface — a real knowledge/ KB
-    # (no integration selector: the candidate stays context-only)
+    # with the integrated selector (a CONTEXT-ONLY candidate still selects the
+    # native Context: it simply authors no semantic layer yet) and the
+    # generated-style schema page seeded by the human base commit exactly like
+    # the accepted fixture pattern (table core_ref/resource facts are
+    # core-owned; later edits inherit them verbatim).
     kb = project / "knowledge"
+    (kb / "tables").mkdir(parents=True, exist_ok=True)
+    (kb / "references").mkdir(parents=True, exist_ok=True)
+    (kb / "tables" / "orders.md").write_text(table_page(), encoding="utf-8")
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
@@ -143,6 +150,18 @@ def context_only_project(tmp_path: Path) -> Path:
         'version: 1\nnamespace: "urn:uuid:context-admission-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
     )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:context-admission-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings: []\n",
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -154,15 +173,25 @@ def context_only_project(tmp_path: Path) -> Path:
         "data/seed_notes.md",
         "knowledge/lumio.yaml",
         "knowledge/.lumio-authoring.yaml",
+        "knowledge/tables/orders.md",
+        "context_integration.yaml",
     )
     run_git(project, "commit", "-q", "-m", "human: context-only base")
     return project
 
 
 def table_page() -> str:
-    """One authored plain physical-table page citing the catalog asset (no
-    generated schema/observations — those stay core-generated)."""
-    catalog = {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
+    """One generated-style native physical-table page (the accepted fixture
+    pattern): the core-owned ``resource`` binding, ``core_ref`` identity and
+    ``ariadne`` schema/observations facts live under ``ariadne_profile.native``
+    and are seeded by the human base commit — ordinary candidate edits inherit
+    them verbatim and may change only authored fields like the description."""
+    resource = orders_resource()
+    catalog = {
+        "id": "orders-catalog",
+        "resource": resource,
+        "title": "orders catalog",
+    }
     meta = {
         "id": "entity:orders",
         "title": "orders",
@@ -175,13 +204,51 @@ def table_page() -> str:
         "ariadne_profile": {
             "version": 1,
             "kind": "table",
+            "core_ref": {"kind": "resource", "id": resource},
             "native": {
                 "type": "table",
                 "title": "orders",
                 "description": "One row per store-scoped order.",
                 "tags": ["table"],
                 "sources": [catalog],
-                "resource": orders_resource(),
+                "resource": resource,
+                "ariadne": {
+                    "schema": [
+                        {
+                            "column": "store_id",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                        {
+                            "column": "local_order_number",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                        {
+                            "column": "global_order_number",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                    ],
+                    "observations": {
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                        "scope": "full",
+                        "row_count": len(ORDER_ROWS),
+                        "candidate_keys": ["global_order_number"],
+                        "columns": {
+                            "store_id": {"null_count": 0, "distinct_count": 2},
+                            "local_order_number": {"null_count": 0, "distinct_count": 6},
+                            "global_order_number": {"null_count": 0, "distinct_count": 6},
+                        },
+                        "citation": resource,
+                    },
+                },
             },
         },
     }
@@ -224,7 +291,7 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
         "title": "Order number",
         "description": "The shared order-number concept of the orders store.",
         "tags": ["reference", "term"],
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "aliases": ["order number concept"],
         "ariadne": {
             "version": 1,
@@ -258,7 +325,7 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
         "lifecycle": "approved",
         "visibility": "public",
         "aliases": ["order number concept"],
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "ariadne_profile": {
             "version": 1,
             "kind": "reference",
@@ -542,7 +609,7 @@ def test_review_exposes_assertion_identity_and_confirmation_eligibility(tmp_path
     page = yaml.safe_load(order_reference_page().split("---", 2)[1])
     [declared] = [
         mapping
-        for mapping in page["ariadne"]["mappings"]
+        for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
     assert assertion["assertion_digest"] == confirmation_binding_digest(page, declared)
@@ -612,7 +679,7 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     page = yaml.safe_load(order_reference_page().split("---", 2)[1])
     [declared] = [
         mapping
-        for mapping in page["ariadne"]["mappings"]
+        for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
     assert entry["assertion_digest"] == confirmation_binding_digest(page, declared)
@@ -708,7 +775,7 @@ def receipt_reference_page(
         "title": "Order number",
         "description": "The store-scoped and global order-number identities.",
         "tags": ["reference", "identifier"],
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "ariadne": {
             "version": 1,
             "reference_role": "identifier",
@@ -748,7 +815,7 @@ def receipt_reference_page(
         "summary": "The store-scoped and global order-number identities.",
         "lifecycle": "approved",
         "visibility": "public",
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "ariadne_profile": {
             "version": 1,
             "kind": "reference",
@@ -856,7 +923,7 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         )
         rival = json.loads(json.dumps(declared))  # a DIFFERENT declaration of the
         rival["separator"] = "-"  # same relationship: conflicting asserted claims
-        page["ariadne"]["mappings"].append(
+        page["ariadne_profile"]["native"]["ariadne"]["mappings"].append(
             {
                 "id": "rival-assertion",
                 "family": "prefix",

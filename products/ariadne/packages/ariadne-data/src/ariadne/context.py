@@ -2559,6 +2559,36 @@ def _resolve_response_parts(matches: list[dict], *, limit: int, max_bytes: int) 
     return parts
 
 
+def resolve_term_native_entries(kb_root: Path) -> list[tuple[str, dict, bool]]:
+    """The NATIVE collector for one materialized knowledge/ tree (C6,
+    spec0035 §2): every Compiled Page whose producer-native metadata carries
+    the structured ``ariadne`` Reference extension becomes one shared-core
+    entry — the SAME in-memory adaptation the pinned-SDK route applies
+    (:func:`ariadne.lumio_context.resolve_term`; there is no second matcher).
+    Ordinary pages stay documentation; bookkeeping pages are skipped."""
+    entries: list[tuple[str, dict, bool]] = []
+    root = Path(kb_root)
+    if not root.is_dir():
+        return entries
+    for path in sorted(root.rglob("*.md")):
+        if path.name in ("index.md", "log.md"):
+            continue  # system bookkeeping, never a Reference
+        try:
+            meta = _load_frontmatter_meta(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue  # the producer/page gate owns malformed pages
+        profile = meta.get("ariadne_profile") if isinstance(meta, dict) else None
+        native = profile.get("native") if isinstance(profile, dict) else None
+        if not isinstance(native, dict):
+            continue
+        extension = native.get("ariadne")
+        if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
+            continue  # ordinary pages stay documentation, never References
+        rel = path.relative_to(root).as_posix()
+        entries.append((rel, {"type": "reference", **native}, False))
+    return entries
+
+
 def resolve_term(
     roots: list[tuple[Path, bool]],
     request: str | dict,

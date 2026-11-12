@@ -31,8 +31,8 @@ from ariadne import (  # noqa: E402
 )
 from ariadne.cli import main as cli  # noqa: E402
 from tests.test_context_admission import (  # noqa: E402
-    REFERENCE_EDIT,
-    TABLE_EDIT,
+    REFERENCE_PAGE_REL,
+    TABLE_PAGE_REL,
     admitted_candidate,
     context_only_candidate,
     order_reference_page,
@@ -40,6 +40,19 @@ from tests.test_context_admission import (  # noqa: E402
     table_page,
 )
 from tests.test_git_authoring import branch_of  # noqa: E402
+
+# A SECOND structured Reference under a distinct native page identity: the
+# classic fixture addressed pages by artifact name; the native batch addresses
+# them by page identity, so the variant needs its own title/entity/path.
+OTHER_REFERENCE_REL = "knowledge/references/other-number.md"
+
+
+def _other_number_reference_page() -> str:
+    meta = yaml.safe_load(order_reference_page().split("---")[1])
+    meta["id"] = "entity:other-number"
+    meta["title"] = "Other number"
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{front}\n---\n\n# Other number\n"
 
 
 class Terminal(io.StringIO):
@@ -143,10 +156,10 @@ def record_admissions(monkeypatch):
 
 def test_all_selections_inert_until_one_exact_native_command(tmp_path, monkeypatch, capsys):
     project, api, candidate = context_only_candidate(tmp_path / "managed")
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         candidate["proposal"],
         candidate["revision"],
-        {**REFERENCE_EDIT, "name": "other-number", "content": order_reference_page()},
+        [{"path": OTHER_REFERENCE_REL, "content": _other_number_reference_page()}],
     )
     validated = api.validate_proposal(candidate["proposal"], edited["revision"])
     assert validated["ok"]
@@ -206,8 +219,10 @@ def test_bounded_native_parts_display_required_scope_before_selection(
     page = order_reference_page().replace(
         "ariadne:\n", "# padding\n" * (authoring.EVIDENCE_PART_CHARS // 10 + 1) + "ariadne:\n"
     )
-    edited = api.edit_proposal(
-        candidate["proposal"], candidate["revision"], {**REFERENCE_EDIT, "content": page}
+    edited = api.edit_pages_batch(
+        candidate["proposal"],
+        candidate["revision"],
+        [{"path": REFERENCE_PAGE_REL, "content": page}],
     )
     assert api.validate_proposal(candidate["proposal"], edited["revision"])["ok"]
     expected_part = api.review_proposal(candidate["proposal"], part=2)
@@ -266,15 +281,17 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
     assert admission.main(native_admission_args(project, first, [selection])) == 0
     capsys.readouterr()
     results = record_admissions(monkeypatch)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         first["proposal"],
         branch_of(project, first["proposal"]),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
-                "One row per store-scoped order.", "Unrelated description."
-            ),
-        },
+        [
+            {
+                "path": TABLE_PAGE_REL,
+                "content": table_page().replace(
+                    "One row per store-scoped order.", "Unrelated description."
+                ),
+            }
+        ],
     )
     assert api.validate_proposal(first["proposal"], edited["revision"])["ok"]
     assert (
@@ -299,13 +316,17 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
         {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
     )
     meta["ariadne"]["mappings"][1]["source_ids"] = ["orders-catalog"]
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         first["proposal"],
         branch_of(project, first["proposal"]),
-        {
-            **REFERENCE_EDIT,
-            "content": "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n# Order number\n",
-        },
+        [
+            {
+                "path": REFERENCE_PAGE_REL,
+                "content": "---\n"
+                + yaml.safe_dump(meta, sort_keys=False)
+                + "---\n\n# Order number\n",
+            }
+        ],
     )
     assert api.validate_proposal(first["proposal"], edited["revision"])["ok"]
     assert (
@@ -384,15 +405,17 @@ def test_stale_displayed_review_is_not_refreshed_or_retried(tmp_path, monkeypatc
 
     def move_then_delegate(argv):
         calls.append(argv)
-        api.edit_proposal(
+        api.edit_pages_batch(
             payload["proposal"],
             payload["revision"],
-            {
-                **TABLE_EDIT,
-                "content": table_page().replace(
-                    "One row per store-scoped order.", "Moved candidate."
-                ),
-            },
+            [
+                {
+                    "path": TABLE_PAGE_REL,
+                    "content": table_page().replace(
+                        "One row per store-scoped order.", "Moved candidate."
+                    ),
+                }
+            ],
         )
         return native(argv)
 
@@ -593,6 +616,3 @@ def test_no_mcp_or_native_agent_registration_exposes_walkthrough():
         names = {tool.name for tool in app._tool_manager.list_tools()}
         assert "review" not in names and "ariadne_review" not in names
         assert "authoring_review_proposal" in names or toolset == "analyst"
-    for path in (PRODUCT_AREA / "packages/ariadne-agent/src/ariadne_agent").glob("*.py"):
-        text = path.read_text()
-        assert "ariadne.review" not in text and "ariadne review" not in text

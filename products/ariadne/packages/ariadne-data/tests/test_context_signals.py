@@ -178,11 +178,11 @@ def test_term_match_carries_the_envelope_and_serializes_through_the_json_adapter
 def test_public_surface_exposes_no_clock_parameter_or_clock_api():
     """Issue #48 fix pass, interface rule (spec 0011 §2 / issues #47–#48):
     the assessment clock is an internal seam only. The live public advisory
-    operations (the kept resolver family and the pinned/classic data-signal
-    views) carry no clock parameter, and the module surface gains no public
-    callable that drives the clock (tests freeze time on
-    ``context._assessment_now``)."""
-    for fn in (resolve_term, context.data_signals, context.data_signals_pinned):
+    operations (the kept resolver family and the pinned data-signal view; the
+    classic served-tree entry retired with C6) carry no clock parameter, and
+    the module surface gains no public callable that drives the clock (tests
+    freeze time on ``context._assessment_now``)."""
+    for fn in (resolve_term, context.data_signals_pinned):
         clockish = [
             name
             for name in inspect.signature(fn).parameters

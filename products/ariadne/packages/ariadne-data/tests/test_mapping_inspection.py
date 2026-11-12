@@ -159,8 +159,12 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
     # C6 (spec0035 §6): the native authoring surface — a real knowledge/ KB
-    # (no integration selector: the candidate stays context-only, K4)
+    # WITH the integrated selector (context-only work still selects the native
+    # Context; it authors no semantic layer) so knowledge pages materialize
+    # and admit through the candidate scope.
     kb = project / "knowledge"
+    (kb / "references").mkdir(parents=True, exist_ok=True)
+    (kb / "policies").mkdir(parents=True, exist_ok=True)
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
@@ -179,6 +183,18 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
         'version: 1\nnamespace: "urn:uuid:mapping-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
     )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:mapping-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings: []\n",
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -190,6 +206,7 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
         "data/seed_notes.md",
         "knowledge/lumio.yaml",
         "knowledge/.lumio-authoring.yaml",
+        "context_integration.yaml",
     )
     run_git(project, "commit", "-q", "-m human: initial artifacts")
     return project
@@ -908,7 +925,7 @@ def test_changed_declaration_invalidates_the_receipt_and_drops_the_summary(tmp_p
     changed = {**candidate, "separator": "-"}  # a different normalized candidate
     page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["mappings"][0]["candidate"] = changed
+    meta["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["candidate"] = changed
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
     revised = api.edit_pages_batch(
@@ -1006,10 +1023,11 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
     api3.validate_proposal(started3["proposal"], edited3["revision"])
     page = read_reference(api3, started3)
     meta = _frontmatter(page["content"])
-    meta["ariadne_evidence"]["local-to-global-prefix"][0]["tested_left"] = 999
+    evidence = meta["ariadne_profile"]["native"]["ariadne_evidence"]
+    evidence["local-to-global-prefix"][0]["tested_left"] = 999
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
-    with pytest.raises(ValueError, match="system-owned trust claim"):
+    with pytest.raises(ValueError, match="trust/generated claim"):
         api3.edit_pages_batch(
             started3["proposal"],
             started3["proposal"] and api3.review_proposal(started3["proposal"])["revision"],
@@ -1334,7 +1352,8 @@ def test_retargeted_representation_invalidates_the_receipt_summary(tmp_path):
     assert _evidence_block(read_reference(api, started)["content"])
     page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["representations"][1]["fields"] = [  # retargeted 'to' endpoint
+    representations = meta["ariadne_profile"]["native"]["ariadne"]["representations"]
+    representations[1]["fields"] = [  # retargeted 'to' endpoint
         {"resource": resource("orders", "orders"), "column": "local_order_number"}
     ]
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
@@ -1364,7 +1383,8 @@ def test_unmeasured_required_scope_invalidates_the_receipt_summary(tmp_path):
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["representations"][0]["scope"] = [  # required scope widened
+    representations = meta["ariadne_profile"]["native"]["ariadne"]["representations"]
+    representations[0]["scope"] = [  # required scope widened
         {"resource": resource("orders", "orders"), "column": "store_id"}
     ]
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()

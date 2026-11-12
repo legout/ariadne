@@ -73,6 +73,8 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     generated_page_filename,
     mapping_assertion_digest,  # K4 (issue #44): the declaration identity of a mapping
     resolve_term,  # K2 (issue #42): the shared read-only term resolver
+    resolve_term_entries,  # C6 fix: the candidate feeds the shared core through native entries
+    resolve_term_native_entries,  # C6 fix: the native collector for a materialized knowledge/ tree
     validate_inspection_candidate,
 )
 from ariadne.render import render
@@ -483,8 +485,12 @@ class AuthoringProject:
                 tree = Path(tmp) / "bundle"
                 tree.mkdir()
                 _materialize(project, proposal, record["candidate_revision"], tree)
-                result = resolve_term(
-                    [(tree / "context_layer", False)],
+                # C6 fix (spec0035 §2): the candidate's References are native
+                # knowledge/ pages — feed the ONE shared resolver core through
+                # the native entries seam (the classic context_layer collector
+                # read the retired bundle shape and matched nothing).
+                result = resolve_term_entries(
+                    resolve_term_native_entries(tree / "knowledge"),
                     request,
                     part=part,
                     # the operator's evidence age budget drives the candidate

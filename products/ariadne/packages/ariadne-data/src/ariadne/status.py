@@ -239,8 +239,10 @@ def _example_counts(snapshot: Path | None, record: dict | None) -> dict:
         return {"total": 0, "by_status": {}}
     total = 0
     for page in release.pages:
-        native = page.native
-        if isinstance(native, dict) and native.get("kind") == "answer_example":
+        # ContextPageView.native is a deep-immutable producer view (never a
+        # plain dict) and the producer kind lives on ``page.kind`` — count the
+        # scoped pinned answer_example pages directly (R2, C6 fix).
+        if page.kind == "answer_example":
             total += 1
     return {"total": total, "by_status": ({"admitted": total} if total else {})}
 

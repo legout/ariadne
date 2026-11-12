@@ -134,12 +134,13 @@ def _example_release(root):
     write_page(reference, ref_meta, ref_body)
     control = tree / "knowledge" / "lumio.yaml"
     control.write_text(
+        # CONTROL already declares the computations category/entity type (the
+        # C6 continuation control fix); only the answer-examples additions ride
+        # this fixture's replacement — a duplicate category is invalid control
         CONTROL.replace(
-            "  - name: metrics\n",
-            "  - name: metrics\n  - name: computations\n  - name: answer-examples\n",
+            "  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n"
         ).replace(
-            "    metric: {}\n",
-            "    metric: {}\n    computation: {}\n    answer-example: {}\n",
+            "    metric: {}\n", "    metric: {}\n    answer-example: {}\n"
         )
     )
     bindings = {
@@ -349,68 +350,80 @@ def test_invalid_citations_and_method_or_sql_provenance_refuse_without_refs(
     assert _refs(project) == refs_before
 
 
-def test_candidate_sql_provenance_absence_and_malformed_refusal(project, capsys):
-    root, _db = project
+def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys):
+    """Spec 0023 §§3–4 on the NATIVE Example journey: a record WITHOUT
+    sql_provenance is the honest legacy form (search discloses sql: null,
+    never backfilled or excluded); PRESENT-but-malformed provenance is invalid
+    data that fails the search with the named error. The variants are authored
+    as native answer_example pages through the public page batch."""
+    from tests.test_git_authoring import approved
+
+    project, api, _review = _example_release(tmp_path / "project")
+    started = api.start_proposal()
+    approved(api, project, started)
+    capsys.readouterr()
     assert (
         run_cli(
-            project,
+            (project, None),
             "save-example",
+            "--proposal",
+            started["proposal"],
+            "--expected-revision",
+            started["candidate_revision"],
             stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT, sources=[]))),
         )
         == 0
     )
     saved = json.loads(capsys.readouterr().out)
-    valid_page = _candidate_page(project, saved).read_text(encoding="utf-8")
-    example_id = Path(saved["path"]).stem
+    root = project
+    valid_page = (worktree_of(project, saved["proposal"]) / saved["path"]).read_text("utf-8")
+    question = yaml.safe_load(valid_page.split("---")[1])["ariadne_profile"]["native"][
+        "question"
+    ]
 
-    def revise_page(page, new_id, *, without_provenance=False, malformed_source=False):
-        lines = []
-        skip_provenance = False
-        for line in page.splitlines():
-            if line == f"id: {example_id}":
-                line = f"id: {new_id}"
-            if without_provenance and line == "sql_provenance:":
-                skip_provenance = True
-                continue
-            if skip_provenance:
-                if line.startswith("  "):
-                    continue
-                skip_provenance = False
-            if malformed_source:
-                line = line.replace("source: submitted_result.sql", "source: handwritten", 1)
-            lines.append(line)
-        return "\n".join(lines) + "\n"
+    def variant_page(new_id: str, *, without_provenance: bool = False, malformed: bool = False):
+        """One authored native variant of the saved Example: a distinct page
+        identity carrying the same record with the provenance under test."""
+        front = yaml.safe_load(valid_page.split("---")[1])
+        front["id"] = f"entity:{new_id}"
+        front["title"] = f"{question} ({new_id})"
+        native = front["ariadne_profile"]["native"]
+        if without_provenance:
+            native.pop("sql_provenance", None)
+        if malformed:
+            native["sql_provenance"] = {**native["sql_provenance"], "source": "handwritten"}
+        dumped = yaml.safe_dump(front, sort_keys=False, allow_unicode=True).strip()
+        return f"knowledge/answer_examples/{new_id}.md", f"---\n{dumped}\n---\n"
 
     from ariadne import proposals
 
-    no_sql = proposals.add_answer_example(
+    no_sql_path, no_sql_content = variant_page("legacy-without-sql", without_provenance=True)
+    no_sql = proposals.edit_page_batch(
         root,
         saved["proposal"],
         saved["candidate_revision"],
-        "legacy-without-sql",
-        revise_page(valid_page, "legacy-without-sql", without_provenance=True),
+        [{"path": no_sql_path, "content": no_sql_content}],
     )
     selectors = ["--proposal", saved["proposal"], "--revision", no_sql["revision"]]
     assert (
-        run_cli(project, "search-examples", "gross margin region", *selectors, "--include-sql") == 0
+        run_cli((project, None), "search-examples", "gross margin region", *selectors, "--include-sql") == 0
     )
     hits = json.loads(capsys.readouterr().out)
     assert (
         next(hit for hit in hits if hit["id"] == "legacy-without-sql")["provenance"]["sql"] is None
     )
 
-    malformed_id = "malformed-provenance"
-    malformed = proposals.add_answer_example(
+    malformed_path, malformed_content = variant_page("malformed-provenance", malformed=True)
+    malformed = proposals.edit_page_batch(
         root,
         saved["proposal"],
         no_sql["revision"],
-        malformed_id,
-        revise_page(valid_page, malformed_id, malformed_source=True),
+        [{"path": malformed_path, "content": malformed_content}],
     )
     selectors[-1] = malformed["revision"]
     assert (
         run_cli(
-            project,
+            (project, None),
             "search-examples",
             "gross margin region",
             *selectors,

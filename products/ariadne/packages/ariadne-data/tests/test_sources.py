@@ -1037,3 +1037,46 @@ def test_facade_over_sqlite_plus_parquet_registry(tmp_path, sqlite_db, duck):
     datasets = {d["name"]: d for d in asyncio.run(facade.list_datasets())}
     assert set(datasets) == {"demo.orders", "events.status"}
     assert [c["name"] for c in datasets["events.status"]["columns"]] == ["status", "n"]
+
+
+def test_canonical_resource_scheme_is_deterministic_and_credential_free():
+    """C6 fix R6/C3 (native recovery of the deleted unit, issue #41 [3]): the
+    canonical resource payload is the compact-separator JSON array (no ASCII
+    escaping) as unpadded URL-safe base64; decode round-trips the exact
+    identifiers; malformed URIs and non-credential-free shapes refuse; the
+    filename scheme keeps same-named assets distinct after the 48-char slug
+    cap through the full digest."""
+    import base64
+    import json
+
+    import pytest
+
+    from ariadne.context import generated_page_filename
+    from ariadne.sources import parse_resource, table_resource
+
+    resource = table_resource("retail", None, "main", "orders")
+    payload = json.dumps(["retail", None, "main", "orders"], separators=(",", ":"))
+    expected = (
+        "ariadne://table/"
+        + base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    assert resource == expected  # deterministic compact unpadded form
+    kind, parts = parse_resource(resource)
+    assert kind == "table" and parts == ["retail", None, "main", "orders"]
+
+    with pytest.raises(ValueError):
+        parse_resource("ariadne://table/not-base64!!!")
+    with pytest.raises(ValueError):
+        parse_resource("postgres://user:secret@host/db")  # credential-bearing shape
+    with pytest.raises(ValueError):
+        parse_resource("ariadne://unknown/x")
+
+    # the filename slug caps at 48 chars; the appended digest keeps
+    # same-named assets in distinct sources distinct
+    long_name = "orders" + "_detail" * 8
+    a = table_resource("sales", None, "main", long_name)
+    b = table_resource("support", None, "main", long_name)
+    filename_a = generated_page_filename(a, "sales")
+    filename_b = generated_page_filename(b, "support")
+    assert len(filename_a.split("--")[0]) <= 48
+    assert filename_a != filename_b  # the digest preserves distinction

@@ -70,7 +70,8 @@ Install Core 0.8.0 on Python >=3.14. Choose optional packages for the task:
 - `ariadne-data[mcp]==0.8.0` adds the pinned MCP 2.2.0 transport.
 - `ariadne-data[documents]==0.8.0` adds the supported document converters;
   it does not approve an input or supply model credentials.
-- `lumio-wiki==0.6.0` supplies the optional integrated knowledge binding.
+- `lumio-wiki>=0.7,<0.8` is the required Lumio SDK foundation every Core
+  install brings (mandatory pairing, ADR-0029/spec0035).
   `lumio-lancedb==0.6.0` is optional retrieval, not a Core requirement.
 
 The separately distributed Ariadne Agent/Tau stack was retired 2026-11-12

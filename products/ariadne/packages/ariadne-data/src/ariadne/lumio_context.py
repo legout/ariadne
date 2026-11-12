@@ -675,6 +675,20 @@ def candidate(root, kb_root, revision):
         # captured technical profile, hidden or unreferenced included.
         elif profile.kind in ("dataset", "table", "computation"):
             errors.extend(_technical_identity_errors(where, profile, sanctioned))
+            # R1 (C6 fix, spec0009 §9): the retained Core meaning/edit gate over
+            # the captured PRODUCER-PARSED flat native metadata — an externally
+            # edited candidate cannot carry a table ariadne_quality profile the
+            # Core authoring gate would refuse (the public batch writer runs the
+            # same gate at edit time; this closes the materialized-candidate
+            # route). Advisory metadata only: never a query permission input.
+            if profile.kind == "table" and "ariadne_quality" in profile.native:
+                from lumio_wiki.ariadne_context import disclose_native
+
+                from ariadne import context
+
+                errors.extend(
+                    context._quality_profile_errors(where, disclose_native(profile.native))
+                )
     if not errors:
         expected = sanctioned
         actual = {

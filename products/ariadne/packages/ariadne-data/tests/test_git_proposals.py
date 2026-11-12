@@ -13,6 +13,7 @@ binary, and the crash variant interrupts the real state transition.
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -463,6 +464,7 @@ def git_project_with_verified_page(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     scaffold_artifacts(project)
     kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
@@ -1083,7 +1085,7 @@ def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
     import base64
     import json as _json
 
-    from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImports] — qualified test env provides the SDK
+    from lumio_wiki.source_references import (
         SOURCE_REFERENCE_MANIFEST_BASENAME,
         SourceReferenceManifest,
         serialize_source_reference_manifest,
@@ -1152,10 +1154,6 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     malformed declaration fails the producer structural gate inside the
     batch writer before any byte is written (never a query refusal,
     spec §5/§7 AC6)."""
-    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — qualified test env provides the SDK
-        GitAuthoringError,
-    )
-
     from ariadne.author import _load_frontmatter_meta
 
     project, resource = git_project_with_generated_table_page(tmp_path)
@@ -1201,9 +1199,11 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     )  # the authored profile landed verbatim
 
     # a malformed (naive-timestamp) declaration refuses INSIDE the batch —
-    # the producer structural gate names the field before any byte is
-    # written, never as a later query refusal (spec §5/§7 AC6)
-    with pytest.raises(GitAuthoringError, match="UTC offset"):
+    # the retained Core authoring gate over the producer-parsed flat native
+    # metadata names the field BEFORE any byte is written (the producer
+    # structural gate stands behind it), never as a later query refusal
+    # (spec §5/§7 AC6)
+    with pytest.raises(ValueError, match="naive timestamp is rejected"):
         api.edit_pages_batch(
             started["proposal"],
             edited["revision"],
@@ -1219,7 +1219,8 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     # the retained spec0013 §2 authoring rule: a declared evidence period is
     # [start, end) — a backwards (start >= end) declaration refuses INSIDE
     # the same batch writer by name, before any byte (never a producer-
-    # accepted shape a consumer would have to disclose around)
+    # accepted shape a consumer would have to disclose around); the retained
+    # Core gate names it first, the aligned producer gate stands behind it
     backwards = _quality_block(resource, "2026-01-15T00:00:00+00:00")
     backwards["reports"][0]["checks"][0]["tested_period"] = {
         "field": "order_date",
@@ -1233,7 +1234,7 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
         front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
         return f"---\n{front}\n---\n\n# Orders\n"
 
-    with pytest.raises(GitAuthoringError, match="start < end"):
+    with pytest.raises(ValueError, match="start < end"):
         api.edit_pages_batch(
             started["proposal"],
             edited["revision"],
@@ -1256,3 +1257,157 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
             ],
         )
     assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
+
+    # ---- R1 (C6 fix) expanded public malformed-declaration matrix: every
+    # variant the old weaker producer gate accepted silently, each refused
+    # with its named diagnostic at the same public batch seam, before any
+    # byte is written.
+    def refuse(block_text: str, diagnostic: str) -> None:
+        with pytest.raises(ValueError, match=diagnostic):
+            api.edit_pages_batch(
+                started["proposal"],
+                edited["revision"],
+                [{"path": "knowledge/tables/orders.md", "content": block_text}],
+            )
+        assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added
+
+    null_reported = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_reported["reports"][0]["reported_at"] = None
+    refuse(with_quality_block(null_reported), "must be an aware instant")
+
+    null_bound = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_bound["reports"][0]["scope"]["period"] = {
+        "field": "order_date",
+        "start": None,
+        "end": "2026-08-01T00:00:00+00:00",
+    }
+    refuse(with_quality_block(null_bound), "period start must be an aware instant")
+
+    duplicate_check = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    duplicate_check["reports"][0]["checks"].append(
+        dict(duplicate_check["reports"][0]["checks"][0])
+    )
+    refuse(with_quality_block(duplicate_check), "duplicates check id")
+
+    null_population = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_population["reports"][0]["checks"][0]["tested_population"] = None
+    refuse(with_quality_block(null_population), "tested_population must be supplied")
+
+    partial_watermark = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    partial_watermark["reports"][0]["watermark"] = {  # 'field' missing entirely
+        "kind": "other",
+        "value": 7,
+        "meaning": "a counted boundary",
+        "units": "rows",
+        "timezone": "UTC",
+        "observed_at": "2026-01-15T00:00:00+00:00",
+    }
+    refuse(with_quality_block(partial_watermark), "watermark field must be supplied")
+
+    # an unsupported YAML variant type (a !!set where the grammar wants a
+    # list) is a NAMED refusal — never a serialization TypeError crash
+    set_source_ids = re.sub(
+        r"source_ids:\n\s*- catalog-demo-main-orders",
+        "source_ids: !!set {catalog-demo-main-orders, extra}",
+        with_quality("2026-01-15T00:00:00+00:00"),
+    )
+    assert "!!set" in set_source_ids  # the raw variant reached the page text
+    refuse(set_source_ids, "source_ids must be a nonempty list")
+
+    # the normalized-byte bound follows the RETAINED Core normalization
+    # (default separators, insertion order) — a profile whose compact form
+    # fits but whose normalized form does not refuses by name. The boundary
+    # is computed independently here from the two documented JSON forms.
+    import json as _json
+
+    def _sizes(block: dict) -> tuple[int, int]:
+        compact = len(
+            _json.dumps(block, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        )
+        normalized = len(_json.dumps(block, ensure_ascii=False).encode())
+        return compact, normalized
+
+    near_bound = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    description = near_bound["reports"][0]["scope"]["description"]
+    padding = 7900
+    while True:
+        near_bound["reports"][0]["scope"]["description"] = description + "x" * padding
+        compact, normalized = _sizes(near_bound)
+        if compact <= 8192 < normalized:
+            break
+        padding += 1
+    refuse(with_quality_block(near_bound), "UTF-8")
+
+    # a VALID explicit period: null stays accepted (non-time-bounded
+    # evidence) — restate the positive shape the first leg already landed
+    explicit_null = _quality_block(resource, "2026-01-16T00:00:00+00:00")
+    assert explicit_null["reports"][0]["scope"]["period"] is None
+    landed = api.edit_pages_batch(
+        started["proposal"],
+        edited["revision"],
+        [{"path": "knowledge/tables/orders.md", "content": with_quality_block(explicit_null)}],
+    )
+    assert landed["changed"] is True
+
+    # ---- recovered invariant (the deleted test_refresh_preserves_supplied_
+    # quality_profile_without_touching_core_facts): an authored quality
+    # profile survives a REAL schema refresh verbatim while the core-owned
+    # facts regenerate around it.
+    from tests.test_git_authoring import approved, complete_bundle_project, write_parquet
+
+    def _page_with_quality(page_text: str, block: dict) -> str:
+        meta = _load_frontmatter_meta(page_text)
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = block
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        body = page_text.split("---", 2)[2]
+        return f"---\n{front}\n---{body}"
+
+    project2 = complete_bundle_project(tmp_path / "refresh")
+    api2 = AuthoringProject(project2)
+    started2 = api2.start_proposal()
+    approved(api2, project2, started2)
+    asset = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
+    first = api2.refresh_schema(started2["proposal"], started2["candidate_revision"], [asset])
+    assert first["changed"] is True
+    table_entry = next(p for p in first["pages"] if p["kind"] == "table")
+    table_rel = table_entry["path"]
+    table_file = worktree_of(project2, started2["proposal"]) / table_rel
+    table_meta = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+    events_resource = table_meta["ariadne_profile"]["native"]["resource"]
+    citation_id = table_meta["ariadne_profile"]["native"]["sources"][0]["id"]
+    events_quality = _quality_block(events_resource, "2026-01-15T00:00:00+00:00")
+    events_quality["reports"][0]["source_ids"] = [citation_id]
+    authored = api2.edit_pages_batch(
+        started2["proposal"],
+        first["revision"],
+        [
+            {
+                "path": table_rel,
+                "content": _page_with_quality(
+                    table_file.read_text(encoding="utf-8"), events_quality
+                ),
+            }
+        ],
+    )
+    assert authored["changed"] is True
+    before_refresh = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+
+    # the physical source changes (a new column arrives): the refresh
+    # regenerates the core-owned schema facts and KEEPS the authored profile
+    write_parquet(
+        project2 / "data" / "events.parquet",
+        [(1, "a", "n1"), (2, "b", "n2")],
+        ["id", "label", "note"],
+    )
+    second = api2.refresh_schema(started2["proposal"], authored["revision"], [asset])
+    assert second["changed"] is True
+    after_refresh = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+    schema_columns = [
+        row["column"]
+        for row in after_refresh["ariadne_profile"]["native"]["ariadne"]["schema"]
+    ]
+    assert "note" in schema_columns  # the core-owned facts DID regenerate
+    assert (
+        after_refresh["ariadne_profile"]["native"]["ariadne_quality"]
+        == before_refresh["ariadne_profile"]["native"]["ariadne_quality"]
+    )  # the authored profile survived verbatim

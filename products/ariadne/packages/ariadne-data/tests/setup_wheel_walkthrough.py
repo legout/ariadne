@@ -53,12 +53,15 @@ semantic_model:
 
 def native_page(kind, title, resource, body):
     """One producer-native knowledge page in the accepted conventions (typed
-    Entity identity, producer envelope, KB-relative citations)."""
+    Entity identity, producer envelope, KB-relative citations). The TABLE page
+    anchors its canonical ``core_ref`` resource identity WITHOUT the
+    system-owned ``native.resource`` binding (an ordinary batch may introduce
+    core_ref, never the stamped resource facts); the POLICY page declares its
+    explicit (empty) required_policies closure like every policy/metric page."""
     entity_id = "entity:" + title.lower().replace(" ", "-")
-    native_extra = ""
-    metric_extra = ""
+    policy_extra = ""
     if kind == "metric":
-        metric_extra = (
+        policy_extra = (
             "  metric_ref:\n"
             "    model: events\n"
             f"    metric: {title}\n"
@@ -66,6 +69,16 @@ def native_page(kind, title, resource, body):
             '    - namespace: "urn:uuid:wheel-walkthrough"\n'
             '      entity_id: "entity:all-events-count"\n'
         )
+    elif kind == "policy":
+        policy_extra = "  required_policies: []\n"
+    core_ref_extra = ""
+    if kind == "table":
+        core_ref_extra = (
+            "  core_ref:\n"
+            "    kind: resource\n"
+            f"    id: {resource}\n"
+        )
+    native_resource = f"    resource: {resource}\n" if kind != "table" else ""
     return (
         "---\n"
         f'id: "{entity_id}"\n'
@@ -81,7 +94,8 @@ def native_page(kind, title, resource, body):
         "ariadne_profile:\n"
         "  version: 1\n"
         f"  kind: {kind}\n"
-        + metric_extra
+        + policy_extra
+        + core_ref_extra
         + "  native:\n"
         f"    type: {kind}\n"
         f"    title: {title}\n"
@@ -91,13 +105,12 @@ def native_page(kind, title, resource, body):
         "    sources:\n"
         "      - id: rule\n"
         "        title: Owner rule\n"
-        + (f"        resource: {resource}\n" if resource else "")
+        + native_resource
         + (
             f"    governed_by: {resource}\n"
             if kind == "metric" and resource
             else ""
         )
-        + native_extra
         + "---\n\n"
         + f"# {title}\n\n"
         + body
@@ -161,6 +174,7 @@ def main():
         # narrative Policy binds the metric and its generated computation;
         # enforcement null — no graph policy audit)
         kb = project / "knowledge"
+        kb.mkdir(parents=True, exist_ok=True)
         (kb / "lumio.yaml").write_text(
             "version: 2\n"
             'mode: "categorized"\n'
@@ -197,11 +211,6 @@ def main():
             "  bindings:\n"
             "    - subject: {kind: metric, identity: events::event_count}\n"
             "      policy: {namespace: urn:uuid:wheel-walkthrough,"
-            " entity_id: entity:all-events-count}\n"
-            "      operations: [get_metric, query_metrics]\n"
-            "      enforcement: null\n"
-            "    - subject: {kind: computation, identity: events::event_count}\n"
-            "      policy: {namespace: uuid:wheel-walkthrough,"
             " entity_id: entity:all-events-count}\n"
             "      operations: [get_metric, query_metrics]\n"
             "      enforcement: null\n",
@@ -258,10 +267,15 @@ def main():
         # pages ride ONE native page batch (AC4) through the edit-pages command
         # (a native skill profile refuses — the skill page is not authored)
         edits = [{"kind": "model", "name": "events", "content": MODEL}]
+        from ariadne.sources import table_resource
+
+        events_table_uri = table_resource("events", None, "events", "events")
         pages = [
             {
                 "path": "knowledge/tables/events.md",
-                "content": native_page("table", "events", "events.events", "One row per event."),
+                "content": native_page(
+                    "table", "events", events_table_uri, "One row per event."
+                ),
             },
             {
                 "path": "knowledge/references/event-rule.md",

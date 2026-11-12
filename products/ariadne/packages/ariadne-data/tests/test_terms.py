@@ -46,7 +46,8 @@ from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     RESOLVE_TERM_LIMIT,
     RESOLVE_TERM_MAX_BYTES,
-    resolve_term,
+    resolve_term_entries,
+    resolve_term_native_entries,
 )
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
@@ -145,6 +146,7 @@ def orders_project(tmp_path: Path) -> Path:
     # governed metric and its generated computation to the narrative Policy
     # (enforcement null); the classic pages stay inert fixture payload.
     kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
@@ -247,11 +249,6 @@ def orders_project(tmp_path: Path) -> Path:
         "  version: 1\n"
         "  bindings:\n"
         "    - subject: {kind: metric, identity: orders::order_number_count}\n"
-        "      policy: {namespace: urn:uuid:terms-fixture,"
-        " entity_id: entity:order-number-format}\n"
-        "      operations: [get_metric, query_metrics]\n"
-        "      enforcement: null\n"
-        "    - subject: {kind: computation, identity: orders::order_number_count}\n"
         "      policy: {namespace: urn:uuid:terms-fixture,"
         " entity_id: entity:order-number-format}\n"
         "      operations: [get_metric, query_metrics]\n"
@@ -530,30 +527,32 @@ def test_order_number_resolves_alternatives_with_exact_bindings_and_unconfirmed_
 
 
 def test_git_validation_rejects_fabricated_confirmation_in_a_real_candidate(tmp_path):
-    """The shared gate rides the REAL Git validation journey: an edit seam
-    accepts an invalid draft (validation owns structural failures), and
-    validate_proposal reports the fabricated confirmation as a page-contract
-    error instead of admitting the claim."""
+    """The shared gate rides the REAL Git authoring journey: the fabricated
+    confirmation refuses at the PUBLIC batch seam — the producer structural
+    gate inside the batch writer rejects the unsupported ``confirmed`` field
+    before any byte is written, so the forged claim can never even enter a
+    candidate (the earlier honest boundary; validation keeps the same page
+    gate for anything that arrives by other means)."""
+    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — qualified test env provides the SDK
+        GitAuthoringError,
+    )
+
     project = orders_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    page = yaml.safe_load(order_reference_page().split("---")[1])
+    base = (worktree_of(project, started["proposal"]) / REFERENCE_PAGE_REL).read_text("utf-8")
+    page = yaml.safe_load(base.split("---")[1])
     page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["confirmed"] = True
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    forged = f"---\n{front}\n---\n\n# Order number\n"
-    edited = api.edit_pages_batch(
-        started["proposal"],
-        started["candidate_revision"],
-        reference_edit(forged),
-    )
-    validated = api.validate_proposal(started["proposal"], edited["revision"])
-    assert validated["ok"] is False
-    assert any("unsupported field(s) ['confirmed']" in error for error in validated["errors"])
-    assert any(
-        check["name"] == "page_contract" and check["outcome"] == "failed"
-        for check in validated["report"]["checks"]
-    )
+    body = base.split("---", 2)[2]
+    forged = f"---\n{front}\n---{body}"
+    with pytest.raises(GitAuthoringError, match=r"unsupported field\(s\) \['confirmed'\]"):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            reference_edit(forged),
+        )
 
 
 def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
@@ -579,6 +578,13 @@ def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
 # ------------------------------------- [3] resolver determinism and bounds
 
 
+def _resolve_native(root: Path, request, *, part: int = 1) -> dict:
+    """The shared resolver core through the production NATIVE entries seam
+    (the retired classic filesystem collector read the retired classic page
+    shape; the native candidate/pinned routes both feed these entries)."""
+    return resolve_term_entries(resolve_term_native_entries(root), request, part=part)
+
+
 def _context_root(tmp_path: Path, pages: dict[str, str]) -> Path:
     root = tmp_path / "context_layer"
     for rel, text in pages.items():
@@ -596,7 +602,7 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     pages = {}
     for index in range(1, 26):
         page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["ariadne"]["representations"] = [
+        page["ariadne_profile"]["native"]["ariadne"]["representations"] = [
             {
                 "id": f"rep-{index:02d}",
                 "aliases": ["shared term"],
@@ -611,7 +617,7 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
         )
     root = _context_root(tmp_path, pages)
 
-    first = resolve_term([(root, False)], "shared term")
+    first = _resolve_native(root, "shared term")
     assert RESOLVE_TERM_LIMIT == 20
     assert first["total_matches"] == 25  # ambiguity counts every eligible match
     assert first["ambiguous"] is True
@@ -620,12 +626,12 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     assert first["complete"] is False
     assert first["part"] == 1 and first["parts"] == 2
 
-    second = resolve_term([(root, False)], "shared term", part=2)
+    second = _resolve_native(root, "shared term", part=2)
     assert len(second["matches"]) == 5
     assert second["complete"] is True
     assert second["truncated"] is True  # the full result spans more than this part
 
-    beyond = resolve_term([(root, False)], "shared term", part=3)
+    beyond = _resolve_native(root, "shared term", part=3)
     assert beyond["matches"] == [] and beyond["complete"] is False
     assert beyond["exhausted"] is True
 
@@ -663,7 +669,7 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
             )
         },
     )
-    first = resolve_term([(root, False)], "order number")
+    first = _resolve_native(root, "order number")
     assert len(json.dumps(first).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert first["total_matches"] == 2 and first["ambiguous"] is True
     assert [match["representation"] for match in first["matches"]] == [
@@ -687,8 +693,10 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
     medium = {}
     for index in range(1, 6):
         page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["description"] = f"Medium concept {index}. " + "detail " * 2_000
-        page["ariadne"]["representations"] = [
+        page["ariadne_profile"]["native"]["description"] = (
+            f"Medium concept {index}. " + "detail " * 2_000
+        )
+        page["ariadne_profile"]["native"]["ariadne"]["representations"] = [
             {
                 "id": f"rep-{index:02d}",
                 "aliases": ["shared term"],
@@ -702,11 +710,11 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
             "\n---\n\n# term\n"
         )
     spread = _context_root(tmp_path / "medium", medium)
-    part_one = resolve_term([(spread, False)], "shared term")
+    part_one = _resolve_native(spread, "shared term")
     assert len(part_one["matches"]) < 5  # the byte ceiling, not the count limit, bound this part
     assert len(json.dumps(part_one).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_one["total_matches"] == 5 and part_one["truncated"] is True
-    part_two = resolve_term([(spread, False)], "shared term", part=2)
+    part_two = _resolve_native(spread, "shared term", part=2)
     assert len(json.dumps(part_two).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_two["complete"] is True
     ids = [m["representation"] for m in part_one["matches"] + part_two["matches"]]
@@ -718,7 +726,7 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
     entry carrying every representation identity, while representation aliases
     stay representation-level matches."""
     root = _context_root(tmp_path, {"references/order-number.md": order_reference_page()})
-    concept = resolve_term([(root, False)], "Order Number Concept")
+    concept = _resolve_native(root, "Order Number Concept")
     assert [match["level"] for match in concept["matches"]] == ["concept"]
     entry = concept["matches"][0]
     assert entry["representation"] is None
@@ -727,7 +735,7 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
         "global-order-number",
     ]
     assert entry["mappings"] and entry["mappings"][0]["id"] == "local-to-global-prefix"
-    rep_match = resolve_term([(root, False)], "local order number")
+    rep_match = _resolve_native(root, "local order number")
     assert rep_match["matches"][0]["level"] == "representation"
     assert rep_match["matches"][0]["representation"] == "local-order-number"
 
@@ -739,21 +747,21 @@ def test_resolver_fails_explicitly_on_malformed_pages_and_requests(tmp_path):
     malformed = order_reference_page().replace("version: 1", "version: 2")
     root = _context_root(tmp_path, {"references/broken.md": malformed})
     with pytest.raises(ValueError, match="references/broken.md.*unsupported ariadne"):
-        resolve_term([(root, False)], "order number")
+        _resolve_native(root, "order number")
     with pytest.raises(ValueError, match="non-empty term"):
-        resolve_term([(root, False)], "   ")
+        _resolve_native(root, "   ")
     with pytest.raises(ValueError, match="exactly \\{resource, column\\}"):
-        resolve_term([(root, False)], {"resource": orders_resource()})
+        _resolve_native(root, {"resource": orders_resource()})
     with pytest.raises(ValueError, match="canonical resource"):
-        resolve_term([(root, False)], {"resource": "orders", "column": "id"})
+        _resolve_native(root, {"resource": "orders", "column": "id"})
     with pytest.raises(ValueError, match="positive integer"):
-        resolve_term([(root, False)], "order number", part=0)
+        _resolve_native(root, "order number", part=0)
     # a page the resolver does not own (non-reference/legacy) is skipped
     quiet = _context_root(
         tmp_path / "quiet",
         {"references/legacy.md": _page("reference", "legacy", "# legacy\n")},
     )
-    assert resolve_term([(quiet, False)], "order number")["matches"] == []
+    assert _resolve_native(quiet, "order number")["matches"] == []
 
 
 # ------------------------------------- [5] the shared adapters, one core
