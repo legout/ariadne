@@ -1579,7 +1579,8 @@ def _table_quality_native_errors(
                     errors.append(f"{spot} source_version value must be a non-empty string")
                 elif len(value) > QUALITY_MAX_ID_CHARS:
                     errors.append(
-                        f"{spot} source_version value exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                        f"{spot} source_version value exceeds its "
+                        f"{QUALITY_MAX_ID_CHARS}-character bound"
                     )
         for key, cap in (
             ("provenance", QUALITY_MAX_TEXT_CHARS),
@@ -1636,7 +1637,8 @@ def _table_quality_native_errors(
                     errors.append(f"{check_spot} criterion must be a non-empty string")
                 elif len(criterion) > QUALITY_MAX_TEXT_CHARS:
                     errors.append(
-                        f"{check_spot} criterion exceeds its {QUALITY_MAX_TEXT_CHARS}-character bound"
+                        f"{check_spot} criterion exceeds its "
+                        f"{QUALITY_MAX_TEXT_CHARS}-character bound"
                     )
                 tested_population = check.get("tested_population")
                 if tested_population is not None:
@@ -1650,7 +1652,9 @@ def _table_quality_native_errors(
                             f"{QUALITY_MAX_TEXT_CHARS}-character bound"
                         )
                 errors.extend(
-                    _quality_period_errors(check.get("tested_period"), f"{check_spot} tested_period")
+                    _quality_period_errors(
+                        check.get("tested_period"), f"{check_spot} tested_period"
+                    )
                 )
         if "watermark" in report:
             watermark = report.get("watermark")
