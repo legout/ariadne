@@ -31,8 +31,11 @@ Dataset/Table profile pages inside `knowledge/tables/` and
 `knowledge/datasets/` — bound by exact `core_ref` resource identity,
 validated with the whole captured KB, and served through the pinned SDK.
 Curated descriptions, authored native metadata and page bodies survive
-regeneration; the legacy `context_layer` route is unchanged for revision-1
-and standalone projects. These revision-2 contracts are implemented in this
+regeneration. C6 (spec0035 §6): the classic `context_layer` refresh route is
+retired — a candidate whose capability revision lacks the native technical
+kinds refuses the refresh with explicit opt-in guidance before any access,
+while historical admitted releases keep their exact read support. These
+revision-2 contracts are implemented in this
 repository's source candidate; published package pairs have not acquired
 them.
 
@@ -82,7 +85,7 @@ Omitting the selection does not confirm a new assertion. Changed, stale, or conf
 
 ## Add a Context Routing Map
 
-When useful destinations or known business gaps exist, author an ordinary Reference at `context_layer/references/context-routing.md` through the normal proposal edit. Keep it to a short business orientation, question families, links to existing definitions and full Policies, and explicit unresolved questions. Do not copy metric formulas, SQL, Policy bodies, or observed values into it.
+When useful destinations or known business gaps exist, author an ordinary Reference at `knowledge/references/context-routing.md` through the normal proposal edit. Keep it to a short business orientation, question families, links to existing definitions and full Policies, and explicit unresolved questions. Do not copy metric formulas, SQL, Policy bodies, or observed values into it.
 
 Use the stable page on retries. If that path already contains an unrelated Reference, resolve the collision with the owner rather than overwriting it. Review the map with the full candidate; admission does not validate its business interpretation. An absent map is fine: normal discovery remains available.
 

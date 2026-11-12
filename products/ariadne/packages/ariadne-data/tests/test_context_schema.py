@@ -28,6 +28,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+
+import pytest
 from pathlib import Path, PurePosixPath
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages

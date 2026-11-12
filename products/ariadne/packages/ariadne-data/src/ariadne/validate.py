@@ -555,48 +555,13 @@ def _digest_files(files: list[tuple[str, Path, bytes]]) -> str:
     return digest.hexdigest()
 
 
-# Generated Context navigation/history is excluded from the runtime digest
-# because governed answers do not consult it. Candidate validation still binds
-# authored Context files and generated navigation in the Git artifact digest.
-_BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
-
-
-def served_tree_files(
-    semantic_dir: str | Path, context_dir: str | Path
-) -> list[tuple[str, Path, bytes]]:
-    """The runtime-scope walker (issue #30): every model YAML, optional
-    ``graph.yml`` and cited-context page consulted by governed answers, except
-    generated bookkeeping. The runtime digest uses these exact files to detect
-    a served tree that changed after human admission."""
-    files: list[tuple[str, Path, bytes]] = []
-    semantic = Path(semantic_dir)
-    models = semantic / "models"
-    if models.is_dir():
-        for path in sorted(models.glob("*.yml")):
-            files.append((f"semantic_layer/models/{path.name}", path, path.read_bytes()))
-    graph = semantic / "graph.yml"
-    if graph.is_file():
-        files.append(("semantic_layer/graph.yml", graph, graph.read_bytes()))
-    context = Path(context_dir)
-    if context.is_dir():
-        for path in sorted(p for p in context.rglob("*.md") if p.name not in _BOOKKEEPING_NAMES):
-            files.append((f"context_layer/{path.relative_to(context)}", path, path.read_bytes()))
-    return files
-
-
-def served_tree_digest(semantic_dir: str | Path, context_dir: str | Path) -> str:
-    """Digest the semantic and context files consulted by the admitted
-    multi-fact runtime. The runtime refuses a served tree whose bytes changed
-    after admission; generated bookkeeping is excluded. Uses the same hashing
-    scheme as the validation report."""
-    return _digest_files(served_tree_files(semantic_dir, context_dir))
-
-
 # The COMPLETE candidate-scope walker (issue #36/G4, plan §2 "Project storage
-# and authority"): unlike the runtime-scope digest above, this binds a Git
-# proposal's registry, Seed Notes, models, graph, Context pages and Answer
-# Examples, including generated navigation where it belongs to the artifact.
-# No candidate-scope byte silently rides outside the complete artifact digest.
+# and authority"): this binds a Git proposal's registry, Seed Notes, models,
+# graph, native knowledge pages and any legacy Context/Example pages still
+# present in a candidate tree (hybrid migration-line and historical admitted
+# trees digest identically across the C6 cutover), including generated
+# navigation where it belongs to the artifact. No candidate-scope byte
+# silently rides outside the complete artifact digest.
 def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
     """Every byte of the candidate artifact scope under the supplied directory — the exact
     artifact set a Git proposal validates, reviews and admits (one walker

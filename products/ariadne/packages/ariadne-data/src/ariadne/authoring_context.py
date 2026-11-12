@@ -1,24 +1,30 @@
-"""Context-layer and Seed Notes artifact edits for Git authoring proposals
-(issue #34/G2; spec 2026-10-02-0009 §3, plan §2 "Authoring call contract").
+"""Seed Notes artifact edits for Git authoring proposals (issue #34/G2).
 
-The layer-specific half of the discriminated edit contract for OKF pages and
-the Seed Notes: one complete ``page`` addressed by its documented section and
-name, or the complete ``seed_notes`` document. Sections and names are validated
-and converted into allowed artifact paths HERE — one central resolver, no
-arbitrary path field, no generated-page edit (``index.md``/``log.md``/
-computations are system-owned, ADR-0007/ADR-0013), no deletion or rename, no
-per-metric mutation (spec §3). Content may be an incomplete or invalid draft:
-the per-type frontmatter gate belongs to a later validation slice, not to the
-edit seam.
+C6 (spec0035 §6): the context-layer ``page`` edit kind is retired — Context
+pages are native ``knowledge/`` Lumio pages authored as complete
+``{path, content}`` objects through the public native page batch
+(``edit_pages_batch``), never through the retired ``context_layer/...``
+artifact resolver. This module keeps ONLY the live Seed Notes resolution:
+one complete ``seed_notes`` document addressed as ``data/seed_notes.md``,
+validated and converted into its allowed artifact path HERE — one central
+resolver, no arbitrary path field, no deletion or rename. Content may be an
+incomplete or invalid draft: the per-type gate belongs to validation, not to
+the edit seam.
 """
 
 from __future__ import annotations
 
 from ariadne.proposals import (
     check_artifact_content,
-    check_artifact_name,
     check_edit_keys,
     refuse_generated,
+)
+
+_PAGES_GUIDANCE = (
+    "the context-layer page edit kind is retired (spec0035 §6): Context pages "
+    "are native knowledge/ Lumio pages — author them as complete {path, "
+    "content} objects through the native page batch (edit_pages_batch), not "
+    "as {kind: 'page', section, name} artifact edits; nothing was written"
 )
 
 _EDIT_KEYS = {
@@ -30,48 +36,17 @@ _IDENTITY_KEYS = {
     "seed_notes": frozenset({"kind"}),
 }
 
-
-def _check_section(section: object) -> str:
-    if section == "computations":
-        raise ValueError(
-            "context_layer/computations/ pages are system-generated (attestation is "
-            "service-owned, ADR-0007/ADR-0013) — they are never user-editable in a "
-            "proposal"
-        )
-    if section not in (
-        "datasets",
-        "tables",
-        "references",
-        "joins",
-        "policies",
-        "metrics",
-        "skills",
-    ):
-        raise ValueError(
-            f"unknown page section {section!r}: OKF pages live under context_layer/"
-            "{datasets,tables,references,references/joins,policies,metrics,skills}/ — "
-            "computations, index.md and log.md are system-owned"
-        )
-    return str(section)
-
-
-# K2 (issue #42, spec 0010 §3): general References (Term References,
-# Identifier Mappings, enums) live directly under ``references/``; the
-# historical join References keep their own ``references/joins/`` folder and
-# gain their own ``joins`` section spelling.
-_SECTION_FOLDERS = {"references": "references", "joins": "references/joins"}
+SEED_NOTES_REL = "data/seed_notes.md"
 
 
 def _relpath(identity: dict) -> str:
-    """The allowed artifact path of one page/seed-notes edit/identity."""
+    """The allowed artifact path of one seed-notes edit/identity, or the
+    retired-kind guidance refusal for a context-layer ``page``."""
     kind = identity.get("kind")
     if kind == "page":
-        section = _check_section(identity.get("section"))
-        name = check_artifact_name(identity.get("name"), what="page name")
-        folder = _SECTION_FOLDERS.get(section, section)
-        return f"context_layer/{folder}/{name}.md"
+        raise ValueError(_PAGES_GUIDANCE)
     if kind == "seed_notes":
-        return "data/seed_notes.md"
+        return SEED_NOTES_REL
     raise ValueError(
         f"unknown context-layer edit kind {kind!r}: use "
         "{{kind: 'page', section, name, content}} or {{kind: 'seed_notes', content}}"
@@ -79,8 +54,9 @@ def _relpath(identity: dict) -> str:
 
 
 def resolve_edit(edit: dict) -> tuple[str, str]:
-    """Validate one discriminated page/seed-notes edit and return its allowed
-    artifact path plus the content to commit."""
+    """Validate one discriminated seed-notes edit and return its allowed
+    artifact path plus the content to commit; a retired context-layer
+    ``page`` edit refuses with the supported-native-page guidance."""
     if not isinstance(edit, dict) or edit.get("kind") not in _EDIT_KEYS:
         got = edit.get("kind") if isinstance(edit, dict) else edit
         raise ValueError(
@@ -95,7 +71,8 @@ def resolve_edit(edit: dict) -> tuple[str, str]:
 
 
 def resolve_identity(identity: dict) -> str:
-    """The allowed artifact path of one typed page/seed-notes read identity."""
+    """The allowed artifact path of one typed seed-notes read identity; a
+    retired context-layer ``page`` identity refuses with the guidance."""
     if not isinstance(identity, dict) or identity.get("kind") not in _IDENTITY_KEYS:
         got = identity.get("kind") if isinstance(identity, dict) else identity
         raise ValueError(

@@ -527,8 +527,6 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
     base = _claim_map(rel, base_text) or {}
     claims = _claim_map(rel, content) or {}
     system_keys = _SYSTEM_CLAIM_KEYS
-    if PurePosixPath(rel).parts[:2] == ("context_layer", "references"):
-        system_keys = _SYSTEM_CLAIM_KEYS - {"ariadne"}  # the authored extension (K2)
     forged = sorted(
         key for key in system_keys & claims.keys() if key not in base or base[key] != claims[key]
     )
@@ -631,9 +629,8 @@ def _assert_scope(rel: str) -> None:
         raise ValueError(
             f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
             "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
-            "contracts/*.ya?ml, contract_bindings.yaml, "
-            "context_layer/{datasets,tables,references,references/joins,policies,"
-            "metrics,skills}/*.md)"
+            "contracts/*.ya?ml, contract_bindings.yaml, context_integration.yaml, "
+            "knowledge/**/*.md native knowledge pages)"
         )
     refuse_generated(rel)  # generated artifacts are never USER-editable
 
@@ -670,17 +667,9 @@ def _in_user_scope(rel: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
         return True  # spec 0028 §3: producer contract documents (flat)
-    if (
-        parts[0] == "context_layer"
-        and len(parts) >= 3
-        and parts[1] in _OKF_PAGE_SECTIONS
-        and pure.suffix == ".md"
-    ):
-        if parts[1] == "references":
-            # K2 (issue #42, spec 0010 §3): general References live directly
-            # under references/; the join References keep references/joins/.
-            return len(parts) == 3 or (len(parts) == 4 and parts[2] == "joins")
-        return True
+    # C6 (spec0035 §6): the retired standalone context_layer/ scope is gone —
+    # user-editable Context pages live only in the native knowledge/ subtree
+    # (knowledge_path, already accepted above).
     return False
 
 
@@ -775,21 +764,17 @@ def _scope_files(project: Path) -> list[str]:
                 raise GitError(f"initial contract {path.name!r} must not be a symlink")
             if path.is_file():
                 rels.append(path.relative_to(project).as_posix())
-    for section in _OKF_PAGE_SECTIONS:
-        root = project / "context_layer" / section
-        if root.is_dir():
-            rels.extend(
-                path.relative_to(project).as_posix()
-                for path in sorted(root.rglob("*.md"))
-                if path.is_file() and path.name not in _GENERATED_FILES
-            )
-    examples = project / "answer_examples"
-    if examples.is_dir():
-        rels.extend(
-            path.relative_to(project).as_posix()
-            for path in sorted(examples.glob("*.md"))
-            if path.is_file() and path.name not in _GENERATED_FILES
-        )
+    for rel in sorted(
+        path
+        for path in sorted(contracts.iterdir())
+        if path.is_file() and path.suffix in _MODEL_SUFFIXES
+    ) if contracts.is_dir() else []:
+        rels.append(rel.relative_to(project).as_posix())
+    # C6 (spec0035 §6): the retired standalone context_layer/ and
+    # answer_examples/ initial-revision walks are gone — the native contract's
+    # initial artifact revision commits the registry, Seed Notes, OSI models,
+    # graph, contracts and the native knowledge/ subtree only (a legacy
+    # project refuses at the shared project gate before any proposal exists).
     return rels
 
 

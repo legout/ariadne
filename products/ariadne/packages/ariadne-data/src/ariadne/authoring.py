@@ -42,7 +42,7 @@ from ariadne import (
     profiler,
     proposals,
 )
-from ariadne.author import MAX_ROUNDS, _bundle_errors, _load_frontmatter_meta
+from ariadne.author import MAX_ROUNDS, _load_frontmatter_meta
 from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historical seam
     EVIDENCE_PART_CHARS,
     MAX_DOCUMENTS_PER_CALL,
@@ -65,10 +65,8 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
 from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issue #41)
     _EVIDENCE_SUMMARY_KEYS,
     _canonical_digest,
-    build_dataset_page,
     build_native_dataset_page,
     build_native_table_page,
-    build_table_page,
     candidate_digest,
     confirmation_binding_digest,  # K4 fix pass: the effective identity a confirmation binds
     evidence_counterevidence,  # K4 fix pass: counterevidence named at validation/review
@@ -194,13 +192,13 @@ def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
 
 
 def _graph_citation_errors(tree: Path) -> list[str]:
-    """Require each multi-fact metric to cite an admitted, contained Policy.
-
-    Route-aware (spec0035 §6, C2): a revision-2 integrated candidate proves
-    its governing Policies through producer-owned native metadata and the
-    producer's actual Policy Closure (:func:`_native_graph_policy_errors`);
-    the classic context_layer page gate remains only for legacy candidates
-    until C6 and never executes on the supported new route."""
+    """Require each multi-fact metric to prove its governing Policies through
+    the producer-native closure (spec0035 §6, C6 cutover): the classic
+    context_layer page gate is retired — revision-2 candidates prove the
+    obligation via :func:`_native_graph_policy_errors`. Old-capability
+    candidates (support_revision < 2 or no authored selector) with governed
+    models are already refused at the finalize pass above, so they never
+    reach the validation gates with a loadable graph."""
     selector_blob = tree / "context_integration.yaml"
     if selector_blob.is_file():
         try:
@@ -213,48 +211,10 @@ def _graph_citation_errors(tree: Path) -> list[str]:
             selected = None  # the candidate gate owns a malformed selector
         if selected is not None and selected.get("support_revision", 1) >= 2:
             return _native_graph_policy_errors(tree, selected["namespace"])
-    if not (tree / "semantic_layer" / "graph.yml").is_file():
-        return []
-    try:
-        graph = load_graph(tree / "semantic_layer")
-    except Exception:
-        return []  # the validator's graph diagnostics already failed the candidate
-    context_root = tree / "context_layer"
-    errors: list[str] = []
-    for name in sorted(graph.metrics):
-        page = context_root / "metrics" / f"{name}.md"
-        rel = f"context_layer/metrics/{name}.md"
-        if not page.is_file():
-            errors.append(
-                f"{rel}: multi-fact admission requires a cited metric page for every "
-                f"graph metric — '{name}' has none (issue #30); an uncited definition "
-                "cannot become a governed multi-fact answer"
-            )
-            continue
-        try:
-            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            errors.append(f"{rel}: frontmatter is not valid YAML: {exc}")
-            continue
-        refs = [
-            str(source.get("resource") if isinstance(source, dict) else source or "")
-            for source in meta.get("sources") or []
-        ]
-        cited = [ref for ref in refs if ref.startswith("policies/")]
-        if not cited:
-            errors.append(
-                f"{rel}: multi-fact admission must cite at least one governing policies/... page"
-            )
-        for ref in cited:
-            target = (context_root / ref).resolve()
-            policy_root = (context_root / "policies").resolve()
-            if not target.is_relative_to(policy_root) or not target.is_file():
-                errors.append(
-                    f"{rel}: cited policy '{ref}' does not resolve inside "
-                    "context_layer/policies/ — a citation outside the Policy "
-                    "directory fails multi-fact admission"
-                )
-    return errors
+    # no (native) selector: the candidate carries no governed-model route
+    # through this validator — the finalize pass refuses any that would need
+    # one, so there is no classic page gate left to run here.
+    return []
 
 
 def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
@@ -570,7 +530,6 @@ class AuthoringProject:
 
 # The finalize commit's fixed message (the only commits validation itself
 # creates): deterministic generated artifacts only, never a review decoration.
-FINALIZE_COMMIT_MESSAGE = "ariadne: finalize generated artifacts"
 
 
 def _cited_resources(meta: dict) -> list[tuple[str, str | None]]:
@@ -1147,43 +1106,49 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             source_digest=source_digest,
             approval=approval,
         )
-        # C2 (spec0035 §6): the supported revision-2 route never executes the
-        # classic context_layer finalization — its generated Computation
-        # content is derived for the ONE native batch writer instead; the
-        # classic pass remains only for legacy candidates until C6.
+        # C6 (spec0035 §6): the classic context_layer finalization is
+        # retired. Every candidate finalizes through the ONE native
+        # derivation; an old-capability candidate (support_revision < 2 or
+        # no authored selector) whose governed metric set needs generated
+        # technical pages refuses THIS operation BEFORE any mutation with
+        # explicit opt-in guidance — never an implicit selector upgrade.
+        # A candidate with nothing to derive finalizes as a no-op.
         finalize_blob = proposals._read_blob(project, current, "context_integration.yaml")
         finalize_route = (
             lumio_context.validated_selector(yaml.safe_load(finalize_blob.decode("utf-8")))
             if finalize_blob is not None
             else None
         )
-        native_finalize_errors: list[str] = []
-        if finalize_route is not None and finalize_route.get("support_revision", 1) >= 2:
-            native_specs, native_finalize_errors = context.finalize_native_candidate(
-                worktree_root
+        native_revision = (
+            finalize_route is not None and finalize_route.get("support_revision", 1) >= 2
+        )
+        native_specs, native_finalize_errors = context.finalize_native_candidate(worktree_root)
+        if native_specs and not native_revision:
+            raise ValueError(
+                "this candidate's capability revision does not include the native "
+                "technical pages the finalize pass generates (support_revision < 2 "
+                "or no authored context_integration.yaml): the retired standalone "
+                "finalization is no longer available. Author the integrated "
+                "context_integration.yaml selector (support_revision: 2 with its "
+                "policy_bindings block) through reviewed setup and resubmit the "
+                "candidate; nothing was written."
             )
-            if native_specs:
-                # the caller HOLDS the proposal lock: submit through the
-                # lock-held batch body (re-acquiring would deadlock) after
-                # the same public batch guards ran on the generated specs
-                proposals.check_page_batch(native_specs)
-                final = proposals._edit_page_batch_locked(
-                    project,
-                    proposal,
-                    record,
-                    current,
-                    worktree_root,
-                    [(spec["path"], spec["content"]) for spec in native_specs],
-                    core_generated=True,
-                )["revision"]
-            else:
-                final = current
+        if native_specs:
+            # the caller HOLDS the proposal lock: submit through the
+            # lock-held batch body (re-acquiring would deadlock) after
+            # the same public batch guards ran on the generated specs
+            proposals.check_page_batch(native_specs)
+            final = proposals._edit_page_batch_locked(
+                project,
+                proposal,
+                record,
+                current,
+                worktree_root,
+                [(spec["path"], spec["content"]) for spec in native_specs],
+                core_generated=True,
+            )["revision"]
         else:
-            context.finalize_candidate(worktree_root)
-            final = (
-                proposals.commit_generated(project, record, message=FINALIZE_COMMIT_MESSAGE)
-                or current
-            )
+            final = current
         with tempfile.TemporaryDirectory(prefix="ariadne-candidate-") as tmp:
             root = Path(tmp)
             tree = root / "bundle"
@@ -1216,8 +1181,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 result = validate(tree)  # compile-only: the boundary error blocks
                 errors = [auth_error, *result.errors]
             page_errors = (
-                _bundle_errors(tree)
-                + _graph_citation_errors(tree)
+                _graph_citation_errors(tree)
                 + _stale_schema_binding_errors(
                     tree, approval.get("approval_digest") if approval else None
                 )
@@ -1680,41 +1644,22 @@ def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
 
 def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
     """Every structured Reference page of one materialized candidate tree:
-    (context-relative page path, frontmatter meta, the ariadne extension).
-    Legacy References without the extension stay out; malformed draft pages
-    stay out too — the page gate owns their structural errors. Integrated
-    candidates (spec0029 §1.5) carry their ONE maintained curated source in
-    the knowledge/ subtree: those KB Reference pages are consumed through the
-    shared in-memory view above, and a legacy context_layer copy — if any —
-    is never a fallback source."""
-    if (tree / "context_integration.yaml").is_file():
-        pages: list[tuple[str, dict, dict]] = []
-        knowledge = tree / "knowledge"
-        for page in sorted(knowledge.rglob("*.md")) if knowledge.is_dir() else []:
-            if page.name in ("index.md", "log.md"):
-                continue
-            rel = page.relative_to(knowledge).as_posix()
-            parsed = _kb_reference_from_text(page.read_text(encoding="utf-8"), rel)
-            if parsed is not None:
-                view, _full = parsed
-                pages.append((rel, view, view["ariadne"]))
-        return pages
-    context_dir = tree / "context_layer"
-    legacy: list[tuple[str, dict, dict]] = []
-    for page in sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []:
-        if page.name in _GENERATED_FILES:
+    (KB-relative page path, frontmatter meta, the ariadne extension).
+    Integrated candidates (spec0029 §1.5) carry their ONE maintained curated
+    source in the knowledge/ subtree. C6: the classic context_layer reference
+    walk is retired with the classic write routes — only the native subtree
+    is read, and a legacy context_layer copy is never a fallback source."""
+    pages: list[tuple[str, dict, dict]] = []
+    knowledge = tree / "knowledge"
+    for page in sorted(knowledge.rglob("*.md")) if knowledge.is_dir() else []:
+        if page.name in ("index.md", "log.md"):
             continue
-        rel = page.relative_to(context_dir).as_posix()
-        if not rel.startswith("references/"):
-            continue
-        try:
-            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-        except yaml.YAMLError:
-            continue  # the page gate owns the malformed-draft error
-        extension = meta.get("ariadne") if isinstance(meta, dict) else None
-        if isinstance(extension, dict) and isinstance(extension.get("mappings"), list):
-            legacy.append((rel, meta, extension))
-    return legacy
+        rel = page.relative_to(knowledge).as_posix()
+        parsed = _kb_reference_from_text(page.read_text(encoding="utf-8"), rel)
+        if parsed is not None:
+            view, _full = parsed
+            pages.append((rel, view, view["ariadne"]))
+    return pages
 
 
 def _asserted_claim_errors(tree: Path) -> list[str]:
@@ -2092,44 +2037,6 @@ def _native_resource_pages(project: Path, revision: str) -> tuple[dict[str, dict
     return pages, paths
 
 
-def _resource_pages(project: Path, revision: str) -> tuple[dict[str, dict], set[str]]:
-    """The candidate's resource-bound schema pages at ``revision`` (read from
-    the commit, never a worktree): ``(resource -> {path, meta, text}, tracked
-    schema-page paths)``. Two pages carrying the same resource is a collision
-    needing human resolution; pages without a canonical resource (legacy
-    authored names) are not touched by refresh."""
-    tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
-    pages: dict[str, dict] = {}
-    paths: set[str] = set()
-    for rel in tracked.split("\n"):
-        if (
-            not (
-                rel.startswith("context_layer/tables/") or rel.startswith("context_layer/datasets/")
-            )
-            or PurePosixPath(rel).name in proposals._GENERATED_FILES
-        ):
-            continue
-        blob = proposals._read_blob(project, revision, rel)
-        if blob is None:  # pragma: no cover - ls-tree paths always resolve
-            continue
-        paths.add(rel)
-        text = blob.decode("utf-8", "replace")
-        try:
-            meta = _load_frontmatter_meta(text)
-        except yaml.YAMLError:
-            continue  # a malformed draft page: the validation gate owns the error
-        resource = meta.get("resource") if isinstance(meta, dict) else None
-        if isinstance(resource, str) and resource.startswith("ariadne://"):
-            if resource in pages:
-                raise ValueError(
-                    f"the candidate carries two schema pages for {resource!r} "
-                    f"({pages[resource]['path']} and {rel}) — a resource collision "
-                    "needs human resolution; refresh refuses rather than overwriting"
-                )
-            pages[resource] = {"path": rel, "meta": meta, "text": text}
-    return pages, paths
-
-
 def _schema_columns(catalog_table: dict, declared: dict) -> list[dict]:
     """The core-owned schema facts of one table: exact column identity/type in
     ordinal order plus only supported declared metadata (unknown stays
@@ -2375,6 +2282,30 @@ def refresh_schema(
             f"refresh expected {expected_revision} — re-read the candidate and retry "
             "with the current revision; nothing was written"
         )
+    # C6 (spec0035 §6): the classic context_layer page-build refresh is
+    # retired — native technical profile pages need the revision-2 capability
+    # opt-in. An old-capability candidate (support_revision < 2 or no
+    # authored selector) refuses THIS refresh operation BEFORE any source
+    # access or mutation, with explicit opt-in guidance; never an implicit
+    # selector upgrade or conversion.
+    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+    selector_blob = proposals._read_blob(project, current, "context_integration.yaml")
+    selected_route = (
+        lumio_context.validated_selector(yaml.safe_load(selector_blob.decode("utf-8")))
+        if selector_blob is not None
+        else None
+    )
+    if selected_route is None or selected_route.get("support_revision", 1) < 2:
+        raise ValueError(
+            "schema refresh generates native dataset/table technical pages, which "
+            "this candidate's capability revision does not include (support_revision "
+            "< 2 or no authored context_integration.yaml): the retired standalone "
+            "context_layer refresh is no longer available. Author the integrated "
+            "selector (support_revision: 2 with its policy_bindings block) through "
+            "reviewed setup and resubmit the candidate; nothing was read, written "
+            "or refreshed."
+        )
     resolved, digest = authoring_sources.candidate_sources(project, current)
     if resolved is None:
         raise ValueError(
@@ -2451,204 +2382,21 @@ def refresh_schema(
             f"{missing[0]} — available assets: {', '.join(available) or 'none'}; "
             "nothing was written"
         )
-    existing, tracked_paths = _resource_pages(project, current)
-    # #83 (spec0032 §§5–6): a candidate whose selector opted into support
-    # revision 2 refreshes into the PRODUCER-NATIVE technical profile pages
-    # of its knowledge/ subtree (revision-checked complete page edits through
-    # the public producer parse for existing pages — no Core YAML parse of
-    # KB bytes, no maintained context_layer mirror); every other candidate,
-    # including standalone and legacy integrated ones, keeps the unchanged
-    # context_layer route below.
-    selector_blob = proposals._read_blob(project, current, "context_integration.yaml")
-    if selector_blob is not None:
-        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
-
-        selected_route = lumio_context.validated_selector(
-            yaml.safe_load(selector_blob.decode("utf-8"))
-        )
-        if selected_route is not None and selected_route.get("support_revision", 1) >= 2:
-            return _refresh_native_profiles(
-                project,
-                proposal,
-                current,
-                requested,
-                matched,
-                profiles,
-                declared,
-                binding_digest,
-                digest,
-            )
-    now = datetime.now(UTC).isoformat(timespec="seconds")
-    specs: list[dict] = []
-    claimed: dict[str, str] = {}
-    collections: dict[tuple, dict] = {}
-    for asset in requested:
-        key = (asset["source"], asset["catalog"], asset["schema"], asset["table"])
-        table = matched[key]
-        resource = table_resource(
-            asset["source"], asset["catalog"], asset["schema"], asset["table"]
-        )
-        columns = _schema_columns(table, declared)
-        page = existing.get(resource)
-        path = (
-            page["path"]
-            if page
-            else (f"context_layer/tables/{generated_page_filename(resource, asset['source'])}")
-        )
-        text, flags = build_table_page(
-            asset={
-                **asset,
-                "resource": resource,
-            },
-            columns=columns,
-            profile=profiles[resource],
-            existing_text=page["text"] if page else None,
-            now=now,
-            source_binding=binding_digest,
-        )
-        specs.append(
-            {
-                "resource": resource,
-                "path": path,
-                "text": text,
-                "kind": "table",
-                "flags": flags,
-            }
-        )
-        collections.setdefault(
-            (asset["source"], asset["catalog"], asset["schema"]),
-            {"source": asset["source"], "catalog": asset["catalog"], "schema": asset["schema"]},
-        )
-    for collection_key, collection in collections.items():
-        resource = collection_resource(
-            collection["source"], collection["catalog"], collection["schema"]
-        )
-        page = existing.get(resource)
-        path = (
-            page["path"]
-            if page
-            else (
-                f"context_layer/datasets/{generated_page_filename(resource, collection['source'])}"
-            )
-        )
-        # Overview membership is the collection's EXISTING represented pages
-        # PLUS the requested updates (issue #41): a narrower refresh never
-        # drops a still-present table's link — and an approved asset nothing
-        # ever documented is never silently asserted (no unrelated additions)
-        members: list[dict] = []
-        requested_here: set[str] = set()
-        for spec in specs:
-            if spec["kind"] != "table":
-                continue
-            parts = parse_resource(spec["resource"])[1]
-            if parts[:3] != list(collection_key):
-                continue  # the tables of OTHER collections
-            members.append(
-                {
-                    "resource": spec["resource"],
-                    "table": parts[3],
-                    "link": f"../tables/{PurePosixPath(spec['path']).name}",
-                    "column_count": len(profiles[spec["resource"]]["columns"]),
-                }
-            )
-            requested_here.add(spec["resource"])
-        carried: list[tuple[str, dict]] = []
-        for res, carried_page in existing.items():
-            if res in requested_here or not carried_page["path"].startswith(
-                "context_layer/tables/"
-            ):
-                continue
-            try:
-                kind, parts = parse_resource(res)
-            except ValueError:
-                continue  # not a canonical resource: nothing it can represent
-            if kind != "table" or parts[:3] != list(collection_key):
-                continue
-            carried_meta = (
-                carried_page["meta"].get("ariadne")
-                if isinstance(carried_page["meta"], dict)
-                else None
-            )
-            carried_schema = carried_meta.get("schema") if isinstance(carried_meta, dict) else None
-            carried.append(
-                (
-                    parts[3],
-                    {
-                        "resource": res,
-                        "table": parts[3],
-                        "link": f"../tables/{PurePosixPath(carried_page['path']).name}",
-                        "column_count": (
-                            len(carried_schema) if isinstance(carried_schema, list) else 0
-                        ),
-                    },
-                )
-            )
-        members.extend(member for _table, member in sorted(carried, key=lambda c: c[0]))
-        text, flags = build_dataset_page(
-            collection={
-                **collection,
-                "resource": resource,
-            },
-            tables=members,
-            existing_text=page["text"] if page else None,
-        )
-        specs.append(
-            {"resource": resource, "path": path, "text": text, "kind": "dataset", "flags": flags}
-        )
-    # collision checks BEFORE any write (plan §2: a collision refuses, never
-    # overwrites; filename/resource consistency is checked against the
-    # candidate's tracked schema pages)
-    for spec in specs:
-        other = claimed.get(spec["path"])
-        if other is not None and other != spec["resource"]:
-            raise ValueError(
-                f"generated filename collision: {spec['path']} would serve both "
-                f"{other!r} and {spec['resource']!r} — refresh refuses rather than "
-                "overwriting another asset"
-            )
-        claimed[spec["path"]] = spec["resource"]
-        page = existing.get(spec["resource"])
-        if page is None and spec["path"] in tracked_paths:
-            raise ValueError(
-                f"{spec['path']}: the generated page for {spec['resource']!r} collides "
-                "with a different existing candidate page — a filename/resource "
-                "collision refuses rather than overwriting; resolve it by hand"
-            )
-    # Fix F1 (parent-authorized, spec 0024 §3/§6 AC5): pre-flight EVERY
-    # generated page against the shared artifact bound BEFORE the first edit.
-    # The sequential edit seam checks one page at a time, so an over-limit
-    # later page would otherwise refuse only after earlier pages already
-    # advanced the candidate — a half-updated refresh. The check is the same
-    # one the edit seam itself runs, moved ahead of all writes; no partial
-    # state can remain.
-    for spec in specs:
-        proposals.check_artifact_content(f"generated page {spec['resource']!r}", spec["text"])
-    revision = current
-    pages: list[dict] = []
-    changed_any = False
-    for spec in specs:  # revision-checked complete page edits, core-generated
-        out = proposals.edit_proposal(
-            project, proposal, revision, spec["path"], spec["text"], core_generated=True
-        )
-        revision = out["revision"]
-        changed_any = changed_any or out["changed"]
-        pages.append(
-            {
-                "resource": spec["resource"],
-                "path": spec["path"],
-                "kind": spec["kind"],
-                "changed": out["changed"],
-                "changes": spec["flags"],
-            }
-        )
-    return {
-        "proposal": proposal,
-        "revision": revision,
-        "changed": changed_any,
-        "pages": pages,
-        "assets": requested,
-        "source_digest": digest,
-    }
+    # #83 (spec0032 §§5–6): the ONE refresh route regenerates the core-owned
+    # schema facts as PRODUCER-NATIVE technical profile pages of the
+    # knowledge/ subtree (C6: the classic context_layer page-build route is
+    # retired; old-capability candidates refused above, before any access).
+    return _refresh_native_profiles(
+        project,
+        proposal,
+        current,
+        requested,
+        matched,
+        profiles,
+        declared,
+        binding_digest,
+        digest,
+    )
 
 
 # ------------------- K3 (issue #43): bounded mapping inspection + receipts
@@ -3843,52 +3591,35 @@ def _verify_receipt(
 
 def _reference_pages_at(project: Path, revision: str) -> dict[str, dict]:
     """The tracked structured Reference pages at one revision: path ->
-    {meta, text}. Pages without the ``ariadne`` extension stay out (legacy
-    References never carry mapping evidence). Integrated candidates carry
-    their structured References in the knowledge/ subtree (spec0029 §1.5):
-    each record also keeps the KB-relative path and the FULL page frontmatter
-    for the Core-owned evidence attach, which rewrites the page through the
-    producer's public parse and checked worktree write — never a
-    context_layer mirror."""
+    {meta, text}. Pages without the ``ariadne`` extension stay out. Integrated
+    candidates carry their structured References in the knowledge/ subtree
+    (spec0029 §1.5): each record also keeps the KB-relative path and the FULL
+    page frontmatter for the Core-owned evidence attach, which rewrites the
+    page through the producer's public parse and checked worktree write —
+    never a context_layer mirror. C6: the classic context_layer branch is
+    retired with the classic write routes; only the native subtree is read."""
     tracked = proposals._git(["ls-tree", "-r", "--name-only", revision], project).stdout
     pages: dict[str, dict] = {}
-    integrated = "context_integration.yaml" in tracked.split("\n")
     for rel in tracked.split("\n"):
-        kb_path: str | None = None
-        if integrated:
-            if not rel.startswith("knowledge/") or not rel.endswith(".md"):
-                continue
-            kb_path = PurePosixPath(rel).relative_to("knowledge").as_posix()
-            if PurePosixPath(rel).name in proposals._GENERATED_FILES or kb_path in (
-                "index.md",
-                "log.md",
-            ):
-                continue
-        elif not rel.startswith("context_layer/references/") or not rel.endswith(".md"):
+        if not rel.startswith("knowledge/") or not rel.endswith(".md"):
             continue
-        else:
-            if PurePosixPath(rel).name in proposals._GENERATED_FILES:
-                continue
+        kb_path = PurePosixPath(rel).relative_to("knowledge").as_posix()
+        if PurePosixPath(rel).name in proposals._GENERATED_FILES or kb_path in (
+            "index.md",
+            "log.md",
+        ):
+            continue
         blob = proposals._read_blob(project, revision, rel)
         if blob is None:  # pragma: no cover - ls-tree paths always resolve
             continue
         text = blob.decode("utf-8", "replace")
-        if kb_path is not None:
-            parsed = _kb_reference_from_text(text, kb_path)
-            if parsed is None:
-                continue
-            view, full = parsed
-            if not view["ariadne"].get("mappings"):
-                continue
-            pages[rel] = {"meta": view, "text": text, "full": full, "kb_path": kb_path}
-        else:
-            try:
-                meta = _load_frontmatter_meta(text)
-            except yaml.YAMLError:
-                continue  # the native page gate owns malformed legacy pages
-            extension = meta.get("ariadne") if isinstance(meta, dict) else None
-            if isinstance(extension, dict) and extension.get("mappings"):
-                pages[rel] = {"meta": meta, "text": text}
+        parsed = _kb_reference_from_text(text, kb_path)
+        if parsed is None:
+            continue
+        view, full = parsed
+        if not view["ariadne"].get("mappings"):
+            continue
+        pages[rel] = {"meta": view, "text": text, "full": full, "kb_path": kb_path}
     return pages
 
 

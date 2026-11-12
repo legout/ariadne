@@ -28,7 +28,7 @@ full Context/Policy caveats, draft/history labels and `resolve-term --part`
 continuation; discovery changes no compile, admission or Git Admission gate.
 
 **Optional Context Routing Map.** A project may carry a human-reviewed
-Reference at `context_layer/references/context-routing.md` that points
+Reference at `knowledge/references/context-routing.md` that points
 question families to existing metric definitions, Policies and Term
 References. When present, consult it through the selected route (the
 admitted snapshot — never a proposal or mutable-root peek), then read the
@@ -528,7 +528,7 @@ the current ambiguity needs.
    Notes and relevant table/Reference/Policy edits, preserving unrelated
    authored content, owner/document provenance and recorded unknowns; raw
    measurements stay core-owned. The Context Routing Map is the ONE
-   stable ordinary Reference `context_layer/references/context-routing.md`
+   stable ordinary Reference `knowledge/references/context-routing.md`
    — a data-project guide, not a repository bounded-context map — created
    or updated only when useful destinations or explicit gaps exist, from
    actual owner/document evidence (never an inferred map): pointers and
@@ -549,8 +549,9 @@ the current ambiguity needs.
 Onboarding adds no second post-answer save prompt: answer-example consent
 stays the single shown-record question from the existing feedback flow,
 and user feedback remains self-declared business assessment, never
-Independent Numerical Validation. Answer Examples stay in their own
-separate store, never inside the Context Routing Map or table measurements.
+Independent Numerical Validation. Answer Examples are native knowledge
+pages of the same KB — historical evidence only, never a cached answer —
+never inside the Context Routing Map or table measurements.
 
 ## Agent rules
 
@@ -560,8 +561,9 @@ separate store, never inside the Context Routing Map or table measurements.
   or write served layers, proposal worktrees or `.ariadne/` state directly.
   Candidate reads require the explicit proposal/revision selectors.
 - **Proposals never admit.** Governed content is served only from the exact
-  human-admitted Git revision. Write through typed proposal edits; never edit
-  `context_layer/`, `semantic_layer/`, generated `index.md`/`log.md`, proposal
+  human-admitted Git revision. Write through typed proposal edits and the
+  native knowledge-page batch; never edit `knowledge/` pages,
+  `semantic_layer/`, generated `index.md`/`log.md`, proposal
   worktrees or anything under `.ariadne/` directly.
 - **Grain before joins.** A `define_metric` source must be grain-preserving: every
   join runs many-to-one on a key that is unique on the joined side. Resolve
@@ -573,7 +575,7 @@ separate store, never inside the Context Routing Map or table measurements.
   the full bodies of every policy it cites. Restate those caveats with every
   number, say `governed: true`, and cite the context actually returned: the
   served metric page and the relevant Policy paths exactly as the page's
-  `sources` list gives them (e.g. `context_layer/metrics/gross_margin.md` and
+  `sources` list gives them (e.g. `metrics/gross_margin.md` and
   `policies/emea-currency-cutover.md`) — never invented, remembered, or guessed
   paths. A caveat is stated, not referenced: name the excluded statuses or rows
   themselves (e.g. "excludes CANCELLED and RETURNED orders" — the kept scope

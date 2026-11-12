@@ -87,9 +87,26 @@ def _staged_contribution(tmp_path):
     proposal = started["proposal"]
     tree = worktree_of(project, proposal)
 
-    # Finalize generated metadata without native live validation or source access.
-    context.finalize_candidate(tree)
-    run_git(tree, "add", "-f", "--", "context_layer")
+    # Finalize generated metadata without native live validation or source
+    # access (C6: the classic context_layer finalization is retired — the ONE
+    # native derivation rides the same public batch guards and lock-held batch
+    # body the validate flow uses).
+    from ariadne import proposals as _proposals
+
+    native_specs, finalize_errors = context.finalize_native_candidate(tree)
+    assert not finalize_errors, finalize_errors
+    if native_specs:
+        _proposals.check_page_batch(native_specs)
+        _proposals._edit_page_batch_locked(
+            project,
+            proposal,
+            _proposals._load_record(project, proposal),
+            revision,
+            tree,
+            [(spec["path"], spec["content"]) for spec in native_specs],
+            core_generated=True,
+        )
+    run_git(tree, "add", "-f", "--", "knowledge")
     run_git(tree, "commit", "-q", "-m", "human: deterministic fixture finalization")
     finalized = run_git(tree, "rev-parse", "HEAD").strip()
     admission.reconcile(project, proposal, revision, finalized)

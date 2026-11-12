@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ariadne-data"
 version = "0.8.0"
-description = "Governed metrics for autonomous agents: OKF context layer + OSI semantic layer behind one MCP facade"
+description = "Governed metrics for autonomous agents: one Lumio knowledge foundation plus the OSI semantic layer behind one MCP facade"
 readme = "README.md"
 requires-python = ">=3.14"  # ADR-0008 scoped amendment (spec 0026): 3.12/3.13 support ends here
 dependencies = [
@@ -45,9 +45,11 @@ mcp = [
 spreadsheets = [
     "openpyxl>=3.1,<4",  # stored XLSX cells/formula presence only; never Excel execution
 ]
-# ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
-# so the base install stays lightweight; ariadne-ingest fails with install guidance
-# when a converter is missing. dev gains the same deps so the test suite covers them.
+# ADR-0009 document conversion, now serving the NATIVE intake's bounded
+# Seed-Notes document parts only (spec0035/ADR-0029: onboarding itself is
+# Lumio-native; the retired ariadne-ingest orchestration and CLI are gone).
+# Optional so the base install stays lightweight. dev gains the same deps so
+# the test suite covers them.
 documents = [
     "liteparse>=2.4.0",  # PDF
     "markitdown[docx]>=0.1.6",  # docx/pptx/xlsx

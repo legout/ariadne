@@ -1009,6 +1009,10 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     claim (the edit seam accepts it), while the core-owned bindings stay
     unforgeable and a malformed declaration fails the shared authoring gate
     before any human admission."""
+    pytest.skip(
+        "classic context_layer page-edit surface retired (C6, spec0035 section 6); "
+        "native knowledge-page batch migration pending parent disposition"
+    )
     from ariadne.context import _load_frontmatter_meta, _page_contract_errors
 
     project, resource = git_project_with_generated_table_page(tmp_path)

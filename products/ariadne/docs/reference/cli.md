@@ -56,9 +56,9 @@ The following decisions remain local and human-only; they are not MCP tools:
 
 A Git commit, validation result, proposed source, authored status field or successful query is not source approval or admission. See [Git-backed authoring](../how-to/git-authoring.md) and the [Git-only route reference](git-authoring-migration.md) for the complete sequence.
 
-## Document ingestion and static validation
+## Document onboarding and static validation
 
-`ariadne-ingest DOC... --project DIR --proposal ID --expected-revision REV` reads operator-authorized external document references and writes authored pages into that proposal revision. `--verbatim` preserves converted text without a model call; `--reconcile` compares against the immutable admitted base and is mutually exclusive with `--verbatim`. Original documents remain external; Core has no upload/archive store.
+Document onboarding uses Lumio's native intake (spec0035/ADR-0029): operator-authorized documents ride the SDK's `extract_source`/`CandidateRequest` contract through the authoring harness, with applicable original retention and the selected verbatim/distilled intent. There is no separate `ariadne-ingest` command and no Core document store; the optional `ariadne-data[documents]` extra adds supported converters for the bounded Seed-Notes document parts only.
 
 `ariadne-validate ARTIFACT_DIR` performs source-free compile checks on an explicit artifact directory. Its result is partial structural evidence only: it does not open sources, perform live validation, approve sources, or admit content. Live validation is revision-bound through `ariadne-authoring validate` after human source approval.
 

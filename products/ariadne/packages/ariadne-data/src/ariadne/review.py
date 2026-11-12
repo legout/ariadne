@@ -94,10 +94,23 @@ def _managed(project: Path, proposal: str | None, stdin: Any, interactive: bool)
         print("Eligible assertion (selection is inert; default skip):")
         print(json.dumps(entry, indent=2))
         print("Required scope/representations — exact reviewed Reference page:")
-        for reviewed_part in parts:
-            for body in reviewed_part["files"]:
-                if body["resource"] == "context_layer/" + entry["page"]:
-                    print(body["text"])
+        # C6 (owner disposition): the reviewed Reference body is printed via
+        # the CANONICAL payload resource identity — the assertion's page is
+        # KB-relative (spec0029 §1.5), so its tracked resource is
+        # ``knowledge/<page>``; the retired ``context_layer/<page>`` form is
+        # matched only for legacy in-flight candidates still under review.
+        # Exact equality only — digest, confirmation and revision safeguards
+        # below are unchanged.
+        resources = {
+            body["resource"]: body["text"]
+            for reviewed_part in parts
+            for body in reviewed_part["files"]
+        }
+        reviewed_text = resources.get("knowledge/" + entry["page"]) or resources.get(
+            "context_layer/" + entry["page"]
+        )
+        if reviewed_text is not None:
+            print(reviewed_text)
         print("Verified citation/evidence identities:")
         print(json.dumps(payload["citations"], indent=2))
         print("Optional repeatable argument: " + shlex.join(["--confirm-mapping", selection]))

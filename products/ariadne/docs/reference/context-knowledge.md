@@ -1,23 +1,25 @@
 # Context knowledge reference
 
-This page describes the context-layer artifacts, generated facts, and tool roles available in Ariadne 0.8.0. For procedures, see [How to manage context knowledge](../how-to/context-knowledge.md). For the authority boundaries shared by all these artifacts, see [How Ariadne works](../explanations/how-ariadne-works.md).
+This page describes the native knowledge pages, generated facts, and tool roles available in Ariadne 0.8.0. For procedures, see [How to manage context knowledge](../how-to/context-knowledge.md). For the authority boundaries shared by all these artifacts, see [How Ariadne works](../explanations/how-ariadne-works.md).
 
-These `context_layer/` paths describe standalone Core projects. In an integrated
-project, curated Metric/Policy/Reference pages live once under `knowledge/`, carry
+Curated Metric/Policy/Reference pages live once under `knowledge/`, carry
 the supported Lumio profile and are consumed through the pinned SDK; ordinary
 unprofiled pages are documentation. See [Bound Releases](../../../../integration/docs/reference/lumio-bound-releases.md).
-Generated Core technical artifacts remain Core-owned.
+Generated Core technical artifacts remain Core-owned. The retired standalone
+`context_layer/` path is not supported: opening such a project refuses with
+fresh-setup/re-onboarding guidance and its files are never converted or reset
+(spec0035 §6/AC10).
 
 ## Page types and ownership
 
-| Artifact | Location / type | Meaning and ownership |
+| Artifact | Location / identity | Meaning and ownership |
 | --- | --- | --- |
-| Dataset Overview | `context_layer/datasets/`, `type: dataset` | Describes a physical source/schema collection and its represented tables. |
-| Table page | `context_layer/tables/`, `type: table` | Contains authored summary and column meaning plus core-generated Schema and Observations sections. |
-| Term or Identifier Reference | `context_layer/references/`, `type: reference` | Documents a shared concept, aliases, exact field bindings, required scope, and optional typed mapping assertions. |
-| Context Routing Map | `context_layer/references/context-routing.md`, ordinary `type: reference` | Human-owned orientation and pointers to existing context; optional, not a new executable page type. |
+| Dataset Overview | `knowledge/datasets/`, producer profile `kind: dataset` | Describes a physical source/schema collection and its represented tables. |
+| Table page | `knowledge/tables/`, producer profile `kind: table` | Contains authored summary and column meaning plus core-generated Schema and Observations facts in the producer envelope. |
+| Term or Identifier Reference | `knowledge/references/`, producer profile `kind: reference` | Documents a shared concept, aliases, exact field bindings, required scope, and optional typed mapping assertions. |
+| Context Routing Map | `knowledge/references/context-routing.md`, ordinary Reference | Human-owned orientation and pointers to existing context; optional, not a new executable page type. |
 
-A table or collection page identifies its asset with a canonical, credential-free resource such as `ariadne://table/<payload>` or `ariadne://collection/<payload>`. Same-named tables from different sources or schemas are distinct assets. A resource or filename collision is refused rather than overwritten.
+Technical pages bind their asset with an exact `core_ref` resource identity (canonical, credential-free, e.g. `ariadne://table/<payload>`). Same-named tables from different sources or schemas are distinct assets. A resource or filename collision is refused rather than overwritten.
 
 ### Structured Term and Identifier References
 
@@ -25,7 +27,7 @@ The versioned `ariadne` extension (version `1`) may declare `reference_role: ter
 
 ## Generated schema and observations
 
-Schema refresh owns the table's `# Schema` block and `ariadne.schema` / `ariadne.observations` metadata. Facts include exact column identity and type, declared nullability/defaults only when the source provides them, measurements such as row/null/distinct counts, candidate keys, profile scope, and `observed_at` with an explicit UTC offset.
+Schema refresh owns the table page's core-generated Schema and Observations facts in the producer envelope. Facts include exact column identity and type, declared nullability/defaults only when the source provides them, measurements such as row/null/distinct counts, candidate keys, profile scope, and `observed_at` with an explicit UTC offset.
 
 Observed uniqueness is a candidate key, not a declared business key. Zero observed nulls do not establish `NOT NULL`; measured table facts do not establish business grain. Generated sections are not hand-authored.
 
@@ -44,9 +46,13 @@ Bound Release manifest (`support_revision` plus `policy_bindings`, digest
 bound). The three query operations `query_detail`, `query_records` and
 `define_metric` stay unsupported until their own revision. A revision-2
 schema refresh writes the generated technical pages as producer-native
-profile pages of `knowledge/tables/` and `knowledge/datasets/` (the legacy
-`context_layer` route is unchanged for revision-1 and standalone projects).
-Every binding's `enforcement.check` must name an existing check that actually
+profile pages of `knowledge/tables/` and `knowledge/datasets/`. C6
+(spec0035 §6): the classic `context_layer` finalization/refresh route is
+retired — a candidate whose capability revision lacks the native technical
+kinds (revision below 2, or no authored selector) refuses the finalize or
+refresh operation with explicit opt-in guidance before any mutation, while
+historical admitted releases of every frozen revision keep their exact read
+support. Every binding's `enforcement.check` must name an existing check that actually
 executes for the bound operation; an executable `query_metrics` binding is
 satisfied only by the executed plan audit — a not-run audit refuses, and
 authored `generated`/`verified` stamps never authenticate evidence.
@@ -72,7 +78,7 @@ The complete successful `value_evidence` mapping is bounded to 8 KiB as compact 
 
 ## Context Routing Map
 
-The optional map is a normal human-owned Reference at `context_layer/references/context-routing.md`. It may contain brief business orientation, question families, pointers to existing metrics, Policies, Term References, tables or Dataset Overviews, and explicit unresolved questions.
+The optional map is a normal human-owned Reference at `knowledge/references/context-routing.md`. It may contain brief business orientation, question families, pointers to existing metrics, Policies, Term References, tables or Dataset Overviews, and explicit unresolved questions.
 
 The map contains pointers, not copied formulas, SQL, Policy bodies, observed-value lists, or a second metric catalog. Its target owns the definition. A missing/ambiguous pointer is handled through normal discovery; the map grants no source, calculation, join, or normalization authority and cannot bypass a required Policy read. Managed analysts read it only from the pinned admitted snapshot.
 

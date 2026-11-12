@@ -59,11 +59,27 @@ ontology:
     reference: {}
     metric: {}
 """
+# C6 (spec0035): the revision-2 integrated selector — the §10.1 capability
+# opt-in plus the authored binding inventory classifying the baseline metric
+# closure (supported_candidate extends it when the candidate adds the
+# cancellation Policy to the required closure).
 SELECTOR = """version: 1
 mode: integrated
 subtree: knowledge
 namespace: urn:demo:retail
 profile: ariadne-context/1
+support_revision: 2
+policy_bindings:
+  version: 1
+  bindings:
+    - subject: {kind: metric, identity: retail_sales::revenue}
+      policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
+      operations: [get_metric, query_metrics]
+      enforcement: null
+    - subject: {kind: computation, identity: retail_sales::revenue}
+      policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
+      operations: [get_metric, query_metrics]
+      enforcement: null
 """
 
 
@@ -318,7 +334,7 @@ def write_page(path, meta, body):
 
 def reconcile_knowledge(project, proposal, previous):
     tree = worktree_of(project, proposal)
-    run_git(tree, "add", "-f", "--", "knowledge")
+    run_git(tree, "add", "-f", "--", "knowledge", "context_integration.yaml")
     run_git(tree, "commit", "-q", "-m", "human: explicitly adapt joint candidate knowledge")
     revision = run_git(tree, "rev-parse", "HEAD").strip()
     admission.reconcile(project, proposal, previous, revision)
@@ -338,6 +354,29 @@ def supported_candidate(root):
     profile = meta["ariadne_profile"]
     profile["required_policies"].append(
         {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
+    )
+    # C6: the selector's authored binding inventory must classify the
+    # candidate's COMPLETE closure — extend it with the cancellation Policy
+    # bindings for the metric and its generated computation subject.
+    selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
+    selector["policy_bindings"]["bindings"].extend(
+        [
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+            {
+                "subject": {"kind": "computation", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+        ]
+    )
+    (tree / "context_integration.yaml").write_text(
+        yaml.safe_dump(selector, sort_keys=False), encoding="utf-8"
     )
     profile["native"]["sources"].append(
         {"id": "cancelled-orders", "resource": "policies/cancelled-orders.md"}
@@ -813,50 +852,180 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
         runtime.con.close()
 
 
-def test_standalone_never_imports_optional_lumio(tmp_path):
-    from tests.test_git_admission import admitted_ready
-    from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+# Independently authored old-format fixture bytes (retired standalone OKF page
+# contract): old ``type: metric`` frontmatter, no producer profile, no native
+# Knowledge Base state. Never a working legacy backend — refusal evidence only.
+_LEGACY_OKF_METRIC_PAGE = (
+    "---\n"
+    "type: metric\n"
+    "name: legacy_orders\n"
+    "description: An old standalone OKF metric page of the retired context_layer path.\n"
+    "---\n"
+    "\n"
+    "# legacy_orders\n"
+    "\n"
+    "Legacy fixture body in the retired standalone format.\n"
+)
 
-    project = complete_bundle_project(tmp_path)
-    api = AuthoringProject(project)
-    review, _journey = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The standalone rule body."),
-        },
-    )
-    admission.admit_revision(
-        project,
-        review["proposal"],
-        review["revision"],
-        review["review_digest"],
-        confirmed_by="human:standalone-operator",
-    )
-    script = """import asyncio, importlib.abc, sys
-class NoLumio(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname == "lumio_wiki" or fullname.startswith("lumio_wiki."):
-            raise AssertionError("standalone imported optional Lumio")
-sys.meta_path.insert(0, NoLumio())
-from ariadne.query import QueryRuntime
-runtime = QueryRuntime.open_project(sys.argv[1])
-try:
-    result = asyncio.run(runtime.get_metric("event_count"))
-    assert result["rows"] == [{"event_count": 3}]
-finally:
-    runtime.con.close()
-"""
-    completed = subprocess.run(
-        [sys.executable, "-I", "-c", script, str(project)],
+
+def _owned_tree_manifest(root: Path) -> dict[str, str]:
+    """sha256 over every project/admission/snapshot file, excluding Git internals
+    (HEAD and porcelain are captured and asserted separately)."""
+    manifest: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if not path.is_file() or ".git" in rel.parts:
+            continue
+        manifest[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return manifest
+
+
+def _git_state(root: Path) -> tuple[str, list[str]]:
+    head = run_git(root, "rev-parse", "HEAD").strip()
+    porcelain = [line for line in run_git(root, "status", "--porcelain").splitlines() if line]
+    return head, porcelain
+
+
+def _assert_fresh_setup_refusal(exc: ValueError) -> None:
+    """The written AC10 contract: the refusal names fresh setup/re-onboarding
+    (never silent activation or conversion)."""
+    message = str(exc).lower()
+    assert "fresh" in message and "re-onboard" in message
+
+
+def test_legacy_project_refuses_without_mutation(tmp_path, monkeypatch, capsys):
+    """AC10 (spec0035 §6), replacing the retired inverse optional-SDK test.
+    (A) A genuinely old standalone project — context_layer bytes, no native
+    Control File/Source Reference Manifest/selector — refuses the actual
+    runtime open paths and the scaffolder CLI with fresh-setup/re-onboarding
+    guidance. (B) A VALID new-format working tree whose current-admission
+    record pins an old-format snapshot without the required native identity
+    refuses at the ADMISSION guard (not the project guard) with the same
+    guidance, BEFORE any source setup. Neither attempt opens a database or
+    executes SQL (boundary sentinel), and neither mutates the project,
+    admission or snapshot bytes (pre/post sha256 manifest, HEAD, porcelain)."""
+    import duckdb
+
+    original_connect = duckdb.connect
+
+    def _no_sql(*_args, **_kwargs):
+        raise AssertionError("the AC10 refusal path must never open a database or execute SQL")
+
+    def _forbid_sql():
+        monkeypatch.setattr(duckdb, "connect", _no_sql)
+
+    # ---------- (A) retired standalone project bytes
+    legacy = tmp_path / "legacy-project"
+    legacy.mkdir()
+    run_git(legacy, "init", "-q")
+    run_git(legacy, "config", "user.name", "Ariadne Tests")
+    run_git(legacy, "config", "user.email", "tests@ariadne.local")
+    legacy_page = legacy / "context_layer" / "metrics" / "legacy_orders.md"
+    legacy_page.parent.mkdir(parents=True)
+    legacy_page.write_text(_LEGACY_OKF_METRIC_PAGE, encoding="utf-8")
+    (legacy / "README.md").write_text("old standalone project\n", encoding="utf-8")
+    run_git(legacy, "add", "-A")
+    run_git(legacy, "commit", "-q", "-m", "human: legacy standalone snapshot")
+
+    _forbid_sql()
+    before_manifest = _owned_tree_manifest(legacy)
+    before_head, before_porcelain = _git_state(legacy)
+    with pytest.raises(ValueError) as discovery_exc:
+        DiscoveryRuntime.open_project(legacy)
+    _assert_fresh_setup_refusal(discovery_exc.value)
+    with pytest.raises(ValueError) as query_exc:
+        QueryRuntime.open_project(legacy)
+    _assert_fresh_setup_refusal(query_exc.value)
+    from ariadne.init import main as init_main
+
+    profile = tmp_path / "legacy-profile.json"
+    init_args = [
+        str(legacy),
+        "--namespace",
+        "urn:uuid:legacy-refusal",
+        "--private-profile",
+        str(profile),
+    ]
+    assert init_main(init_args) == 1
+    init_err = capsys.readouterr().err.lower()
+    assert "fresh" in init_err and "re-onboard" in init_err
+    assert _owned_tree_manifest(legacy) == before_manifest
+    assert _git_state(legacy) == (before_head, before_porcelain)
+
+    # ---------- (B) valid new-format tree, old-format pinned admission
+    monkeypatch.setattr(duckdb, "connect", original_connect)  # fixture setup may use DuckDB
+    project = content_project(tmp_path / "b")  # passes the project guard
+    legacy_bytes = tmp_path / "legacy-page.md"
+    legacy_bytes.write_text(_LEGACY_OKF_METRIC_PAGE, encoding="utf-8")
+    blob = run_git(project, "hash-object", "-w", str(legacy_bytes)).strip()
+    tree_metrics = subprocess.run(
+        ["git", "mktree"],
+        cwd=project,
+        input=f"100644 blob {blob}\tlegacy_orders.md\n",
         capture_output=True,
         text=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
+        check=True,
+    ).stdout.strip()
+    tree_root = subprocess.run(
+        ["git", "mktree"],
+        cwd=project,
+        input=f"040000 tree {tree_metrics}\tcontext_layer\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    commit = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Ariadne Tests",
+            "-c",
+            "user.email=tests@ariadne.local",
+            "commit-tree",
+            tree_root,
+            "-m",
+            "human: legacy admission snapshot",
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    snapshot = project / ".ariadne" / "snapshots" / commit / "context_layer" / "metrics"
+    snapshot.mkdir(parents=True)
+    (snapshot / "legacy_orders.md").write_text(_LEGACY_OKF_METRIC_PAGE, encoding="utf-8")
+    from ariadne.validate import candidate_scope_digest
+
+    record = {
+        "route": "git-review-admission",
+        "proposal": "p-legacy-admission-fixture",
+        "commit": commit,
+        "snapshot": f".ariadne/snapshots/{commit}",
+        "artifact_digest": candidate_scope_digest(project / ".ariadne" / "snapshots" / commit),
+        "review_digest": "e" * 64,
+        "source_digest": "0" * 64,
+        "sources": [],
+        "validation": {},
+        "confirmed": {},
+    }
+    current = project / ".ariadne" / "current.json"
+    current.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+    _forbid_sql()
+    before_manifest = _owned_tree_manifest(project)
+    before_head, before_porcelain = _git_state(project)
+    with pytest.raises(ValueError) as admission_exc:
+        QueryRuntime.open_project(project)
+    # the ADMISSION guard refused (names the pinned legacy snapshot commit),
+    # not the project-layout guard the valid working tree passes
+    assert commit[:12] in str(admission_exc.value)
+    _assert_fresh_setup_refusal(admission_exc.value)
+    with pytest.raises(ValueError) as discovery_exc:
+        DiscoveryRuntime.open_project(project)
+    assert commit[:12] in str(discovery_exc.value)
+    _assert_fresh_setup_refusal(discovery_exc.value)
+    assert _owned_tree_manifest(project) == before_manifest
+    assert _git_state(project) == (before_head, before_porcelain)
 
 
 def test_admission_binding_checks_carry_postgres_destinations(tmp_path, monkeypatch):

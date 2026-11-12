@@ -54,8 +54,9 @@ __pycache__/
 # Optional document distillation may load credentials from the operator-selected
 # ARIADNE_ENV file; the real file is never committed.
 ENV_EXAMPLE = """\
-# Optional LLM-backed document distillation credentials (never commit real values).
-# Point ARIADNE_ENV at this file only when using that optional ingestion path.
+# Private environment values referenced by ariadne.yaml (never commit real values).
+# Documents are onboarded through the native Lumio intake (spec0035); the optional
+# [documents] converter extra serves the bounded Seed-Notes document parts only.
 # Add private values referenced by ariadne.yaml to your process environment.
 # Never commit credentials or copy original source documents into this project.
 """

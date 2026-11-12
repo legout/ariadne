@@ -56,9 +56,6 @@ _OPERATION_ARGUMENTS = {
     "get_metric": ("name",),
     "define_metric": ("name", "description", "source", "expression"),
 }
-# A citation is an existing served metric or Policy page (spec rev 1): only
-# those two OKF page kinds may back an example dependency.
-_CITATION_KINDS = ("context_layer/metrics/", "context_layer/policies/")
 # Identity and review state are system-owned: a submission may not claim them
 # (spec: local identity is self-declared, never authenticated; review evidence
 # is written only by the operator review command, issue #20). sql_provenance
@@ -67,10 +64,7 @@ _CITATION_KINDS = ("context_layer/metrics/", "context_layer/policies/")
 _RESERVED_FIELDS = frozenset(
     {"id", "status", "verified", "review", "stale", "superseded", "attested", "sql_provenance"}
 )
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
-_QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")  # same token rule as search_context
 _SLUG_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ANSWER_EVIDENCE_RE = re.compile(
     r"Captured answer excerpt \((.+?); full structured-result digest `([0-9a-f]{64})`\):"
 )
@@ -113,26 +107,6 @@ def _validate_result(result: Any) -> None:
         raise ValueError("'result.rows' must be a list of rows")
     if not isinstance(result.get("governed"), bool):
         raise ValueError("'result.governed' must be a boolean")
-
-
-def _resolve_citation(ref: str, served_root: Path) -> dict:
-    """A cited served metric or Policy page: must resolve to an existing .md
-    file in the served metric or Policy page directories inside the selected
-    served root. Its content digest is recorded with it — no guessed or
-    fabricated citation is ever recorded."""
-    resolved = (served_root / ref).resolve()
-    root = served_root.resolve()
-    if not resolved.is_relative_to(root):
-        raise ValueError(f"cited path escapes the selected served root: {ref!r}")
-    rel = resolved.relative_to(root).as_posix()
-    if not (rel.startswith(_CITATION_KINDS) and resolved.suffix == ".md"):
-        raise ValueError(
-            "cited path must be a served metric or Policy page "
-            f"(context_layer/metrics/*.md or context_layer/policies/*.md): {ref!r}"
-        )
-    if not resolved.is_file():
-        raise ValueError(f"cited path does not exist in the served root: {ref!r}")
-    return {"path": ref, "sha256": _sha256_hex(resolved.read_bytes())}
 
 
 def _normalize_submission(submission: Any) -> dict:
@@ -237,29 +211,6 @@ def _verify_citation(project: Path, revision: str, ref: str) -> dict:
             f"cited page must be a metric or Policy page: {ref!r} (producer kind {kind!r})"
         )
     return {"path": ref, "sha256": _sha256_hex(blob)}
-
-
-def _frontmatter(path: Path) -> dict | None:
-    """The page's frontmatter mapping, or None when it is not an OKF page
-    (index.md/log.md, unparsable frontmatter)."""
-    match = _FRONTMATTER_RE.match(path.read_text(encoding="utf-8"))
-    if not match:
-        return None
-    try:
-        meta = yaml.safe_load(match.group(1))
-    except yaml.YAMLError:
-        return None
-    return meta if isinstance(meta, dict) else None
-
-
-def _write_candidate_index(directory: Path) -> None:
-    """Candidate navigation is always unadmitted, regardless of file claims."""
-    lines = ["# Answer Examples", ""]
-    for page in sorted(p for p in directory.glob("*.md") if p.name not in ("index.md", "log.md")):
-        meta = _frontmatter(page) or {}
-        question = " ".join(str(meta.get("question") or page.stem).split())
-        lines.append(f"* [{question}]({page.name}) — draft")
-    (directory / "index.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _page_markdown(record: dict, example_id: str) -> bytes:
@@ -463,30 +414,6 @@ def validated_sql_provenance(meta: dict, label: str) -> dict | None:
     return {"source": SQL_PROVENANCE_SOURCE, "text": text}
 
 
-def _is_stale(meta: dict, served_root: Path) -> bool:
-    """Dependency staleness against the recorded digests (spec): a cited served
-    metric/Policy that is missing, unreadable, escaping the root or changed
-    makes the record stale — its historical file is never mutated. With no
-    cited dependency no staleness claim is invented."""
-    entries = meta.get("sources") or []
-    if not entries:
-        return False
-    for entry in entries:
-        if not isinstance(entry, dict):
-            return True
-        try:
-            resolved = (served_root / str(entry.get("path"))).resolve()
-            if (
-                not resolved.is_relative_to(served_root.resolve())
-                or not resolved.is_file()
-                or _sha256_hex(resolved.read_bytes()) != entry.get("sha256")
-            ):
-                return True
-        except OSError:
-            return True
-    return False
-
-
 def validate_candidate_records(project: Path, record: dict, candidate_root: Path) -> list[str]:
     """Core meaning checks over the candidate's SDK-parsed answer_example
     pages, BEFORE admission (spec0035 C4): a new or changed record carries the
@@ -613,65 +540,6 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
     return errors
 
 
-def _rank_records(
-    records: list[tuple[str, dict, str, bool]],
-    query: str,
-    limit: int,
-    include_history: bool,
-    include_sql: bool,
-    *,
-    proposal: str | None = None,
-    revision: str | None = None,
-) -> list[dict]:
-    if limit <= 0:
-        return []
-    terms = _QUERY_TOKEN_RE.findall(query.lower())
-    if not terms:
-        return []
-    ranked = []
-    for path, meta, status, stale in records:
-        if not include_history and (stale or status not in ("draft", "stable")):
-            continue
-        tokens = _QUERY_TOKEN_RE.findall(
-            f"{meta.get('question') or ''} {meta.get('interpretation') or ''}".lower()
-        )
-        score = sum(tokens.count(term) for term in terms)
-        if not score:
-            continue
-        submitter = meta.get("submitter")
-        submitter = submitter if isinstance(submitter, dict) else {}
-        provenance = {
-            "submitter": submitter.get("identity"),
-            "generated": (meta.get("answer") or {}).get("captured"),
-            "sources": meta.get("citations") or [],
-        }
-        stem = PurePosixPath(path).stem
-        hit = {
-            "id": stem,
-            # the persisted page's stable Entity identity (entity:<file stem>,
-            # the save convention); admitted hits carry the SDK-read value
-            "entity_id": f"entity:{stem}",
-            "status": status,
-            "stale": stale,
-            "question": meta.get("question"),
-            "interpretation": meta.get("interpretation"),
-            "method": meta.get("method"),
-            "provenance": provenance,
-            "path": path,
-        }
-        if proposal is not None:
-            hit.update({"proposal": proposal, "revision": revision})
-        ranked.append((0 if status == "stable" and not stale else 1, -score, path, hit, meta))
-    ranked.sort()
-    selected = ranked[:limit]
-    if include_sql:
-        for *_, hit, meta in selected:
-            hit["provenance"]["sql"] = validated_sql_provenance(
-                meta, f"answer example {hit['id']!r}"
-            )
-    return [hit for *_, hit, _ in selected]
-
-
 def _candidate_is_stale(meta: dict, project: Path, revision: str, proposals) -> bool:
     citations = meta.get("citations") or []
     if not isinstance(citations, list):
@@ -690,27 +558,6 @@ def _candidate_is_stale(meta: dict, project: Path, revision: str, proposals) -> 
         if blob is None or _sha256_hex(blob) != digest:
             return True
     return False
-
-
-def search_admitted(
-    snapshot_root: str | Path,
-    query: str,
-    limit: int = 10,
-    include_history: bool = False,
-    include_sql: bool = False,
-) -> list[dict]:
-    """Search only Examples inside one pinned admitted snapshot."""
-    root = Path(snapshot_root)
-    records = []
-    directory = root / EXAMPLES_DIR
-    if directory.is_dir():
-        for path in sorted(directory.glob("*.md")):
-            meta = _frontmatter(path)
-            if meta and meta.get("type") == "answer_example":
-                records.append(
-                    (f"{EXAMPLES_DIR}/{path.name}", meta, "stable", _is_stale(meta, root))
-                )
-    return _rank_records(records, query, limit, include_history, include_sql)
 
 
 def search_candidate(

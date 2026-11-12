@@ -46,7 +46,6 @@ from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     RESOLVE_TERM_LIMIT,
     RESOLVE_TERM_MAX_BYTES,
-    _page_contract_errors,
     resolve_term,
 )
 from ariadne.query import QueryRuntime  # noqa: E402
@@ -396,7 +395,9 @@ def _reference_errors(page: str) -> list[str]:
         page_path = root / "context_layer" / "references" / "probe.md"
         page_path.parent.mkdir(parents=True)
         page_path.write_text(page, encoding="utf-8")
-        return _page_contract_errors(root, page_path, "reference")
+        pytest.skip(
+            "the classic OKF reference page-contract gate is retired (C6, spec0035 section 6)"
+        )
 
 
 def _reference_with(mapping_overrides: dict | None = None, **ext_overrides) -> str:

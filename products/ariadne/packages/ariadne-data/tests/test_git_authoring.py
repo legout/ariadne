@@ -213,6 +213,98 @@ SKILLS_PAGE = (
     "# run the demo\n"
 )
 
+# C6 (spec0035): the fixture's native knowledge pages — producer-profile
+# Metric/Policy pages mirroring the classic bundle's governed pair, written in
+# the accepted native page conventions (typed Entity identity, producer
+# envelope, KB-relative citations).
+NATIVE_POLICY_PAGE = (
+    "---\n"
+    'id: "entity:all-events-count"\n'
+    'title: "All events count"\n'
+    "entity_types:\n  - policy\n"
+    "tags:\n  - policy\n"
+    'summary: "The counting rule for every recorded event."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    "  - id: seed-notes\n"
+    "    title: Seed notes\n"
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: policy\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: policy\n"
+    "    title: All events count\n"
+    "    description: The counting rule.\n"
+    "    tags:\n      - policy\n"
+    "    status: draft\n"
+    "    sources:\n"
+    "      - id: seed-notes\n"
+    "        title: Seed notes\n"
+    "        resource: data/seed_notes.md\n"
+    "---\n\n"
+    "# All events count\n\n"
+    "The rule body.\n"
+)
+NATIVE_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:event-count"\n'
+    'title: "event_count"\n'
+    "entity_types:\n  - metric\n"
+    "tags:\n  - metric\n"
+    'summary: "Count of all events."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    "  - id: all-events-count\n"
+    "    title: All events count\n"
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    "    model: events\n"
+    "    metric: event_count\n"
+    "  required_policies:\n"
+    "    - namespace: \"urn:uuid:authoring-fixture\"\n"
+    "      entity_id: \"entity:all-events-count\"\n"
+    "  native:\n"
+    "    type: metric\n"
+    "    title: event_count\n"
+    "    description: Count of all events.\n"
+    "    tags:\n      - metric\n"
+    "    status: draft\n"
+    "    sources:\n"
+    "      - id: all-events-count\n"
+    "        title: All events count\n"
+    "        resource: policies/all-events-count.md\n"
+    "    governed_by: policies/all-events-count.md\n"
+    "---\n\n"
+    "# event_count\n"
+)
+# The revision-2 integrated selector: the five §10.1 base keys plus the
+# explicit capability opt-in and the authored policy_bindings block classifying
+# the metric's and the generated computation's complete closure.
+NATIVE_SELECTOR = (
+    "version: 1\n"
+    "mode: integrated\n"
+    "subtree: knowledge\n"
+    "namespace: urn:uuid:authoring-fixture\n"
+    "profile: ariadne-context/1\n"
+    "support_revision: 2\n"
+    "policy_bindings:\n"
+    "  version: 1\n"
+    "  bindings:\n"
+    "    - subject: {kind: metric, identity: events::event_count}\n"
+    "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
+    "      operations: [get_metric, query_metrics]\n"
+    "      enforcement: null\n"
+    "    - subject: {kind: computation, identity: events::event_count}\n"
+    "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
+    "      operations: [get_metric, query_metrics]\n"
+    "      enforcement: null\n"
+)
+
 
 @pytest.fixture(autouse=True)
 def isolated_git_config(monkeypatch):
@@ -283,23 +375,22 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
         path = project / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    (project / "context_integration.yaml").write_text(
-        "version: 1\n"
-        "mode: integrated\n"
-        "subtree: knowledge\n"
-        "namespace: urn:uuid:authoring-fixture\n"
-        "profile: ariadne-context/1\n",
-        encoding="utf-8",
-    ) if native_state else None
+    if native_state:
+        (project / "context_integration.yaml").write_text(NATIVE_SELECTOR, encoding="utf-8")
     kb = project / "knowledge"
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
         "categories:\n"
         "  - name: references\n"
+        "  - name: metrics\n"
+        "  - name: policies\n"
         "ontology:\n"
         "  entity_types:\n"
         "    reference: {}\n"
+        "    metric: {}\n"
+        "    policy: {}\n"
+        "    computation: {}\n"
         "  predicates: {}\n"
         "  redirects: {}\n",
         encoding="utf-8",
@@ -308,6 +399,15 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
         'version: 1\nnamespace: "urn:uuid:authoring-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
     ) if native_state else None
+    if native_state:
+        # C6 (spec0035): the governed Metric/Policy pair also lives as
+        # producer-native knowledge pages, and the selector carries the
+        # revision-2 capability opt-in with the authored §10.1 binding
+        # inventory — the classic bundle pages stay as inert fixture payload.
+        (kb / "policies").mkdir(parents=True, exist_ok=True)
+        (kb / "metrics").mkdir(parents=True, exist_ok=True)
+        (kb / "policies" / "all-events-count.md").write_text(NATIVE_POLICY_PAGE, encoding="utf-8")
+        (kb / "metrics" / "event-count.md").write_text(NATIVE_METRIC_PAGE, encoding="utf-8")
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -322,6 +422,8 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
             "context_integration.yaml",
             "knowledge/lumio.yaml",
             "knowledge/.lumio-authoring.yaml",
+            "knowledge/policies/all-events-count.md",
+            "knowledge/metrics/event-count.md",
         ]
     run_git(project, "add", "--", *scope)
     run_git(project, "commit", "-q", "-m", "human: complete existing bundle", "--", *scope)

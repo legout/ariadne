@@ -1,9 +1,10 @@
 """Shared LLM completion and artifact-normalization helpers.
 
 Git authoring uses ``normalize_layer_yaml`` for readable, revision-bound edits.
-The retired document-ingest model-completion path (``_default_complete``) is
-removed with its callers: native intake needs no model service (spec0035). Durable
-writes belong to Git proposals, not this module.
+The retired document-ingest model-completion path (``_default_complete``) and
+the classic bundle page gates (``_bundle_errors`` — C6, spec0035 §6) are
+removed with their callers. Durable writes belong to Git proposals, not this
+module.
 """
 
 from __future__ import annotations
@@ -11,10 +12,7 @@ from __future__ import annotations
 import yaml
 
 from ariadne.context import (
-    _bundle_errors as _bundle_errors,
-)
-from ariadne.context import (
-    _load_frontmatter_meta as _load_frontmatter_meta,
+    _load_frontmatter_meta as _load_frontmatter_meta,  # live re-export (authoring)
 )
 
 MAX_ROUNDS = 3

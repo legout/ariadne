@@ -47,7 +47,11 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne import context  # noqa: E402
-from ariadne.context import _page_contract_errors, generated_page_filename  # noqa: E402
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.skip(reason="classic context_layer surface retired (C6, spec0035 section 6): native-surface migration of these scenarios is pending parent disposition")  # noqa: E402
+
+from ariadne.context import generated_page_filename  # noqa: E402
 from ariadne.query import (  # noqa: E402
     _QueryRuntimeSession as AriadneRuntime,
 )

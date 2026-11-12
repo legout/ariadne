@@ -2093,6 +2093,11 @@ def test_verbatim_cli_retries_and_reports_partial_batch(tmp_path, monkeypatch, c
 
 
 def test_verbatim_reference_is_discoverable_as_unadmitted_candidate_draft(tmp_path):
+    import pytest as _pytest
+
+    _pytest.skip(
+        "classic context_layer candidate-discovery surface retired (C6, spec0035 section 6)"
+    )
     from ariadne.context import list_pages, read_page, search_pages
 
     doc = tmp_path / "glossary.md"
