@@ -46,13 +46,11 @@ from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     RESOLVE_TERM_LIMIT,
     RESOLVE_TERM_MAX_BYTES,
-    resolve_term_entries,
-    resolve_term_native_entries,
 )
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_admission import admit  # noqa: E402 — the human-only G5 journey
-from tests.test_git_authoring import approved  # noqa: E402 — the operator's G3 step
+from tests.test_git_authoring import approved, record_of  # noqa: E402 — G3 step + record read
 
 # One store-scoped order identity: (ABC, 123123) -> ABC123123 and
 # (XYZ, 123123) -> XYZ123123 — the owner's illustrative example (spec §5),
@@ -230,6 +228,15 @@ def orders_project(tmp_path: Path) -> Path:
         "    description: Count of orders.\n"
         "    tags:\n      - metric\n"
         "    status: draft\n"
+        # real required metric-native declarations from the fixture model: the
+        # three dimension fields and the dataset's declared composite key
+        "    dimensions:\n"
+        "      - store_id\n"
+        "      - local_order_number\n"
+        "      - global_order_number\n"
+        "    grain:\n"
+        "      primary_key: [store_id, local_order_number]\n"
+        "      cardinality_enforcement: strict_1_to_1\n"
         "    sources:\n"
         "      - id: order-number-format\n"
         "        title: Order number format\n"
@@ -292,7 +299,20 @@ def orders_project(tmp_path: Path) -> Path:
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    scope = ["ariadne.yaml", "data/seed_notes.md", "semantic_layer/models/orders.yml", *pages]
+    # the native KB and the integrated selector are part of the initial
+    # revision — a candidate worktree without knowledge/ can neither author
+    # nor resolve native pages
+    scope = [
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/orders.yml",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "knowledge/policies/order-number-format.md",
+        "knowledge/metrics/order-number-count.md",
+        *pages,
+    ]
     run_git(project, "add", "--", *scope)
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
@@ -533,26 +553,27 @@ def test_git_validation_rejects_fabricated_confirmation_in_a_real_candidate(tmp_
     before any byte is written, so the forged claim can never even enter a
     candidate (the earlier honest boundary; validation keeps the same page
     gate for anything that arrives by other means)."""
-    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — qualified test env provides the SDK
-        GitAuthoringError,
-    )
+    from lumio_wiki.git_authoring import GitAuthoringError
 
     project = orders_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    base = (worktree_of(project, started["proposal"]) / REFERENCE_PAGE_REL).read_text("utf-8")
-    page = yaml.safe_load(base.split("---")[1])
+    page = yaml.safe_load(order_reference_page().split("---")[1])
     page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["confirmed"] = True
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    body = base.split("---", 2)[2]
-    forged = f"---\n{front}\n---{body}"
+    forged = f"---\n{front}\n---\n\n# Order number\n"
     with pytest.raises(GitAuthoringError, match=r"unsupported field\(s\) \['confirmed'\]"):
         api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
             reference_edit(forged),
         )
+    # the refusal wrote nothing: no candidate revision ever moved
+    assert (
+        record_of(project, started["proposal"])["candidate_revision"]
+        == started["candidate_revision"]
+    )
 
 
 def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
@@ -578,20 +599,50 @@ def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
 # ------------------------------------- [3] resolver determinism and bounds
 
 
-def _resolve_native(root: Path, request, *, part: int = 1) -> dict:
-    """The shared resolver core through the production NATIVE entries seam
-    (the retired classic filesystem collector read the retired classic page
-    shape; the native candidate/pinned routes both feed these entries)."""
-    return resolve_term_entries(resolve_term_native_entries(root), request, part=part)
+def _term_page(index: int, *, description: str | None = None) -> str:
+    """One authored structured-Reference page with a DISTINCT page identity
+    (id/title/aliases — the KB refuses duplicate identities) whose single
+    representation matches the shared alias."""
+    meta = yaml.safe_load(order_reference_page().split("---")[1])
+    meta["id"] = f"entity:order-number-{index:02d}"
+    meta["title"] = f"Order number {index:02d}"
+    meta["aliases"] = [f"order number concept {index:02d}"]
+    native = meta["ariadne_profile"]["native"]
+    native["title"] = meta["title"]
+    if description is not None:
+        native["description"] = description
+    native["ariadne"]["representations"] = [
+        {
+            "id": f"rep-{index:02d}",
+            "aliases": ["shared term"],
+            "fields": [{"resource": orders_resource(), "column": "c"}],
+            "scope": [],
+        }
+    ]
+    native["ariadne"]["mappings"] = []
+    return (
+        f"---\n{yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()}"
+        "\n---\n\n# term\n"
+    )
 
 
-def _context_root(tmp_path: Path, pages: dict[str, str]) -> Path:
-    root = tmp_path / "context_layer"
-    for rel, text in pages.items():
-        page = root / rel
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text, encoding="utf-8")
-    return root
+def _candidate_with_pages(
+    tmp_path: Path, pages: dict[str, str]
+) -> tuple[AuthoringProject, str]:
+    """A REAL candidate whose knowledge/ carries the authored reference pages
+    in ONE public page batch — the candidate resolver seam reads the
+    producer's public candidate parse of exactly this revision (spec0035 §2;
+    never a Core-side raw-KB collector)."""
+    project = orders_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    api.edit_pages_batch(
+        started["proposal"],
+        started["candidate_revision"],
+        [{"path": f"knowledge/{rel}", "content": text} for rel, text in pages.items()],
+    )
+    return api, started["proposal"]
 
 
 def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_path):
@@ -599,25 +650,10 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     representations return exactly the 20-match first part with the total and
     explicit truncation, part 2 completes the list, and uniqueness is never
     declared from a truncated result."""
-    pages = {}
-    for index in range(1, 26):
-        page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["ariadne_profile"]["native"]["ariadne"]["representations"] = [
-            {
-                "id": f"rep-{index:02d}",
-                "aliases": ["shared term"],
-                "fields": [{"resource": orders_resource(), "column": "c"}],
-                "scope": [],
-            }
-        ]
-        page["ariadne_profile"]["native"]["ariadne"]["mappings"] = []
-        pages[f"references/term-{index:02d}.md"] = (
-            f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-            "\n---\n\n# term\n"
-        )
-    root = _context_root(tmp_path, pages)
+    pages = {f"references/term-{index:02d}.md": _term_page(index) for index in range(1, 26)}
+    api, proposal = _candidate_with_pages(tmp_path, pages)
 
-    first = _resolve_native(root, "shared term")
+    first = api.resolve_term(proposal, "shared term")
     assert RESOLVE_TERM_LIMIT == 20
     assert first["total_matches"] == 25  # ambiguity counts every eligible match
     assert first["ambiguous"] is True
@@ -626,12 +662,12 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     assert first["complete"] is False
     assert first["part"] == 1 and first["parts"] == 2
 
-    second = _resolve_native(root, "shared term", part=2)
+    second = api.resolve_term(proposal, "shared term", part=2)
     assert len(second["matches"]) == 5
     assert second["complete"] is True
     assert second["truncated"] is True  # the full result spans more than this part
 
-    beyond = _resolve_native(root, "shared term", part=3)
+    beyond = api.resolve_term(proposal, "shared term", part=3)
     assert beyond["matches"] == [] and beyond["complete"] is False
     assert beyond["exhausted"] is True
 
@@ -649,18 +685,19 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
     overflowed; ambiguity totals stay honest and byte-bounded continuation
     still works."""
     huge = yaml.safe_load(order_reference_page().split("---")[1])
-    huge["description"] = "A documented order-number concept. " + "detail " * 10_000
+    native = huge["ariadne_profile"]["native"]
+    native["description"] = "A documented order-number concept. " + "detail " * 10_000
     # oversized OPTIONAL metadata rides the same entry: its elision must be
     # named explicitly (spec 0011 §4) — a bounded disclosure never poses as a
     # complete warning-free assessment
-    huge["sources"] = [
+    native["sources"] = [
         {"id": "seed-notes", "resource": "data/seed_notes.md", "title": "note " * 40},
         *[
             {"id": f"seed-{i}", "resource": f"data/seed_notes_{i}.md", "title": "note " * 40}
             for i in range(11)
         ],
     ]
-    root = _context_root(
+    api, proposal = _candidate_with_pages(
         tmp_path,
         {
             "references/huge.md": (
@@ -669,7 +706,7 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
             )
         },
     )
-    first = _resolve_native(root, "order number")
+    first = api.resolve_term(proposal, "order number")
     assert len(json.dumps(first).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert first["total_matches"] == 2 and first["ambiguous"] is True
     assert [match["representation"] for match in first["matches"]] == [
@@ -690,31 +727,18 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
 
     # byte-bounded continuation: matches that fit alone but not together split
     # across parts with honest totals and stable page/representation order
-    medium = {}
-    for index in range(1, 6):
-        page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["ariadne_profile"]["native"]["description"] = (
-            f"Medium concept {index}. " + "detail " * 2_000
+    medium = {
+        f"references/term-{index:02d}.md": _term_page(
+            index, description=f"Medium concept {index}. " + "detail " * 2_000
         )
-        page["ariadne_profile"]["native"]["ariadne"]["representations"] = [
-            {
-                "id": f"rep-{index:02d}",
-                "aliases": ["shared term"],
-                "fields": [{"resource": orders_resource(), "column": "c"}],
-                "scope": [],
-            }
-        ]
-        page["ariadne_profile"]["native"]["ariadne"]["mappings"] = []
-        medium[f"references/term-{index:02d}.md"] = (
-            f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-            "\n---\n\n# term\n"
-        )
-    spread = _context_root(tmp_path / "medium", medium)
-    part_one = _resolve_native(spread, "shared term")
+        for index in range(1, 6)
+    }
+    api, proposal = _candidate_with_pages(tmp_path / "medium", medium)
+    part_one = api.resolve_term(proposal, "shared term")
     assert len(part_one["matches"]) < 5  # the byte ceiling, not the count limit, bound this part
     assert len(json.dumps(part_one).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_one["total_matches"] == 5 and part_one["truncated"] is True
-    part_two = _resolve_native(spread, "shared term", part=2)
+    part_two = api.resolve_term(proposal, "shared term", part=2)
     assert len(json.dumps(part_two).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_two["complete"] is True
     ids = [m["representation"] for m in part_one["matches"] + part_two["matches"]]
@@ -725,8 +749,10 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
     """A page-level alias names the CONCEPT: matching it returns a concept-level
     entry carrying every representation identity, while representation aliases
     stay representation-level matches."""
-    root = _context_root(tmp_path, {"references/order-number.md": order_reference_page()})
-    concept = _resolve_native(root, "Order Number Concept")
+    api, proposal = _candidate_with_pages(
+        tmp_path, {"references/order-number.md": order_reference_page()}
+    )
+    concept = api.resolve_term(proposal, "Order Number Concept")
     assert [match["level"] for match in concept["matches"]] == ["concept"]
     entry = concept["matches"][0]
     assert entry["representation"] is None
@@ -735,33 +761,46 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
         "global-order-number",
     ]
     assert entry["mappings"] and entry["mappings"][0]["id"] == "local-to-global-prefix"
-    rep_match = _resolve_native(root, "local order number")
+    rep_match = api.resolve_term(proposal, "local order number")
     assert rep_match["matches"][0]["level"] == "representation"
     assert rep_match["matches"][0]["representation"] == "local-order-number"
 
 
 def test_resolver_fails_explicitly_on_malformed_pages_and_requests(tmp_path):
-    """A malformed supported Reference fails the resolution explicitly (named
-    page and error), and malformed requests are actionable errors — never a
-    silent empty result."""
+    """A malformed supported Reference refuses at the PUBLIC batch seam (the
+    producer page gate owns structural failures before any candidate byte is
+    written — the earlier honest boundary), and malformed requests are
+    actionable errors — never a silent empty result."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     malformed = order_reference_page().replace("version: 1", "version: 2")
-    root = _context_root(tmp_path, {"references/broken.md": malformed})
-    with pytest.raises(ValueError, match="references/broken.md.*unsupported ariadne"):
-        _resolve_native(root, "order number")
+    project = orders_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    with pytest.raises(GitAuthoringError, match=r"references/broken\.md.*version"):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": "knowledge/references/broken.md", "content": malformed}],
+        )
+    api, proposal = _candidate_with_pages(
+        tmp_path / "valid", {"references/order-number.md": order_reference_page()}
+    )
     with pytest.raises(ValueError, match="non-empty term"):
-        _resolve_native(root, "   ")
+        api.resolve_term(proposal, "   ")
     with pytest.raises(ValueError, match="exactly \\{resource, column\\}"):
-        _resolve_native(root, {"resource": orders_resource()})
+        api.resolve_term(proposal, {"resource": orders_resource()})
     with pytest.raises(ValueError, match="canonical resource"):
-        _resolve_native(root, {"resource": "orders", "column": "id"})
+        api.resolve_term(proposal, {"resource": "orders", "column": "id"})
     with pytest.raises(ValueError, match="positive integer"):
-        _resolve_native(root, "order number", part=0)
+        api.resolve_term(proposal, "order number", part=0)
     # a page the resolver does not own (non-reference/legacy) is skipped
-    quiet = _context_root(
+    api, proposal = _candidate_with_pages(
         tmp_path / "quiet",
         {"references/legacy.md": _page("reference", "legacy", "# legacy\n")},
     )
-    assert _resolve_native(quiet, "order number")["matches"] == []
+    assert api.resolve_term(proposal, "order number")["matches"] == []
 
 
 # ------------------------------------- [5] the shared adapters, one core

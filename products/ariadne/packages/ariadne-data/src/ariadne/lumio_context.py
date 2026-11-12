@@ -2048,6 +2048,34 @@ def search_examples(manifest, query, limit=10, include_history=False, include_sq
     return [hit for *_, hit, _meta in selected]
 
 
+def candidate_term_entries(kb_root, revision):
+    """The candidate-side Reference entries for the ONE shared resolver core
+    (spec0035 §2): the producer's PUBLIC candidate parse
+    (:func:`lumio_wiki.git_authoring.capture_revision` reads the exact Git
+    blobs of ``revision``) supplies the pages, and each structured Reference
+    is adapted in memory exactly like the pinned native resolver above —
+    ``disclose_native`` over the producer-parsed flat native metadata, no
+    Core-side KB YAML parse, no second matcher. Ordinary pages stay
+    documentation; bookkeeping pages are not Compiled Pages at all."""
+    from lumio_wiki.ariadne_context import disclose_native
+    from lumio_wiki.git_authoring import capture_revision
+
+    root = Path(kb_root)
+    if not root.is_dir():
+        return []  # a candidate without a knowledge subtree has no References
+    entries: list[tuple[str, dict, bool]] = []
+    for page in capture_revision(root, revision).kb.pages:
+        profile = page.ariadne_profile
+        native = disclose_native(profile.native) if profile is not None else None
+        if not isinstance(native, dict):
+            continue
+        extension = native.get("ariadne")
+        if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
+            continue  # ordinary pages stay documentation, never References
+        entries.append((page.path, {"type": "reference", **native}, False))
+    return entries
+
+
 def resolve_term(
     manifest,
     request,

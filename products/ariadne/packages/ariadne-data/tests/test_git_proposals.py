@@ -29,6 +29,10 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 from ariadne import proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from ariadne.context import (  # noqa: E402
+    QUALITY_MAX_TEXT_CHARS,
+    QUALITY_PROFILE_MAX_BYTES,
+)
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 MODEL_YML = """\
@@ -1327,15 +1331,42 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
         normalized = len(_json.dumps(block, ensure_ascii=False).encode())
         return compact, normalized
 
+    # an otherwise-VALID near-bound profile: the size is grown through
+    # additional DISTINCT checks (inside the per-report check-count limit)
+    # with every text field under its 1024-character cap — never through one
+    # oversized description, which the text cap would refuse first for the
+    # wrong diagnostic. The padding search is bounded by the text cap itself
+    # and fail-fast: the first straddling padding wins, else the fixture
+    # itself is broken (never an unbounded loop).
     near_bound = _quality_block(resource, "2026-01-15T00:00:00+00:00")
-    description = near_bound["reports"][0]["scope"]["description"]
-    padding = 7900
-    while True:
-        near_bound["reports"][0]["scope"]["description"] = description + "x" * padding
+    checks = near_bound["reports"][0]["checks"]
+    base_criterion = checks[0]["criterion"]
+    for index in range(1, 8):
+        checks.append(
+            {
+                "id": f"completeness-{index:02d}",
+                "kind": "completeness",
+                "outcome": "unknown",
+                "criterion": base_criterion,
+                "tested_population": "all orders",
+                "tested_period": None,
+            }
+        )
+    assert len({check["id"] for check in checks}) == len(checks)  # distinct ids
+    for padding in range(QUALITY_MAX_TEXT_CHARS - len(base_criterion) + 1):
+        for check in checks:
+            check["criterion"] = base_criterion + "x" * padding
         compact, normalized = _sizes(near_bound)
-        if compact <= 8192 < normalized:
+        if compact <= QUALITY_PROFILE_MAX_BYTES < normalized:
             break
-        padding += 1
+    else:
+        raise AssertionError(
+            "the near-bound fixture never straddled the normalized-byte bound — "
+            "a fixture construction defect, not a production claim"
+        )
+    assert all(
+        len(check["criterion"]) <= QUALITY_MAX_TEXT_CHARS for check in checks
+    )  # the cap holds for the profile that reaches the byte boundary
     refuse(with_quality_block(near_bound), "UTF-8")
 
     # a VALID explicit period: null stays accepted (non-time-bounded

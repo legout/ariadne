@@ -77,11 +77,10 @@ jobs:
           # explicit tests path adds the default test_*.py suite in the
           # same single run. No skips beyond the three environment
           # exclusions above.
-          S3_TESTS=products/ariadne/packages/ariadne-data/tests
           .ci-venv/bin/python -m pytest -q \
-            --ignore=$S3_TESTS/test_s3_lakehouse.py \
-            --ignore=$S3_TESTS/test_s3_storage_access.py \
-            --ignore=$S3_TESTS/test_s3_storage_profiles.py \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_lakehouse.py \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_storage_access.py \
+            --ignore=products/ariadne/packages/ariadne-data/tests/test_s3_storage_profiles.py \
             integration/tests/lumio_metric_mvp.py \
             integration/tests/lumio_local_context.py \
             products/ariadne/packages/ariadne-data/tests \

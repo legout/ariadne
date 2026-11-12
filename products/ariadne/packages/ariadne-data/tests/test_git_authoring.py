@@ -240,10 +240,6 @@ NATIVE_POLICY_PAGE = (
     "    description: The counting rule.\n"
     "    tags:\n      - policy\n"
     "    status: draft\n"
-    "    dimensions:\n      - order_number\n"
-    "    grain:\n"
-    "      primary_key: [order_number]\n"
-    "      cardinality_enforcement: strict_1_to_1\n"
     "    sources:\n"
     "      - id: seed-notes\n"
     "        title: Seed notes\n"
@@ -279,6 +275,12 @@ NATIVE_METRIC_PAGE = (
     "    description: Count of all events.\n"
     "    tags:\n      - metric\n"
     "    status: draft\n"
+    # real required metric-native declarations from the fixture model: the
+    # label dimension and the dataset's declared [id] primary key
+    "    dimensions:\n      - label\n"
+    "    grain:\n"
+    "      primary_key: [id]\n"
+    "      cardinality_enforcement: strict_1_to_1\n"
     "    sources:\n"
     "      - id: all-events-count\n"
     "        title: All events count\n"
@@ -406,12 +408,16 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
         "  - name: metrics\n"
         "  - name: policies\n"
         "  - name: computations\n"
+        "  - name: tables\n"
+        "  - name: datasets\n"
         "ontology:\n"
         "  entity_types:\n"
         "    reference: {}\n"
         "    metric: {}\n"
         "    policy: {}\n"
         "    computation: {}\n"
+        "    table: {}\n"
+        "    dataset: {}\n"
         "  predicates: {}\n"
         "  redirects: {}\n",
         encoding="utf-8",
@@ -2182,7 +2188,9 @@ def _table_resource_of(asset: dict) -> str:
 
 
 def _page_split(text: str) -> tuple[str, str]:
-    _front, _sep, body = text.split("---", 2)
+    # the text opens with '---', so split yields ('', frontmatter, body) —
+    # the FRONTMATTER is the middle part, never the first
+    _opening, _front, body = text.split("---", 2)
     return "---" + _front + "---", body
 
 
@@ -2214,20 +2222,26 @@ def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(t
     assert sales_rel != support_rel
     worktree = worktree_of(project, proposal)
 
-    # author meaning for two sales columns — one SINGLE line, one MULTILINE
+    # author meaning for two sales columns — one SINGLE line, one MULTILINE —
+    # as CURATED BODY content (the native body is operator space; the core
+    # schema/observation facts live in the technical envelope)
     front, body = _page_split((worktree / sales_rel).read_text(encoding="utf-8"))
-    authored_body = body.replace(
-        "- `order_id` — unknown (not yet authored)",
-        "- `order_id` — business key of a sale",
-    ).replace(
-        "- `amount` — unknown (not yet authored)",
-        "- `amount` — net amount of the sale\n  in source currency, taxes included",
+    authored_body = (
+        "\n# sales.sales.orders\n\n"
+        "Curated operator notes.\n\n"
+        "## Column meanings\n\n"
+        "- `order_id` — business key of a sale\n"
+        "- `amount` — net amount of the sale\n"
+        "  in source currency, taxes included\n"
     )
-    assert authored_body != body  # the placeholders were found and replaced
+    assert authored_body != body  # the curated notes replace the placeholder
     edited = api.edit_pages_batch(
         proposal, first["revision"], [{"path": sales_rel, "content": front + authored_body}]
     )
     assert edited["changed"] is True
+    # the landed bytes (the writer normalizes the frontmatter boundary) — the
+    # independent baseline the refresh must preserve verbatim
+    authored_landed = _page_split((worktree / sales_rel).read_text(encoding="utf-8"))[1]
 
     # the physical source changes: `amount` disappears, `qty` arrives
     write_parquet(
@@ -2240,16 +2254,19 @@ def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(t
     assert sales_entry["changes"] == {"added": ["qty"], "removed": ["amount"], "type_changed": []}
     refreshed = (worktree / sales_rel).read_text(encoding="utf-8")
     _front2, body2 = _page_split(refreshed)
-    assert "- `order_id` — business key of a sale" in body2  # identical column kept
-    # the removed column's COMPLETE multiline meaning moved into history
-    assert (
-        "retained meaning: net amount of the sale in source currency, taxes included"
-        in body2
-    )
-    assert "`amount` removed (was DOUBLE)" in body2
-    # no guessed meaning: the new column starts unknown
-    assert "- `qty` — unknown (not yet authored)" in body2
-    assert "## Column meanings" in refreshed and "## Schema history" in refreshed
+    # the curated body survives — the complete multiline meaning block
+    # included: authored meaning is retained for the operator, never rewritten
+    # by the core-owned facts regeneration (the writer normalizes only the
+    # frontmatter-boundary newline, never body content)
+    assert body2.strip() == authored_landed.strip()
+    assert "- `amount` — net amount of the sale\n  in source currency, taxes included\n" in body2
+    refreshed_native = _load_frontmatter_meta(refreshed)["ariadne_profile"]["native"]
+    schema_rows = {row["column"]: row for row in refreshed_native["ariadne"]["schema"]}
+    # the core facts moved with the source: amount gone, qty present with its
+    # INSPECTED type, no guessed meaning anywhere in the authored body
+    assert set(schema_rows) == {"order_id", "qty"}
+    assert "`qty`" not in body2  # a new column gets no guessed meaning
+    assert "## Column meanings" in body2  # the curated section is intact
     support_entry = next(p for p in second["pages"] if p["resource"] == support_resource)
     assert support_entry["changes"] == {"added": [], "removed": [], "type_changed": []}
 
@@ -2278,23 +2295,29 @@ def test_refresh_preserves_only_unchanged_meaning_and_moves_changes_to_history(t
     assert third["changed"] is False
     assert third["revision"] == narrower["revision"]
 
-    # a MALFORMED authored selection (a list, not a mapping) refuses the
-    # refresh BEFORE any write: revision and page bytes unchanged
+    # a MALFORMED authored selection (a list, not a mapping) refuses at the
+    # PUBLIC BATCH seam — the producer page gate rejects it before any byte
+    # is written (the earlier honest boundary; the refresh keeps the same
+    # named refusal for pages arriving by other means): page bytes and the
+    # candidate revision are unchanged
     before_bytes = (worktree / sales_rel).read_bytes()
     meta = _load_frontmatter_meta((worktree / sales_rel).read_text(encoding="utf-8"))
     meta["ariadne_profile"]["native"]["observed_value_columns"] = ["qty"]
     dumped = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
     _f, b = _page_split((worktree / sales_rel).read_text(encoding="utf-8"))
-    malformed = api.edit_pages_batch(
-        proposal,
-        third["revision"],
-        [{"path": sales_rel, "content": f"---\n{dumped}\n---{b}"}],
-    )
-    with pytest.raises(ValueError, match="not a valid selection"):
-        api.refresh_schema(proposal, malformed["revision"], [SALES_ASSET])
-    assert (worktree / sales_rel).read_bytes() != before_bytes  # the edit itself landed…
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    with pytest.raises(
+        GitAuthoringError, match="observed_value_columns must map column names"
+    ):
+        api.edit_pages_batch(
+            proposal,
+            third["revision"],
+            [{"path": sales_rel, "content": f"---\n{dumped}\n---{b}"}],
+        )
+    assert (worktree / sales_rel).read_bytes() == before_bytes  # nothing was written
     still = proposals._load_record(project, proposal)["candidate_revision"]
-    assert still == malformed["revision"]  # …but the refresh wrote nothing: no new revision
+    assert still == third["revision"]  # and no revision moved
 
 
 def test_refresh_refuses_generated_target_collision_without_overwrite(tmp_path):
@@ -2407,9 +2430,17 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     assert meta["ariadne_profile"]["native"]["observed_value_columns"] == {"region": "VARCHAR"}
     evidence = meta["ariadne_profile"]["native"]["ariadne"]["observations"]["value_evidence"]
     assert evidence["region"] == {"state": "unavailable", "reason": "type_changed"}
-    assert "`region` type changed VARCHAR -> BIGINT" in (worktree / sales_rel).read_text(
-        encoding="utf-8"
-    )  # the schema history keeps the change for review
+    # the reviewable change record is the refresh's STRUCTURED disclosure
+    # (native schema facts move with the source; the body stays curated)
+    sales_page = next(p for p in changed_type["pages"] if p["resource"] == sales_resource)
+    assert sales_page["changes"]["type_changed"] == [
+        {"column": "region", "from": "VARCHAR", "to": "INTEGER"}
+    ]
+    schema_rows = {
+        row["column"]: row
+        for row in meta["ariadne_profile"]["native"]["ariadne"]["schema"]
+    }
+    assert schema_rows["region"]["type"] == "INTEGER"  # the current fact moved
 
     # repeating the refresh stays unavailable (the old binding is never erased)
     repeat = api.refresh_schema(proposal, changed_type["revision"], [SALES_ASSET])
@@ -2418,9 +2449,10 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     ]
     assert evidence["region"] == {"state": "unavailable", "reason": "type_changed"}
     assert repeat["revision"] != changed_type["revision"] or repeat["changed"] is False
+    revision = repeat["revision"]
 
     # explicit rebinding restores exact INTEGER evidence (1:2, 2:1 by literals)
-    revision = edit_selection({"region": "BIGINT"}, changed_type["revision"])
+    revision = edit_selection({"region": "INTEGER"}, revision)
     rebound = api.refresh_schema(proposal, revision, [SALES_ASSET])
     evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"][
         "value_evidence"
@@ -2433,14 +2465,15 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
         ],
     }
 
-    # deselection removes ACTIVE evidence; the schema history survives
+    # deselection removes ACTIVE evidence; the current core facts survive
     revision = edit_selection(None, rebound["revision"])
     deselected = api.refresh_schema(proposal, revision, [SALES_ASSET])
     meta = page_meta()
     native = meta["ariadne_profile"]["native"]
     assert "observed_value_columns" not in native
     assert "value_evidence" not in native["ariadne"]["observations"]
-    assert "type changed VARCHAR -> BIGINT" in (worktree / sales_rel).read_text("utf-8")
+    schema_rows = {row["column"]: row for row in native["ariadne"]["schema"]}
+    assert schema_rows["region"]["type"] == "INTEGER"  # the fact history persists
     assert deselected["changed"] is True
 
 

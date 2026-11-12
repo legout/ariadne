@@ -385,7 +385,7 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
         """One authored native variant of the saved Example: a distinct page
         identity carrying the same record with the provenance under test."""
         front = yaml.safe_load(valid_page.split("---")[1])
-        front["id"] = f"entity:{new_id}"
+        front["id"] = f"entity:{new_id}"  # the page-id form of saved native Examples
         front["title"] = f"{question} ({new_id})"
         native = front["ariadne_profile"]["native"]
         if without_provenance:
@@ -393,7 +393,11 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
         if malformed:
             native["sql_provenance"] = {**native["sql_provenance"], "source": "handwritten"}
         dumped = yaml.safe_dump(front, sort_keys=False, allow_unicode=True).strip()
-        return f"knowledge/answer_examples/{new_id}.md", f"---\n{dumped}\n---\n"
+        # author under the ACTUAL declared catalog category — the same
+        # category the real saved page occupies (derive it, never guess a
+        # new namespace)
+        category_dir = saved["path"].rsplit("/", 1)[0]
+        return f"{category_dir}/{new_id}.md", f"---\n{dumped}\n---\n"
 
     from ariadne import proposals
 
@@ -406,32 +410,41 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
     )
     selectors = ["--proposal", saved["proposal"], "--revision", no_sql["revision"]]
     assert (
-        run_cli((project, None), "search-examples", "gross margin region", *selectors, "--include-sql") == 0
+        run_cli(
+            (project, None), "search-examples", "gross margin region", *selectors, "--include-sql"
+        )
+        == 0
     )
     hits = json.loads(capsys.readouterr().out)
     assert (
-        next(hit for hit in hits if hit["id"] == "legacy-without-sql")["provenance"]["sql"] is None
+        next(hit for hit in hits if hit["id"] == "entity:legacy-without-sql")["provenance"][
+            "sql"
+        ]
+        is None
     )
 
+    # PRESENT-but-malformed provenance is invalid data: the producer page
+    # gate refuses it at the PUBLIC BATCH seam — before any byte is written,
+    # the named diagnostic — so the malformed record can never even enter a
+    # candidate (the earlier honest boundary; the same named refusal search
+    # keeps for anything arriving by other means)
+    import pytest
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     malformed_path, malformed_content = variant_page("malformed-provenance", malformed=True)
-    malformed = proposals.edit_page_batch(
-        root,
-        saved["proposal"],
-        no_sql["revision"],
-        [{"path": malformed_path, "content": malformed_content}],
-    )
-    selectors[-1] = malformed["revision"]
-    assert (
-        run_cli(
-            (project, None),
-            "search-examples",
-            "gross margin region",
-            *selectors,
-            "--include-sql",
+    with pytest.raises(
+        GitAuthoringError, match="sql_provenance.source must be the fixed descriptor"
+    ):
+        proposals.edit_page_batch(
+            root,
+            saved["proposal"],
+            no_sql["revision"],
+            [{"path": malformed_path, "content": malformed_content}],
         )
-        == 1
-    )
-    assert "unsupported sql_provenance.source" in error_payload(capsys.readouterr().err)["message"]
+    # the refusal wrote nothing: the candidate revision never moved
+    from tests.test_git_authoring import branch_of
+
+    assert branch_of(root, saved["proposal"]) == no_sql["revision"]
 
 
 def test_define_metric_examples_retain_only_the_actual_operation_arguments(project, capsys):

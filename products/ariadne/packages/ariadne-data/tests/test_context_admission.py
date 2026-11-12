@@ -37,8 +37,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne import (  # noqa: E402
+    admission,
+    proposals,
+)
 from ariadne import context as context_module  # noqa: E402
-from ariadne import proposals  # noqa: E402
 from ariadne.admission import main as admit_cli  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
@@ -343,6 +346,15 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
     return f"---\n{front}\n---\n\n{body}\n"
 
 
+def reference_view(page_text: str) -> dict:
+    """The Reference VIEW the shared digest/review seam operates on
+    (spec0029 §1.5): the producer's flat-native adaptation of the authored
+    page — the same in-memory view shape the candidate parse builds, never
+    the raw outer page envelope."""
+    meta = yaml.safe_load(page_text.split("---", 2)[1])
+    return {"type": "reference", **meta["ariadne_profile"]["native"]}
+
+
 TABLE_PAGE_REL = "knowledge/tables/orders.md"
 REFERENCE_PAGE_REL = "knowledge/references/order-number.md"
 
@@ -395,8 +407,18 @@ def _policy_page_edit(text: str) -> list[dict]:
 
 
 def admit(
-    project: Path, review: dict, *, confirm: bool = True, confirm_mapping: Sequence[str] = ()
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    confirm_mapping: Sequence[str] = (),
+    destination: Path | None = None,
+    expected: str = "none",
 ) -> int:
+    """The human admission journey. An INTEGRATED candidate activates through
+    the composite preview the operator confirms (spec0032 §10): pass
+    ``destination`` to run that preview→confirm flow; without it the call is
+    the plain display/admission path."""
     argv = [
         "--project",
         str(project),
@@ -408,6 +430,24 @@ def admit(
         review["review_digest"],
         *(f"--confirm-mapping={selection}" for selection in confirm_mapping),
     ]
+    if destination is not None:
+        composite = admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=str(destination),
+            expected_current=expected,
+            scope=["public"],
+            confirm_mappings=list(confirm_mapping),
+        )
+        argv += [
+            "--context-destination",
+            str(destination),
+            "--context-expected-current",
+            expected,
+            f"--overall-digest={composite['digest']}",
+        ]
     if confirm:
         argv.append("--confirm")
     return admit_cli(argv)
@@ -612,7 +652,9 @@ def test_review_exposes_assertion_identity_and_confirmation_eligibility(tmp_path
         for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
-    assert assertion["assertion_digest"] == confirmation_binding_digest(page, declared)
+    assert assertion["assertion_digest"] == confirmation_binding_digest(
+        reference_view(order_reference_page()), declared
+    )
     assert assertion["source_ids"] == ["seed-notes"]  # the actual dependencies
     assert assertion["receipts"] == []  # no receipts cited
     # reading the review confirmed nothing: no admission exists
@@ -636,14 +678,17 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     assert shown["selection"] == selection
     assert shown["assertion"]["declaration"]["claim"] == "asserted"
     assert shown["assertion"]["assertion_digest"] == confirmation_binding_digest(
-        yaml.safe_load(order_reference_page().split("---", 2)[1]),
+        reference_view(order_reference_page()),
         shown["assertion"]["declaration"],
     )
     assert "never sign-off" in displayed["confirmation_required"]
     assert not (project / CURRENT).exists()  # displaying confirms nothing
 
     # the assertion variant with NO selection: admitted, still unconfirmed
-    assert admit(project, review) == 0
+    # (an integrated candidate activates through the composite preview the
+    # operator confirms — the production admission flow, spec0032 §10)
+    published = tmp_path / "published"
+    assert admit(project, review, destination=published) == 0
     admitted = json.loads(capsys.readouterr().out)
     assert admitted["confirmed_mappings"] == []
     assert read_current(project)["confirmed_mappings"] == []
@@ -667,7 +712,16 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     assert validated["ok"] is True
     second = api.review_proposal(review["proposal"])
     pre_blobs = blobs_of(project, second["revision"])
-    assert admit(project, second, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            second,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=review["revision"],
+        )
+        == 0
+    )
     confirmed = json.loads(capsys.readouterr().out)
     [recorded] = confirmed["confirmed_mappings"]
     assert recorded["selection"] == selection
@@ -682,7 +736,9 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
         for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
-    assert entry["assertion_digest"] == confirmation_binding_digest(page, declared)
+    assert entry["assertion_digest"] == confirmation_binding_digest(
+        reference_view(order_reference_page()), declared
+    )
     assert entry["by"] and entry["at"]  # the operational human evidence
 
     # admission changed no candidate byte
@@ -895,6 +951,12 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
     evidence) or stale (aged past the operator budget) refuse validation —
     the admission gate never sees them."""
     if variant == "unsupported":
+        # the asserted mapping without cited evidence now refuses at the
+        # NATIVE BATCH boundary — the producer page gate rejects it before
+        # any byte is written (the earlier honest boundary; the same named
+        # gate validation kept for pages arriving by other means)
+        from lumio_wiki.git_authoring import GitAuthoringError
+
         project = context_only_project(tmp_path)
         api = AuthoringProject(project)
         started = api.start_proposal()
@@ -903,15 +965,14 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         forged = yaml.safe_load(page.split("---")[1])
         forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = []
         front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-        edited = api.edit_pages_batch(
-            started["proposal"],
-            started["candidate_revision"],
-            reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
-        )
-        result = api.validate_proposal(started["proposal"], edited["revision"])
-        assert any("asserted mapping without evidence" in error for error in result["errors"])
-        outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-        assert outcomes["page_contract"] == "failed"
+        with pytest.raises(GitAuthoringError, match="asserted mapping without evidence"):
+            api.edit_pages_batch(
+                started["proposal"],
+                started["candidate_revision"],
+                reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
+            )
+        # the refusal wrote nothing: no candidate revision ever moved
+        assert branch_of(project, started["proposal"]) == started["candidate_revision"]
         return
 
     if variant == "conflicting":

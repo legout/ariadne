@@ -74,7 +74,6 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     mapping_assertion_digest,  # K4 (issue #44): the declaration identity of a mapping
     resolve_term,  # K2 (issue #42): the shared read-only term resolver
     resolve_term_entries,  # C6 fix: the candidate feeds the shared core through native entries
-    resolve_term_native_entries,  # C6 fix: the native collector for a materialized knowledge/ tree
     validate_inspection_candidate,
 )
 from ariadne.render import render
@@ -471,35 +470,34 @@ class AuthoringProject:
         """Resolve one shared business term or exact ``{resource, column}``
         field lookup against an EXPLICITLY selected proposal's current
         candidate revision (plan §2 ``resolve_term`` row, spec 0010 §6):
-        read-only — the candidate is materialized from the exact commit, never
-        a mutable worktree, and the response keeps the candidate identity
-        (proposal + revision + ``candidate: true``) visible beside the shared
-        resolver envelope (:func:`ariadne.context.resolve_term`). Authoring
-        gains no query, approval or admission authority here."""
+        read-only — the entries come from the producer's PUBLIC candidate
+        parse of the exact committed revision (never a mutable worktree and
+        never a Core-side KB YAML parse, spec0035 §2/ADR0029), and the
+        response keeps the candidate identity (proposal + revision +
+        ``candidate: true``) visible beside the shared resolver envelope
+        (:func:`ariadne.context.resolve_term_entries`). Authoring gains no
+        query, approval or admission authority here."""
         project = self.project.resolve()
         proposals._load_record(project, proposal)  # identity errors early
         with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
             record = proposals._load_record(project, proposal)  # authoritative
             proposals._check_coherent(project, record)
-            with tempfile.TemporaryDirectory(prefix="ariadne-resolve-") as tmp:
-                tree = Path(tmp) / "bundle"
-                tree.mkdir()
-                _materialize(project, proposal, record["candidate_revision"], tree)
-                # C6 fix (spec0035 §2): the candidate's References are native
-                # knowledge/ pages — feed the ONE shared resolver core through
-                # the native entries seam (the classic context_layer collector
-                # read the retired bundle shape and matched nothing).
-                result = resolve_term_entries(
-                    resolve_term_native_entries(tree / "knowledge"),
-                    request,
-                    part=part,
-                    # the operator's evidence age budget drives the candidate
-                    # side's explicit as_of/stale freshness states too (K4 fix
-                    # pass, finding 3); no confirmations exist on a candidate
-                    evidence_max_age_hours=project_inspection_limits(project)[
-                        "receipt_max_age_hours"
-                    ],
-                )
+            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+            result = resolve_term_entries(
+                lumio_context.candidate_term_entries(
+                    project / proposals.WORKTREES_REL / proposal / "knowledge",
+                    record["candidate_revision"],
+                ),
+                request,
+                part=part,
+                # the operator's evidence age budget drives the candidate
+                # side's explicit as_of/stale freshness states too (K4 fix
+                # pass, finding 3); no confirmations exist on a candidate
+                evidence_max_age_hours=project_inspection_limits(project)[
+                    "receipt_max_age_hours"
+                ],
+            )
         result.update(
             {
                 "proposal": proposal,

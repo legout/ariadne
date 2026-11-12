@@ -1223,12 +1223,16 @@ def build_native_table_page(
     body = existing_body
     if not body.strip():
         body = (
-            f"# {title}\n\nGenerated physical table profile of the approved "
+            # the producer parse keeps the boundary newline IN the body, so
+            # the seeded placeholder carries it too and the emitted page —
+            # fence + body reassembled without an extra separator — is
+            # byte-stable across refreshes (an identical refresh is a no-op)
+            f"\n# {title}\n\nGenerated physical table profile of the approved "
             "catalog asset; the schema and observation facts live in the "
             "technical envelope. This body is curated operator space.\n"
         )
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    return f"---\n{front}---\n{body}", flags
+    return f"---\n{front}---{body}", flags
 
 
 def build_native_dataset_page(
@@ -1308,12 +1312,14 @@ def build_native_dataset_page(
     body = existing_body
     if not body.strip():
         body = (
-            f"# {title}\n\nGenerated Dataset Overview of the approved "
+            # same boundary-newline contract as the table builder above: the
+            # reassembled page is byte-stable across refreshes
+            f"\n# {title}\n\nGenerated Dataset Overview of the approved "
             "collection; the table links live in the technical envelope. This "
             "body is curated operator space.\n"
         )
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    return f"---\n{front}---\n{body}", flags
+    return f"---\n{front}---{body}", flags
 
 
 
@@ -2557,36 +2563,6 @@ def _resolve_response_parts(matches: list[dict], *, limit: int, max_bytes: int) 
     if current or not parts:
         parts.append(current)
     return parts
-
-
-def resolve_term_native_entries(kb_root: Path) -> list[tuple[str, dict, bool]]:
-    """The NATIVE collector for one materialized knowledge/ tree (C6,
-    spec0035 §2): every Compiled Page whose producer-native metadata carries
-    the structured ``ariadne`` Reference extension becomes one shared-core
-    entry — the SAME in-memory adaptation the pinned-SDK route applies
-    (:func:`ariadne.lumio_context.resolve_term`; there is no second matcher).
-    Ordinary pages stay documentation; bookkeeping pages are skipped."""
-    entries: list[tuple[str, dict, bool]] = []
-    root = Path(kb_root)
-    if not root.is_dir():
-        return entries
-    for path in sorted(root.rglob("*.md")):
-        if path.name in ("index.md", "log.md"):
-            continue  # system bookkeeping, never a Reference
-        try:
-            meta = _load_frontmatter_meta(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError):
-            continue  # the producer/page gate owns malformed pages
-        profile = meta.get("ariadne_profile") if isinstance(meta, dict) else None
-        native = profile.get("native") if isinstance(profile, dict) else None
-        if not isinstance(native, dict):
-            continue
-        extension = native.get("ariadne")
-        if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
-            continue  # ordinary pages stay documentation, never References
-        rel = path.relative_to(root).as_posix()
-        entries.append((rel, {"type": "reference", **native}, False))
-    return entries
 
 
 def resolve_term(
