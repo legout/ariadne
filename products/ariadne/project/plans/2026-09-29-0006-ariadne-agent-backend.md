@@ -1,5 +1,7 @@
 # Implementation plan: Ariadne Agent backend
 
+> **Retired — 2026-11-12:** superseded by [ADR-0027](../adr/0027-host-agents-only.md) (owner host-only decision: host agents wire through skills and/or MCP; no Ariadne-specific agent backend, no replacement). Preserved as a historical execution map.
+>
 > **Historical status — 2026-10-07:** Historical execution map: #22–#25 are closed. The proposed `ariadne-core`/`ariadne-agent` distribution names below are superseded by [ADR-0018](../adr/0018-distribution-naming-ariadneai.md): current distributions are `ariadneai`/`ariadneai-agent`, with unchanged import namespaces. Preserve original decisions as history; no retrospective approval is inferred.
 
 | | |

@@ -1,6 +1,6 @@
 # Embed Tau's agent core in a separate Ariadne Agent package
 
-Status: accepted (owner, pi conversation 2026-09-29; approved in-chat design and separate-distribution, explicit-role, in-memory-session choices; later approved the `ariadne-core` distribution-name amendment and DuckDB-only scope, not implementation).
+Status: accepted (owner, pi conversation 2026-09-29; approved in-chat design and separate-distribution, explicit-role, in-memory-session choices; later approved the `ariadne-core` distribution-name amendment and DuckDB-only scope, not implementation). Superseded by [ADR-0027](0027-host-agents-only.md) — host agents only (owner decision 2026-11-12); the original body below is preserved as history.
 
 Ariadne needs a Python conversational backend for a later UI, with an OpenAI-compatible model and user-selected Analyst/Authoring roles. Embed `tau_ai` and `tau_agent` in a separately installable `ariadne-agent` package instead of building a second agent loop or running the `tau_coding` application: Tau already offers the event-streaming model loop, while Ariadne must retain ownership of its compile, staging and human approval gates. The `tau-ai` wheel includes `tau_coding` and UI dependencies, but the backend must not import or invoke that layer. Role-specific native Ariadne tools stay local-first; explicit stdio MCP integration reuses the owned `tau-mcp` core rather than bypassing the runtime or building another client. The user selects a role per in-memory session; durable session storage and BI tools wait for an actual need.
 

@@ -98,6 +98,8 @@ packages/
   lumio-wiki/               # existing public SDK member, including its package tests
   lumio-lancedb/            # existing optional adapter member and package tests
 ariadne-agent/             # retained separate project/environment; not a workspace member
+                           # (retired and removed 2026-11-12 — host agents only,
+                           #  ADR-0027; this layout line is preserved as history)
 project/                   # existing Ariadne decisions/specifications and workflow map
   lumio/                   # imported Lumio project records, with original IDs
     CONTEXT.md             # original Lumio vocabulary, preserved
@@ -143,10 +145,11 @@ extras and supported Python versions remain as published. In particular:
   integrated use still requires an installed compatible SDK and exact identity.
 - Workspace sources select local members for joint development only. They do
   not replace or erase published dependency metadata.
-- `ariadne-agent` keeps its independent environment, existing Core dependency
-  and external Tau boundary. Relocation of Core requires correcting its relative
-  development source path. No Agent qualification, new Tau installation, Tau
-  import or machine-specific path cleanup is included.
+- `ariadne-agent` kept its independent environment, existing Core dependency
+  and external Tau boundary until its retirement and removal (2026-11-12,
+  host agents only — see [Ariadne ADR-0027](../../products/ariadne/project/adr/0027-host-agents-only.md));
+  this historical constraint no longer binds. No Agent qualification, new Tau
+  installation, Tau import or machine-specific path cleanup is included.
 - The private Lumio application, Tau repositories, credentials, local admissions
   and real data projects are not imported.
 
