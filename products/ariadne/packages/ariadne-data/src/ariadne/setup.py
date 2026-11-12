@@ -275,12 +275,8 @@ def _kb_namespace(root: Path) -> str | None:
     or incomplete layouts already refused upstream
     (``refuse_unsupported_project``); an unreadable manifest is a bounded
     refusal, never an adoption guess."""
-    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
-        load_source_reference_manifest,
-    )
-    from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImports]
-        SourceReferenceError,
-    )
+    from lumio_wiki import load_source_reference_manifest
+    from lumio_wiki.source_references import SourceReferenceError
 
     kb = root / "knowledge"
     if not kb.is_dir():
@@ -322,12 +318,8 @@ def _validate_resume_selections(
             file=sys.stderr,
         )
         return False
-    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
-        load_private_profile,
-    )
-    from lumio_wiki.private_profile import (  # pyright: ignore[reportMissingImports]
-        PrivateProfileError,
-    )
+    from lumio_wiki import load_private_profile
+    from lumio_wiki.private_profile import PrivateProfileError
 
     try:
         load_private_profile(args.private_profile, kb_root=root / "knowledge")
