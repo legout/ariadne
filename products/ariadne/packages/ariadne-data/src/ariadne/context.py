@@ -3831,7 +3831,12 @@ def data_signals_pinned(
         resource = native_meta.get("resource")
         if not (isinstance(resource, str) and resource.startswith("ariadne://")):
             continue
-        meta = {"resource": resource}
+        meta: dict = {"resource": resource}
+        # the Core advisory gate resolves the reports' source_ids against the
+        # page's own declared citations — carry them with the profile
+        sources_meta = native_meta.get("sources")
+        if isinstance(sources_meta, list):
+            meta["sources"] = sources_meta
         quality = native_meta.get("ariadne_quality")
         if quality is not None:
             meta["ariadne_quality"] = quality

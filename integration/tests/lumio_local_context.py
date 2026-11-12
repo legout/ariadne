@@ -3184,6 +3184,8 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     # exists), so the native finalize derivation is a genuine no-op — the
     # admission never needs a revision-2 capability and its bytes are never
     # rewritten.
+    from tests.test_contracts import contract_project
+
     from integration.tests.lumio_metric_mvp import (
         BASELINE,
         CONTROL,
@@ -3191,7 +3193,6 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         SourceReferenceManifest,
         serialize_source_reference_manifest,
     )
-    from tests.test_contracts import contract_project
 
     legacy_project = contract_project(tmp_path / "legacy")
     run_git(legacy_project, "rm", "-q", "-r", "--", "context_layer")
