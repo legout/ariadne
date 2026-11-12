@@ -53,9 +53,11 @@ categories:
   - name: policies
   - name: references
   - name: metrics
+  - name: computations
 ontology:
   entity_types:
     policy: {}
+    computation: {}
     reference: {}
     metric: {}
 """

@@ -3770,28 +3770,34 @@ def _data_signals_state(
 
 
 def data_signals_pinned(
-    snapshot_pages,
+    snapshot,
     dependencies: dict[str, list[str | None]],
     *,
     requested_period: tuple[datetime | None, datetime | None] | None = None,
     period_fields: set[str] | frozenset[str] | None = None,
 ) -> dict:
-    """The spec0013 §4 advisory quality view over the PINNED scoped SDK page
-    view (C6 native route): the SAME semantic calculation and disclosure
-    shape as :func:`data_signals`, with the consuming metric pages and the
-    directly-cited table pages resolved from authorized typed producer
-    metadata — the metric page's recorded ``sources[].resource`` citations
-    and the table pages' exact ``core_ref`` resource identities — instead of
-    the retired served-tree read. No filesystem read, no second index, no
-    raw KB parse: the pinned visible page set is the only input, and a
-    dependency without a pinned technical page — or a page without a valid
-    authored ``ariadne_quality`` profile — stays honestly unknown coverage.
-    The view never fails a numerically valid query and never invents
-    evidence; the pinned set is already bound-checked, so only the asset and
-    report bounds can truncate."""
+    """The spec0013 §4 advisory quality view over the PINNED scoped
+    ContextSnapshot (C6 native route, owner-approved quality contract):
+    the SAME semantic calculation and disclosure shape as the classic entry
+    (via the shared `_data_signals_state`), with the consuming metric pages
+    and the directly-cited table pages resolved from the REAL producer view —
+    metric identity ONLY through `snapshot.bindings` (`metric_entity_id` /
+    `metric_ref`, qualified model::metric — a bare name mapping to several
+    models stays honestly unknown, never a cross-match) and table identity
+    through the exact FLAT `native.resource`. Citations resolve SCOPE-FIRST
+    over the visible pinned pages: an exact visible KB-relative page path
+    resolves that page and reads its canonical resource; a canonical resource
+    URI matches the visible page whose resource equals it exactly; unknown or
+    hidden stays honestly unknown. No filesystem read, no second index, no
+    raw KB parse, no SQL/source probe on the advisory read; the view never
+    fails a numerically valid query and never invents evidence — a dependency
+    without a pinned technical page, or a page without an authored accepted
+    `ariadne_quality` profile, stays honestly unknown coverage."""
     from lumio_wiki.ariadne_context import disclose_native
 
     now = _assessment_now()
+    pages = tuple(snapshot.pages) if snapshot is not None else ()
+    bindings = tuple(snapshot.bindings) if snapshot is not None else ()
     metric_names = list(dependencies)[:DATA_SIGNALS_MAX_METRICS]
     omitted_metrics = len(dependencies) - len(metric_names)
     asset_order: list[str] = []
@@ -3802,62 +3808,77 @@ def data_signals_pinned(
     omitted_assets = max(0, len(asset_order) - DATA_SIGNALS_MAX_ASSETS)
     asset_order = asset_order[:DATA_SIGNALS_MAX_ASSETS]
     wanted = set(asset_order)
-    # typed identity index over the pinned visible pages (deterministic
-    # order; the disclosed producer profile is the ONLY metadata read)
+    # qualified metric identity through the REAL producer bindings (never a
+    # bare-name cross-match), then the metric page by its exact producer identity
+    bindings_by_metric: dict[str, list] = {}
+    for binding in bindings:
+        metric_ref = getattr(binding, "metric_ref", None)
+        name = getattr(metric_ref, "metric", None)
+        if isinstance(name, str) and name:
+            bindings_by_metric.setdefault(name, []).append(binding)
+    page_by_entity = {page.entity_id: page for page in pages}
+    # typed index over the VISIBLE pinned pages (deterministic order; the
+    # disclosed FLAT native metadata is the only metadata read)
     metric_citations: dict[str, set[str]] = {}
     tables: dict[str, tuple[str, dict]] = {}
-    for page in sorted(snapshot_pages, key=lambda item: item.path):
-        profile = disclose_native(page.native)
-        if not isinstance(profile, dict):
+    resource_by_visible_path: dict[str, str] = {}
+    for page in sorted(pages, key=lambda item: item.path):
+        native_meta = disclose_native(page.native)
+        if not isinstance(native_meta, dict):
             continue
-        inner = profile.get("native")
-        inner = inner if isinstance(inner, dict) else {}
-        core_ref = profile.get("core_ref")
-        if profile.get("kind") == "table" and isinstance(core_ref, dict):
-            resource = core_ref.get("id")
-            if isinstance(resource, str) and resource.startswith("ariadne://"):
-                meta = {"resource": resource}
-                quality = inner.get("ariadne_quality")
-                if quality is not None:
-                    meta["ariadne_quality"] = quality
-                tables.setdefault(resource, (f"knowledge/{page.path}", meta))
+        if page.kind != "table":
             continue
-        if profile.get("kind") == "metric":
-            metric_ref = profile.get("metric_ref")
-            name = metric_ref.get("metric") if isinstance(metric_ref, dict) else None
-            if not isinstance(name, str):
+        resource = native_meta.get("resource")
+        if not (isinstance(resource, str) and resource.startswith("ariadne://")):
+            continue
+        meta = {"resource": resource}
+        quality = native_meta.get("ariadne_quality")
+        if quality is not None:
+            meta["ariadne_quality"] = quality
+        tables.setdefault(resource, (f"knowledge/{page.path}", meta))
+        resource_by_visible_path[page.path] = resource
+    for name in dict.fromkeys(metric_names):
+        candidates = bindings_by_metric.get(name) or []
+        if len(candidates) != 1:
+            continue  # absent/ambiguous qualified identity: honest unknown
+        binding = candidates[0]
+        metric_page = page_by_entity.get(getattr(binding, "metric_entity_id", None))
+        if metric_page is None:
+            continue
+        native_meta = disclose_native(metric_page.native)
+        sources = native_meta.get("sources") if isinstance(native_meta, dict) else None
+        if not isinstance(sources, list):
+            continue
+        cited = metric_citations.setdefault(name, set())
+        for source in sources:
+            resource = source.get("resource") if isinstance(source, dict) else None
+            if not (isinstance(resource, str) and resource):
                 continue
-            cited = metric_citations.setdefault(name, set())
-            sources = inner.get("sources")
-            if not isinstance(sources, list):
+            if not resource.startswith("ariadne://"):
+                # an exact visible KB-relative table page path resolves THAT
+                # page, then its canonical resource — never a URI comparison
+                resolved = resource_by_visible_path.get(resource)
+                if resolved is not None:
+                    cited.add(resolved)
                 continue
-            for source in sources:
-                resource = source.get("resource") if isinstance(source, dict) else None
-                if not (isinstance(resource, str) and resource):
-                    continue
-                if resource.startswith("tables/"):
-                    name_part = resource[len("tables/") :]
-                    if name_part == Path(name_part).name and name_part.endswith(".md"):
-                        cited.add(f"tables/{name_part}")
-                    continue
-                try:
-                    kind, _parts = parse_resource(resource)
-                except ValueError:
-                    continue
-                if kind == "table":
-                    cited.add(resource)
-    bindings: dict[str, tuple[str, dict]] = {}
+            try:
+                citation_kind, _parts = parse_resource(resource)
+            except ValueError:
+                continue
+            if citation_kind == "table":
+                cited.add(resource)  # canonical URI: exact resource match below
+    bindings_resolved: dict[str, tuple[str, dict]] = {}
     for resource in asset_order:
         entry = tables.get(resource)
         if entry is None:
             continue  # no pinned technical page: the asset entry stays unknown
         path, meta = entry
         if any(resource in metric_citations.get(name, ()) for name in metric_names):
-            bindings[resource] = (path, meta)
+            bindings_resolved[resource] = (path, meta)
     cited_wanted: set[str] = set()
     for name in metric_names:
         cited_wanted |= {r for r in metric_citations.get(name, ()) if r in wanted}
-    unresolved = sorted(cited_wanted - set(bindings))
+    unresolved = sorted(cited_wanted - set(bindings_resolved))
     return _data_signals_state(
         metric_names,
         asset_order,
@@ -3865,7 +3886,7 @@ def data_signals_pinned(
         omitted_assets,
         0,  # the pinned set is already complete: no page-read budget exists
         dependencies,
-        bindings,
+        bindings_resolved,
         unresolved,
         now,
         requested_period,

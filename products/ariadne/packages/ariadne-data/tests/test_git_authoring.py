@@ -385,6 +385,7 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
         "  - name: references\n"
         "  - name: metrics\n"
         "  - name: policies\n"
+        "  - name: computations\n"
         "ontology:\n"
         "  entity_types:\n"
         "    reference: {}\n"

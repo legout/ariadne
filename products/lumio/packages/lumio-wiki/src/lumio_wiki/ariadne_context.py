@@ -1025,10 +1025,16 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
     if not isinstance(native, dict):
         return [f"{where} must be a mapping, got {type(native).__name__}"]
     errors: list[str] = []
-    unknown = sorted(set(native) - NATIVE_KEYS)
+    native_type = native.get("type")
+    # C6 quality-profile amendment (spec0009 §9): `ariadne_quality` is a
+    # kind-scoped OPTIONAL native field of TABLE profile pages only; every
+    # other kind still refuses it as an unsupported field.
+    allowed_keys = set(NATIVE_KEYS)
+    if kind == "table" or native_type == "table":
+        allowed_keys.add("ariadne_quality")
+    unknown = sorted(set(native) - allowed_keys)
     if unknown:
         errors.append(f"{where} carries unsupported native field(s) {unknown}")
-    native_type = native.get("type")
     if "type" in native:
         if not isinstance(native_type, str) or native_type not in NATIVE_TYPES:
             errors.append(f"{where} type must be one of {sorted(NATIVE_TYPES)}")
@@ -1142,6 +1148,15 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
                 f"{where} ariadne carries a reference/table/dataset metadata block — "
                 "unsupported for this kind"
             )
+    if (kind == "table" or native_type == "table") and "ariadne_quality" in native:
+        errors.extend(
+            _table_quality_native_errors(
+                f"{where} ariadne_quality",
+                native["ariadne_quality"],
+                resource=native.get("resource"),
+                sources=native.get("sources"),
+            )
+        )
     if "ariadne_evidence" in native:
         errors.extend(_evidence_errors(f"{where} ariadne_evidence", native["ariadne_evidence"]))
     return errors
@@ -1259,6 +1274,426 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
             answer["result_digest"]
         ):
             errors.append(f"{where} answer.result_digest must be a 64-hex digest")
+    return errors
+
+
+# --- C6 quality-profile amendment (spec0009 §9, owner-approved 2026-11-12):
+# the OPTIONAL `ariadne_quality` native field of TABLE profile pages, with
+# structural validation ONLY. The closed v1 grammar is retained 1:1 from the
+# approved Ariadne source-quality contract (spec0013 r2 + the Core validator's
+# closed constants); K checks shape, types, bounds, vocabularies and the
+# binding-local asset/citation rules — never meaning, freshness interpretation,
+# applicability, execution authority or query refusal, which stay Core-side
+# advisory meaning. Reports are SUPPLIED CLAIMS, never authenticated execution
+# or current healthy state. Pure: no I/O, no dependency, never imports Ariadne.
+ARIADNE_QUALITY_VERSION = 1
+QUALITY_MAX_REPORTS = 8
+QUALITY_MAX_CHECKS = 8
+QUALITY_MAX_SOURCE_IDS = 8
+QUALITY_MAX_ID_CHARS = 128  # id/source-version value/field/actor strings
+QUALITY_MAX_TEXT_CHARS = 1024  # description/criterion/population/meaning/provenance
+QUALITY_MAX_CADENCE_CHARS = 256
+QUALITY_MAX_UNITS_CHARS = 64  # units/timezone
+QUALITY_MAX_BYTES = 8192  # the normalized (disclosed compact JSON) profile bound
+_QUALITY_ROOT_KEYS = frozenset({"version", "reports"})
+_QUALITY_REPORT_KEYS = frozenset(
+    {
+        "id",
+        "asset",
+        "source_ids",
+        "scope",
+        "reported_at",
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "checks",
+        "watermark",
+    }
+)
+_QUALITY_REPORT_OPTIONAL_KEYS = frozenset(
+    {
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "watermark",
+    }
+)
+_QUALITY_SCOPE_KEYS = frozenset({"kind", "description", "population", "period"})
+_QUALITY_PERIOD_KEYS = frozenset({"field", "start", "end"})
+_QUALITY_SOURCE_VERSION_KEYS = frozenset({"kind", "value"})
+_QUALITY_CHECK_KEYS = frozenset(
+    {"id", "kind", "outcome", "criterion", "tested_population", "tested_period"}
+)
+_QUALITY_WATERMARK_KEYS = frozenset(
+    {"kind", "value", "field", "meaning", "units", "timezone", "observed_at"}
+)
+_QUALITY_SCOPE_KINDS = ("asset", "subset")
+_QUALITY_SOURCE_VERSION_KINDS = ("snapshot", "version")
+_QUALITY_CHECK_OUTCOMES = ("pass", "fail", "unknown")
+_QUALITY_WATERMARK_KINDS = ("event_time", "ingestion_time", "snapshot_as_of", "other")
+
+
+def _quality_aware_instant(value: object, where: str) -> tuple[datetime | None, list[str]]:
+    """Parse one OPTIONAL aware ISO-8601 instant. Naive datetimes, plain dates
+    and non-temporal values reject with a NAMED field diagnostic — never an
+    invented timezone and never a crash."""
+    if value is None:
+        return None, []
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None, [f"{where} is not a valid ISO-8601 instant"]
+    else:
+        return None, [
+            f"{where} must be an ISO-8601 instant string with an explicit UTC "
+            "offset (a plain date is not an instant)"
+        ]
+    if not isinstance(parsed, datetime) or parsed.utcoffset() is None:
+        return None, [
+            f"{where} must carry an explicit UTC offset (naive datetimes and "
+            "plain dates are rejected)"
+        ]
+    return parsed, []
+
+
+def _quality_period_errors(period: object, where: str) -> list[str]:
+    """The closed `{field, start, end}` declared-evidence period; an explicit
+    null is the declared non-time-bounded form (omission is not a declaration —
+    the requiring caller owns that rule)."""
+    if period is None:
+        return []
+    if not isinstance(period, dict):
+        return [f"{where} must be {{field, start, end}} or an explicit null"]
+    errors: list[str] = []
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS)
+    if unknown:
+        errors.append(f"{where} carries unsupported field(s) {unknown}")
+    field = period.get("field")
+    if not isinstance(field, str) or not field.strip():
+        errors.append(f"{where} field must be a non-empty string")
+    elif len(field) > QUALITY_MAX_ID_CHARS:
+        errors.append(f"{where} field exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+    for bound in ("start", "end"):
+        _, bound_errors = _quality_aware_instant(period.get(bound), f"{where} {bound}")
+        errors.extend(bound_errors)
+    return errors
+
+
+def _table_quality_native_errors(
+    where: str, profile: object, *, resource: object, sources: object
+) -> list[str]:
+    """Structural validation of the OPTIONAL `ariadne_quality` native field of
+    one TABLE profile page (spec0009 §9 quality-profile amendment, owner-
+    approved 2026-11-12). The closed v1 grammar is retained 1:1 from the
+    approved Ariadne source-quality contract: closed keys, exact version,
+    count/length/byte bounds, closed vocabularies, duplicate-ID detection and
+    the binding-local rules — each report's `asset` must equal the containing
+    page's canonical `native.resource`, and `source_ids` must resolve to the
+    page's actual `sources[].id` entries, every selected source declaring a
+    nonempty `resource`. Reports are SUPPLIED CLAIMS: no meaning, freshness
+    interpretation, applicability, execution authority or query refusal is
+    evaluated here (Core-side advisory meaning). Pure: no I/O."""
+    if not isinstance(profile, dict):
+        return [f"{where} must be a mapping"]
+    errors: list[str] = []
+    normalized = json.dumps(
+        disclose_native(profile), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    normalized_bytes = len(normalized.encode("utf-8"))
+    if normalized_bytes > QUALITY_MAX_BYTES:
+        errors.append(
+            f"{where} exceeds its {QUALITY_MAX_BYTES}-UTF-8-byte normalized bound "
+            f"(disclosed compact form is {normalized_bytes} bytes)"
+        )
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
+    if unknown:
+        errors.append(
+            f"{where} carries unsupported field(s) {unknown} — the profile is a "
+            "closed declaration with no sql/script/command or other executable "
+            "payload field; descriptions are inert text"
+        )
+    version = profile.get("version")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != ARIADNE_QUALITY_VERSION
+    ):
+        errors.append(
+            f"{where} version must be the exact integer {ARIADNE_QUALITY_VERSION}, "
+            f"got {version!r}"
+        )
+    reports = profile.get("reports")
+    if not isinstance(reports, list):
+        return errors + [f"{where} reports must be a list"]
+    if len(reports) > QUALITY_MAX_REPORTS:
+        errors.append(
+            f"{where} carries {len(reports)} reports — at most {QUALITY_MAX_REPORTS} "
+            "are declared per page"
+        )
+    binding = resource if isinstance(resource, str) else None
+    citation_resources: dict[str, str | None] = {}
+    if isinstance(sources, list):
+        for source in sources:
+            if isinstance(source, dict) and isinstance(source.get("id"), str):
+                entry_resource = source.get("resource")
+                citation_resources[source["id"]] = (
+                    entry_resource if isinstance(entry_resource, str) else None
+                )
+    report_ids: set[str] = set()
+    for position, report in enumerate(reports):
+        spot = f"{where} reports[{position}]"
+        if not isinstance(report, dict):
+            errors.append(f"{spot} must be a mapping")
+            continue
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS)
+        if unknown:
+            errors.append(
+                f"{spot} carries unsupported field(s) {unknown} — the profile is a "
+                "closed declaration with no sql/script/command or other executable "
+                "payload field; descriptions are inert text"
+            )
+        missing = sorted(_QUALITY_REPORT_KEYS - _QUALITY_REPORT_OPTIONAL_KEYS - set(report))
+        if missing:
+            errors.append(f"{spot} requires field(s) {missing}")
+        identifier = report.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            errors.append(f"{spot} id must be a nonempty stable string")
+        elif len(identifier) > QUALITY_MAX_ID_CHARS:
+            errors.append(f"{spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+        elif identifier in report_ids:
+            errors.append(
+                f"{spot} duplicates report id {identifier!r} — report IDs are "
+                "stable: repeated findings update the same declaration"
+            )
+        else:
+            report_ids.add(identifier)
+        if isinstance(binding, str) and binding and report.get("asset") != binding:
+            errors.append(
+                f"{spot} asset must equal the containing page's canonical resource "
+                f"binding {binding!r} — a report is tied to its page's exact asset, "
+                "never a display-name match"
+            )
+        source_ids = report.get("source_ids")
+        if (
+            not isinstance(source_ids, list)
+            or not source_ids
+            or len(source_ids) > QUALITY_MAX_SOURCE_IDS
+            or not all(isinstance(source_id, str) and source_id for source_id in source_ids)
+        ):
+            errors.append(
+                f"{spot} source_ids must be a nonempty list of at most "
+                f"{QUALITY_MAX_SOURCE_IDS} citation ids"
+            )
+        else:
+            unresolved = [s for s in source_ids if s not in citation_resources]
+            if unresolved:
+                errors.append(
+                    f"{spot} source_ids {unresolved} resolves to no page sources[] "
+                    "citation — supplied evidence cites the page's actual sources"
+                )
+            resourceless = [s for s in source_ids if not citation_resources.get(s)]
+            if resourceless:
+                errors.append(
+                    f"{spot} source_ids {resourceless} cite a source without a "
+                    "resource — a citation is an identity, and needs one"
+                )
+        scope = report.get("scope")
+        if not isinstance(scope, dict):
+            errors.append(f"{spot} scope must be {{kind, description, population, period}}")
+        else:
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS)
+            if unknown:
+                errors.append(f"{spot} scope carries unsupported field(s) {unknown}")
+            if scope.get("kind") not in _QUALITY_SCOPE_KINDS:
+                errors.append(
+                    f"{spot} scope kind must be one of {list(_QUALITY_SCOPE_KINDS)}, "
+                    f"got {scope.get('kind')!r}"
+                )
+            for key in ("description", "population"):
+                value = scope.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} scope {key} must be a non-empty string")
+                elif len(value) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{spot} scope {key} exceeds its {QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
+            missing = sorted(_QUALITY_SCOPE_KEYS - set(scope))
+            if missing:
+                errors.append(
+                    f"{spot} scope requires field(s) {missing} — period is null only "
+                    "when non-time-bounded evidence is EXPLICITLY declared; "
+                    "omission is not a declaration"
+                )
+            errors.extend(_quality_period_errors(scope.get("period"), f"{spot} scope period"))
+        reported_at, reported_errors = _quality_aware_instant(
+            report.get("reported_at"), f"{spot} reported_at"
+        )
+        errors.extend(reported_errors)
+        if "observed_at" in report:
+            _, observed_errors = _quality_aware_instant(
+                report.get("observed_at"), f"{spot} observed_at"
+            )
+            errors.extend(observed_errors)
+        if "valid_until" in report:
+            valid_until, valid_errors = _quality_aware_instant(
+                report.get("valid_until"), f"{spot} valid_until"
+            )
+            errors.extend(valid_errors)
+            if (
+                not valid_errors
+                and reported_at is not None
+                and valid_until is not None
+                and valid_until < reported_at
+            ):
+                errors.append(f"{spot} valid_until must not precede reported_at")
+        if "source_version" in report:
+            source_version = report.get("source_version")
+            if not isinstance(source_version, dict):
+                errors.append(f"{spot} source_version must be {{kind, value}}")
+            else:
+                unknown = sorted(set(source_version) - _QUALITY_SOURCE_VERSION_KEYS)
+                if unknown:
+                    errors.append(f"{spot} source_version carries unsupported field(s) {unknown}")
+                if source_version.get("kind") not in _QUALITY_SOURCE_VERSION_KINDS:
+                    errors.append(
+                        f"{spot} source_version kind must be one of "
+                        f"{list(_QUALITY_SOURCE_VERSION_KINDS)}, got {source_version.get('kind')!r}"
+                    )
+                value = source_version.get("value")
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} source_version value must be a non-empty string")
+                elif len(value) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{spot} source_version value exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+        for key, cap in (
+            ("provenance", QUALITY_MAX_TEXT_CHARS),
+            ("reported_by", QUALITY_MAX_ID_CHARS),
+            ("cadence", QUALITY_MAX_CADENCE_CHARS),
+        ):
+            if key in report:
+                value = report.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} {key} must be a non-empty string")
+                elif len(value) > cap:
+                    errors.append(f"{spot} {key} exceeds its {cap}-character bound")
+        checks = report.get("checks")
+        if not isinstance(checks, list) or not checks:
+            errors.append(f"{spot} requires a nonempty checks list")
+        elif len(checks) > QUALITY_MAX_CHECKS:
+            errors.append(
+                f"{spot} carries {len(checks)} checks — at most {QUALITY_MAX_CHECKS} "
+                "are declared per report"
+            )
+        else:
+            for index, check in enumerate(checks):
+                check_spot = f"{spot} checks[{index}]"
+                if not isinstance(check, dict):
+                    errors.append(f"{check_spot} must be a mapping")
+                    continue
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS)
+                if unknown:
+                    errors.append(f"{check_spot} carries unsupported field(s) {unknown}")
+                missing = sorted(_QUALITY_CHECK_KEYS - set(check))
+                if missing:
+                    errors.append(f"{check_spot} requires field(s) {missing}")
+                identifier = check.get("id")
+                if not isinstance(identifier, str) or not identifier.strip():
+                    errors.append(f"{check_spot} id must be a non-empty string")
+                elif len(identifier) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{check_spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+                check_kind = check.get("kind")
+                if not isinstance(check_kind, str) or not check_kind.strip():
+                    errors.append(f"{check_spot} kind must be a non-empty string")
+                elif len(check_kind) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{check_spot} kind exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+                if check.get("outcome") not in _QUALITY_CHECK_OUTCOMES:
+                    errors.append(
+                        f"{check_spot} outcome must be one of "
+                        f"{list(_QUALITY_CHECK_OUTCOMES)}, got {check.get('outcome')!r}"
+                    )
+                criterion = check.get("criterion")
+                if not isinstance(criterion, str) or not criterion.strip():
+                    errors.append(f"{check_spot} criterion must be a non-empty string")
+                elif len(criterion) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{check_spot} criterion exceeds its {QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
+                tested_population = check.get("tested_population")
+                if tested_population is not None:
+                    if not isinstance(tested_population, str) or not tested_population.strip():
+                        errors.append(
+                            f"{check_spot} tested_population must be a non-empty string or null"
+                        )
+                    elif len(tested_population) > QUALITY_MAX_TEXT_CHARS:
+                        errors.append(
+                            f"{check_spot} tested_population exceeds its "
+                            f"{QUALITY_MAX_TEXT_CHARS}-character bound"
+                        )
+                errors.extend(
+                    _quality_period_errors(check.get("tested_period"), f"{check_spot} tested_period")
+                )
+        if "watermark" in report:
+            watermark = report.get("watermark")
+            if not isinstance(watermark, dict):
+                errors.append(f"{spot} watermark must be a mapping")
+            else:
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS)
+                if unknown:
+                    errors.append(f"{spot} watermark carries unsupported field(s) {unknown}")
+                if watermark.get("kind") not in _QUALITY_WATERMARK_KINDS:
+                    errors.append(
+                        f"{spot} watermark kind must be one of "
+                        f"{list(_QUALITY_WATERMARK_KINDS)}, got {watermark.get('kind')!r}"
+                    )
+                watermark_value = watermark.get("value")
+                if watermark.get("kind") in ("event_time", "ingestion_time", "snapshot_as_of"):
+                    _, value_errors = _quality_aware_instant(
+                        watermark_value, f"{spot} watermark value"
+                    )
+                    errors.extend(value_errors)
+                elif watermark_value is not None and (
+                    isinstance(watermark_value, bool)
+                    or not isinstance(watermark_value, (int, float, str))
+                    or (isinstance(watermark_value, float) and not math.isfinite(watermark_value))
+                ):
+                    errors.append(
+                        f"{spot} watermark value must be a finite scalar with its stated meaning"
+                    )
+                for key, cap in (
+                    ("field", QUALITY_MAX_ID_CHARS),
+                    ("meaning", QUALITY_MAX_TEXT_CHARS),
+                    ("units", QUALITY_MAX_UNITS_CHARS),
+                    ("timezone", QUALITY_MAX_UNITS_CHARS),
+                ):
+                    if key in watermark and watermark.get(key) is not None:
+                        wm_value = watermark.get(key)
+                        if not isinstance(wm_value, str) or not wm_value.strip():
+                            errors.append(
+                                f"{spot} watermark {key} must be a non-empty string or null"
+                            )
+                        elif len(wm_value) > cap:
+                            errors.append(
+                                f"{spot} watermark {key} exceeds its {cap}-character bound"
+                            )
+                if "observed_at" in watermark:
+                    _, wm_errors = _quality_aware_instant(
+                        watermark.get("observed_at"), f"{spot} watermark observed_at"
+                    )
+                    errors.extend(wm_errors)
     return errors
 
 

@@ -495,7 +495,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # assessed for a report whose period field IS the model's ``is_time``
         # field, the one field the range predicates.
         result["data_signals"] = data_signals_pinned(
-            self._context_snapshot.pages if self._context_snapshot is not None else [],
+            self._context_snapshot,
             {name: self._direct_table_dependencies(name)},
             requested_period=_requested_period(range, inclusive_end=True),
             period_fields=self._model_time_fields(name),
@@ -1043,7 +1043,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # correspondence is only assessed for a report whose period field is
         # one of the conformed time dimension's native member fields.
         result["data_signals"] = data_signals_pinned(
-            self._context_snapshot.pages if self._context_snapshot is not None else [],
+            self._context_snapshot,
             self._plan_table_dependencies(graph, plan),
             requested_period=_plan_requested_period(plan.fetch_bounds),
             period_fields=self._conformed_time_fields(graph, plan.time_dimension),
