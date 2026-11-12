@@ -16,9 +16,8 @@ computation-page reads for historical revision-1 native releases remain):
   rejected; legacy References stay readable), and the shared read-only
   :func:`resolve_term` resolves terms and exact field bindings with bounded
   alternatives, unconfirmed claims and actual citations;
-- the advisory quality view (spec 0013 §4) in its served-tree
-  (:func:`data_signals`) and pinned typed-SDK (:func:`data_signals_pinned`)
-  entries over ONE shared disclosure assembly;
+- the advisory quality view (spec 0013 §4) through the pinned typed-SDK
+  entry (:func:`data_signals_pinned`) over ONE shared disclosure assembly;
 - native technical page builders (:func:`build_native_table_page`,
   :func:`build_native_dataset_page`, the native finalize derivation) and the
   measurement/mapping evidence machinery (digests, evidence views,
@@ -2760,7 +2759,7 @@ _FOLDER_BLURBS = {
 # closed-shape declaration of SUPPLIED reports — a domain owner's/upstream
 # producer's reported claims with citations, never a core-produced
 # measurement or a new registry. The shared per-type gate validates it before
-# human admission; the shared :func:`data_signals` consumer reads it. Every
+# human admission; the pinned advisory consumer reads it. Every
 # bound below is an approved public-contract limit (plan §2), not an
 # adjustable mechanical budget.
 ARIADNE_QUALITY_VERSION = 1
@@ -3206,120 +3205,15 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
 DATA_SIGNALS_VERSION = 1
 DATA_SIGNALS_MAX_METRICS = 64
 DATA_SIGNALS_MAX_ASSETS = 64
-DATA_SIGNALS_MAX_PAGES = 32
 DATA_SIGNALS_MAX_REPORTS = 128
 DATA_SIGNALS_MAX_BYTES = 64 * 1024
 _PAGE_FRONTMATTER_READ_BYTES = 64 * 1024
-
-
-def _read_page_meta_bounded(path: Path) -> dict | None:
-    """Frontmatter meta of one OKF page from a BOUNDED read — at most 64 KiB
-    of the file, never the body or external citations. ``None`` when the page
-    is unreadable or carries no parseable frontmatter: unknown evidence,
-    never a query failure."""
-    try:
-        with path.open("rb") as handle:
-            prefix = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return None
-    match = _FRONTMATTER_RE.match(prefix)
-    if not match:
-        return None
-    try:
-        meta = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError:
-        return None
-    return meta if isinstance(meta, dict) else None
-
-
 def _coerce_validated_instant(value: object) -> datetime:
     """The instant of a VALIDATED profile timestamp (aware datetime or aware
-    ISO string — the authoring gate rejected everything else)."""
+    ISO string — the producer authoring gate rejected everything else)."""
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
-
-
-# One enriched index line: the page link plus the trailing core-appended
-# resource marker ``resource: `ariadne://…` ``. The label may itself contain
-# ``]`` (authored titles are preserved verbatim), so the link ends at the
-# FIRST ``](`` — first-link-target semantics. Greedy prefix matching keeps
-# the LAST marker on a line — the one the generator appends — ahead of any
-# identical text authored into a description.
-_INDEX_RESOURCE_RE = re.compile(r"^\s*\*\s+\[(?:.*?)\]\(([^)\s]+)\).*\bresource:\s*`([^`]+)`")
-
-
-def _table_index_bindings(context_dir: Path) -> dict[str, str]:
-    """The resource->page resolution map of the system-generated
-    ``tables/index.md`` (spec 0010 §4: ``resource`` authoritative, page
-    filenames navigational; the owner-approved fix4 design makes the
-    regenerated index the reader's resolution source). ONE bounded metadata
-    read — at most 64 KiB — explicitly NOT charged against the 32-page
-    evidence budget. A missing or unreadable index, or one written by an
-    older core without resource markers, resolves nothing: every canonical
-    citation then degrades to a ``binding_unknown`` disclosure, never to a
-    scan. ponytail: duplicate-resource lines (an authoring anomaly — pages
-    bound to resources keep protected single resources) resolve to the
-    first line, matching the index's sorted page order."""
-    try:
-        with (context_dir / "tables" / "index.md").open("rb") as handle:
-            text = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return {}
-    bindings: dict[str, str] = {}
-    for line in text.splitlines():
-        match = _INDEX_RESOURCE_RE.match(line)
-        if match and match.group(2) not in bindings:
-            name = match.group(1)
-            if name == Path(name).name and name.endswith(".md"):  # one served page file
-                bindings[match.group(2)] = f"tables/{name}"
-    return bindings
-
-
-def _direct_table_citations(
-    context_dir: Path, metric_names: list[str]
-) -> tuple[set[str], set[str]]:
-    """The DIRECTLY-cited table identities recorded on the CONSUMING metric
-    pages (``metrics/<name>.md`` frontmatter ``sources[]``): cited table page
-    paths (``tables/<plain-name>.md``) and cited canonical table resources
-    (``ariadne://table/…``). This is the consuming side of spec 0013 §4's
-    contract — a table page citing its own source is a self-citation, never a
-    citation by the metric — and it is resolved BEFORE any ``tables/*.md``
-    read, so only directly-cited pages ever enter evidence consideration. A
-    missing or unparseable metric page, a ``sources[]`` that is not a list,
-    bare display names, ``policies/...`` refs, non-plain page paths
-    (subdirectories, traversal — the citation names one served page file) and
-    malformed resources cite nothing: unknown coverage, never a guess."""
-    root = context_dir.resolve()
-    cited_pages: set[str] = set()
-    cited_resources: set[str] = set()
-    for name in metric_names:
-        page = root / "metrics" / f"{name}.md"
-        try:
-            if not page.resolve().is_relative_to(root):
-                continue  # containment: a crafted name is just another missing page
-        except OSError:
-            continue
-        meta = _read_page_meta_bounded(page)
-        sources = meta.get("sources") if meta else None
-        if not isinstance(sources, list):
-            continue
-        for source in sources:
-            resource = source.get("resource") if isinstance(source, dict) else None
-            if not (isinstance(resource, str) and resource):
-                continue
-            if resource.startswith("tables/"):
-                name_part = resource[len("tables/") :]
-                if name_part == Path(name_part).name and name_part.endswith(".md"):
-                    cited_pages.add(f"tables/{name_part}")
-                continue
-            try:
-                kind, _parts = parse_resource(resource)
-            except ValueError:
-                continue
-            if kind == "table":
-                cited_resources.add(resource)
-    return cited_pages, cited_resources
 
 
 def _period_disjoint(period: dict, requested: tuple[datetime | None, datetime | None]) -> bool:
@@ -3409,172 +3303,6 @@ def _report_view(
     return view
 
 
-def data_signals(
-    context_dir: str | Path,
-    dependencies: dict[str, list[str | None]],
-    *,
-    requested_period: tuple[datetime | None, datetime | None] | None = None,
-    period_fields: set[str] | frozenset[str] | None = None,
-) -> dict:
-    """The shared read-only advisory quality-evidence view of spec 0013 §4
-    (plan 0013 §2): for every metric's DIRECT table dependencies — already
-    resolved to canonical table resources by the caller against the built
-    execution catalog — the directly cited physical-table pages under the
-    served ``tables/`` section are read (bounded: at most 64 KiB of
-    frontmatter per page, at most 32 pages physically read), and each page's
-    optional validated ``ariadne_quality`` reports are disclosed with their
-    age, applicability, limitations, checks and watermarks.
-
-    A page is DIRECTLY CITED only when the CONSUMING metric page
-    (``metrics/<name>.md``) records the citation in its own ``sources[]`` —
-    a ``tables/...`` page path or a canonical table resource (spec §4's
-    "admitted table citations"). Every citation is resolved to an EXACT
-    page path BEFORE any table-page read: a path citation names its page
-    directly, and a canonical-resource citation resolves through the
-    regenerated ``tables/index.md`` — the reader's resource->page resolution
-    source (spec 0010 §4: ``resource`` is authoritative, filenames
-    navigational; existing pages bound to resources keep their names) — via
-    ONE bounded index read that is explicitly NOT charged against the
-    page-read budget, with each resolved page's OWN frontmatter — its
-    declared ``resource`` — confirming the resolution as it is read.
-    Resolution is INDEX-ONLY: an index without resource markers (a
-    pre-existing served context), a missing/unreadable index or a citation
-    the index does not resolve degrades to a ``binding_unknown`` disclosure
-    for that citation — the query still succeeds, nothing is scanned. A
-    table page citing its own source is a self-citation and establishes
-    nothing. The resolved pages are the ONLY pages ever read: unrelated
-    pages are never read, never sorted against and never consume the
-    page-read budget, and each resolved page's declared binding is
-    cross-checked against the catalog-resolved direct dependencies
-    (same-named tables in distinct sources stay distinct assets). Citing
-    more pages than the budget reads is the one truncation scenario: a
-    cited page beyond it is disclosed under ``omitted``/``truncated``, never
-    silently assessed.
-
-    Coverage is honesty about EVIDENCE, not about data: ``complete`` means
-    every direct dependency is identified and covered by applicable parseable
-    report evidence (an expired or reported-failed report still covers an
-    identified dependency); ``partial`` means identified coverage is
-    incomplete; ``unknown`` means correspondence/evidence is unavailable. A
-    missing binding, a missing table citation, an absent optional profile or
-    a later-unreadable declared profile is explicit unknown coverage — the
-    last additionally warns ``data_evidence_unavailable``; a wholly absent
-    optional profile never warns merely for its absence. No pass outcome,
-    watermark recency or admission is ever presented as live health.
-
-    The optional ``requested_period`` (issue #54) is the runtime's own
-    requested query period as aware instants (either side may be ``None`` —
-    unbounded): it NEVER widens evidence, it only lets a mechanically
-    established period CONTRADICTION — the report's own declared evidence
-    period provably disjoint from the requested period — disclose that report
-    as ``inapplicable`` with the ``scope_mismatch`` limitation. The
-    contradiction additionally requires ``period_fields`` (W1 fix3): the
-    runtime-supplied set of fields the request's range actually predicates,
-    so a period declared on any other field stays unknown correspondence.
-    Overlap establishes nothing: applicability stays unknown on every
-    unproven axis.
-
-    The read is PURE (no restamp, no write, no fetch, no probe — retries
-    return another assessment of the same pinned bytes) and never fails a
-    numerically valid query: bounded counts and the total view size elide
-    trailing entries deterministically, count them under ``omitted`` and mark
-    ``truncated`` (elided evidence never leaves a complete/warning-free
-    claim). No recursive lineage traversal, directory-wide report discovery
-    or external read happens here — only the directly cited table pages of
-    the named dependencies."""
-    now = _assessment_now()
-    metric_names = list(dependencies)[:DATA_SIGNALS_MAX_METRICS]
-    omitted_metrics = len(dependencies) - len(metric_names)
-    asset_order: list[str] = []
-    for name in metric_names:
-        for resource in dependencies[name]:
-            if isinstance(resource, str) and resource and resource not in asset_order:
-                asset_order.append(resource)
-    omitted_assets = max(0, len(asset_order) - DATA_SIGNALS_MAX_ASSETS)
-    asset_order = asset_order[:DATA_SIGNALS_MAX_ASSETS]
-    wanted = set(asset_order)
-    # The directly-cited set resolved from the CONSUMING side before any
-    # table-page read (spec 0013 §4, issue #53's "exactly bound directly
-    # cited table"): the metric pages' recorded table citations name the
-    # pages (``tables/...`` paths) or canonical resources that may supply
-    # evidence. A table page citing its own source is a self-citation and
-    # establishes nothing; an uncited page — same resource or not — never
-    # enters evidence consideration.
-    cited_pages, cited_resources = _direct_table_citations(Path(context_dir), metric_names)
-    # The citation resolution, built BEFORE any table-page read (spec 0010
-    # §4 + the owner-approved fix4 design): a path citation names its page
-    # directly, and a canonical-resource citation resolves through the
-    # regenerated ``tables/index.md`` — ONE bounded metadata read, explicitly
-    # NOT charged against the 32-page evidence budget — to the exact page
-    # the index binds that resource to, each resolved page's OWN frontmatter
-    # (its declared ``resource``) confirming the resolution as it is read.
-    # Resolution is INDEX-ONLY: no ``tables/*.md`` walk, no generated-name
-    # convention, no scan loop — unrelated pages are never candidates, never
-    # read and never charged to the page-read budget. An index without
-    # resource markers (a pre-existing served context), a missing/unreadable
-    # index or a citation the index does not resolve degrades to a
-    # ``binding_unknown`` disclosure — the query still succeeds, nothing is
-    # scanned.
-    cited_wanted = cited_resources & wanted
-    resolved: dict[str, str] = {}
-    if cited_wanted:
-        for resource, page in _table_index_bindings(Path(context_dir)).items():
-            if resource in cited_wanted:
-                resolved[resource] = page
-    candidates: set[str] = set(cited_pages) | set(resolved.values())
-    bindings: dict[str, tuple[str, dict]] = {}
-    omitted_pages = 0
-    pages_read = 0
-    read_pages: set[str] = set()
-    tables_dir = Path(context_dir) / "tables"
-    if tables_dir.is_dir():
-        for rel in sorted(candidates):
-            if pages_read >= DATA_SIGNALS_MAX_PAGES:
-                # direct citations the read budget never reached — disclosed
-                # as omitted: citing more pages than the budget reads is the
-                # one truncation scenario, never silently assessed
-                omitted_pages = len(candidates) - pages_read
-                break  # the budget bounds pages physically read (plan §2)
-            pages_read += 1
-            read_pages.add(rel)
-            meta = _read_page_meta_bounded(tables_dir / Path(rel).name)
-            if not meta:
-                continue
-            resource = meta.get("resource")
-            # the identity cross-check of the cited pages against the runtime
-            # catalog: a directly-cited page still binds only when its declared
-            # resource is one of the catalog-resolved direct dependencies
-            if not (isinstance(resource, str) and resource in wanted):
-                continue
-            if (rel in cited_pages or resource in cited_resources) and resource not in bindings:
-                bindings[resource] = (rel, meta)  # the first cited page in sorted order binds
-    # honest degradation (owner-approved fix4 design): a canonical citation
-    # the index did not resolve at all, or whose resolved page was read but
-    # did not confirm the binding, is disclosed binding_unknown — never a
-    # guess and never a scan (a page the budget never reached stays covered
-    # by the omitted/truncated disclosure alone)
-    unresolved: list[str] = []
-    for resource in sorted(cited_wanted):
-        if resource in bindings:
-            continue
-        page = resolved.get(resource)
-        if page is None or page in read_pages:
-            unresolved.append(resource)
-    return _data_signals_state(
-        metric_names,
-        asset_order,
-        omitted_metrics,
-        omitted_assets,
-        omitted_pages,
-        dependencies,
-        bindings,
-        unresolved,
-        now,
-        requested_period,
-        period_fields,
-    )
-
-
 def _data_signals_state(
     metric_names: list[str],
     asset_order: list[str],
@@ -3588,9 +3316,8 @@ def _data_signals_state(
     requested_period: tuple[datetime | None, datetime | None] | None,
     period_fields: set[str] | frozenset[str] | None,
 ) -> dict:
-    """The shared spec0013 §4 disclosure assembly behind both
-    :func:`data_signals` (served-tree citations) and
-    :func:`data_signals_pinned` (pinned typed SDK metadata): coverage,
+    """The shared spec0013 §4 disclosure assembly behind the pinned advisory
+    entry :func:`data_signals_pinned` (pinned typed SDK metadata): coverage,
     warnings, bounded elision and the deterministic 64 KiB convergence —
     ONE semantic calculation, never a second advisory dialect."""
 

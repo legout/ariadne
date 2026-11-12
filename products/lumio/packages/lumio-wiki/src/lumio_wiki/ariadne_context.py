@@ -1366,9 +1366,12 @@ def _quality_aware_instant(value: object, where: str) -> tuple[datetime | None, 
 
 
 def _quality_period_errors(period: object, where: str) -> list[str]:
-    """The closed `{field, start, end}` declared-evidence period; an explicit
-    null is the declared non-time-bounded form (omission is not a declaration —
-    the requiring caller owns that rule)."""
+    """The closed `{field, start, end}` declared-evidence period with aware
+    instants ordered ``start < end`` (the retained spec0013 §2 authoring rule:
+    the period is interpreted ``[start, end)``); an explicit null is the
+    declared non-time-bounded form (omission is not a declaration — the
+    requiring caller owns that rule). Pure structural chronology between the
+    two declared bounds — no Core import, no dynamic freshness."""
     if period is None:
         return []
     if not isinstance(period, dict):
@@ -1382,9 +1385,12 @@ def _quality_period_errors(period: object, where: str) -> list[str]:
         errors.append(f"{where} field must be a non-empty string")
     elif len(field) > QUALITY_MAX_ID_CHARS:
         errors.append(f"{where} field exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
-    for bound in ("start", "end"):
-        _, bound_errors = _quality_aware_instant(period.get(bound), f"{where} {bound}")
-        errors.extend(bound_errors)
+    start, start_errors = _quality_aware_instant(period.get("start"), f"{where} start")
+    errors.extend(start_errors)
+    end, end_errors = _quality_aware_instant(period.get("end"), f"{where} end")
+    errors.extend(end_errors)
+    if start is not None and end is not None and not start < end:
+        errors.append(f"{where} must satisfy start < end (interpreted [start, end))")
     return errors
 
 

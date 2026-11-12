@@ -282,6 +282,24 @@ NATIVE_METRIC_PAGE = (
     "---\n\n"
     "# event_count\n"
 )
+# The candidate-side knowledge identities of the governed fixture pages: the
+# native page batch addresses pages by these complete {path, content} objects
+# (spec0035 §6) — the retired {kind: page, section, name} edit objects refuse.
+NATIVE_POLICY_REL = "knowledge/policies/all-events-count.md"
+NATIVE_METRIC_REL = "knowledge/metrics/event-count.md"
+
+
+def policy_pages(text: str) -> list[dict]:
+    """The native batch object list revising the governed policy page's rule
+    body to ``text`` (the shared one-page journey edit)."""
+    return [
+        {
+            "path": NATIVE_POLICY_REL,
+            "content": NATIVE_POLICY_PAGE.replace("The rule body.", text),
+        }
+    ]
+
+
 # The revision-2 integrated selector: the five §10.1 base keys plus the
 # explicit capability opt-in and the authored policy_bindings block classifying
 # the metric's and the generated computation's complete closure.
@@ -471,15 +489,10 @@ def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(
     started = api.start_proposal()
     approved(api, project, started)
 
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
+        policy_pages("The rule body, revised."),
     )
     assert edited["changed"] is True
 
@@ -532,32 +545,44 @@ def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(
 # ------------------------------------------- [5] the parameterized regression
 
 
-def _validated_failure(api: AuthoringProject, started: dict, edit: dict) -> dict:
-    """Apply one breaking edit and validate: the failed result envelope."""
-    edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+def _validated_failure(apply, api: AuthoringProject, started: dict) -> dict:
+    """Apply one breaking edit (via its own live seam) and validate: the
+    failed result envelope."""
+    edited = apply(api, started)
     return api.validate_proposal(started["proposal"], edited["revision"])
 
 
 @pytest.mark.parametrize(
-    "edit, why",
+    "apply, why",
     [
         (
-            {
-                "kind": "page",
-                "section": "metrics",
-                "name": "event_count",
-                "content": METRIC_PAGE.replace(
-                    "resource: policies/all-events-count.md",
-                    "resource: policies/removed.md",
-                ),
-            },
+            lambda api, started: api.edit_pages_batch(
+                started["proposal"],
+                started["candidate_revision"],
+                [
+                    {
+                        "path": NATIVE_METRIC_REL,
+                        "content": NATIVE_METRIC_PAGE.replace(
+                            "resource: policies/all-events-count.md",
+                            "resource: policies/removed.md",
+                        ),
+                    }
+                ],
+            ),
             "broken-policy",
         ),
-        ({"kind": "model", "name": "events", "content": UNSAFE_GRAIN_MODEL_YML}, "unsafe-grain"),
+        (
+            lambda api, started: api.edit_proposal(
+                started["proposal"],
+                started["candidate_revision"],
+                {"kind": "model", "name": "events", "content": UNSAFE_GRAIN_MODEL_YML},
+            ),
+            "unsafe-grain",
+        ),
     ],
     ids=["broken-policy", "unsafe-grain"],
 )
-def test_single_file_edits_breaking_inherited_dependencies_fail_validation(tmp_path, edit, why):
+def test_single_file_edits_breaking_inherited_dependencies_fail_validation(tmp_path, apply, why):
     """Issue #36 [5]/AC2: a broken cited Policy and a model edit introducing an
     unsafe grain each block the candidate even though only ONE file changed —
     the inherited dependency checks run against the whole effective bundle."""
@@ -566,7 +591,7 @@ def test_single_file_edits_breaking_inherited_dependencies_fail_validation(tmp_p
     started = api.start_proposal()
     approved(api, project, started)
 
-    result = _validated_failure(api, started, edit)
+    result = _validated_failure(apply, api, started)
     assert result["ok"] is False and result["status"] == "invalid"
     assert result["attempts"] == 1  # a changed failed validation consumed a round
     if why == "broken-policy":
@@ -620,18 +645,18 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
     # three CHANGED failing validations exhaust the bounded rounds
     revisions = []
     for round_number, removed in enumerate(("one", "two", "three"), start=1):
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             revisions[-1] if revisions else started["candidate_revision"],
-            {
-                "kind": "page",
-                "section": "metrics",
-                "name": "event_count",
-                "content": METRIC_PAGE.replace(
-                    "resource: policies/all-events-count.md",
-                    f"resource: policies/removed-{removed}.md",
-                ),
-            },
+            [
+                {
+                    "path": NATIVE_METRIC_REL,
+                    "content": NATIVE_METRIC_PAGE.replace(
+                        "resource: policies/all-events-count.md",
+                        f"resource: policies/removed-{removed}.md",
+                    ),
+                }
+            ],
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
@@ -647,15 +672,10 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
     assert retry["revision"] == revisions[-1]
 
     # a CHANGED validation on the exhausted proposal is refused for the human
-    fixed = api.edit_proposal(
+    fixed = api.edit_pages_batch(
         started["proposal"],
         revisions[-1],
-        {
-            "kind": "page",
-            "section": "metrics",
-            "name": "event_count",
-            "content": METRIC_PAGE,
-        },
+        [{"path": NATIVE_METRIC_REL, "content": NATIVE_METRIC_PAGE}],
     )
     with pytest.raises(ValueError, match="review_needed"):
         api.validate_proposal(started["proposal"], fixed["revision"])
@@ -681,17 +701,21 @@ def test_a_rebased_commit_never_resets_the_repair_rounds(tmp_path):
     started = api.start_proposal()
     approved(api, project, started)
     result = _validated_failure(
+        lambda api, started: api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [
+                {
+                    "path": NATIVE_METRIC_REL,
+                    "content": NATIVE_METRIC_PAGE.replace(
+                        "resource: policies/all-events-count.md",
+                        "resource: policies/removed.md",
+                    ),
+                }
+            ],
+        ),
         api,
         started,
-        {
-            "kind": "page",
-            "section": "metrics",
-            "name": "event_count",
-            "content": METRIC_PAGE.replace(
-                "resource: policies/all-events-count.md",
-                "resource: policies/removed.md",
-            ),
-        },
     )
     assert result["attempts"] == 1
 
@@ -794,15 +818,8 @@ def test_a_source_only_model_change_cannot_inherit_the_predecessor_attestation(t
 
     # UNCHANGED model (only a policy page moves): the genuinely attested
     # computation is preserved byte-for-byte
-    kept = api.edit_proposal(
-        started["proposal"],
-        attested,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
+    kept = api.edit_pages_batch(
+        started["proposal"], attested, policy_pages("The rule body, revised.")
     )
     second = api.validate_proposal(started["proposal"], kept["revision"])
     assert second["ok"] is True
@@ -844,15 +861,8 @@ def test_review_returns_revisions_inventory_bodies_citations_and_is_read_only(tm
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(
-        started["proposal"],
-        started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
+    edited = api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], policy_pages("The rule body, revised.")
     )
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is True
@@ -906,15 +916,8 @@ def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validate
     assert validated["ok"] is True
 
     # the candidate moved: no report binds the new commit
-    moved = api.edit_proposal(
-        started["proposal"],
-        validated["revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "Later edit."),
-        },
+    moved = api.edit_pages_batch(
+        started["proposal"], validated["revision"], policy_pages("Later edit.")
     )
     after_move = api.review_proposal(started["proposal"])
     assert after_move["revision"] == moved["revision"]
@@ -946,11 +949,11 @@ def test_review_bodies_arrive_in_bounded_parts(tmp_path):
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    long_policy = POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
-    api.edit_proposal(
+    long_policy = NATIVE_POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
+    api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {"kind": "page", "section": "policies", "name": "all-events-count", "content": long_policy},
+        [{"path": NATIVE_POLICY_REL, "content": long_policy}],
     )
     review = api.review_proposal(started["proposal"])
     policy = next(
@@ -969,16 +972,11 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    long_policy = POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
-    edited = api.edit_proposal(
+    long_policy = NATIVE_POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": long_policy,
-        },
+        [{"path": NATIVE_POLICY_REL, "content": long_policy}],
     )
     first = api.review_proposal(started["proposal"])
     second = api.review_proposal(started["proposal"], part=2)  # must not raise
@@ -1134,27 +1132,18 @@ def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
     "edit, why",
     [
         (
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("title: All events count", "title: [unclosed"),
-            },
-            "malformed-page-frontmatter",
-        ),
-        (
             {"kind": "model", "name": "events", "content": MALFORMED_SEMANTIC_MODEL_YML},
             "non-mapping-model",
         ),
     ],
-    ids=["malformed-page-frontmatter", "non-mapping-model"],
+    ids=["non-mapping-model"],
 )
 def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(tmp_path, edit, why):
-    """Review fix (G4, spec §4): the edit seam accepts invalid DRAFT content,
-    so malformed page frontmatter and a non-mapping semantic_model entry are
-    recoverable validation FAILURES — validate_proposal RETURNS the failed
-    report (named errors, stored evidence, repair state advanced) instead of
-    raising from a pre-validation walker, and the proposal stays repairable."""
+    """Review fix (G4, spec §4): the OSI/model edit seam accepts invalid DRAFT
+    content, so a non-mapping semantic_model entry is a recoverable validation
+    FAILURE — validate_proposal RETURNS the failed report (named errors,
+    stored evidence, repair state advanced) instead of raising from a
+    pre-validation walker, and the proposal stays repairable."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -1166,13 +1155,8 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(tmp_pa
     assert result["ok"] is False and result["status"] == "invalid"
     assert result["attempts"] == 1 and result["repair_status"] == "open"
     outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    if why == "malformed-page-frontmatter":
-        assert any("frontmatter is not valid YAML" in error for error in result["errors"])
-        assert outcomes["page_contract"] == "failed"
-        assert outcomes["citations"] == "failed"  # the parse failure is a diagnostic
-    else:
-        assert any("semantic_model entry is not a mapping" in error for error in result["errors"])
-        assert outcomes["structural"] == "failed"
+    assert any("semantic_model entry is not a mapping" in error for error in result["errors"])
+    assert outcomes["structural"] == "failed"
     # the failed report is STORED for the exact final revision (repair
     # accounting counted it — never an escaped exception instead of evidence)
     stored = json.loads(
@@ -1186,17 +1170,32 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(tmp_pa
     repaired = api.edit_proposal(
         started["proposal"],
         result["revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE,
-        }
-        if why == "malformed-page-frontmatter"
-        else {"kind": "model", "name": "events", "content": MODEL_YML},
+        {"kind": "model", "name": "events", "content": MODEL_YML},
     )
     fixed = api.validate_proposal(started["proposal"], repaired["revision"])
     assert fixed["ok"] is True and fixed["attempts"] == 2
+
+
+def test_malformed_native_page_refuses_the_batch_and_never_crashes(tmp_path):
+    """AC4 native counterpart (spec0035 §2/§6): a native knowledge page with
+    malformed frontmatter refuses the producer writer INSIDE the public page
+    batch before any byte — the candidate and its bounded repair state stay
+    at the approved base (the batch never landed, so no validation round is
+    consumed) and the flow recovers cleanly — never an escaped exception."""
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    malformed = NATIVE_POLICY_PAGE.replace('title: "All events count"', 'title: "[unclosed')
+    with pytest.raises(GitAuthoringError):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": NATIVE_POLICY_REL, "content": malformed}],
+        )
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    clean = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert clean["ok"] is True and clean["attempts"] == 1
 
 
 def test_onboarding_candidate_reviews_without_models_and_validates_recoverably(tmp_path):
@@ -1944,21 +1943,21 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     # pre-cutover historical artifact; the integrated composite publication
     # contract is R0-owned and cannot exist in a local fixture). The project
     # gate passes (real native KB, no current admission) so the refusal
-    # exercises the EXACT supplied-record boundary.
-    def policy_edit(text: str) -> dict:
-        return {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", text),
-        }
-
+    # exercises the EXACT supplied-record boundary. The candidate's visible
+    # edit rides the live seed-notes artifact: the context-layer page kind is
+    # retired and the legacy base has no knowledge/ KB for a native page.
     started2 = api.start_proposal(base_revision=legacy_commit)
     resolved2, source_digest2 = candidate_sources(project, started2["candidate_revision"])
     assert resolved2 is not None and source_digest2 is not None
     api.approve_sources(started2["proposal"], started2["candidate_revision"], source_digest2)
-    edited2 = api.edit_proposal(started2["proposal"], started2["candidate_revision"],
-                                policy_edit("Legacy admitted body."))
+    edited2 = api.edit_proposal(
+        started2["proposal"],
+        started2["candidate_revision"],
+        {
+            "kind": "seed_notes",
+            "content": SEED_NOTES.replace("All events count.", "Legacy admitted body."),
+        },
+    )
     validated2 = api.validate_proposal(started2["proposal"], edited2["revision"])
     assert validated2["ok"] is True and validated2["errors"] == []
     review2 = api.review_proposal(started2["proposal"])

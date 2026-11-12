@@ -46,8 +46,10 @@ from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.validate import candidate_scope_digest  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    METRIC_PAGE,
-    POLICY_PAGE,
+    NATIVE_METRIC_PAGE,
+    NATIVE_METRIC_REL,
+    NATIVE_POLICY_PAGE,
+    NATIVE_POLICY_REL,
     approved,
     branch_of,
     complete_bundle_project,
@@ -77,12 +79,13 @@ def blobs_of(project: Path, revision: str) -> dict[str, bytes]:
     return {rel: blob for rel, blob in proposals.scope_blobs(project, revision)}
 
 
-def admitted_ready(api: AuthoringProject, project: Path, edit: dict) -> tuple[dict, dict]:
-    """The full admitable journey: start, approve, one edit, validate (ok),
-    review. Returns (review, validated) envelopes of the exact final revision."""
+def admitted_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> tuple[dict, dict]:
+    """The full admitable journey: start, approve, one native page batch,
+    validate (ok), review. Returns (review, validated) envelopes of the exact
+    final revision."""
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    edited = api.edit_pages_batch(started["proposal"], started["candidate_revision"], pages)
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is True and validated["errors"] == []
     review = api.review_proposal(started["proposal"])
@@ -155,16 +158,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     project-owned stores without moving one snapshot byte."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
-    review, journey = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
-    )
+    review, journey = admitted_ready(api, project, _policy_edit("The rule body, revised."))
     revision = review["revision"]
     proposal = review["proposal"]
 
@@ -235,15 +229,10 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
 
     # a later authoring HEAD never changes the admitted answers (AC4): the
     # pinned revision serves until a separately admitted revision replaces it
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "A later authoring edit."),
-        },
+        _policy_edit("A later authoring edit."),
     )
     assert api.validate_proposal(proposal, moved["revision"])["ok"] is True
     assert branch_of(project, proposal) != revision
@@ -315,19 +304,22 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
 # ------------------------------------- [2] exact-evidence admission refusals
 
 
-def _validated_ready(api: AuthoringProject, project: Path, edit: dict) -> dict:
-    """Start/approve/one edit/validate(ok)/review; returns the review envelope."""
-    review, _journey = admitted_ready(api, project, edit)
+def _validated_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> dict:
+    """Start/approve/one native page batch/validate(ok)/review; returns the
+    review envelope."""
+    review, _journey = admitted_ready(api, project, pages)
     return review
 
 
-def _policy_edit(text: str) -> dict:
-    return {
-        "kind": "page",
-        "section": "policies",
-        "name": "all-events-count",
-        "content": POLICY_PAGE.replace("The rule body.", text),
-    }
+def _policy_edit(text: str) -> list[dict]:
+    """The governed fixture policy page as one native page-batch object with
+    its rule body revised to ``text`` (the live edit contract)."""
+    return [
+        {
+            "path": NATIVE_POLICY_REL,
+            "content": NATIVE_POLICY_PAGE.replace("The rule body.", text),
+        }
+    ]
 
 
 def test_admission_requires_explicit_confirmation_and_refuses_dirty_or_moved_candidates(
@@ -371,7 +363,7 @@ def test_admission_requires_explicit_confirmation_and_refuses_dirty_or_moved_can
     run_git(worktree, "checkout", "--", "data/seed_notes.md")
 
     # a candidate that moved past its validated revision is a different revision
-    moved = api.edit_proposal(proposal, revision, _policy_edit("A later edit."))
+    moved = api.edit_pages_batch(proposal, revision, _policy_edit("A later edit."))
     assert admit(project, review) == 1
     error = json.loads(capsys.readouterr().err)["error"]
     assert "current candidate" in error["message"] and moved["revision"] != revision
@@ -473,7 +465,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     assert admit(project, first_review) == 0
     first = read_current(project)
 
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"],
         first["commit"],
         _policy_edit("Second candidate body."),
@@ -743,18 +735,18 @@ def test_reconcile_never_clears_exhausted_repair_state_or_inconsistent_transitio
     # exhaust the three bounded validation rounds with changed broken candidates
     revision = started["candidate_revision"]
     for removed in ("one", "two", "three"):
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             revision,
-            {
-                "kind": "page",
-                "section": "metrics",
-                "name": "event_count",
-                "content": METRIC_PAGE.replace(
-                    "resource: policies/all-events-count.md",
-                    f"resource: policies/removed-{removed}.md",
-                ),
-            },
+            [
+                {
+                    "path": NATIVE_METRIC_REL,
+                    "content": NATIVE_METRIC_PAGE.replace(
+                        "resource: policies/all-events-count.md",
+                        f"resource: policies/removed-{removed}.md",
+                    ),
+                }
+            ],
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
@@ -803,7 +795,7 @@ def test_sessions_pin_one_admission_across_later_admissions(tmp_path):
     # a second admission on the same proposal: the FIRST session keeps serving
     # its pinned revision (session-level coherent pinning)
     session1 = QueryRuntime.open_project(project)
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
@@ -832,7 +824,7 @@ def test_open_project_uses_exact_supplied_admission_record(tmp_path, monkeypatch
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
     assert admit(project, first_review) == 0
     first = read_current(project)
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
@@ -1065,7 +1057,7 @@ def test_a_stale_review_of_an_advanced_baseline_never_activates(tmp_path, capsys
     # descends from C1 and its review binds the no-admission baseline
     b_started = api.start_proposal(base_revision=a_review["revision"])
     approved(api, project, b_started)
-    b_edit = api.edit_proposal(
+    b_edit = api.edit_pages_batch(
         b_started["proposal"], b_started["candidate_revision"], _policy_edit("B's body.")
     )
     b_validated = api.validate_proposal(b_started["proposal"], b_edit["revision"])
@@ -1243,7 +1235,7 @@ def test_reconcile_refuses_an_interrupted_commit_record_disagreement(tmp_path, m
 
     monkeypatch.setattr(proposals, "_store_record", store_boom)
     with pytest.raises(OSError, match="simulated record-store crash"):
-        api.edit_proposal(
+        api.edit_pages_batch(
             started["proposal"], stale_revision, _policy_edit("An edit that crashed.")
         )
     monkeypatch.undo()
@@ -1329,7 +1321,7 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     capsys.readouterr()
     first = read_current(project)
 
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"]

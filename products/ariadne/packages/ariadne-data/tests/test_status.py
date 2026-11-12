@@ -33,14 +33,14 @@ from tests.test_context_admission import (  # noqa: E402
     admitted_candidate as context_only_reviewed,
 )
 from tests.test_git_admission import (  # noqa: E402
-    admit as admit_via_cli,
-)
-from tests.test_git_admission import (  # noqa: E402
+    _policy_edit,
     admitted_ready,
     read_current,
 )
+from tests.test_git_admission import (  # noqa: E402
+    admit as admit_via_cli,
+)
 from tests.test_git_authoring import (  # noqa: E402
-    POLICY_PAGE,
     complete_bundle_project,
 )
 
@@ -99,16 +99,7 @@ def admitted_project(tmp_path: Path) -> Path:
 
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
-    review, _ = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
-    )
+    review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
     assert admit_via_cli(project, review) == 0
     return project
 

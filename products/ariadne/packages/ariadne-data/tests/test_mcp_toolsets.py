@@ -40,7 +40,7 @@ from mcp.client.stdio import (  # noqa: E402  # pyright: ignore[reportMissingImp
 
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    POLICY_PAGE,
+    SEED_NOTES,
     complete_bundle_project,
 )
 
@@ -195,20 +195,11 @@ def _admitted_project(tmp_path: Path) -> tuple[Path, dict]:
     (approve the candidate's resolved source identity, validate, review,
     ``ariadne-admit --confirm``) performed OUTSIDE every agent surface, with
     the same helpers the G5 admission suite uses."""
-    from tests.test_git_admission import admit, admitted_ready
+    from tests.test_git_admission import _policy_edit, admit, admitted_ready
 
     project = complete_bundle_project(tmp_path / "admitted")
     api = AuthoringProject(project)
-    review, _journey = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, admitted."),
-        },
-    )
+    review, _journey = admitted_ready(api, project, _policy_edit("The rule body, admitted."))
     assert admit(project, review) == 0
     return project, review
 
@@ -239,11 +230,9 @@ def test_stdio_fresh_onboarding_authoring_unblocked_by_missing_admission(tmp_pat
                                 "proposal": out["started"]["proposal"],
                                 "expected_revision": out["started"]["candidate_revision"],
                                 "edit": {
-                                    "kind": "page",
-                                    "section": "policies",
-                                    "name": "all-events-count",
-                                    "content": POLICY_PAGE.replace(
-                                        "The rule body.", "The rule body, drafted."
+                                    "kind": "seed_notes",
+                                    "content": SEED_NOTES.replace(
+                                        "All events count.", "All events count, drafted."
                                     ),
                                 },
                             },
@@ -315,9 +304,8 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
                             "authoring_read_artifact",
                             {
                                 "proposal": out["started"]["proposal"],
-                                "kind": "page",
-                                "section": "policies",
-                                "name": "all-events-count",
+                                "kind": "model",
+                                "name": "events",
                             },
                         )
                     )
@@ -340,7 +328,8 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
     assert started["base_revision"] == review["revision"]
     read = out["read"]
     assert read["revision"] == started["candidate_revision"]
-    assert "The rule body, admitted." in read["content"]
+    assert read["path"] == "semantic_layer/models/events.yml"
+    assert "COUNT(*)" in read["content"]  # the governed fixture expression
     assert read["complete"] is True
 
 

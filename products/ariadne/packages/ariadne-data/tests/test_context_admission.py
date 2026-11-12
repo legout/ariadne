@@ -50,8 +50,7 @@ from ariadne.planner import PlannerError  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    METRIC_PAGE,
-    POLICY_PAGE,
+    NATIVE_METRIC_PAGE,
     UNSAFE_GRAIN_MODEL_YML,
     approved,
     branch_of,
@@ -123,24 +122,68 @@ def context_only_project(tmp_path: Path) -> Path:
     )
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    # C6 (spec0035 §6): the native authoring surface — a real knowledge/ KB
+    # (no integration selector: the candidate stays context-only)
+    kb = project / "knowledge"
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "  - name: tables\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "    table: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:context-admission-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+    )
     run_git(project, "commit", "-q", "-m", "human: context-only base")
     return project
 
 
 def table_page() -> str:
-    """One authored physical-table page citing the catalog asset."""
+    """One authored plain physical-table page citing the catalog asset (no
+    generated schema/observations — those stay core-generated)."""
+    catalog = {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
     meta = {
-        "type": "table",
+        "id": "entity:orders",
         "title": "orders",
-        "description": "One row per store-scoped order.",
+        "entity_types": ["table"],
         "tags": ["table"],
-        "sources": [
-            {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
-        ],
+        "summary": "One row per store-scoped order.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "sources": [catalog],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "table",
+            "native": {
+                "type": "table",
+                "title": "orders",
+                "description": "One row per store-scoped order.",
+                "tags": ["table"],
+                "sources": [catalog],
+                "resource": orders_resource(),
+            },
+        },
     }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{front}\n---\n\n# orders\n\nOne row per store-scoped order.\n"
@@ -176,12 +219,12 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
                 "receipt_ids": [],
             }
         )
-    meta = {
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The shared order-number concept of the orders store.",
         "tags": ["reference", "term"],
-        "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md", "title": "Seed notes"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
         "aliases": ["order number concept"],
         "ariadne": {
             "version": 1,
@@ -206,6 +249,22 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
             "mappings": mappings,
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference", "term"],
+        "summary": "The shared order-number concept of the orders store.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "aliases": ["order number concept"],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Order number\n\n"
@@ -217,8 +276,23 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-TABLE_EDIT = {"kind": "page", "section": "tables", "name": "orders"}
-REFERENCE_EDIT = {"kind": "page", "section": "references", "name": "order-number"}
+TABLE_PAGE_REL = "knowledge/tables/orders.md"
+REFERENCE_PAGE_REL = "knowledge/references/order-number.md"
+
+
+def table_edit(content: str) -> list[dict]:
+    """The table page as one native page-batch object."""
+    return [{"path": TABLE_PAGE_REL, "content": content}]
+
+
+def reference_edit(content: str) -> list[dict]:
+    """The Reference page as one native page-batch object."""
+    return [{"path": REFERENCE_PAGE_REL, "content": content}]
+
+
+def read_reference(api, proposal: str) -> dict:
+    """The candidate's Reference page through the live artifact reader."""
+    return proposals.read_artifact(api.project, proposal, REFERENCE_PAGE_REL)
 
 
 def context_only_candidate(
@@ -230,17 +304,27 @@ def context_only_candidate(
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": order_reference_page(asserted=asserted)},
-    )
-    edited = api.edit_proposal(
-        started["proposal"],
-        edited["revision"],
-        {**TABLE_EDIT, "content": table_page()},
+        [
+            {"path": REFERENCE_PAGE_REL, "content": order_reference_page(asserted=asserted)},
+            {"path": TABLE_PAGE_REL, "content": table_page()},
+        ],
     )
     return project, api, {"proposal": started["proposal"], "revision": edited["revision"]}
+
+
+def _policy_page_edit(text: str) -> list[dict]:
+    """The governed fixture policy page as one native page-batch object."""
+    from tests.test_git_authoring import NATIVE_POLICY_PAGE, NATIVE_POLICY_REL
+
+    return [
+        {
+            "path": NATIVE_POLICY_REL,
+            "content": NATIVE_POLICY_PAGE.replace("The rule body.", text),
+        }
+    ]
 
 
 def admit(
@@ -379,19 +463,16 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
             "--",
             "semantic_layer/models/events.yml",
         )
-        edit = {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        }
+        edit = _policy_page_edit("The rule body, revised.")
         failing = "grain"
-    else:  # broken governing Policy: the metric page cites an unresolvable page
-        (project / "context_layer" / "metrics" / "event_count.md").write_text(
-            METRIC_PAGE.replace("policies/all-events-count.md", "policies/missing.md"),
+    else:  # broken governing Policy: the native metric page cites an unresolvable page
+        (project / "knowledge" / "metrics" / "event-count.md").write_text(
+            NATIVE_METRIC_PAGE.replace(
+                "policies/all-events-count.md", "policies/missing.md"
+            ),
             encoding="utf-8",
         )
-        run_git(project, "add", "--", "context_layer/metrics/event_count.md")
+        run_git(project, "add", "--", "knowledge/metrics/event-count.md")
         run_git(
             project,
             "commit",
@@ -399,22 +480,18 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
             "-m",
             "human: broken policy citation",
             "--",
-            "context_layer/metrics/event_count.md",
+            "knowledge/metrics/event-count.md",
         )
-        edit = {
-            "kind": "page",
-            "section": "skills",
-            "name": "run-the-demo",
-            "content": (project / "context_layer" / "skills" / "run-the-demo.md")
-            .read_text(encoding="utf-8")
-            .replace("One skill page.", "One skill page, revised."),
-        }
+        edit = {"kind": "seed_notes", "content": SEED_NOTES + "Revised seed note.\n"}
         failing = "citations"
 
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    if isinstance(edit, list):  # native page batch
+        edited = api.edit_pages_batch(started["proposal"], started["candidate_revision"], edit)
+    else:
+        edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
     result = api.validate_proposal(started["proposal"], edited["revision"])
     assert result["ok"] is False
     checks = {check["name"]: check for check in result["report"]["checks"]}
@@ -510,17 +587,14 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
 
     # a new revision of the same proposal: select the assertion and confirm
     api = AuthoringProject(project)
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            "kind": "page",
-            "section": "tables",
-            "name": "orders",
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; revised."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(review["proposal"], moved["revision"])
     assert validated["ok"] is True
@@ -587,15 +661,12 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     # refuses the unsupported field before validation could pass
     api = AuthoringProject(project)
     forged = yaml.safe_load(order_reference_page().split("---")[1])
-    forged["ariadne"]["mappings"][1]["confirmed"] = True
+    forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["confirmed"] = True
     front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            **REFERENCE_EDIT,
-            "content": f"---\n{front}\n---\n\n# Order number\n",
-        },
+        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
     result = api.validate_proposal(review["proposal"], edited["revision"])
     assert result["ok"] is False
@@ -632,12 +703,12 @@ def receipt_reference_page(
     candidate and cites measured receipts under the given claim — the
     endpoint representations mirror the candidate's measured sides (the K3
     correspondence evidence verification enforces)."""
-    meta = {
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The store-scoped and global order-number identities.",
         "tags": ["reference", "identifier"],
-        "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md", "title": "Seed notes"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
         "ariadne": {
             "version": 1,
             "reference_role": "identifier",
@@ -669,6 +740,21 @@ def receipt_reference_page(
             ],
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference", "identifier"],
+        "summary": "The store-scoped and global order-number identities.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{front}\n---\n\n# Order number\n\nThe measured mapping.\n"
 
@@ -684,15 +770,14 @@ def measured_context_only_candidate(
     approved(api, project, started)
     candidate = prefix_candidate(separator=separator)
     measured = api.inspect_mapping(started["proposal"], started["candidate_revision"], candidate)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            **REFERENCE_EDIT,
-            "content": receipt_reference_page(
+        reference_edit(
+            receipt_reference_page(
                 candidate, [measured["receipt_id"]], claim=claim, mapping_id=mapping_id
-            ),
-        },
+            )
+        ),
     )
     return (
         project,
@@ -749,12 +834,12 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         approved(api, project, started)
         page = order_reference_page()
         forged = yaml.safe_load(page.split("---")[1])
-        forged["ariadne"]["mappings"][1]["source_ids"] = []
+        forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = []
         front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
-            {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+            reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert any("asserted mapping without evidence" in error for error in result["errors"])
@@ -784,10 +869,10 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
             }
         )
         front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             candidate["proposal"],
             branch_of(project, candidate["proposal"]),
-            {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+            reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
         )
         result = api.validate_proposal(candidate["proposal"], edited["revision"])
         assert any("conflicting asserted claims" in error for error in result["errors"])
@@ -801,15 +886,12 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         started = api.start_proposal()
         approved(api, project, started)
         declared = prefix_candidate()
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
-            {
-                **REFERENCE_EDIT,
-                "content": receipt_reference_page(
-                    declared, ["mr-0000000000000000"], claim="asserted"
-                ),
-            },
+            reference_edit(
+                receipt_reference_page(declared, ["mr-0000000000000000"], claim="asserted")
+            ),
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert any("receipt" in error for error in result["errors"])
@@ -869,15 +951,14 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # an unrelated page-only change: the assertion is byte-identical, so the
     # prior human evidence RETAINS without a new selection
     api = AuthoringProject(project)
-    unrelated = api.edit_proposal(
+    unrelated = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; unrelated edit."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(proposal, unrelated["revision"])
     assert validated["ok"] is True
@@ -901,12 +982,14 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     changed_page["sources"].append(
         {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
     )
-    changed_page["ariadne"]["mappings"][1]["source_ids"] = ["orders-catalog"]
+    changed_page["ariadne_profile"]["native"]["ariadne"]["mappings"][1][
+        "source_ids"
+    ] = ["orders-catalog"]
     front = yaml.safe_dump(changed_page, default_flow_style=False, sort_keys=False).strip()
-    changed = api.edit_proposal(
+    changed = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
     validated = api.validate_proposal(proposal, changed["revision"])
     assert validated["ok"] is True
@@ -961,15 +1044,17 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     )
     assert fresh["receipt_id"] != measured["receipt_id"]
     page = yaml.safe_load(
-        api.read_artifact(candidate["proposal"], REFERENCE_EDIT)["content"].split("---", 2)[1]
+        read_reference(api, candidate["proposal"])["content"].split("---", 2)[1]
     )
-    page["ariadne"]["mappings"][0]["receipt_ids"] = [fresh["receipt_id"]]
+    page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["receipt_ids"] = [
+        fresh["receipt_id"]
+    ]
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    body = api.read_artifact(candidate["proposal"], REFERENCE_EDIT)["content"].split("---", 2)[2]
-    edited = api.edit_proposal(
+    body = read_reference(api, candidate["proposal"])["content"].split("---", 2)[2]
+    edited = api.edit_pages_batch(
         candidate["proposal"],
         branch_of(project, candidate["proposal"]),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     validated = api.validate_proposal(candidate["proposal"], edited["revision"])
     assert validated["ok"] is True
@@ -1107,17 +1192,17 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     # read-modify-write: retarget the global representation's field binding
     # (store_id joins the global identity) — the MAPPING bytes stay identical
     api = AuthoringProject(project)
-    content = api.read_artifact(review["proposal"], REFERENCE_EDIT)["content"]
+    content = read_reference(api, review["proposal"])["content"]
     page = yaml.safe_load(content.split("---", 2)[1])
-    page["ariadne"]["representations"][1]["fields"].insert(
+    page["ariadne_profile"]["native"]["ariadne"]["representations"][1]["fields"].insert(
         0, {"resource": orders_resource(), "column": "store_id"}
     )
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = content.split("---", 2)[2]
-    retargeted = api.edit_proposal(
+    retargeted = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     validated = api.validate_proposal(review["proposal"], retargeted["revision"])
     assert validated["ok"] is True  # no receipts cited: nothing re-verifies
@@ -1238,15 +1323,14 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     # a later candidate of the same proposal, validated while fresh: the
     # stored evidence returns idempotently, so the expiry can only be caught
     # at the retention decision of the new admission
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; later."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(review["proposal"], moved["revision"])
     assert validated["ok"] is True

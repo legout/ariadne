@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import yaml
 
 import ariadne
 
@@ -52,22 +51,55 @@ semantic_model:
 """
 
 
-def page(kind, title, resource, body, **extra):
+def native_page(kind, title, resource, body):
+    """One producer-native knowledge page in the accepted conventions (typed
+    Entity identity, producer envelope, KB-relative citations)."""
+    entity_id = "entity:" + title.lower().replace(" ", "-")
+    native_extra = ""
+    metric_extra = ""
+    if kind == "metric":
+        metric_extra = (
+            "  metric_ref:\n"
+            "    model: events\n"
+            f"    metric: {title}\n"
+            "  required_policies:\n"
+            '    - namespace: "urn:uuid:wheel-walkthrough"\n'
+            '      entity_id: "entity:all-events-count"\n'
+        )
     return (
         "---\n"
-        + yaml.safe_dump(
-            {
-                "type": kind,
-                "title": title,
-                "description": body,
-                "tags": [kind],
-                **({"status": "draft"} if kind in ("policy", "metric") else {}),
-                "sources": [{"id": "rule", "resource": resource, "title": "Owner rule"}],
-                **extra,
-            },
-            sort_keys=False,
+        f'id: "{entity_id}"\n'
+        f'title: "{title}"\n'
+        f"entity_types:\n  - {kind}\n"
+        f"tags:\n  - {kind}\n"
+        f'summary: "{body}"\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        "  - id: rule\n"
+        "    title: Owner rule\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        f"  kind: {kind}\n"
+        + metric_extra
+        + "  native:\n"
+        f"    type: {kind}\n"
+        f"    title: {title}\n"
+        f"    description: {body}\n"
+        f"    tags:\n      - {kind}\n"
+        "    status: draft\n"
+        "    sources:\n"
+        "      - id: rule\n"
+        "        title: Owner rule\n"
+        + (f"        resource: {resource}\n" if resource else "")
+        + (
+            f"    governed_by: {resource}\n"
+            if kind == "metric" and resource
+            else ""
         )
+        + native_extra
         + "---\n\n"
+        + f"# {title}\n\n"
         + body
         + "\n"
     )
@@ -124,6 +156,57 @@ def main():
         (project / "data/seed_notes.md").write_text(
             "# Events\n\nOne row per unique event id; count every event once.\n", encoding="utf-8"
         )
+        # the native authoring surface: the knowledge/ KB plus the revision-2
+        # integrated selector with the authored §10.1 binding inventory (the
+        # narrative Policy binds the metric and its generated computation;
+        # enforcement null — no graph policy audit)
+        kb = project / "knowledge"
+        (kb / "lumio.yaml").write_text(
+            "version: 2\n"
+            'mode: "categorized"\n'
+            "categories:\n"
+            "  - name: tables\n"
+            "  - name: references\n"
+            "  - name: policies\n"
+            "  - name: metrics\n"
+            "  - name: computations\n"
+            "ontology:\n"
+            "  entity_types:\n"
+            "    table: {}\n"
+            "    reference: {}\n"
+            "    policy: {}\n"
+            "    metric: {}\n"
+            "    computation: {}\n"
+            "  predicates: {}\n"
+            "  redirects: {}\n",
+            encoding="utf-8",
+        )
+        (kb / ".lumio-authoring.yaml").write_text(
+            'version: 1\nnamespace: "urn:uuid:wheel-walkthrough"\nsources: {}\nbindings: {}\n',
+            encoding="utf-8",
+        )
+        (project / "context_integration.yaml").write_text(
+            "version: 1\n"
+            "mode: integrated\n"
+            "subtree: knowledge\n"
+            "namespace: urn:uuid:wheel-walkthrough\n"
+            "profile: ariadne-context/1\n"
+            "support_revision: 2\n"
+            "policy_bindings:\n"
+            "  version: 1\n"
+            "  bindings:\n"
+            "    - subject: {kind: metric, identity: events::event_count}\n"
+            "      policy: {namespace: urn:uuid:wheel-walkthrough,"
+            " entity_id: entity:all-events-count}\n"
+            "      operations: [get_metric, query_metrics]\n"
+            "      enforcement: null\n"
+            "    - subject: {kind: computation, identity: events::event_count}\n"
+            "      policy: {namespace: uuid:wheel-walkthrough,"
+            " entity_id: entity:all-events-count}\n"
+            "      operations: [get_metric, query_metrics]\n"
+            "      enforcement: null\n",
+            encoding="utf-8",
+        )
         conn = duckdb.connect()
         conn.execute(
             "CREATE TABLE events AS SELECT * FROM "
@@ -171,50 +254,31 @@ def main():
         )
         command("ariadne-authoring", "inputs", "--project", str(project), "--proposal", pid)
         revision = declared["revision"]
-        edits = [
-            {"kind": "model", "name": "events", "content": MODEL},
+        # the OSI/model draft rides the live single-edit seam; the knowledge
+        # pages ride ONE native page batch (AC4) through the edit-pages command
+        # (a native skill profile refuses — the skill page is not authored)
+        edits = [{"kind": "model", "name": "events", "content": MODEL}]
+        pages = [
             {
-                "kind": "page",
-                "section": "tables",
-                "name": "events",
-                "content": page(
-                    "table",
-                    "Events",
-                    "events.events",
-                    "One row per event.",
-                    grain={"primary_key": ["id"], "cardinality_enforcement": "STRICT_1_TO_1"},
-                ),
+                "path": "knowledge/tables/events.md",
+                "content": native_page("table", "events", "events.events", "One row per event."),
             },
             {
-                "kind": "page",
-                "section": "references",
-                "name": "event-rule",
-                "content": page(
+                "path": "knowledge/references/event-rule.md",
+                "content": native_page(
                     "reference", "Event rule", "data/seed_notes.md", "All events count."
                 ),
             },
             {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": page(
+                "path": "knowledge/policies/all-events-count.md",
+                "content": native_page(
                     "policy", "All events count", "data/seed_notes.md", "Count every event once."
                 ),
             },
             {
-                "kind": "page",
-                "section": "metrics",
-                "name": "event_count",
-                "content": page(
+                "path": "knowledge/metrics/event-count.md",
+                "content": native_page(
                     "metric", "event_count", "policies/all-events-count.md", "Count all events."
-                ),
-            },
-            {
-                "kind": "page",
-                "section": "skills",
-                "name": "query-events",
-                "content": page(
-                    "skill", "Query events", "data/seed_notes.md", "Query the admitted metric."
                 ),
             },
         ]
@@ -235,6 +299,22 @@ def main():
                 structured=True,
             )
             revision = changed["revision"]
+        pages_file = root / "pages.json"
+        pages_file.write_text(json.dumps(pages), encoding="utf-8")
+        changed = command(
+            "ariadne-authoring",
+            "edit-pages",
+            "--project",
+            str(project),
+            "--proposal",
+            pid,
+            "--expected-revision",
+            revision,
+            "--file",
+            str(pages_file),
+            structured=True,
+        )
+        revision = changed["revision"]
         validated = command(
             "ariadne-authoring",
             "validate",

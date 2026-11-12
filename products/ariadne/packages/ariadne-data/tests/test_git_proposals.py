@@ -290,7 +290,9 @@ def test_reading_a_missing_artifact_is_a_specific_error(tmp_path):
     started = api.start_proposal()
     with pytest.raises(ValueError, match="no artifact"):
         api.read_artifact(started["proposal"], {"kind": "model", "name": "never_created"})
-    with pytest.raises(ValueError, match="no artifact"):
+    # the context-layer page identity is retired: it refuses with the
+    # supported-native-page guidance before any artifact lookup
+    with pytest.raises(ValueError, match="retired"):
         api.read_artifact(
             started["proposal"], {"kind": "page", "section": "policies", "name": "none"}
         )
@@ -380,13 +382,13 @@ def test_wildcard_artifact_names_never_become_git_pathspecs(tmp_path):
                 started["candidate_revision"],
                 {"kind": "model", "name": bad_name, "content": "x: 1\n"},
             )
-    with pytest.raises(ValueError, match="plain artifact filename"):
-        api.edit_proposal(
+    with pytest.raises(ValueError, match="knowledge"):
+        api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
-            {"kind": "page", "section": "metrics", "name": "*", "content": "# p\n"},
+            [{"path": "knowledge/metrics/../escape.md", "content": "# p\n"}],
         )
-    # the wildcard never reached Git: no commit, nothing staged, the draft kept
+    # the hostile path never reached Git: no commit, nothing staged, the draft kept
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
     assert "other.yml" not in run_git(worktree, "ls-files")
     assert dirty(project, started["proposal"]).strip() == "?? semantic_layer/models/other.yml"
@@ -418,30 +420,69 @@ def test_initial_artifacts_with_credentials_are_refused_before_staging(tmp_path)
 
 # A policy page whose base revision already carries a system-owned verified
 # marker: an edit may KEEP it verbatim, but
-# may never introduce or change such a claim (spec §4).
-_POLICY_WITH_VERIFIED = (
+# may never introduce or change such a claim (spec §4) — the native trust
+# claims ride the producer envelope (native.verified), authored only in the
+# human base revision.
+_NATIVE_POLICY_VERIFIED = (
     "---\n"
-    "type: policy\n"
-    "status: admitted\n"
-    "title: Rule\n"
-    "description: A rule page\n"
-    "tags: [policy]\n"
-    "verified:\n"
-    "  - by: operator\n"
-    "    at: 2026-01-01T00:00:00Z\n"
+    'id: "entity:rule"\n'
+    'title: "Rule"\n'
+    "entity_types:\n  - policy\n"
+    "tags:\n  - policy\n"
+    'summary: "A rule page"\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    "  - id: seed-notes\n"
+    "    title: Seed notes\n"
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: policy\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: policy\n"
+    "    title: Rule\n"
+    "    description: A rule page\n"
+    "    tags:\n      - policy\n"
+    "    verified:\n"
+    "      - by: operator\n"
+    "        at: 2026-01-01T00:00:00+00:00\n"
+    "    sources:\n"
+    "      - id: seed-notes\n"
+    "        title: Seed notes\n"
+    "        resource: data/seed_notes.md\n"
     "---\n\n"
     "# Rule\n\n"
     "The rule body.\n"
 )
 
+_NATIVE_VERIFIED_REL = "knowledge/policies/rule.md"
+
 
 def git_project_with_verified_page(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     scaffold_artifacts(project)
-    (project / "context_layer" / "policies").mkdir(parents=True, exist_ok=True)
-    (project / "context_layer" / "policies" / "rule.md").write_text(
-        _POLICY_WITH_VERIFIED, encoding="utf-8"
+    kb = project / "knowledge"
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: policies\n"
+        "  - name: metrics\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    policy: {}\n"
+        "    metric: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
     )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:trust-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    (kb / "policies").mkdir(parents=True, exist_ok=True)
+    (kb / "policies" / "rule.md").write_text(_NATIVE_POLICY_VERIFIED, encoding="utf-8")
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -452,7 +493,9 @@ def git_project_with_verified_page(tmp_path: Path) -> Path:
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/models/events.yml",
-        "context_layer/policies/rule.md",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "knowledge/policies/rule.md",
     )
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
@@ -470,46 +513,54 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
     worktree = worktree_of(project, started["proposal"])
 
     # an edit that KEEPS the base's verified entry verbatim succeeds
-    kept = api.edit_proposal(
+    kept = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "rule",
-            "content": _POLICY_WITH_VERIFIED.replace("The rule body.", "The rule body, edited."),
-        },
+        [
+            {
+                "path": _NATIVE_VERIFIED_REL,
+                "content": _NATIVE_POLICY_VERIFIED.replace(
+                    "The rule body.", "The rule body, edited."
+                ),
+            }
+        ],
     )
     assert kept["changed"] is True
 
     # an edit that CHANGES the verified claim is refused before any write
-    changed = _POLICY_WITH_VERIFIED.replace("by: operator", "by: the-agent-itself").replace(
+    changed = _NATIVE_POLICY_VERIFIED.replace("by: operator", "by: the-agent-itself").replace(
         "The rule body.", "Rewritten."
     )
     with pytest.raises(ValueError, match="system-owned"):
-        api.edit_proposal(
+        api.edit_pages_batch(
             started["proposal"],
             kept["revision"],
-            {"kind": "page", "section": "policies", "name": "rule", "content": changed},
+            [{"path": _NATIVE_VERIFIED_REL, "content": changed}],
         )
-    assert (worktree / "context_layer" / "policies" / "rule.md").read_text(
+    assert (worktree / "knowledge" / "policies" / "rule.md").read_text(
         encoding="utf-8"
-    ) == _POLICY_WITH_VERIFIED.replace("The rule body.", "The rule body, edited.")
+    ) == _NATIVE_POLICY_VERIFIED.replace("The rule body.", "The rule body, edited.")
     assert branch_of(project, started["proposal"]) == kept["revision"]
 
     # INTRODUCING a verified/attester claim where the base has none is refused
     # before any write — the new page never even reaches the worktree
     for forged in (
-        "---\ntype: metric\nstatus: draft\nverified:\n  - by: human\n---\n\n# m\n",
-        "---\ntype: metric\nstatus: draft\nattester: the-agent-itself\n---\n\n# m\n",
+        _NATIVE_POLICY_VERIFIED.replace(
+            "kind: policy", "kind: metric"
+        ).replace("      - by: operator\n", "      - by: human\n"),
+        _NATIVE_POLICY_VERIFIED.replace(
+            "kind: policy", "kind: metric"
+        ).replace(
+            "    verified:\n      - by: operator\n", "    attester: the-agent-itself\n"
+        ),
     ):
         with pytest.raises(ValueError, match="system-owned"):
-            api.edit_proposal(
+            api.edit_pages_batch(
                 started["proposal"],
                 kept["revision"],
-                {"kind": "page", "section": "metrics", "name": "new", "content": forged},
+                [{"path": "knowledge/metrics/new.md", "content": forged}],
             )
-    assert not (worktree / "context_layer" / "metrics").exists()
+    assert not (worktree / "knowledge" / "metrics").exists()
     assert branch_of(project, started["proposal"]) == kept["revision"]
 
     # model YAML top-level trust claims are refused the same way
@@ -536,10 +587,6 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
         {"kind": "model", "name": "..", "content": "x: 1\n"},
         {"kind": "model", "name": "", "content": "x: 1\n"},
         {"kind": "model", "name": "a\\b", "content": "x: 1\n"},
-        {"kind": "page", "section": "../escape", "name": "p", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "..", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "-opt", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "a/b", "content": "# p\n"},
     ],
     ids=lambda e: f"{e.get('kind')}-{e.get('name') or e.get('section')}",
 )
@@ -552,6 +599,33 @@ def test_escaping_artifact_names_are_refused_before_any_git_write(tmp_path, edit
     started = api.start_proposal()
     with pytest.raises(ValueError):
         api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    assert dirty(project, started["proposal"]) == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "knowledge/../escape.md",
+        "knowledge/tables/../p.md",
+        "context_layer/tables/p.md",
+        "knowledge/tables/p.txt",
+    ],
+    ids=["parent-escape", "section-escape", "outside-knowledge", "non-page-suffix"],
+)
+def test_escaping_native_page_paths_are_refused_before_any_git_write(tmp_path, path):
+    """Ticket [4], native page-batch counterpart: traversal, non-knowledge and
+    non-page batch identities are refused centrally BEFORE any Git dispatch —
+    the candidate, worktree and history are untouched."""
+    project = git_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    with pytest.raises(ValueError):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": path, "content": "# p\n"}],
+        )
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
     assert dirty(project, started["proposal"]) == ""
 
@@ -579,28 +653,43 @@ def test_credential_bearing_edit_is_refused_before_any_write(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "pages",
+    [
+        [{"path": "knowledge/computations/event_count.md", "content": "# c\n"}],
+        [{"path": "knowledge/metrics/index.md", "content": "# i\n"}],
+        [{"path": "knowledge/policies/log.md", "content": "# l\n"}],
+    ],
+    ids=["computations-page", "index-page", "log-page"],
+)
+def test_system_owned_native_pages_are_refused(tmp_path, pages):
+    """Ticket [4], native batch counterpart: generated artifacts (computation
+    pages, index.md/log.md bookkeeping) are system-owned — the batch writer
+    refuses them before any Git dispatch."""
+    project = git_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    with pytest.raises(ValueError):
+        api.edit_pages_batch(started["proposal"], started["candidate_revision"], pages)
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    assert dirty(project, started["proposal"]) == ""
+
+
+@pytest.mark.parametrize(
     "edit",
     [
-        {"kind": "page", "section": "computations", "name": "event_count", "content": "# c\n"},
-        {"kind": "page", "section": "metrics", "name": "index", "content": "# i\n"},
-        {"kind": "page", "section": "policies", "name": "log", "content": "# l\n"},
         {"kind": "model", "name": "events", "content": "x: 1\n", "approved": True},
         {"kind": "graph", "content": "x: 1\n", "attester": "the-agent-itself"},
         {"kind": "seed_notes", "content": "x\n", "validated": True},
     ],
     ids=[
-        "computations-section",
-        "index-page",
-        "log-page",
         "model-approval-claim",
         "graph-attester-claim",
         "seed-validated-claim",
     ],
 )
 def test_system_owned_artifacts_and_claim_smuggling_are_refused(tmp_path, edit):
-    """Ticket [4]: generated artifacts (computations/index/log) are
-    system-owned, and a caller cannot smuggle approval/attestation claims into
-    an edit envelope — the discriminated contract is exact."""
+    """Ticket [4]: a caller cannot smuggle approval/attestation claims into an
+    edit envelope — the discriminated contract is exact."""
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -1124,6 +1213,31 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
                     "content": with_quality("2026-01-15T00:00:00"),
                 }
             ],
+        )
+    assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
+
+    # the retained spec0013 §2 authoring rule: a declared evidence period is
+    # [start, end) — a backwards (start >= end) declaration refuses INSIDE
+    # the same batch writer by name, before any byte (never a producer-
+    # accepted shape a consumer would have to disclose around)
+    backwards = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    backwards["reports"][0]["checks"][0]["tested_period"] = {
+        "field": "order_date",
+        "start": "2026-09-01T00:00:00+00:00",
+        "end": "2026-08-01T00:00:00+00:00",
+    }
+
+    def with_quality_block(block: dict) -> str:
+        meta = _load_frontmatter_meta(original)
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = block
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        return f"---\n{front}\n---\n\n# Orders\n"
+
+    with pytest.raises(GitAuthoringError, match="start < end"):
+        api.edit_pages_batch(
+            started["proposal"],
+            edited["revision"],
+            [{"path": "knowledge/tables/orders.md", "content": with_quality_block(backwards)}],
         )
     assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
 

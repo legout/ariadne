@@ -1190,14 +1190,14 @@ def test_contract_evidence_dependency_and_age_gate(tmp_path, monkeypatch, capsys
 
     # an unrelated candidate change reuses the still-applicable observation
     # with its ORIGINAL time (no restamp, no repeated scan)
+    # the context-layer page kind is retired (spec0035 §6): the unrelated
+    # candidate change rides the live seed-notes artifact instead
     page = api.edit_proposal(
         started["proposal"],
         first["revision"],
         {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-orders-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
+            "kind": "seed_notes",
+            "content": SEED_NOTES.replace("All orders count.", "All orders count, revised."),
         },
     )
     second = api.validate_proposal(started["proposal"], page["revision"])

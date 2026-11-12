@@ -672,21 +672,12 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "host_config_file_tightens_the_cli":
         from ariadne import cli
         from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import admit, admitted_ready
-        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)
-        review, _ = admitted_ready(
-            api,
-            project,
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
-        )
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
         assert admit(project, review) == 0
         capsys.readouterr()
         registry = project / "ariadne.yaml"
@@ -876,21 +867,12 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
     elif case == "cli_threads_one_request_budget_through_construction":
         from ariadne import cli
         from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import admit, admitted_ready
-        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)
-        review, _ = admitted_ready(
-            api,
-            project,
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
-        )
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
         assert admit(project, review) == 0
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(

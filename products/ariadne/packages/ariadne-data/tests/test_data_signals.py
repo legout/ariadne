@@ -44,7 +44,6 @@ probed, no external document read.
 """
 
 import asyncio
-import copy
 import json
 import re
 import sqlite3
@@ -794,34 +793,13 @@ def test_absent_profile_keeps_metric_usable_and_coverage_unknown(tmp_path, monke
     assert signals["warnings"] == []
 
 
-def test_core_uninterpretable_report_yields_unknown_evidence_and_query_succeeds(
-    tmp_path, monkeypatch
-):
-    """Spec §5: when a producer-ACCEPTED declaration cannot be interpreted by
-    the Core advisory contract (the producer's structural gate does not
-    order period bounds; Core requires ``start < end``), the view exposes
-    unknown evidence with the unavailability warning while the numerically
-    valid query still succeeds — never a fabricated assessment, never a
-    quality-based refusal."""
-    db = _sqlite_db(tmp_path / "mf.db", ORDERS)
-    backwards = copy.deepcopy(EXPIRED_REPORT)
-    backwards["checks"][0]["tested_period"] = {
-        "field": "order_date",
-        "start": "2026-09-01T00:00:00+00:00",
-        "end": "2026-08-01T00:00:00+00:00",  # producer-valid, Core-uninterpretable
-    }
-    (runtime, _project), _resource = _simple_quality_project(
-        tmp_path, sources={"demo": db}, reports=[backwards]
-    )
-    result = _get_metric(runtime, monkeypatch)
-    assert _rows_by_region(result) == {"NA": 2, "EMEA": 1}
-    signals = result["data_signals"]
-    [metric] = signals["metrics"]
-    assert metric["coverage"] == "unknown"
-    [asset] = signals["assets"]
-    assert asset["page"] == "knowledge/tables/orders.md"
-    assert asset["coverage"] == "unknown" and asset["reports"] == []
-    assert _warning_codes(result) == {"data_evidence_unavailable"}
+# The former producer-accepted/Core-uninterpretable backwards-period
+# disclosure scenario (a tested_period with start >= end admitted past the
+# producer gate) is retired BY CONSTRUCTION: the producer structural gate
+# restores the retained ``start < end`` authoring rule (spec0013 §2), and a
+# pinned snapshot is immutable, so such a declaration can never reach the
+# pinned disclosure. The refusal is asserted by the authoring matrix above
+# and the disclosure honesty stays exercised with producer-valid inputs.
 
 
 def test_same_named_tables_in_distinct_sources_never_share_a_report_by_name(
@@ -1180,13 +1158,12 @@ def test_valid_supplied_profile_passes_the_native_batch(tmp_path):
 
 def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_path):
     """Spec §2/§7 AC6, native migration (spec0035 §6): unsupported versions,
-    naive/plain-date timestamps, executable payload keys, mismatched
-    asset/citation identity, duplicate IDs, missing scope declarations,
-    validity and count invariants fail the producer structural gate INSIDE
-    the public native page batch — before any byte is written, never as a
-    query refusal. (Period-bound ordering is producer-valid and Core-
-    advisory-only: its query-time honesty is the uninterpretable-report test
-    above.)"""
+    naive/plain-date timestamps, broken period/ordering invariants,
+    executable payload keys, mismatched asset/citation identity, duplicate
+    IDs, missing scope declarations, validity and count invariants fail the
+    producer structural gate INSIDE the public native page batch — before any
+    byte is written, never as a query refusal."""
+    period_backwards = {"start": "2026-09-01T00:00:00+00:00", "end": "2026-08-01T00:00:00+00:00"}
 
     def drop_tested_scope(meta: dict) -> None:
         check = meta["ariadne_profile"]["native"]["ariadne_quality"]["reports"][0]["checks"][0]
@@ -1225,6 +1202,11 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
             "reports"
         ][1].__setitem__(
             "id", m["ariadne_profile"]["native"]["ariadne_quality"]["reports"][0]["id"]
+        ),
+        "period-start-not-before-end": lambda m: m["ariadne_profile"]["native"][
+            "ariadne_quality"
+        ]["reports"][0]["checks"][0].__setitem__(
+            "tested_period", {**period_backwards, "field": "order_date"}
         ),
         "omitted-scope-period": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"

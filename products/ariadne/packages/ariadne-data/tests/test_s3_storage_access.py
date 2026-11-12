@@ -40,6 +40,7 @@ from ariadne.authoring_sources import (  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
 from tests import s3_fixture as fx  # noqa: E402
+from tests.test_git_admission import _policy_edit  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     MODEL_YML,
@@ -558,15 +559,10 @@ def test_effective_endpoint_change_requires_new_approval_and_evidence(
         monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "globalwrongsecret")
 
         # [3] MEASURED VALIDATION against endpoint A, then review + admission
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             proposed["revision"],
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
+            _policy_edit("The rule body, revised."),
         )
         validated_a = api.validate_proposal(started["proposal"], edited["revision"])
         assert validated_a["ok"] is True
@@ -798,15 +794,10 @@ def test_stale_schema_observations_refuse_under_a_changed_endpoint(
         approved_a = api.approve_sources(
             started["proposal"], proposed["revision"], proposed["source_digest"]
         )
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             proposed["revision"],
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
+            _policy_edit("The rule body, revised."),
         )
         # schema refreshed under A: the generated observations carry A's
         # effective-approval binding
