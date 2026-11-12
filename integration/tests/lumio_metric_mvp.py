@@ -78,10 +78,6 @@ policy_bindings:
       policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
       operations: [get_metric, query_metrics]
       enforcement: null
-    - subject: {kind: computation, identity: retail_sales::revenue}
-      policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
-      operations: [get_metric, query_metrics]
-      enforcement: null
 """
 
 
@@ -365,12 +361,6 @@ def supported_candidate(root):
         [
             {
                 "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
-                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
-                "operations": ["get_metric", "query_metrics"],
-                "enforcement": None,
-            },
-            {
-                "subject": {"kind": "computation", "identity": "retail_sales::revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,

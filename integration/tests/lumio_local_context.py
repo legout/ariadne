@@ -171,6 +171,31 @@ def multi_metric_release(root: Path):
             {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
         )
         write_page(page, meta, body)
+    # the authored §10.1 binding inventory must classify the candidate's
+    # COMPLETE closure: both metric subjects gain the Cancelled Orders
+    # binding (the derived computation subjects carry empty closures)
+    import yaml
+
+    selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
+    selector["policy_bindings"]["bindings"].extend(
+        [
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::completed_orders"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+        ]
+    )
+    (tree / "context_integration.yaml").write_text(
+        yaml.safe_dump(selector, sort_keys=False), encoding="utf-8"
+    )
     revision = reconcile_knowledge(project, started["proposal"], revision)
     validated = api.validate_proposal(started["proposal"], revision)
     assert validated["ok"] is True, validated["errors"]
@@ -1881,10 +1906,10 @@ def _p1_control() -> str:
 
     return CONTROL.replace(
         "  - name: metrics\n",
-        "  - name: metrics\n  - name: datasets\n  - name: tables\n  - name: computations\n",
+        "  - name: metrics\n  - name: datasets\n  - name: tables\n",
     ).replace(
         "    metric: {}\n",
-        "    metric: {}\n    dataset: {}\n    table: {}\n    computation: {}\n",
+        "    metric: {}\n    dataset: {}\n    table: {}\n",
     )
 
 

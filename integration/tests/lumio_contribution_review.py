@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 from ariadne import (
-    admission,
     context,
     execution,
     query,
@@ -106,10 +105,9 @@ def _staged_contribution(tmp_path):
             [(spec["path"], spec["content"]) for spec in native_specs],
             core_generated=True,
         )
-    run_git(tree, "add", "-f", "--", "knowledge")
-    run_git(tree, "commit", "-q", "-m", "human: deterministic fixture finalization")
-    finalized = run_git(tree, "rev-parse", "HEAD").strip()
-    admission.reconcile(project, proposal, revision, finalized)
+    # the lock-held native batch body both commits and records any generated
+    # pages — the candidate record is already current; no reconcile transition
+    # remains for the retired classic finalize commit.
 
     order_reference = tree / "knowledge/references/order-number.md"
     metadata, body = page_parts(order_reference)
