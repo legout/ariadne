@@ -2924,9 +2924,10 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     assert (worktree / sales_rel).read_bytes() == before  # atomic: nothing written
     assert proposals._load_record(project, proposal)["candidate_revision"] == revision
 
-    # (c) artifact-bound atomicity, MULTI-TABLE: the authored sales page —
-    # bulk in the CURATED BODY — stays BELOW the 2,097,152-byte artifact
-    # bound at the edit; the refresh's measured value evidence for a newly
+    # (c) artifact-bound atomicity, MULTI-TABLE with a CHANGED FIRST
+    # member: the authored sales page (bulk in the CURATED BODY) stays
+    # below the 2,097,152-byte artifact bound at the edit; the refresh's
+    # measured value evidence for a newly
     # selected long-string column (two 2,800-char literals ≈ 5.7 KiB, under
     # the 8 KiB evidence bound) grows past the remaining gap AT REFRESH —
     # the whole multi-table request (earlier support member + oversized
@@ -2942,6 +2943,29 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
         ["order_id", *(n for n, _v in wide), "bulk"],
     )
     support_first = api.refresh_schema(proposal, revision, [SUPPORT_ASSET])
+
+    # the EARLIER member must carry a PENDING change the failing refresh
+    # would apply: the support source now measures 3 authored rows (same
+    # schema/path/identity) while the persisted support facts still show
+    # the old 2 — a broken sequential writer that partially applied the
+    # earlier member would rewrite those facts and fail the exact tree
+    # equality below
+    support_rel = _generated_rel(_table_resource_of(SUPPORT_ASSET), "support")
+    support_parquet = project / "data" / "support" / "orders.parquet"
+    write_parquet(support_parquet, [(1, "t1"), (2, "t2"), (3, "t3")], ["order_id", "ticket"])
+    support_con = duckdb.connect()
+    assert (
+        support_con.execute(
+            f"SELECT COUNT(*) FROM read_parquet('{support_parquet}')"
+        ).fetchone()[0]
+        == 3
+    )  # the pending source carries 3 authored rows…
+    support_con.close()
+    support_observations = _load_frontmatter_meta(
+        (worktree / support_rel).read_text(encoding="utf-8")
+    )["ariadne_profile"]["native"]["ariadne"]["observations"]
+    assert support_observations["row_count"] == 2  # …while the persisted
+    # member facts stay at the OLD measurement until the refresh commits
 
     def knowledge_bytes() -> dict[str, bytes]:
         return {
