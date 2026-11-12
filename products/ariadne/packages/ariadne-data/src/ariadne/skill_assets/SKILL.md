@@ -661,8 +661,11 @@ never inside the Context Routing Map or table measurements.
   native overall admission, or the pinned result context.
 - **Operator setup is not agent authority.** `ariadne setup` is
   operator-facing; agents do not initialize/configure Git, approve sources or
-  admit revisions through setup. Pass exact operator commands and blockers to
-  the human. `ariadne review` is retired; agents use the read-only
+  admit revisions through setup. A fresh project needs the operator's explicit
+  `--namespace` and machine-local `--private-profile` selections (Git must
+  already exist); an existing native Knowledge Base resumes by validation,
+  never reinitialization. Pass exact operator commands and blockers to the
+  human. `ariadne review` is retired; agents use the read-only
   `ariadne-authoring review`, return its exact payload/digest, and stop for
   human Git Admission. Use `ariadne status` only for offline diagnostics, not
   a query or readiness probe that opens sources.

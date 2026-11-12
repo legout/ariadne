@@ -23,27 +23,35 @@ No server or LLM credential is required for local CLI queries. Optional transpor
 
 ## Create a project
 
-Run the setup wizard in a new project directory:
+Native authoring needs Git first. Create the project directory, make it its
+own repository and set a repository-local identity (setup never initializes or
+configures Git itself):
 
 ```bash
-ariadne setup --project retail --agents --agent pi
-cd retail
-```
-
-The default for a new project is Git-managed authoring. Setup scaffolds files and can detect candidate data files by filename; detection is only a hint, not source approval or a schema/content scan. It does not initialize Git or configure commit identity. Create the repository and set identity locally:
-
-```bash
+mkdir retail && cd retail
 git init
 git config user.name "Your Name"
 git config user.email "you@example.org"
 ```
 
-Put data files under the project (for example, `data/`) and work with the owner to write `data/seed_notes.md`: describe the business domain, row grain, date conventions, units, exclusions, known caveats, and desired metrics. Do not infer business meaning from filenames or value frequency.
-
-If the wizard paused because Git prerequisites were missing, resume it from the project root:
+Then run the setup wizard with the explicit selections that initialize one
+native Knowledge Base: a `--namespace` you choose once as its stable identity,
+and a machine-local `--private-profile` path outside the repository:
 
 ```bash
-ariadne setup --project . --agents --agent pi
+ariadne setup --project . --namespace "urn:uuid:your-retail-namespace" --private-profile "$HOME/.ariadne-profiles/retail.json" --agents --agent pi
+```
+
+Setup can also detect candidate data files by filename; detection is only a hint, not source approval or a schema/content scan. Without the selections (or while Git prerequisites are missing) setup only reports the actionable operator prerequisites and writes nothing except an explicitly selected skill installation.
+
+Put data files under the project (for example, `data/`) and work with the owner to write `data/seed_notes.md`: describe the business domain, row grain, date conventions, units, exclusions, known caveats, and desired metrics. Do not infer business meaning from filenames or value frequency.
+
+Resume the wizard at any time; an existing native Knowledge Base is validated,
+never reinitialized (re-supplying the same selections validates them, and a
+conflicting namespace or profile refuses):
+
+```bash
+ariadne setup --project . --namespace "urn:uuid:your-retail-namespace" --private-profile "$HOME/.ariadne-profiles/retail.json" --agents --agent pi
 ```
 
 `--agents` installs the packaged Ariadne skill; `--agent` selects the host integration. Skill installation is separate from source approval and catalog admission.

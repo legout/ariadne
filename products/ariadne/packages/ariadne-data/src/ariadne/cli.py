@@ -238,6 +238,19 @@ def build_parser() -> _Parser:
     setup_cmd.add_argument("--project", default=".", help="directory to scaffold or resume")
     setup_cmd.add_argument("--no-input", action="store_true", help="scaffold/detect/report only")
     setup_cmd.add_argument(
+        "--namespace",
+        default=None,
+        help="explicit native Knowledge Base namespace; with --private-profile, "
+        "initializes a fresh project once through the public initializer",
+    )
+    setup_cmd.add_argument(
+        "--private-profile",
+        type=Path,
+        default=None,
+        help="machine-local private profile file outside the repository; "
+        "required together with --namespace to initialize a fresh project",
+    )
+    setup_cmd.add_argument(
         "--agents", action="store_true", help="install the selected packaged skill"
     )
     setup_cmd.add_argument("--agent", choices=("universal", "pi", "claude", "hermes"))

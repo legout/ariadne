@@ -123,6 +123,58 @@ all criteria after execution. The full proposal and closure matrix live in the
 append-only C6 fix report; C6/C7 gate status and landing remain governed by actual
 evidenced criteria, not by this capture.
 
+Owner-authorized S1 residual batch (owner-selected "Batch S1 freigeben
+(Empfohlen)" plus the separate "Sichtbar, weiter" tab admission, 2026-11-12;
+documentation only, no change to historical approvals, frozen verdicts or issue
+snapshots): with C6's repair budget exhausted and the required C7 `core-source`
+run red (144 failed/29 errors on the same frozen base), the owner authorized ONE
+S1-only fixture-completion exception: the explicit old `init.main([str(project)])`
+callsites in `products/ariadne/packages/ariadne-data/tests/test_setup.py` reach
+their existing setup scenarios through a valid native predecessor — the existing
+public initializer with an explicit fixed namespace and a machine-local
+private-profile path outside each synthetic repository, and each scenario's
+already-explicit Git fixture prerequisite arranged before native initialization
+(the SDK never initializes Git; no-Git/no-identity/parent-repo negative gates stay
+meaningful and untouched). Validation is EXACTLY three existing nodes
+(`test_managed_typed_declaration_exact_handoff_and_idempotent_resume`,
+`test_setup_declaration_references_an_existing_candidate_profile`,
+`test_inline_credential_refused_without_echo_or_declaration`) plus one scoped
+Ruff pass on the changed file, on the retained C7 core-pair pair after static
+package-input correspondence confirms unchanged Core/SDK inputs; isolated Pi
+writer, parent audit without a third independent C6 review. Checkpoint after;
+no automatic follow-on batch, no wider repair/cleanup, no test pruning, no
+Plan0036 transfer. Global C6 source-ready acceptance stays suspended; D1–D4
+evidence and all independent verdicts remain preserved.
+
+Owner-authorized S2 native setup caller repair (owner-selected "Produktfix
+vorbereiten (Empfohlen)" then "S2 samt Review freigeben", 2026-11-12;
+documentation only, no change to historical approvals, frozen verdicts or issue
+snapshots): S1's actual three-node red proved the production defect —
+`ariadne/setup.py` unconditionally called the native initializer with the
+pre-native signature. The owner approved the bounded native setup behavior
+(exact scope in the 2026-11-12 spec0017 native amendment): existing valid native
+KB resumes metadata-only and is never reinitialized; re-supplied selections
+validate against the existing namespace and the named external profile; fresh
+native initialization needs BOTH explicit `--namespace`/`--private-profile`
+setup options (initializer names/semantics) plus operator-prepared Git and
+delegates once to the public initializer; missing selections or Git/root/identity
+report all actionable prerequisites and complete as a diagnostic (exit 0,
+Ready: no) with only selected-skill-install writes; retired/incomplete layouts
+refuse before any write. Owned files: A/src/ariadne/setup.py, A/src/ariadne/cli.py,
+A/tests/test_setup.py (S1 WIP preserved; test_new_managed_scaffold explicitly
+adapted to the approved native flow; ONE new focused refusal test), the two
+captures (spec0017 native amendment, this addendum) and the affected setup
+usage in SKILL.md/cli.md/getting-started.md only. Validation: EXACTLY six
+named selectors in serial groups of at most three (180s INT/kill5,
+faulthandler 30, `-vv`) on the retained C7 core-pair interpreter with an
+explicit own source-root PYTHONPATH overlay (installed Core is stale); scoped
+Ruff on the three changed Python files; no baseline rerun, full suite, wheel
+rebuild or installed-artifact claim. ONE new independent production review
+(Pi openai-codex/gpt-6.1-sol:high), limited to this setup adaptation and its
+human/identity/no-overwrite gates — not a third C6 D1–D4 review; one fix pass
+plus one delta recheck maximum. Checkpoint after review; no merge/push or
+follow-on batch; S2 does not promise the remaining setup/whole-CI migration.
+
 ## C7 — Verify the assembled candidate once and hand it back
 
 Canonical task: [#115](https://github.com/legout/ariadne/issues/115). Source: AC1–AC15; depends on C1–C6 and accepted R0–R4, source-contract dispositions and a known final build. Produces one assembled CI/isolated-wheel/local-journey evidence set and coordinates R5's separately authorized live leg on that build. C7 can start final CI after C6; R5 waits for C6, not C7 completion. Missing live prerequisites remain live-unqualified.
