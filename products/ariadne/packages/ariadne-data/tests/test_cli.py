@@ -26,15 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import admission  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
-from ariadne.init import main as init_main  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from tests.test_git_authoring import approved, run_git  # noqa: E402
 from tests.test_serve import (  # noqa: E402
     GOLDEN_OKF,
     GOLDEN_OSI,
+    GOLDEN_POLICY_EMEA,
+    GOLDEN_POLICY_STATUS,
     GOTCHA_1,
     GOTCHA_2,
     seed_demo_db,
@@ -81,8 +81,9 @@ _METRIC_BODIES = {
 }
 
 
-def _native_policy_page(slug: str, title: str, rule: str, tag: str) -> str:
-    """One producer-native Policy page carrying a seed-note rule verbatim."""
+def _native_policy_page(slug: str, title: str, rule: str, tag: str, body: str) -> str:
+    """One producer-native Policy page: the original Golden policy body
+    verbatim inside its typed native wrapper (identity/metadata unchanged)."""
     return (
         "---\n"
         f'id: "entity:{slug}"\n'
@@ -110,7 +111,7 @@ def _native_policy_page(slug: str, title: str, rule: str, tag: str) -> str:
         "      - id: seed-notes\n"
         "        title: Seed notes\n"
         "        resource: data/seed_notes.md\n"
-        f"---\n\n# {title}\n\n{rule}.\n"
+        f"---{body}"
     )
 
 
@@ -187,6 +188,9 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     the OSI model and the typed native metric/Policy pages, and one Git
     proposal carries the generated Table profile (``refresh_schema``), full
     native validation and the composite human admission."""
+    from ariadne import admission
+    from ariadne.init import main as init_main
+
     root.mkdir(parents=True, exist_ok=True)
     run_git(root, "init", "-q")
     run_git(root, "config", "user.name", "Ariadne Tests")
@@ -227,10 +231,18 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     )
     pages = {
         "policies/order-status-billing.md": _native_policy_page(
-            "order-status-billing", "Order status billing", GOTCHA_1, "billing"
+            "order-status-billing",
+            "Order status billing",
+            GOTCHA_1,
+            "billing",
+            GOLDEN_POLICY_STATUS.split("---", 2)[2],
         ),
         "policies/emea-currency-cutover.md": _native_policy_page(
-            "emea-currency-cutover", "EMEA currency cutover", GOTCHA_2, "currency"
+            "emea-currency-cutover",
+            "EMEA currency cutover",
+            GOTCHA_2,
+            "currency",
+            GOLDEN_POLICY_EMEA.split("---", 2)[2],
         ),
         **{
             f"metrics/{metric}.md": _native_metric_page(metric, policies)
