@@ -400,7 +400,7 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
     if native_state:
         (project / "context_integration.yaml").write_text(NATIVE_SELECTOR, encoding="utf-8")
     kb = project / "knowledge"
-    kb.mkdir(parents=True, exist_ok=True)
+    kb.mkdir(parents=True, exist_ok=True) if native_state else None
     (kb / "lumio.yaml").write_text(
         "version: 2\n"
         'mode: "categorized"\n'
@@ -1880,7 +1880,8 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     occupied-but-invalid knowledge/ marker files refuse before proposal state
     exists, and an EXACT supplied historical standalone admission (real
     commit, real snapshot, admitted through the public protocol from the
-    legacy base revision) refuses at QueryRuntime.open_project BEFORE any
+    legacy base revision — a docs-only snapshot, no retired metric
+    finalization) refuses at QueryRuntime.open_project BEFORE any
     source open, without mutation, while the valid pinned NATIVE current
     admission still opens (AC7: unrelated state never blocks a valid
     admission)."""
@@ -1906,8 +1907,17 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     assert not (invalid / ".ariadne").exists()  # no proposal state was created
 
     # an ACTUAL valid historical standalone admission: the public admit
-    # protocol from the LEGACY base revision, then a native admission on top
+    # protocol from the LEGACY base revision, then a native admission on top.
+    # The synthetic legacy input is deliberately docs-only (spec0035 §6/AC10):
+    # the governed model/metric pair is retired and committed BEFORE the
+    # legacy commit, so the historical candidate has nothing to derive and
+    # finalizes through the existing no-op path.
     project = complete_bundle_project(tmp_path / "history", native_state=False)
+    (project / "semantic_layer" / "models" / "events.yml").unlink()
+    (project / "context_layer" / "metrics" / "event_count.md").unlink()
+    run_git(project, "add", "--", "semantic_layer/models/events.yml",
+            "context_layer/metrics/event_count.md")
+    run_git(project, "commit", "-q", "-m", "human: docs-only legacy input")
     legacy_commit = run_git(project, "rev-parse", "HEAD").strip()
     (project / "context_integration.yaml").write_text(
         "version: 1\n"
@@ -1935,15 +1945,11 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
         'version: 1\nnamespace: "urn:uuid:authoring-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
     )
-    # the native-state commit retires the legacy metric/model pair (the
-    # integrated contract sanctions native metric pages against the working
-    # model inventory; the historical LEGACY commit below keeps them)
-    (project / "semantic_layer" / "models" / "events.yml").unlink()
-    (project / "context_layer" / "metrics" / "event_count.md").unlink()
+    # the native-state commit adds the integrated selector and the native
+    # KB; the metric/model pair is already absent from the docs-only legacy
+    # input, so no second deletion is needed
     run_git(project, "add", "--", "context_integration.yaml", "knowledge/lumio.yaml",
             "knowledge/.lumio-authoring.yaml")
-    run_git(project, "add", "--", "semantic_layer/models/events.yml",
-            "context_layer/metrics/event_count.md")
     run_git(project, "commit", "-q", "-m", "human: native state added")
 
     api = AuthoringProject(project)
