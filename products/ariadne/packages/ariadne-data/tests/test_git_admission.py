@@ -1298,7 +1298,7 @@ def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path
     assert admit(project, review) == 0
     record = read_current(project)
     snapshot = project / record["snapshot"]
-    page = snapshot / "context_layer" / "policies" / "all-events-count.md"
+    page = snapshot / NATIVE_POLICY_REL
     original = page.read_text(encoding="utf-8")
 
     runtime = QueryRuntime.open_project(project)
