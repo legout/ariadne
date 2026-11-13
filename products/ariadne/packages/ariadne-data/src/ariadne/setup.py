@@ -233,23 +233,36 @@ def _authoring_handoff(root: Path) -> None:
     )
 
 
-def _install_skill(args: argparse.Namespace, interactive: bool, stdin: Any) -> int:
+def _resolve_skill_target(
+    args: argparse.Namespace, interactive: bool, stdin: Any
+) -> str | None:
+    """The real selected skill target, or None when nothing is selected (no
+    --agents, missing noninteractive target, interactive skip). No writes."""
     if not args.agents:
-        print("Skill installation skipped (use --agents with an explicit target).")
-        return 0
-    target = args.agent
+        return None
+    if args.agent is not None:
+        return args.agent
+    if not interactive:
+        return None
+    target = _ask(stdin, "Skill target: universal / pi / claude / hermes / skip?")
+    if target == "skip":
+        return None
+    if target not in ("universal", *skill.AGENT_DIRS):
+        raise ValueError("unknown skill target; installed nothing")
+    return target
+
+
+def _install_skill(args: argparse.Namespace, interactive: bool, stdin: Any) -> int:
+    target = _resolve_skill_target(args, interactive, stdin)
     if target is None:
-        if not interactive:
+        if not args.agents:
+            print("Skill installation skipped (use --agents with an explicit target).")
+        elif not interactive:
             print(
                 "Skill target selection required: --agent universal|pi|claude|hermes; "
                 "installed nothing."
             )
-            return 0
-        target = _ask(stdin, "Skill target: universal / pi / claude / hermes / skip?")
-        if target == "skip":
-            return 0
-        if target not in ("universal", *skill.AGENT_DIRS):
-            raise ValueError("unknown skill target; installed nothing")
+        return 0
     args.agent = target
     argv = ["install", "--scope", args.scope]
     if target != "universal":
@@ -292,18 +305,18 @@ def _kb_namespace(root: Path) -> str | None:
 
 
 def _validate_resume_selections(
-    args: argparse.Namespace, root: Path, namespace: str
+    args: argparse.Namespace, root: Path, namespace: str, private_profile: Path | None
 ) -> bool:
     """An existing managed Knowledge Base is NEVER reinitialized. Re-supplied
     selections are validated metadata-only against the existing namespace and
     the named external profile; nothing is applied or replaced."""
-    if args.namespace is None and args.private_profile is None:
+    if args.namespace is None and private_profile is None:
         print(
             f"Native Knowledge Base present (namespace {namespace}); "
             "resuming without reinitialization."
         )
         return True
-    if not (args.namespace and args.private_profile):
+    if not (args.namespace and private_profile):
         print(
             "error: resuming requires BOTH --namespace and --private-profile "
             "(or neither); refusing without reinitializing or adopting.",
@@ -322,7 +335,7 @@ def _validate_resume_selections(
     from lumio_wiki.private_profile import PrivateProfileError
 
     try:
-        load_private_profile(args.private_profile, kb_root=root / "knowledge")
+        load_private_profile(private_profile, kb_root=root / "knowledge")
     except PrivateProfileError as exc:
         print(
             f"error: the selected private profile does not validate against the "
@@ -340,6 +353,12 @@ def _validate_resume_selections(
 def run(args: argparse.Namespace, stdin: Any) -> int:
     interactive = not args.no_input and stdin.isatty() and sys.stdout.isatty()
     root = Path(args.project).expanduser().absolute()
+    # the operator's relative --private-profile selection binds to the INVOCATION
+    # cwd before any project chdir, so identical selections address the same
+    # machine-local file on fresh setup and resume
+    private_profile = (
+        args.private_profile.absolute() if args.private_profile is not None else None
+    )
     try:
         # AC10 / spec0035 §6: retired or incomplete layouts refuse BEFORE any
         # KB/profile/source write; plain empty projects stay supported.
@@ -356,9 +375,9 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
         return 1
     kb_ready = namespace is not None
     if namespace is not None:
-        if not _validate_resume_selections(args, root, namespace):
+        if not _validate_resume_selections(args, root, namespace, private_profile):
             return 1
-    elif not (args.namespace and args.private_profile):
+    elif not (args.namespace and private_profile):
         # spec0017 native amendment: no implicit scaffold — report the missing
         # explicit selections; nothing is initialized or written for them.
         print(
@@ -368,21 +387,49 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
             "or written."
         )
     if not root.is_dir():
-        if not args.agents:
+        skill_target = None
+        skill_error = False
+        if args.agents:
+            try:
+                skill_target = _resolve_skill_target(args, interactive, stdin)
+            except Exception as exc:
+                print(f"Skill installation incomplete: {exc}; rerun to resume.", file=sys.stderr)
+                skill_error = True
+        if skill_target is not None and args.scope == "project":
+            args.agent = skill_target
+            # the only blocked-path write: a real selected project-scope install needs its root
+            root.mkdir(parents=True, exist_ok=True)
+        else:
+            if skill_target is None and args.agents and not interactive:
+                print(
+                    "Skill target selection required: --agent universal|pi|claude|hermes; "
+                    "installed nothing."
+                )
             print(
                 f"Project directory {root} does not exist; setup never creates it "
                 "or initializes Git implicitly. Operator: create {root}, run git "
                 "init and configure repository-local commit identity, then re-run "
                 "with explicit --namespace/--private-profile."
             )
-            print(
+            finish = (
                 "Finish: scaffold/skills are not a query-ready catalog. Ready: no. "
                 "Human gates remain: source approval and Git Review Admission; "
                 "setup invokes neither."
             )
-            return 0
-        # the only write a blocked path allows: the selected skill install needs its root
-        root.mkdir(parents=True, exist_ok=True)
+            if skill_target is not None:  # a selected user-scope install needs no project root
+                args.agent = skill_target
+                try:
+                    code = _install_skill(args, interactive, stdin)
+                except Exception as exc:
+                    print(
+                        f"Skill installation incomplete: {exc}; rerun to resume.",
+                        file=sys.stderr,
+                    )
+                    code = 1
+                print(finish)
+                return code
+            print(finish)
+            return 1 if skill_error else 0
     root = root.resolve()
     code = 0
     with contextlib.chdir(root):
@@ -413,7 +460,7 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
                         "--namespace",
                         args.namespace,
                         "--private-profile",
-                        str(args.private_profile),
+                        str(private_profile),
                     ]
                 ):
                     return 1

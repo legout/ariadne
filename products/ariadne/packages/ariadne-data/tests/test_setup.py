@@ -125,28 +125,32 @@ def test_new_managed_scaffold_reports_gates_without_git_mutation(tmp_path, capsy
     assert not (project / ".gitignore").exists() and not (project / "AGENTS.md").exists()
     # explicit selections but Git still missing: prerequisites only, no initializer
     namespace = "urn:uuid:native-wizard-fixture"  # authored fixture identity, never generated
-    profile = tmp_path / "new-profile.json"  # machine-local, outside the repository
+    profile_arg = "wizard-profile.json"  # caller-relative selection, anchored at invocation cwd
+    selected_profile = tmp_path / "wizard-profile.json"  # the actual requested external location
     assert (
         run_setup(
-            project, "", "--no-input", "--namespace", namespace, "--private-profile", str(profile)
+            project, "", "--no-input", "--namespace", namespace, "--private-profile", profile_arg
         )
         == 0
     )
     output = capsys.readouterr().out
     assert "Proposal preparation paused" in output and "config user.email" in output
     assert "Native initialization paused" in output
-    assert not (project / "knowledge").exists() and not profile.exists()
+    assert not (project / "knowledge").exists() and not selected_profile.exists()
     # operator-prepared Git + explicit selections: ONE initializer delegation
     prepare_git(project)
     assert (
         run_setup(
-            project, "", "--no-input", "--namespace", namespace, "--private-profile", str(profile)
+            project, "", "--no-input", "--namespace", namespace, "--private-profile", profile_arg
         )
         == 0
     )
     output = capsys.readouterr().out
     assert "ariadne project ready" in output and namespace in output
-    assert (project / "knowledge").is_dir() and profile.is_file()
+    assert (project / "knowledge").is_dir()
+    # the profile lands at the requested external location (invocation cwd), never inside
+    assert selected_profile.is_file() and not (project / "wizard-profile.json").exists()
+    assert json.loads(selected_profile.read_text())["namespace"] == namespace
     assert ".ariadne/" in (project / ".gitignore").read_text()
 
     def snapshot():
@@ -160,7 +164,7 @@ def test_new_managed_scaffold_reports_gates_without_git_mutation(tmp_path, capsy
     # no-op repeat with the same selections: validated resume, byte-identical
     assert (
         run_setup(
-            project, "", "--no-input", "--namespace", namespace, "--private-profile", str(profile)
+            project, "", "--no-input", "--namespace", namespace, "--private-profile", profile_arg
         )
         == 0
     )
@@ -176,7 +180,7 @@ def test_new_managed_scaffold_reports_gates_without_git_mutation(tmp_path, capsy
             "--namespace",
             "urn:uuid:conflicting-selection",
             "--private-profile",
-            str(profile),
+            profile_arg,
         )
         == 1
     )
@@ -195,9 +199,14 @@ def test_setup_refuses_legacy_or_incomplete_kb_without_mutation(tmp_path, capsys
         pytest.fail("setup invoked the initializer on a refused layout")
 
     monkeypatch.setattr(init, "main", forbidden)
+
+    def snapshot(root):
+        return {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
     legacy = tmp_path / "legacy"
     (legacy / "context_layer").mkdir(parents=True)
     (legacy / "context_layer" / "served.md").write_text("# retired served page\n")
+    before = snapshot(legacy)
     assert (
         run_setup(
             legacy,
@@ -213,12 +222,14 @@ def test_setup_refuses_legacy_or_incomplete_kb_without_mutation(tmp_path, capsys
     output = capsys.readouterr()
     assert "retired standalone Context layout" in output.err
     assert "Nothing was read, written or modified here" in output.err
+    assert snapshot(legacy) == before
     assert not (legacy / "knowledge").exists() and not (tmp_path / "legacy-profile.json").exists()
     assert not records(legacy)
 
     incomplete = tmp_path / "incomplete"
     (incomplete / "knowledge").mkdir(parents=True)
     (incomplete / "knowledge" / "placeholder.md").write_text("# dummy knowledge file\n")
+    before = snapshot(incomplete)
     assert (
         run_setup(
             incomplete,
@@ -233,6 +244,7 @@ def test_setup_refuses_legacy_or_incomplete_kb_without_mutation(tmp_path, capsys
     )
     err = capsys.readouterr().err
     assert "knowledge/ directory without the native Knowledge Base state" in err
+    assert snapshot(incomplete) == before
     assert (incomplete / "knowledge" / "placeholder.md").read_text() == "# dummy knowledge file\n"
     assert not (tmp_path / "incomplete-profile.json").exists()
 
@@ -345,6 +357,15 @@ def test_existing_registry_is_preserved_without_route_choice(tmp_path, capsys):
 def test_real_target_wiring_inside_project_from_outside_cwd(tmp_path, capsys, target, relative):
     project = tmp_path / "project"
     caller = Path.cwd()
+    # an unselected skill target never materializes the project root: noninteractive
+    missing = tmp_path / "missing" / "nested"
+    assert run_setup(missing, "", "--no-input", "--agents") == 0
+    output = capsys.readouterr().out
+    assert "Skill target selection required" in output
+    assert not missing.exists()
+    # an interactive skip selects no installation either: still no root write
+    assert run_setup(missing, "skip\n", "--agents") == 0
+    assert not missing.exists()
     assert run_setup(project, "", "--no-input", "--agents", "--agent", target) == 0
     installed = project / ".agents/skills/ariadne"
     assert skill._dir_hash(installed) == skill._dir_hash(skill.ASSETS)
