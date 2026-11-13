@@ -29,6 +29,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -97,6 +98,20 @@ def admitted_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> t
 def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tuple default
     project: Path, review: dict, *, confirm: bool = True, extra: Sequence[str] = ()
 ) -> int:
+    # Spec0035 composite admission through the real CLI: the display call shows
+    # the composite preview; only re-running with --confirm and that preview's
+    # exact digest activates. The synthetic fixture operator publishes with
+    # public visibility to a stable destination OUTSIDE the project; the
+    # expected-current baseline is the currently admitted publication ('none'
+    # for the first) — a real compare-and-swap, never a fabricated pointer.
+    current = project / CURRENT
+    expected = (
+        json.loads(current.read_text(encoding="utf-8"))["bound_release"]["knowledge"][
+            "published_version"
+        ]
+        if current.exists()
+        else "none"
+    )
     argv = [
         "--project",
         str(project),
@@ -106,11 +121,24 @@ def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tupl
         review["revision"],
         "--reviewed-digest",
         review["review_digest"],
+        "--context-destination",
+        str(project.parent / "published"),
+        "--context-expected-current",
+        expected,
+        "--visibility",
+        "public",
         *extra,
     ]
-    if confirm:
-        argv.append("--confirm")
-    return admit_cli(argv)
+    if not confirm:
+        return admit_cli(argv)  # display-only: the composite preview, no activation
+    preview = io.StringIO()
+    with redirect_stdout(preview):
+        code = admit_cli(argv)
+    if code != 0:
+        return code  # the real CLI refusal (its stderr) reaches the caller unchanged
+    return admit_cli(
+        [*argv, "--confirm", "--overall-digest", json.loads(preview.getvalue())["digest"]]
+    )
 
 
 def test_standalone_initial_proposal_ignores_unrelated_knowledge_symlink(tmp_path):
