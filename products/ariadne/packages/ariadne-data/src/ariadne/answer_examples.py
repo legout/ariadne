@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 from datetime import (
     UTC,  # pyright: ignore[reportAttributeAccessIssue] — resolver drift: UTC is py3.11+
     datetime,
@@ -183,7 +184,10 @@ def _example_id(question: str, captured: datetime) -> str:
     slug = "-".join(_SLUG_TOKEN_RE.findall(question.lower()))[:48].rstrip("-")
     # lowercase digits only: the id becomes the Entity slug (entity:<id>),
     # which must begin and end with a letter or digit (KB slug rule)
-    return f"{slug or 'example'}-{captured.strftime('%Y%m%d%H%M%S')}"
+    # the random tail makes every save a separately identified draft (spec0007)
+    # even at one identical instant: peer proposals resolving the same admitted
+    # base never see each other's pages, so no collision loop can de-alias them
+    return f"{slug or 'example'}-{captured.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
 
 
 def _verify_citation(project: Path, revision: str, ref: str) -> dict:

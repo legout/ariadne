@@ -478,8 +478,9 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     import asyncio
     import io
     import json
+    from datetime import UTC, datetime
 
-    from ariadne import execution, serve
+    from ariadne import answer_examples, execution, serve
     from ariadne.query import QueryRuntime
 
     project, api, review = _example_release(tmp_path / "project")
@@ -494,31 +495,58 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
 
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
-    saved = json.loads(capsys.readouterr().out)
 
-    assert cli_run("search-examples", "gross margin region") == 0
-    assert json.loads(capsys.readouterr().out) == []
-    selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
-    assert cli_run("search-examples", "gross margin region", *selectors) == 0
-    hits = json.loads(capsys.readouterr().out)
-    assert len(hits) == 1 and hits[0]["status"] == "draft"
+    # F6 repro: identical-instant peer saves can't see each other; spec0007 demands distinct drafts.
+    fixed_instant = datetime(2031, 2, 3, 4, 5, 6, tzinfo=UTC)
 
-    app = serve.build_app(QueryRuntime, project=str(project))
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_instant
 
-    async def _mcp_save():
-        return await app.call_tool("save_example", {"submission": submission})
+    with monkeypatch.context() as clock:  # clock scoped to the save seam only
+        clock.setattr(answer_examples, "datetime", _FrozenDatetime)
+        assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+        saved = json.loads(capsys.readouterr().out)
 
-    def _payload(result):
-        # a plain dict return is exactly one JSON text block: no structured
-        # content wrapper (the observed native form, per the proven journey)
-        assert not getattr(result, "is_error", False)
-        blocks = list(getattr(result, "content", ()))
-        assert len(blocks) == 1 and blocks[0].type == "text"
-        return json.loads(blocks[0].text)
+        assert cli_run("search-examples", "gross margin region") == 0
+        assert json.loads(capsys.readouterr().out) == []
+        selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
+        assert cli_run("search-examples", "gross margin region", *selectors) == 0
+        hits = json.loads(capsys.readouterr().out)
+        assert len(hits) == 1 and hits[0]["status"] == "draft"
 
-    mcp_saved = _payload(asyncio.run(_mcp_save()))
+        app = serve.build_app(QueryRuntime, project=str(project))
+
+        async def _mcp_save():
+            return await app.call_tool("save_example", {"submission": submission})
+
+        def _payload(result):
+            # a plain dict return is exactly one JSON text block: no structured
+            # content wrapper (the observed native form, per the proven journey)
+            assert not getattr(result, "is_error", False)
+            blocks = list(getattr(result, "content", ()))
+            assert len(blocks) == 1 and blocks[0].type == "text"
+            return json.loads(blocks[0].text)
+
+        mcp_saved = _payload(asyncio.run(_mcp_save()))
+
     assert mcp_saved["status"] == "draft" and mcp_saved["id"] != saved["id"]
+    assert mcp_saved["path"] != saved["path"]  # two page paths, never one aliased page
+    assert mcp_saved["proposal"] != saved["proposal"]  # two separate peer drafts
+
+    def _persisted(record):
+        page = worktree_of(project, record["proposal"]) / record["path"]
+        return yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
+
+    cli_page, mcp_page = _persisted(saved), _persisted(mcp_saved)
+    assert cli_page["id"] != mcp_page["id"]  # two distinct Entity identities
+    assert cli_page["title"] != mcp_page["title"]
+    assert (
+        cli_page["ariadne_profile"]["native"]["question"]
+        == mcp_page["ariadne_profile"]["native"]["question"]
+        == submission["question"]  # exact original question bytes in BOTH drafts
+    )
     assert db_path.read_bytes() == db_before
 
     monkeypatch.undo()  # restore the boundary: human admission legitimately validates
