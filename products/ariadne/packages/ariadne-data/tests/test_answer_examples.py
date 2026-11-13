@@ -42,9 +42,9 @@ def _submission(result, /, **overrides):
         "submitter": "expert:dana",
         "attestation": "I confirmed this against the observed result.",
         "sources": [
-            "context_layer/metrics/gross_margin.md",
-            "context_layer/policies/order-status-billing.md",
-            "context_layer/policies/emea-currency-cutover.md",
+            "metrics/gross_margin.md",
+            "policies/order-status-billing.md",
+            "policies/emea-currency-cutover.md",
         ],
     }
     submission.update(overrides)
