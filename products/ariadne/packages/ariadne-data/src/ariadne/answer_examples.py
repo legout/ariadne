@@ -184,9 +184,7 @@ def _example_id(question: str, captured: datetime) -> str:
     slug = "-".join(_SLUG_TOKEN_RE.findall(question.lower()))[:48].rstrip("-")
     # lowercase digits only: the id becomes the Entity slug (entity:<id>),
     # which must begin and end with a letter or digit (KB slug rule)
-    # the random tail makes every save a separately identified draft (spec0007)
-    # even at one identical instant: peer proposals resolving the same admitted
-    # base never see each other's pages, so no collision loop can de-alias them
+    # Peer proposals cannot see each other's pages, so each save needs fresh entropy.
     return f"{slug or 'example'}-{captured.strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(4)}"
 
 
