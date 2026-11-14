@@ -28,9 +28,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.profiler import profile  # noqa: E402
-
-# the private numerical-test seam (spec 0027 §6): plain-root Facade construction is retired
-from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
 from ariadne.sources import (  # noqa: E402
     build_connection,
     default_registry_path,
@@ -439,12 +436,10 @@ def test_native_duckdb_catalog_and_compiled_metric(tmp_path, monkeypatch):
     (tmp_path / "semantic_layer" / "models" / "orders.yml").write_text(
         MINIMAL_OSI.replace("demo.main.orders", "warehouse.main.orders"), encoding="utf-8"
     )
-    facade = Facade(
-        tmp_path / "semantic_layer",
-        tmp_path / "context_layer",
-        catalog_file,
-        sources=reg,
-    )
+    from ariadne.query import QueryRuntime
+
+    _admit_registry_project(tmp_path)
+    facade = QueryRuntime.open_project(tmp_path)
     result = asyncio.run(facade.get_metric("total_amount"))
     assert result["governed"] is True
     assert result["rows"] == [{"total_amount": 60.0}]
@@ -1009,6 +1004,125 @@ semantic_model:
 """
 
 
+# Registry metrics use a governing Reference without inventing a Policy.
+_SOURCES_NAMESPACE = "urn:uuid:sources-fixture"
+_SOURCES_CONTROL = (
+    "version: 2\n"
+    'mode: "categorized"\n'
+    "categories:\n"
+    "  - name: references\n"
+    "  - name: metrics\n"
+    "  - name: computations\n"
+    "ontology:\n"
+    "  entity_types:\n"
+    "    reference: {}\n"
+    "    metric: {}\n"
+    "    computation: {}\n"
+    "  predicates: {}\n"
+    "  redirects: {}\n"
+)
+_SOURCES_SELECTOR = (
+    "version: 1\nmode: integrated\nsubtree: knowledge\n"
+    f"namespace: {_SOURCES_NAMESPACE}\nprofile: ariadne-context/1\nsupport_revision: 2\n"
+    "policy_bindings:\n  version: 1\n  bindings: []\n"
+)
+_SOURCES_NOTES = (
+    "---\n"
+    'id: "entity:registry-notes"\n'
+    'title: "Registry notes"\n'
+    "entity_types:\n  - reference\n"
+    "tags: [registry]\n"
+    'summary: "The registry fixtures governing notes."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: reference\n"
+    "  native:\n"
+    "    type: reference\n"
+    '    title: "Registry notes"\n'
+    '    description: The registry fixtures governing notes.\n'
+    "    tags:\n      - registry\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "---\n\n# Registry notes\n\nThe registry-backed orders fixtures.\n"
+)
+_SOURCES_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:total-amount"\n'
+    'title: "total_amount"\n'
+    "entity_types:\n  - metric\n"
+    "tags: [metric]\n"
+    'summary: "Sum of order amounts."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    "    model: orders\n    metric: total_amount\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    "    status: stable\n"
+    "    title: total_amount\n"
+    '    description: "Sum of order amounts."\n'
+    "    tags: [metric]\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "    dimensions: []\n"
+    "    governed_by: references/notes.md\n"
+    "    grain:\n"
+    "      primary_key: [id]\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n\n# total_amount\n\nSum of order amounts.\n"
+)
+
+
+def _admit_registry_project(project: Path) -> None:
+    """Admit the existing registry tree as one minimal native project."""
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_admission import admit
+    from tests.test_git_authoring import approved, run_git
+
+    kb = project / "knowledge"
+    (kb / "references").mkdir(parents=True)
+    (kb / "metrics").mkdir(parents=True)
+    (kb / "lumio.yaml").write_text(_SOURCES_CONTROL, encoding="utf-8")
+    (kb / ".lumio-authoring.yaml").write_text(
+        f'version: 1\nnamespace: "{_SOURCES_NAMESPACE}"\nsources: {{}}\nbindings: {{}}\n',
+        encoding="utf-8",
+    )
+    (kb / "references" / "notes.md").write_text(_SOURCES_NOTES, encoding="utf-8")
+    (kb / "metrics" / "total-amount.md").write_text(_SOURCES_METRIC_PAGE, encoding="utf-8")
+    (project / "context_integration.yaml").write_text(_SOURCES_SELECTOR, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "semantic_layer",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(project, "commit", "-q", "-m", "human: registry fixture base")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    destination = project.parent / f"{project.name}-published"
+    assert admit(project, review, extra=("--context-destination", str(destination))) == 0
+
+
 def test_facade_over_sqlite_plus_parquet_registry(tmp_path, sqlite_db, duck):
     (tmp_path / "semantic_layer" / "models").mkdir(parents=True)
     (tmp_path / "semantic_layer" / "models" / "orders.yml").write_text(MINIMAL_OSI)
@@ -1016,19 +1130,17 @@ def test_facade_over_sqlite_plus_parquet_registry(tmp_path, sqlite_db, duck):
         f"COPY (SELECT 'up' AS status, 2 AS n UNION ALL SELECT 'down', 3) "
         f"TO '{tmp_path / 'status.parquet'}' (FORMAT PARQUET)"
     ).close()
-    reg = write_registry(
+    write_registry(
         tmp_path,
         [
             {"name": "demo", "type": "sqlite", "path": str(sqlite_db)},
             {"name": "events", "type": "parquet", "path": str(tmp_path / "status.parquet")},
         ],
     )
-    facade = Facade(
-        tmp_path / "semantic_layer",
-        tmp_path / "context_layer",
-        sqlite_db,
-        sources=reg,
-    )
+    from ariadne.query import QueryRuntime
+
+    _admit_registry_project(tmp_path)
+    facade = QueryRuntime.open_project(tmp_path)
     # governed metric over the sqlite model, executed on the registry connection
     result = asyncio.run(facade.get_metric("total_amount"))
     assert result["governed"] is True

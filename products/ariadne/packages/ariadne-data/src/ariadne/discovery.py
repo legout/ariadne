@@ -572,8 +572,8 @@ class _DiscoverySession:
         Integrated projects navigate the pinned scoped SDK facade (A2,
         spec0029 §1.3): native Lumio lexical ranking over the published
         visible page set with verbatim passages and coordinates — never the
-        legacy context_layer filesystem, never a source connection. The
-        legacy snapshot read remains for standalone admissions."""
+        legacy context_layer filesystem, never a source connection. Public
+        sessions require an admitted native release."""
         self._refuse_unsupported("search_context")
         if self._source_free:
             return []

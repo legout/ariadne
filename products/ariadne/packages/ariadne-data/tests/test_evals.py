@@ -54,13 +54,8 @@ PRODUCT_AREA = Path(__file__).resolve().parents[3]  # Ariadne product area (spec
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.query import QueryRuntime  # noqa: E402  # pyright: ignore[reportMissingImports] — drift
 from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
-from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissingImports]
-from tests.test_cli import create_git_demo_project  # noqa: E402
-from tests.test_git_admission import admit  # noqa: E402
-from tests.test_git_authoring import approved  # noqa: E402
+from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissingImports] — drift
 
 TOLERANCE = 1e-6
 GOLDEN = json.loads((REPO_ROOT / "tests" / "evals" / "golden.json").read_text())
@@ -194,9 +189,7 @@ def assert_close(actual, expected, where: str) -> None:
     assert abs(actual - expected) <= TOLERANCE, f"{where}: {actual} != {expected}"
 
 
-# One producer-native Metric page for the customers master-data metric: no
-# Policy obligation exists for a plain master-data count, so none is invented
-# (spec0035 §5: a metric without a Policy requirement needs no Policy).
+# policy-less master-data count: spec0035 §5 invents no Policy where none is required
 CUSTOMER_COUNT_PAGE = (
     "---\n"
     'id: "entity:customer-count"\n'
@@ -231,10 +224,7 @@ CUSTOMER_COUNT_PAGE = (
 )
 
 
-# One authored Reference page documenting the customers master data — the
-# truthful governing artifact for the policy-less customer_count metric (the
-# native contract requires a non-empty governed_by; a POLICY-less metric
-# names a non-policies resource instead of an invented Policy, spec0035 §5).
+# the policy-less metric's truthful governed_by: a Reference, never an invented Policy (spec0035 §5)
 CUSTOMERS_REFERENCE_PAGE = (
     "---\n"
     'id: "entity:customers-master-data"\n'
@@ -267,6 +257,12 @@ def demo(tmp_path_factory):
     currency table's generated Table page — the golden metrics' real
     governed seam; the second contribution is admitted through the same
     composite confirmation lifecycle."""
+    from ariadne.authoring import AuthoringProject
+    from ariadne.query import QueryRuntime
+    from tests.test_cli import create_git_demo_project
+    from tests.test_git_admission import admit
+    from tests.test_git_authoring import approved
+
     project, db = create_git_demo_project(tmp_path_factory.mktemp("demo") / "project")
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -349,7 +345,9 @@ _JOIN_SOURCE = (
     "CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp::TIMESTAMP"
     " < TIMESTAMP '2024-01-01' THEN o.amount * r.rate_to_usd"
     " ELSE o.amount END AS amount_usd "
-    "FROM orders o LEFT JOIN currency_conversion_rate r ON r.currency = o.currency"
+    # the catalog's exact physical identities, as GOLDEN_OSI authors them
+    "FROM demo.main.orders o LEFT JOIN demo.main.currency_conversion_rate r"
+    " ON r.currency = o.currency"
 )
 _MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount_usd END)"
 
@@ -587,7 +585,9 @@ def _admitted_trap_project(root: Path, *, drifted: bool) -> Path:
     grain-preserving at admission (exactly one line per order); ``drifted``
     then restores the original 1:N lines AFTER admission — the live per-call
     grain guard's documented ETL-reload threat."""
-    from tests.test_git_authoring import run_git
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_admission import admit
+    from tests.test_git_authoring import approved, run_git
 
     build_trap(root)
     con = sqlite3.connect(root / "trap.db")
@@ -747,6 +747,8 @@ def test_get_metric_rejects_served_model_with_fanned_source(tmp_path):
     grain-preserving (one line per order), then the ETL reload restores the
     1:N lines — the per-call live guard refuses the now-fanned served model
     and the inflated joined-row total (NA 700) stays unservable."""
+    from ariadne.query import QueryRuntime
+
     project = _admitted_trap_project(tmp_path / "trap", drifted=True)
     runtime = QueryRuntime.open_project(project)
     with pytest.raises(ValueError, match="grain-preservation invariant"):
@@ -759,6 +761,8 @@ def test_get_metric_answers_served_model_with_many_to_one_source(tmp_path):
     side) still answers through get_metric after the same data drift: the
     deduplicated line totals NA 300 / EMEA 400, with provenance SQL and
     governed: true."""
+    from ariadne.query import QueryRuntime
+
     project = _admitted_trap_project(tmp_path / "trap", drifted=True)
     runtime = QueryRuntime.open_project(project)
     result = asyncio.run(runtime.get_metric("sanctioned_lines_total", ["region"]))

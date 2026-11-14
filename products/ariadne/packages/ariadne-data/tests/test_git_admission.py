@@ -188,14 +188,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     review, journey = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-    # CW2: the journey below also exercises ad-hoc define_metric and Answer
-    # Examples, which the frozen revision-2 table does not include — the
-    # candidate explicitly selects the fresh revision-4 capability table
-    # (spec0032 §10.3), declares the answer-examples category it writes, and
-    # authors the genuine Table coverage revision-3+ query operations refuse
-    # without (spec0032 §3): the events fact table's canonical resource URI
-    # is derived here from the documented payload contract, never from
-    # runtime output.
+    # revision-4 table + answer-examples category + events Table page — inputs required below
     import base64
 
     events_payload = json.dumps(["events", None, "events", "events"], separators=(",", ":"))

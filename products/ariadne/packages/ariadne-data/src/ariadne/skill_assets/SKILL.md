@@ -7,9 +7,9 @@ description: Work in an ariadne data project — query governed metrics with the
 
 Ariadne serves governed metrics through the local `ariadne` command — no
 server, no setup beyond the base package. Numbers come from OSI models compiled
-to SQL by a deterministic gate; the rules that make them right live in the OKF
-context layer. The context layer routes and guides; the semantic layer
-calculates; no computation ever bypasses the compile gate.
+to SQL by a deterministic gate; business meaning lives in the native Lumio
+Knowledge Base. Context guides; the semantic layer calculates; no computation
+bypasses the compile gate.
 
 ## Querying — the default workflow
 
@@ -402,12 +402,11 @@ not unadmit definitions or create a background scan. ODCS narrative is metadata,
 never prompt instructions or a Policy; OSI keeps calculation/grain/join authority.
 Shared cross-layer identity/provider integration (#76) is outside this profile.
 
-## Integrated Lumio context — optional bound release
+## Native Lumio context — admitted Bound Release
 
-Some projects bind a Lumio knowledge base as their governed context source
-(`context_integration.yaml`, `knowledge/` subtree, one shared Content Commit).
-If the project carries one, an admitted **Bound Release** — activated only by
-the operator's explicit overall admission — is the sole context authority:
+Current projects use one Lumio Knowledge Base (`context_integration.yaml`,
+`knowledge/`, one shared Content Commit). Its admitted **Bound Release**,
+activated only by human overall admission, is the sole Context authority:
 
 - `ariadne search-context "<query>" --project .` navigates that pinned release
   source-free: native lexical ranking over the operator-scoped published
@@ -455,9 +454,6 @@ the operator's explicit overall admission — is the sole context authority:
   narrative enforced, and authored `generated`/`verified` stamps never
   authenticate evidence. These revision-2 contracts are released with
   Core 0.7.0; older published package pairs do not carry them.
-  `save-example` and `search-examples` refuse in an integrated project
-  — never route around a refusal via legacy context, weaker roots or raw
-  SQL, and never present the refusal as something to fix by widening scope.
 - A project may further opt its selector into **support revision 3**
   (`support_revision: 3` with the same versioned `policy_bindings` block):
   the integrated `query-detail`, `query-records` and `define-metric`
@@ -490,10 +486,13 @@ the operator's explicit overall admission — is the sole context authority:
   admission; public package versions alone never qualify a source for these
   capabilities.
 
-If the project has no such selector, everything earlier in this skill applies
-unchanged; the SDK stays an optional dependency the standalone route never
-imports. Source approval and the overall admission remain human-only; no tool
-or agent role exposes them.
+**Support revision 4** adds `answer_example`, `save-example` and
+`search-examples` to revision 3. Saves create reviewable native KB drafts;
+the consent and fresh-query rules above apply. Earlier admissions retain
+their refusals: never silently upgrade a selector or bypass review and
+human overall admission. A missing native selector refuses with fresh-setup
+guidance, not an SDK-free fallback. Source approval and overall admission
+remain human-only; no agent tool exposes them.
 
 ## Skill-led business onboarding
 
@@ -574,10 +573,8 @@ never inside the Context Routing Map or table measurements.
   `get_metric` responses carry a `context` field: the served metric page plus
   the full bodies of every policy it cites. Restate those caveats with every
   number, say `governed: true`, and cite the context actually returned: the
-  served metric page and the relevant Policy paths exactly as the page's
-  `sources` list gives them (e.g. `metrics/gross_margin.md` and
-  `policies/emea-currency-cutover.md`) — never invented, remembered, or guessed
-  paths. A caveat is stated, not referenced: name the excluded statuses or rows
+  exact version-qualified metric and Policy page citations returned — never
+  invented, remembered, guessed or substituted with source IDs. A caveat is stated, not referenced: name the excluded statuses or rows
   themselves (e.g. "excludes CANCELLED and RETURNED orders" — the kept scope
   "per COMPLETED order" is not the caveat) and the time window a conversion or
   filter applies to (e.g. "pre-2024 EMEA orders are converted to USD") in the
@@ -589,12 +586,12 @@ never inside the Context Routing Map or table measurements.
   tool output without naming them in the answer is not a citation.
 - **Lifecycle caveats name relied-upon context only.** Responses also carry a
   `context_signals` advisory envelope: per-page lifecycle `status`,
-  `freshness` and `verification_tier` views, plus `warnings` with three codes
-  — `context_stale` (a consumed page's supported expiry was reached),
-  `context_deprecated` (a consumed page declares deprecated status) and
-  `context_unavailable` (required metric/Policy context was missing or
-  unreadable; the context block collapses to its null/empty form). When an
-  answer actually relies on context a warning names, add ONE brief caveat
+  `freshness` and `verification_tier` views, plus advisory `warnings` such as
+  `context_stale` (a consumed page's supported expiry was reached) and
+  `context_deprecated` (a consumed page declares deprecated status). Missing
+  required metric/Policy Context refuses before SQL; never continue with a
+  null/empty Context answer. When an answer relies on context a warning names,
+  add ONE brief caveat
   identifying the issue and the affected Policy/page (e.g. "this uses the
   admitted definition, but its cited revenue Policy
   `policies/emea-currency-cutover.md` has expired") — never print every

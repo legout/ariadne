@@ -1,4 +1,4 @@
-"""Query workflow: the five governed + ad-hoc operations (QueryRuntime).
+"""Governed and Ad-hoc query workflow (QueryRuntime).
 
 :class:`QueryRuntime` owns everything the served tree offers to consuming
 agents (spec 2026-09-23-0001 §3, ADR-0012; moved here from
@@ -9,15 +9,15 @@ compilation, execution, context, or grain logic:
 
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
-    search_context(query)              -> ranked matches over context_layer/**/*.md
+    search_context(query)              -> ranked SDK matches in the pinned native release
     resolve_term(request)              -> shared terminology resolution (spec
                                           0010 §6): bounded concept/representation
                                           matches with exact bindings, scope,
                                           ambiguity and unconfirmed claims
     get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance),
-                                          governed: true + context (rev 10): the full
-                                          served OKF metric page plus the full bodies
-                                          of every policy its frontmatter cites
+                                          governed: true + native Context: the full
+                                          Metric page and every required Policy
+                                          from the same pinned release
     define_metric(definition)          -> ephemeral OSI model -> render -> read-only
                                           execution -> rows + SQL + governed: false +
                                           persistence: not_saved
@@ -69,9 +69,6 @@ from sqlglot import (  # pyright: ignore[reportMissingImports] — same
 )
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
-# Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
-# separate transport-neutral module — the runtime only contributes its selected
-# roots; examples never touch compilation, execution or governed context.
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
@@ -81,9 +78,6 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
     data_signals_pinned,
 )
-
-# Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
-# deterministic OKF generation live in ariadne.context.
 from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
 
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
@@ -973,8 +967,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         many-to-one paths, aligned aggregate merge), the per-request live
         relationship audits, the single-statement guard, and an EXPLAIN bind
         before the one guarded SELECT executes. The response carries the rows,
-        the compiled SQL, a bounded lineage plan, per-metric OKF metric + Policy
-        context with the independent attestation state, and the local admission
+        the compiled SQL, a bounded lineage plan, per-metric native Metric + Policy
+        Context with the independent attestation state, and the local admission
         provenance — ``governed: true`` only because a human admitted the exact
         validated revision."""
         self._refuse_unsupported("query_metrics")
@@ -983,8 +977,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # metric's exact SDK binding and complete Policy Closure resolve as ONE
         # unit, and the COMBINED mandatory context must fit the complete-response
         # budget — BEFORE planning, the live relationship audits, bind or SELECT.
-        # An answer that cannot carry its required context never executes; the
-        # standalone route keeps the unchanged OKF context path below.
+        # An answer that cannot carry its required Context never executes.
         sdk_contexts = self._sdk_metric_contexts(request)
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
@@ -1086,8 +1079,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # the admitted graph's proven edges, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical lookup tables with full published
-        # views before ANY planner, live audit, bind or SELECT work; the
-        # standalone route keeps the unchanged path below
+        # views before ANY planner, live audit, bind or SELECT work.
         detail_context = None
         if self._context_snapshot is not None:
             resources = self._detail_static_resources(graph, request)
@@ -1162,8 +1154,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # catalog dataset's canonical resource, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical table with a full published view before
-        # ANY planner work, bind or SELECT; the standalone route keeps the
-        # unchanged path below
+        # ANY planner work, bind or SELECT.
         records_context = None
         if self._context_snapshot is not None:
             # F3 shared seam: the NATIVE static validation (single ownership,
@@ -1360,8 +1351,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # the stage-4 complete Context/enforcement/budget preflight — an
             # integrated Bound Release consumes every allowed nested source
             # with a full published Table view BEFORE the grain guard (a data
-            # read), compile, bind or SELECT; the standalone route keeps the
-            # unchanged path below
+            # read), compile, bind or SELECT.
             adhoc_context = None
             if self._context_snapshot is not None:
                 # the extraction above never returns "skip": an unresolved

@@ -1,7 +1,6 @@
-"""Optional local Lumio binding for spec0029 r2; no SDK import in standalone."""
+"""Native Lumio binding for admitted Core Bound Releases (spec0035)."""
 
 # pyright: reportMissingImports=false
-# Optional SDK is qualified in the external M1 environment, not the editor's environment.
 
 import hashlib
 import importlib.metadata
@@ -754,7 +753,7 @@ def execution_identity():
 
 
 def validation_build_identity(root):
-    """Standalone never resolves the optional SDK, even for evidence applicability."""
+    """Internal inputs without a selector have no native build identity."""
     if not (Path(root) / "context_integration.yaml").is_file():
         return None
     return execution_identity()
@@ -868,7 +867,7 @@ def _s3_transport(profile, binding, bucket: str):
     URL style honored through obstore's documented option). Credentials come
     only from the declared ENV NAMES and never enter the returned identity
     view; the optional obstore dependency resolves only inside this call,
-    so standalone Core never imports it."""
+    so the local Knowledge transport never imports it."""
     import os
 
     try:

@@ -3150,9 +3150,7 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         assert context["policies"] and "Region rollup" in context["policies"][0]
         assert context["attestation"] == "pending"
         signals = context["context_signals"]
-        # the signals envelope carries each consumed page's CITED identity
-        # ("{namespace} {entity} v{version} {path}") — the path is its final
-        # component, so the order and page identity stay exactly asserted
+        # each signals page carries its CITED identity; the path is its final component
         assert [
             page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]
         ] == [

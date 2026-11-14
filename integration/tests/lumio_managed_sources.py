@@ -45,11 +45,7 @@ BASELINE_ORIGINAL_DIGEST = "e534894a04abb692671f08d2a9f779963568fe894ea7a286a0ad
 NEW_ORIGINAL = b"New operating note: retain this additional original exactly.\n"
 NEW_ORIGINAL_DIGEST = "f2c5e1f6b876265dd960ec3ba18ea48fd005e5c36996e3e525ec0632849b7d07"
 
-# The finalize pass's generated Computation page (a/context.py:462) cites the
-# candidate's OSI model as its source; under required retention that source is
-# a genuine retained original, registered like any other — the exact bytes of
-# the candidate's own semantic_layer/models/retail_sales.yml (read in-test, so
-# the digest is derived from the genuine artifact, never fabricated).
+# the cited model source is retained like any original: genuine bytes, artifact-derived digest
 MODEL_SOURCE = "model-retail_sales"
 COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
 

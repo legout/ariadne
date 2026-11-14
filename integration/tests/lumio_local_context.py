@@ -497,6 +497,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # list: every visible page, SDK-sorted by exact path; metadata only.
     listed = _typed_list(results["list"])
     assert [entry["path"] for entry in listed] == [
+        "computations/revenue.md",  # the finalize pass's generated page
         "metrics/retail-revenue.md",
         "policies/retail-return-policy.md",
         "references/fulfilment-glossary.md",
@@ -964,6 +965,19 @@ def t2_reference_candidate(root: Path):
     profile["ontology_refs"] = [
         {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r7"}
     ]
+    # Classify the appended required Policy explicitly (§10.1).
+    selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
+    selector["policy_bindings"]["bindings"].append(
+        {
+            "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+            "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+            "operations": ["get_metric", "query_metrics"],
+            "enforcement": None,
+        }
+    )
+    (tree / "context_integration.yaml").write_text(
+        yaml.safe_dump(selector, sort_keys=False), encoding="utf-8"
+    )
     write_page(metric, meta, body)
     (tree / "knowledge/lumio.yaml").write_text(
         CONTROL

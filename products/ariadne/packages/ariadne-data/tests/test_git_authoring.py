@@ -653,10 +653,7 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
     started = api.start_proposal()
     approved(api, project, started)
 
-    # three CHANGED failing validations exhaust the bounded rounds — the
-    # failure is a validation-time one (an unparseable draft model, which the
-    # edit seam deliberately accepts): the dangling-policy page mutation this
-    # body historically used now refuses earlier, at the batch-write gate.
+    # unparseable-model failures: the old dangling-policy mutation now refuses at the write gate
     revisions = []
     for round_number, removed in enumerate(("one", "two", "three"), start=1):
         edited = api.edit_proposal(

@@ -10,8 +10,8 @@ import asyncio
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports] — drift
-from ariadne.discovery import DiscoveryRuntime  # pyright: ignore[reportMissingImports] — drift
+from ariadne.authoring import AuthoringProject
+from ariadne.discovery import DiscoveryRuntime
 from tests.test_git_admission import _policy_edit, admit, admitted_ready
 from tests.test_git_authoring import (
     NATIVE_POLICY_PAGE,
