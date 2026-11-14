@@ -51,6 +51,7 @@ from tests.test_git_authoring import (  # noqa: E402
     NATIVE_METRIC_REL,
     NATIVE_POLICY_PAGE,
     NATIVE_POLICY_REL,
+    NATIVE_SELECTOR,
     approved,
     branch_of,
     complete_bundle_project,
@@ -187,6 +188,82 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     review, journey = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+    # CW2: the journey below also exercises ad-hoc define_metric and Answer
+    # Examples, which the frozen revision-2 table does not include — the
+    # candidate explicitly selects the fresh revision-4 capability table
+    # (spec0032 §10.3), declares the answer-examples category it writes, and
+    # authors the genuine Table coverage revision-3+ query operations refuse
+    # without (spec0032 §3): the events fact table's canonical resource URI
+    # is derived here from the documented payload contract, never from
+    # runtime output.
+    import base64
+
+    events_payload = json.dumps(["events", None, "events", "events"], separators=(",", ":"))
+    events_uri = "ariadne://table/" + base64.urlsafe_b64encode(
+        events_payload.encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    table_page = (
+        "---\n"
+        'id: "entity:events-table"\n'
+        'title: "Events Table"\n'
+        "entity_types:\n  - table\n"
+        "tags:\n  - events\n"
+        'summary: "The events fact table."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - id: "owner-notes"\n'
+        '    title: "Owner notes"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: table\n"
+        "  core_ref:\n"
+        "    kind: resource\n"
+        f'    id: "{events_uri}"\n'
+        "  native:\n"
+        "    type: table\n"
+        '    title: "Events Table"\n'
+        '    description: "The events fact table."\n'
+        "    tags:\n      - events\n"
+        f'    resource: "{events_uri}"\n'
+        "    grain:\n"
+        "      primary_key: [id]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        "    sources:\n"
+        '      - id: "owner-notes"\n'
+        '        title: "Owner notes"\n'
+        "---\n\n"
+        "# Events Table\n\nThe event rows the fixture registers.\n"
+    )
+    tree = worktree_of(project, review["proposal"])
+    (tree / "context_integration.yaml").write_text(
+        NATIVE_SELECTOR.replace("support_revision: 2", "support_revision: 4"),
+        encoding="utf-8",
+    )
+    control = tree / "knowledge" / "lumio.yaml"
+    control.write_text(
+        control.read_text(encoding="utf-8")
+        .replace("  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n")
+        .replace("    metric: {}\n", "    metric: {}\n    answer-example: {}\n"),
+        encoding="utf-8",
+    )
+    (tree / "knowledge" / "tables").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge" / "tables" / "events-table.md").write_text(table_page, encoding="utf-8")
+    run_git(
+        tree,
+        "add",
+        "--",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/tables/events-table.md",
+    )
+    run_git(tree, "commit", "-q", "-m", "human: select revision-4 capabilities")
+    revision = run_git(tree, "rev-parse", "HEAD").strip()
+    reconcile(project, review["proposal"], review["revision"], revision)
+    revalidated = api.validate_proposal(review["proposal"], revision)
+    assert revalidated["ok"] is True, revalidated["errors"]
+    review = api.review_proposal(review["proposal"])
+    journey = {"started": journey["started"], "validated": revalidated}
     revision = review["revision"]
     proposal = review["proposal"]
 
@@ -197,9 +274,10 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     # the display step verifies the reviewed digest but admits NOTHING
     assert admit(project, review, confirm=False) == 0
     displayed = json.loads(capsys.readouterr().out)
-    assert displayed["review"]["review_digest"] == review["review_digest"]
-    assert displayed["review"]["report"]["ok"] is True
-    assert "confirm" in displayed["confirmation_required"].lower()
+    assert displayed["core_review"]["review_digest"] == review["review_digest"]
+    assert displayed["core_review_digest"] == review["review_digest"]
+    assert displayed["core_review"]["report"]["ok"] is True
+    assert displayed["digest"]  # the composite the operator confirms verbatim
     assert not (project / CURRENT).exists()
 
     pre_commit = branch_of(project, proposal)
@@ -232,9 +310,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     assert files == set(pre_blobs)
     for rel, blob in pre_blobs.items():
         assert (snapshot / rel).read_bytes() == blob
-    policy_text = (snapshot / "context_layer" / "policies" / "all-events-count.md").read_text(
-        encoding="utf-8"
-    )
+    policy_text = (snapshot / NATIVE_POLICY_REL).read_text(encoding="utf-8")
     assert "The rule body, revised." in policy_text
     assert "verified:" not in policy_text  # admission never decorates reviewed bytes
     assert run_git(project, "ls-files", "--", ".ariadne") == ""  # state stays untracked
@@ -305,7 +381,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
                 },
                 "submitter": "analyst",
                 "attestation": "self-declared",
-                "sources": ["context_layer/metrics/event_count.md"],
+                "sources": ["metrics/event-count.md"],
             }
         )
     )
@@ -322,7 +398,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
             revision=saved["candidate_revision"],
         )
     )
-    assert hits and hits[0]["id"] == saved["id"] and hits[0]["status"] == "draft"
+    assert hits and hits[0]["id"] == f"entity:{saved['id']}" and hits[0]["status"] == "draft"
     fresh.con.close()
 
     # none of it moved one pinned byte

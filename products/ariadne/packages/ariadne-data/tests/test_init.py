@@ -19,7 +19,6 @@ from ariadne.init import main
 
 CONSOLE_SCRIPTS = (
     "ariadne",
-    "ariadne-ingest",
     "ariadne-validate",
     "ariadne-serve",
     "ariadne-analyst-mcp",

@@ -653,21 +653,16 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
     started = api.start_proposal()
     approved(api, project, started)
 
-    # three CHANGED failing validations exhaust the bounded rounds
+    # three CHANGED failing validations exhaust the bounded rounds — the
+    # failure is a validation-time one (an unparseable draft model, which the
+    # edit seam deliberately accepts): the dangling-policy page mutation this
+    # body historically used now refuses earlier, at the batch-write gate.
     revisions = []
     for round_number, removed in enumerate(("one", "two", "three"), start=1):
-        edited = api.edit_pages_batch(
+        edited = api.edit_proposal(
             started["proposal"],
             revisions[-1] if revisions else started["candidate_revision"],
-            [
-                {
-                    "path": NATIVE_METRIC_REL,
-                    "content": NATIVE_METRIC_PAGE.replace(
-                        "resource: policies/all-events-count.md",
-                        f"resource: policies/removed-{removed}.md",
-                    ),
-                }
-            ],
+            {"kind": "model", "name": "events", "content": f"version: [unclosed-{removed}\n"},
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
@@ -683,10 +678,10 @@ def test_repair_state_persists_across_failures_retries_restarts_and_rebases(tmp_
     assert retry["revision"] == revisions[-1]
 
     # a CHANGED validation on the exhausted proposal is refused for the human
-    fixed = api.edit_pages_batch(
+    fixed = api.edit_proposal(
         started["proposal"],
         revisions[-1],
-        [{"path": NATIVE_METRIC_REL, "content": NATIVE_METRIC_PAGE}],
+        {"kind": "model", "name": "events", "content": MODEL_YML},
     )
     with pytest.raises(ValueError, match="review_needed"):
         api.validate_proposal(started["proposal"], fixed["revision"])

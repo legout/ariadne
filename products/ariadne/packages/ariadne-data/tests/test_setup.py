@@ -255,12 +255,24 @@ def test_missing_git_prerequisites_pause_declarations(tmp_path, capsys, monkeypa
     if kind == "no_git":
         from ariadne import status
 
+        project.mkdir()  # setup never creates the project directory
         monkeypatch.setattr(status, "_git_available", lambda: False)
     elif kind == "parent_repo":
+        project.mkdir()  # setup never creates the project directory
         prepare_git(tmp_path)
     else:
         prepare_git(project, identity=False)
-    assert run_setup(project, "unused\n") == 0
+    assert (
+        run_setup(
+            project,
+            "unused\n",
+            "--namespace",
+            "urn:uuid:prerequisite-fixture",
+            "--private-profile",
+            str(tmp_path / "prerequisite-profile.json"),
+        )
+        == 0
+    )
     assert "Proposal preparation paused" in capsys.readouterr().out
     assert not records(project)
 

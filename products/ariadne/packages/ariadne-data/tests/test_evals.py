@@ -41,7 +41,7 @@ facade grain guard (grain-preservation invariant) before compile or execution.
 import asyncio
 import contextlib
 import json
-import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -54,10 +54,13 @@ PRODUCT_AREA = Path(__file__).resolve().parents[3]  # Ariadne product area (spec
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.query import QueryRuntime  # noqa: E402  # pyright: ignore[reportMissingImports] — drift
 from ariadne.query import _QueryRuntimeSession as Facade  # noqa: E402
 from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissingImports]
-from tests.test_seed import run_seed  # noqa: E402
-from tests.test_serve import GOLDEN_OKF, GOLDEN_OSI  # noqa: E402
+from tests.test_cli import create_git_demo_project  # noqa: E402
+from tests.test_git_admission import admit  # noqa: E402
+from tests.test_git_authoring import approved  # noqa: E402
 
 TOLERANCE = 1e-6
 GOLDEN = json.loads((REPO_ROOT / "tests" / "evals" / "golden.json").read_text())
@@ -191,40 +194,116 @@ def assert_close(actual, expected, where: str) -> None:
     assert abs(actual - expected) <= TOLERANCE, f"{where}: {actual} != {expected}"
 
 
-def resolve_served(served: Path) -> Path:
-    """Snapshot the reference layers from the worktree copy into tmp (never
-    point the numerical eval at a live directory another process could mutate).
-    Fresh checkouts reconstruct the recorded reference orders and customers
-    models — see module docstring."""
-    models_dst = served / "semantic_layer" / "models"
-    models_dst.mkdir(parents=True)
-    (served / "context_layer").mkdir(parents=True)
-    models_src = PRODUCT_AREA / "examples" / "retail-demo" / "semantic_layer" / "models"
-    context_src = PRODUCT_AREA / "examples" / "retail-demo" / "context_layer"
-    if models_src.is_dir():
-        shutil.copytree(models_src, models_dst, dirs_exist_ok=True)
-        if context_src.is_dir():
-            shutil.copytree(context_src, served / "context_layer", dirs_exist_ok=True)
-    else:
-        models_dst.joinpath("orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
-        models_dst.joinpath("customers.yml").write_text(CUSTOMERS_MODEL, encoding="utf-8")
-        pages = served / "context_layer" / "metrics"
-        pages.mkdir(parents=True)
-        pages.joinpath("gross_margin.md").write_text(GOLDEN_OKF, encoding="utf-8")
-    return served
+# One producer-native Metric page for the customers master-data metric: no
+# Policy obligation exists for a plain master-data count, so none is invented
+# (spec0035 §5: a metric without a Policy requirement needs no Policy).
+CUSTOMER_COUNT_PAGE = (
+    "---\n"
+    'id: "entity:customer-count"\n'
+    'title: "customer_count"\n'
+    "entity_types:\n  - metric\n"
+    "tags: [metric]\n"
+    'summary: "Count of customers in the master data."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    "    model: customers\n    metric: customer_count\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    "    status: stable\n"
+    "    title: customer_count\n"
+    '    description: Count of customers in the master data.\n'
+    "    tags: [metric]\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "    dimensions:\n      - country\n"
+    "    governed_by: references/customers-master-data.md\n"
+    "    grain:\n"
+    "      primary_key: [id]\n"
+    "      cardinality_enforcement: strict_1_to_1\n"
+    "---\n\n# customer_count\n\nCount of customers in the master data.\n"
+)
+
+
+# One authored Reference page documenting the customers master data — the
+# truthful governing artifact for the policy-less customer_count metric (the
+# native contract requires a non-empty governed_by; a POLICY-less metric
+# names a non-policies resource instead of an invented Policy, spec0035 §5).
+CUSTOMERS_REFERENCE_PAGE = (
+    "---\n"
+    'id: "entity:customers-master-data"\n'
+    'title: "Customers master data"\n'
+    "entity_types:\n  - reference\n"
+    "tags: [customers]\n"
+    'summary: "The demo customers master data."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: reference\n"
+    "  native:\n"
+    "    type: reference\n"
+    '    title: "Customers master data"\n'
+    '    description: The demo customers master data.\n'
+    "    tags:\n      - customers\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "---\n\n# Customers master data\n\nOne row per customer.\n"
+)
 
 
 @pytest.fixture(scope="module")
-def demo_db(tmp_path_factory) -> Path:
-    db_path = tmp_path_factory.mktemp("evals") / "demo.db"
-    run_seed(db_path)  # examples/retail-demo/seed_db.py into tmp (subprocess), as in test_seed
-    return db_path
-
-
-@pytest.fixture(scope="module")
-def facade(tmp_path_factory, demo_db) -> Facade:
-    served = resolve_served(tmp_path_factory.mktemp("served"))
-    return Facade(served / "semantic_layer", served / "context_layer", demo_db)
+def demo(tmp_path_factory):
+    """One genuinely admitted native retail demo (the S2 journey) extended
+    with the customers master-data model/page and the ad-hoc consumed
+    currency table's generated Table page — the golden metrics' real
+    governed seam; the second contribution is admitted through the same
+    composite confirmation lifecycle."""
+    project, db = create_git_demo_project(tmp_path_factory.mktemp("demo") / "project")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": "customers", "content": CUSTOMERS_MODEL},
+    )
+    refreshed = api.refresh_schema(
+        started["proposal"],
+        edited["revision"],
+        [
+            {
+                "source": "demo",
+                "catalog": "demo",
+                "schema": "main",
+                "table": "currency_conversion_rate",
+            }
+        ],
+    )
+    paged = api.edit_pages_batch(
+        started["proposal"],
+        refreshed["revision"],
+        [
+            {"path": "knowledge/metrics/customer-count.md", "content": CUSTOMER_COUNT_PAGE},
+            {
+                "path": "knowledge/references/customers-master-data.md",
+                "content": CUSTOMERS_REFERENCE_PAGE,
+            },
+        ],
+    )
+    validated = api.validate_proposal(started["proposal"], paged["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(project, review) == 0
+    return QueryRuntime.open_project(project), db
 
 
 @pytest.mark.parametrize(
@@ -232,8 +311,9 @@ def facade(tmp_path_factory, demo_db) -> Facade:
     [e for e in GOLDEN["entries"] if not e.get("adhoc")],
     ids=lambda e: f"{e['metric']}:{'+'.join(e['dimensions']) or 'overall'}",
 )
-def test_golden_entry(entry, facade, demo_db):
+def test_golden_entry(entry, demo):
     """Facade output == independent SQL == baked golden value; governed: true."""
+    facade, demo_db = demo
     result = asyncio.run(facade.get_metric(entry["metric"], entry["dimensions"] or None))
     assert result["governed"] is True  # spec §8.10 symmetry
     assert result["sql"].strip().upper().startswith("SELECT")  # provenance present
@@ -319,7 +399,8 @@ def independent_adhoc_means(db_path: Path) -> dict:
     return {"per_customer": per_customer, "overall": overall, "customer_ids": ids}
 
 
-def test_adhoc_evaluation_is_ephemeral(facade, demo_db):
+def test_adhoc_evaluation_is_ephemeral(demo):
+    facade, demo_db = demo
     definition = {
         "name": ADHOC_ENTRY["metric"],
         "description": "Mean billable order amount per customer in USD",
@@ -408,6 +489,172 @@ def trap_facade(tmp_path):
     return Facade(served / "semantic", served / "context", served / "trap.db")
 
 
+_TRAP_NAMESPACE = "urn:uuid:trap-fixture"
+_TRAP_SELECTOR = (
+    "version: 1\nmode: integrated\nsubtree: knowledge\n"
+    f"namespace: {_TRAP_NAMESPACE}\nprofile: ariadne-context/1\nsupport_revision: 2\n"
+    "policy_bindings:\n  version: 1\n  bindings: []\n"
+)
+_TRAP_CONTROL = (
+    "version: 2\n"
+    'mode: "categorized"\n'
+    "categories:\n"
+    "  - name: references\n"
+    "  - name: metrics\n"
+    "  - name: policies\n"
+    "  - name: computations\n"
+    "  - name: tables\n"
+    "  - name: datasets\n"
+    "ontology:\n"
+    "  entity_types:\n"
+    "    reference: {}\n"
+    "    metric: {}\n"
+    "    policy: {}\n"
+    "    computation: {}\n"
+    "    table: {}\n"
+    "    dataset: {}\n"
+    "  predicates: {}\n"
+    "  redirects: {}\n"
+)
+
+
+_TRAP_GOVERNING_REFERENCE = (
+    "---\n"
+    'id: "entity:trap-fixture-notes"\n'
+    'title: "Trap fixture notes"\n'
+    "entity_types:\n  - reference\n"
+    "tags: [trap]\n"
+    'summary: "The trap fixture governing notes."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: reference\n"
+    "  native:\n"
+    "    type: reference\n"
+    '    title: "Trap fixture notes"\n'
+    '    description: The trap fixture governing notes.\n'
+    "    tags:\n      - trap\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "---\n\n# Trap fixture notes\n\nThe orders and order_lines fixtures.\n"
+)
+
+
+def _trap_metric_page(model: str, metric: str, grain_key: str) -> str:
+    """One producer-native no-Policy Metric page for a trap model (spec0035
+    §5: none of the trap metrics has a Policy obligation, so none is
+    invented)."""
+    return (
+        "---\n"
+        f'id: "entity:{metric.replace("_", "-")}"\n'
+        f'title: "{metric}"\n'
+        "entity_types:\n  - metric\n"
+        "tags: [metric]\n"
+        f'summary: "{metric} over the trap fixture."\n'
+        "lifecycle: approved\n"
+        "visibility: public\n"
+        "sources:\n"
+        '  - id: seed-notes\n    title: Seed notes\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: metric\n"
+        "  metric_ref:\n"
+        f"    model: {model}\n    metric: {metric}\n"
+        "  required_policies: []\n"
+        "  native:\n"
+        "    type: metric\n"
+        "    status: stable\n"
+        f"    title: {metric}\n"
+        f'    description: "{metric} over the trap fixture."\n'
+        "    tags: [metric]\n"
+        "    stale_after: 2027-12-31\n"
+        "    sources:\n"
+        '      - id: seed-notes\n        title: Seed notes\n'
+        "    dimensions:\n      - region\n"
+        "    governed_by: references/trap-fixture-notes.md\n"
+        "    grain:\n"
+        f"      primary_key: [{grain_key}]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        f"---\n\n# {metric}\n\n{metric} over the trap fixture.\n"
+    )
+
+
+def _admitted_trap_project(root: Path, *, drifted: bool) -> Path:
+    """The trap fixture admitted as one real native project: the join is
+    grain-preserving at admission (exactly one line per order); ``drifted``
+    then restores the original 1:N lines AFTER admission — the live per-call
+    grain guard's documented ETL-reload threat."""
+    from tests.test_git_authoring import run_git
+
+    build_trap(root)
+    con = sqlite3.connect(root / "trap.db")
+    con.execute("DELETE FROM order_lines WHERE line_id NOT IN (11, 21, 31)")
+    con.commit()
+    con.close()
+    (root / "semantic_layer" / "models").mkdir(parents=True)
+    (root / "semantic_layer" / "models" / "trap.yml").write_text(
+        (root / "semantic" / "models" / "trap.yml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (root / "semantic_layer" / "models" / "lines.yml").write_text(LINES_MODEL, encoding="utf-8")
+    (root / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: trap.db\n",
+        encoding="utf-8",
+    )
+    knowledge = root / "knowledge"
+    (knowledge / "metrics").mkdir(parents=True)
+    (knowledge / "references").mkdir(parents=True)
+    (knowledge / "lumio.yaml").write_text(_TRAP_CONTROL, encoding="utf-8")
+    (knowledge / ".lumio-authoring.yaml").write_text(
+        f"version: 1\nnamespace: \"{_TRAP_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
+        encoding="utf-8",
+    )
+    for model, metric, grain_key in (
+        ("trap_orders", "orders_total", "order_id"),
+        ("trap_orders", "lines_total", "order_id"),
+        ("lines_many_to_one", "sanctioned_lines_total", "line_id"),
+    ):
+        (knowledge / "metrics" / f"{metric.replace('_', '-')}.md").write_text(
+            _trap_metric_page(model, metric, grain_key), encoding="utf-8"
+        )
+    (knowledge / "references" / "trap-fixture-notes.md").write_text(
+        _TRAP_GOVERNING_REFERENCE, encoding="utf-8"
+    )
+    (root / "context_integration.yaml").write_text(_TRAP_SELECTOR, encoding="utf-8")
+    run_git(root, "init", "-q")
+    run_git(root, "config", "user.name", "Ariadne Tests")
+    run_git(root, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        root,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "semantic_layer",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(root, "commit", "-q", "-m", "human: trap fixture base")
+    api = AuthoringProject(root)
+    started = api.start_proposal()
+    approved(api, root, started)
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(root, review) == 0
+    if drifted:
+        con = sqlite3.connect(root / "trap.db")
+        con.executemany(
+            "INSERT INTO order_lines VALUES (?, ?, ?)",
+            [(12, 1, 30.0), (13, 1, 10.0), (22, 2, 50.0)],
+        )
+        con.commit()
+        con.close()
+    return root
+
+
 def test_define_metric_rejects_fanout_source(trap_facade, monkeypatch):
     """The naive fanned source is rejected before compile or execution."""
 
@@ -490,26 +737,31 @@ def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_pa
         )
 
 
-def test_get_metric_rejects_served_model_with_fanned_source(trap_facade):
+def test_get_metric_rejects_served_model_with_fanned_source(tmp_path):
     """Correction-pass reachability (the reviewer's exact path): the governed
     get_metric gauntlet — render -> single-statement guard -> EXPLAIN bind-check
     -> grain guard — rejects a SERVED model whose dataset source bakes in the
-    fan-out (trap.yml, orders ⋈ order_lines) with the grain guidance. The
-    inflated joined-row total (NA 700) is unservable through the facade, not
-    just through define_metric."""
+    fan-out with the grain guidance. The fanned model is no longer admissible
+    (validation runs the same live guard), so the honest reachable shape is
+    the documented post-admission data drift: the trap join is admitted
+    grain-preserving (one line per order), then the ETL reload restores the
+    1:N lines — the per-call live guard refuses the now-fanned served model
+    and the inflated joined-row total (NA 700) stays unservable."""
+    project = _admitted_trap_project(tmp_path / "trap", drifted=True)
+    runtime = QueryRuntime.open_project(project)
     with pytest.raises(ValueError, match="grain-preservation invariant"):
-        asyncio.run(trap_facade.get_metric("orders_total", ["region"]))
+        asyncio.run(runtime.get_metric("orders_total", ["region"]))
 
 
 def test_get_metric_answers_served_model_with_many_to_one_source(tmp_path):
     """The governed gauntlet's upside: a served model whose source joins
     many-to-one (order_lines ⋈ orders on the orders PK — unique on the joined
-    side) still answers through get_metric: the deduplicated line totals
-    NA 300 / EMEA 400, with provenance SQL and governed: true."""
-    served = build_trap(tmp_path)
-    (served / "semantic" / "models" / "lines.yml").write_text(LINES_MODEL, encoding="utf-8")
-    facade = Facade(served / "semantic", served / "context", served / "trap.db")
-    result = asyncio.run(facade.get_metric("sanctioned_lines_total", ["region"]))
+    side) still answers through get_metric after the same data drift: the
+    deduplicated line totals NA 300 / EMEA 400, with provenance SQL and
+    governed: true."""
+    project = _admitted_trap_project(tmp_path / "trap", drifted=True)
+    runtime = QueryRuntime.open_project(project)
+    result = asyncio.run(runtime.get_metric("sanctioned_lines_total", ["region"]))
     assert result["governed"] is True
     assert result["sql"].strip().upper().startswith("SELECT")
     actual = {row["region"]: row["sanctioned_lines_total"] for row in result["rows"]}

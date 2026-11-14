@@ -2853,13 +2853,16 @@ def _t5_native_policy_page() -> str:
 
 
 def _t5_native_metric_page(
-    name: str, model: str, policy: str = "policies/region-rollup.md"
+    name: str,
+    model: str,
+    policy: str = "policies/region-rollup.md",
+    grain_key: str = "order_id",
 ) -> str:
     """A native metric page whose native.sources cite one governing Policy
     page by its KB-relative visible path."""
     return (
         "---\n"
-        f'id: "entity:{name}"\n'
+        f'id: "entity:{name.replace("_", "-")}"\n'
         f'title: "{name}"\n'
         "entity_types:\n  - metric\n"
         "tags:\n  - metric\n"
@@ -2889,6 +2892,10 @@ def _t5_native_metric_page(
         "        title: Region rollup policy\n"
         f"        resource: {policy}\n"
         f"    governed_by: {policy}\n"
+        "    dimensions:\n      - region\n"
+        "    grain:\n"
+        f"      primary_key: [{grain_key}]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
         "---\n\n"
         f"# {name}\n"
     )
@@ -2983,7 +2990,7 @@ def _t5_bundle(
     ]
     if lines_page is not None:
         content = (
-            _t5_native_metric_page("lines_total", "order_lines")
+            _t5_native_metric_page("lines_total", "order_lines", grain_key="line_id")
             if lines_page == "default"
             else lines_page
         )
@@ -3143,7 +3150,12 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         assert context["policies"] and "Region rollup" in context["policies"][0]
         assert context["attestation"] == "pending"
         signals = context["context_signals"]
-        assert [page["path"] for page in signals["pages"]] == [
+        # the signals envelope carries each consumed page's CITED identity
+        # ("{namespace} {entity} v{version} {path}") — the path is its final
+        # component, so the order and page identity stay exactly asserted
+        assert [
+            page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]
+        ] == [
             f"metrics/{name}.md",
             "policies/region-rollup.md",
             f"computations/{name}.md",

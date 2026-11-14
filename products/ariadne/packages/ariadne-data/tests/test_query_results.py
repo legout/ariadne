@@ -453,13 +453,29 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert result["result"]["has_more_matching"] is True
 
     elif case == "rows_fit_but_metadata_overflows":
+        from ariadne.authoring import AuthoringProject
+        from ariadne.query import QueryRuntime as ProjectRuntime
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
+
+        # an admitted native project: the aggregate row fits while the
+        # served answer's context/admission metadata overflows the budget
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+        assert admit(project, review) == 0
+        registry = project / "ariadne.yaml"
+        registry.write_text(
+            registry.read_text(encoding="utf-8") + "\nquery:\n  response_bytes: 2000\n",
+            encoding="utf-8",
+        )
         # 2000 clears the refusal-form floor (every refusable representation
-        # must fit) while the required cited page (~4.6KB) still overflows it
-        rt = make_runtime(served, response_bytes=2000)
+        # must fit) while the served answer's metadata still overflows it
+        rt = ProjectRuntime.open_project(project)
         with pytest.raises(QueryResultError) as raised:
-            asyncio.run(rt.get_metric("total"))
+            asyncio.run(rt.get_metric("event_count"))
         assert raised.value.code == "result_byte_limit"
-        # the single aggregate row fits; the required cited page does not —
+        # the single aggregate row fits; the served metadata does not —
         # refusal, never a dropped Policy body.
         assert raised.value.observed["rows_lower_bound"] == 0
 
@@ -834,11 +850,20 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(execution, "_deadline_clock", real)
 
     elif case == "expiry_between_phases_never_returns_success":
-        rt = make_runtime(served)
+        from ariadne.authoring import AuthoringProject
+        from ariadne.query import QueryRuntime as ProjectRuntime
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
+
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+        assert admit(project, review) == 0
+        rt = ProjectRuntime.open_project(project)
         for jump_after in (2, 4, 6):  # deterministic expiry at varying phase points
             monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(jump_after))
             with pytest.raises(QueryResultError) as raised:
-                asyncio.run(rt.get_metric("total"))
+                asyncio.run(rt.get_metric("event_count"))
             assert raised.value.code == "execution_deadline"
 
     elif case == "request_budget_spans_construction_and_first_operation":

@@ -1,103 +1,79 @@
-"""Token-free Context Layer browsing at the private synthetic-session seam.
+"""Context browsing over the admitted native Context snapshot.
 
-The fixture pages define expected metadata and bodies; project admission and
-pinned-snapshot refusal are covered by Git lifecycle tests.
+The fixture pages are the authored native bundle constants admitted through
+the real composite journey; project admission and pinned-snapshot tamper
+refusals are covered by the Git lifecycle tests (spec0035 §6: the classic
+``context_layer`` browsing seam is retired).
 """
 
 import asyncio
-from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.query import _QueryRuntimeSession  # pyright: ignore[reportMissingImports] — drift
-
-# One governed model over a declared CSV source so the runtime constructs and
-# compiles exactly like every production route (the established fixture shape).
-_MODES = """version: 0.2.0.dev0
-semantic_model:
-  - name: probe
-    description: browsing probe
-    datasets:
-      - name: vals
-        source: vals.vals
-        fields:
-          - name: v
-            expression: {dialects: [{dialect: ANSI_SQL, expression: v}]}
-    metrics:
-      - name: total
-        description: sum of the fixture values
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "SUM(v)"}]}
-"""
-
-SERVED_POLICY_BODY = (
-    "---\ntype: policy\ntitle: Order status billing\n---\n\nOrders bill only in COMPLETED status.\n"
+from ariadne.authoring import AuthoringProject  # pyright: ignore[reportMissingImports] — drift
+from ariadne.discovery import DiscoveryRuntime  # pyright: ignore[reportMissingImports] — drift
+from tests.test_git_admission import _policy_edit, admit, admitted_ready
+from tests.test_git_authoring import (
+    NATIVE_POLICY_PAGE,
+    complete_bundle_project,
 )
-SERVED_METRIC_BODY = "# Total value\n\nSum over all rows.\n"
-SERVED_GLOSSARY_BODY = "Billing period text without a title or heading.\n"
+
+REVISED_BODY = "The browsing revision body."
 
 
 @pytest.fixture(scope="module")
-def runtime(tmp_path_factory) -> _QueryRuntimeSession:
-    root = tmp_path_factory.mktemp("browsing_project")
-    (root / "data").mkdir()
-    (root / "data" / "vals.csv").write_text("v\n2\n3\n", encoding="utf-8")
-    (root / "semantic_layer" / "models").mkdir(parents=True)
-    (root / "semantic_layer" / "models" / "probe.yml").write_text(_MODES, encoding="utf-8")
-    context = root / "context_layer"
-    (context / "policies").mkdir(parents=True)
-    (context / "policies" / "order-status.md").write_text(SERVED_POLICY_BODY, encoding="utf-8")
-    (context / "metrics").mkdir()
-    (context / "metrics" / "total.md").write_text(SERVED_METRIC_BODY, encoding="utf-8")
-    (context / "glossary").mkdir()
-    (context / "glossary" / "billing-period.md").write_text(SERVED_GLOSSARY_BODY, encoding="utf-8")
-    registry = root / "ariadne.yaml"
-    registry.write_text(
-        f"sources:\n  - name: vals\n    type: csv\n    path: {root / 'data' / 'vals.csv'}\n",
-        encoding="utf-8",
-    )
-    return _QueryRuntimeSession(root / "semantic_layer", context, None, sources=str(registry))
+def runtime(tmp_path_factory):
+    project = complete_bundle_project(tmp_path_factory.mktemp("browsing_project"))
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(api, project, _policy_edit(REVISED_BODY))
+    assert admit(project, review) == 0
+    return DiscoveryRuntime.open_project(project)
 
 
 def test_listing_is_a_metadata_directory(runtime):
     listing = asyncio.run(runtime.list_context_pages())
-    assert [(entry["path"], entry["draft"]) for entry in listing] == [
-        ("glossary/billing-period.md", False),
-        ("metrics/total.md", False),
-        ("policies/order-status.md", False),
+    assert [entry["path"] for entry in listing] == [
+        "computations/event_count.md",
+        "metrics/event-count.md",
+        "policies/all-events-count.md",
     ]
     titles = {entry["path"]: entry["title"] for entry in listing}
-    assert titles["glossary/billing-period.md"] is None
-    assert titles["metrics/total.md"] == "Total value"
-    assert titles["policies/order-status.md"] == "Order status billing"
+    assert titles["metrics/event-count.md"] == "event_count"
+    assert titles["policies/all-events-count.md"] == "All events count"
+    # the finalize pass's generated page: the documented title format
+    assert titles["computations/event_count.md"] == "sanctioned SQL — events::event_count"
     for entry in listing:
+        assert entry["draft"] is False
         assert "content" not in entry
         assert entry["context_signals"]["pages"][0]["path"] == entry["path"]
 
 
 def test_read_returns_the_exact_page(runtime):
-    served = asyncio.run(runtime.read_context_page("policies/order-status.md"))
-    assert served["path"] == "policies/order-status.md"
+    served = asyncio.run(runtime.read_context_page("policies/all-events-count.md"))
+    assert served["path"] == "policies/all-events-count.md"
     assert served["draft"] is False
-    assert served["content"] == SERVED_POLICY_BODY
-    assert served["context_signals"]["pages"][0]["path"] == "policies/order-status.md"
+    # the exact authored canonical bytes of the served revision
+    assert served["content"] == NATIVE_POLICY_PAGE.replace("The rule body.", REVISED_BODY)
+    assert served["context_signals"]["pages"][0]["path"] == "policies/all-events-count.md"
 
 
 def test_invalid_paths_refuse_naming_the_rejected_path(runtime, tmp_path):
-    """AC3: absolute, escaping, backslashed, non-markdown, symlink-escaping and
-    unknown paths each raise ValueError naming the path — nothing reads."""
-    outside = tmp_path / "outside-secret.md"
-    outside.write_text("secret", encoding="utf-8")
-    secret = Path(runtime.context_dir) / "policies" / "secret.md"
-    secret.symlink_to(outside)
+    """Absolute, escaping, backslashed, non-markdown, unknown and empty paths
+    each refuse through the pinned native facade, naming the rejected path —
+    the served root is the verified snapshot itself, so no path resolves
+    outside it and nothing is read."""
+    from lumio_wiki.ariadne_context import UnadmittedInputError
+
     for bad in (
         "/etc/passwd.md",
-        "../order-status.md",
-        "policies\\order-status.md",
+        "../policies/all-events-count.md",
+        "policies\\all-events-count.md",
         "policies/order-status.txt",
         "policies/missing.md",
-        "policies/secret.md",  # symlink out of the served root
         "",
     ):
-        with pytest.raises(ValueError, match="unknown context page") as refusal:
+        with pytest.raises(
+            UnadmittedInputError, match="no visible context page at path"
+        ) as refusal:
             asyncio.run(runtime.read_context_page(bad))
         assert repr(bad) in str(refusal.value), "the refusal names the rejected path"

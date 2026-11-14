@@ -335,7 +335,7 @@ def test_skill_teaches_context_knowledge_and_typed_page_edits():
     assert "never mark anything confirmed" in normalized
     # durable context changes use typed edits; the retired enrichment operation is absent
     assert "ariadne-authoring edit --proposal ID" in normalized
-    assert "context_layer/references/context-routing.md" in normalized
+    assert "knowledge/references/context-routing.md" in normalized
     assert "ariadne-authoring enrich-legacy" not in normalized
     assert "ambiguous" in normalized and "ambiguity between alternatives" in normalized
     assert "never guessed" in normalized  # resolution refuses rather than guesses

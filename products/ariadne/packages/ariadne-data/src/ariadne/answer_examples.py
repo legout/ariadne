@@ -216,7 +216,7 @@ def _verify_citation(project: Path, revision: str, ref: str) -> dict:
 
 
 def _page_markdown(record: dict, example_id: str) -> bytes:
-    """One native ``knowledge/answer_examples/`` Compiled Page: the shared
+    """One native ``knowledge/answer-examples/`` Compiled Page: the shared
     page frontmatter (stable Entity id, canonical title, controlled entity
     type, scoped visibility) plus the producer-owned ``answer_example``
     profile carrying the retained spec0007/0023 native families, and the
