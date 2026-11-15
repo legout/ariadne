@@ -13,6 +13,7 @@ binary, and the crash variant interrupts the real state transition.
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -290,7 +291,9 @@ def test_reading_a_missing_artifact_is_a_specific_error(tmp_path):
     started = api.start_proposal()
     with pytest.raises(ValueError, match="no artifact"):
         api.read_artifact(started["proposal"], {"kind": "model", "name": "never_created"})
-    with pytest.raises(ValueError, match="no artifact"):
+    # the context-layer page identity is retired: it refuses with the
+    # supported-native-page guidance before any artifact lookup
+    with pytest.raises(ValueError, match="retired"):
         api.read_artifact(
             started["proposal"], {"kind": "page", "section": "policies", "name": "none"}
         )
@@ -380,13 +383,13 @@ def test_wildcard_artifact_names_never_become_git_pathspecs(tmp_path):
                 started["candidate_revision"],
                 {"kind": "model", "name": bad_name, "content": "x: 1\n"},
             )
-    with pytest.raises(ValueError, match="plain artifact filename"):
-        api.edit_proposal(
+    with pytest.raises(ValueError, match="knowledge"):
+        api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
-            {"kind": "page", "section": "metrics", "name": "*", "content": "# p\n"},
+            [{"path": "knowledge/metrics/../escape.md", "content": "# p\n"}],
         )
-    # the wildcard never reached Git: no commit, nothing staged, the draft kept
+    # the hostile path never reached Git: no commit, nothing staged, the draft kept
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
     assert "other.yml" not in run_git(worktree, "ls-files")
     assert dirty(project, started["proposal"]).strip() == "?? semantic_layer/models/other.yml"
@@ -418,30 +421,70 @@ def test_initial_artifacts_with_credentials_are_refused_before_staging(tmp_path)
 
 # A policy page whose base revision already carries a system-owned verified
 # marker: an edit may KEEP it verbatim, but
-# may never introduce or change such a claim (spec §4).
-_POLICY_WITH_VERIFIED = (
+# may never introduce or change such a claim (spec §4) — the native trust
+# claims ride the producer envelope (native.verified), authored only in the
+# human base revision.
+_NATIVE_POLICY_VERIFIED = (
     "---\n"
-    "type: policy\n"
-    "status: admitted\n"
-    "title: Rule\n"
-    "description: A rule page\n"
-    "tags: [policy]\n"
-    "verified:\n"
-    "  - by: operator\n"
-    "    at: 2026-01-01T00:00:00Z\n"
+    'id: "entity:rule"\n'
+    'title: "Rule"\n'
+    "entity_types:\n  - policy\n"
+    "tags:\n  - policy\n"
+    'summary: "A rule page"\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    "  - id: seed-notes\n"
+    "    title: Seed notes\n"
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: policy\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: policy\n"
+    "    title: Rule\n"
+    "    description: A rule page\n"
+    "    tags:\n      - policy\n"
+    "    verified:\n"
+    "      - by: operator\n"
+    "        at: 2026-01-01T00:00:00+00:00\n"
+    "    sources:\n"
+    "      - id: seed-notes\n"
+    "        title: Seed notes\n"
+    "        resource: data/seed_notes.md\n"
     "---\n\n"
     "# Rule\n\n"
     "The rule body.\n"
 )
 
+_NATIVE_VERIFIED_REL = "knowledge/policies/rule.md"
+
 
 def git_project_with_verified_page(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     scaffold_artifacts(project)
-    (project / "context_layer" / "policies").mkdir(parents=True, exist_ok=True)
-    (project / "context_layer" / "policies" / "rule.md").write_text(
-        _POLICY_WITH_VERIFIED, encoding="utf-8"
+    kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: policies\n"
+        "  - name: metrics\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    policy: {}\n"
+        "    metric: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
     )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:trust-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    (kb / "policies").mkdir(parents=True, exist_ok=True)
+    (kb / "policies" / "rule.md").write_text(_NATIVE_POLICY_VERIFIED, encoding="utf-8")
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
@@ -452,7 +495,9 @@ def git_project_with_verified_page(tmp_path: Path) -> Path:
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/models/events.yml",
-        "context_layer/policies/rule.md",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "knowledge/policies/rule.md",
     )
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
@@ -470,46 +515,54 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
     worktree = worktree_of(project, started["proposal"])
 
     # an edit that KEEPS the base's verified entry verbatim succeeds
-    kept = api.edit_proposal(
+    kept = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "rule",
-            "content": _POLICY_WITH_VERIFIED.replace("The rule body.", "The rule body, edited."),
-        },
+        [
+            {
+                "path": _NATIVE_VERIFIED_REL,
+                "content": _NATIVE_POLICY_VERIFIED.replace(
+                    "The rule body.", "The rule body, edited."
+                ),
+            }
+        ],
     )
     assert kept["changed"] is True
 
     # an edit that CHANGES the verified claim is refused before any write
-    changed = _POLICY_WITH_VERIFIED.replace("by: operator", "by: the-agent-itself").replace(
+    changed = _NATIVE_POLICY_VERIFIED.replace("by: operator", "by: the-agent-itself").replace(
         "The rule body.", "Rewritten."
     )
     with pytest.raises(ValueError, match="system-owned"):
-        api.edit_proposal(
+        api.edit_pages_batch(
             started["proposal"],
             kept["revision"],
-            {"kind": "page", "section": "policies", "name": "rule", "content": changed},
+            [{"path": _NATIVE_VERIFIED_REL, "content": changed}],
         )
-    assert (worktree / "context_layer" / "policies" / "rule.md").read_text(
+    assert (worktree / "knowledge" / "policies" / "rule.md").read_text(
         encoding="utf-8"
-    ) == _POLICY_WITH_VERIFIED.replace("The rule body.", "The rule body, edited.")
+    ) == _NATIVE_POLICY_VERIFIED.replace("The rule body.", "The rule body, edited.")
     assert branch_of(project, started["proposal"]) == kept["revision"]
 
     # INTRODUCING a verified/attester claim where the base has none is refused
     # before any write — the new page never even reaches the worktree
     for forged in (
-        "---\ntype: metric\nstatus: draft\nverified:\n  - by: human\n---\n\n# m\n",
-        "---\ntype: metric\nstatus: draft\nattester: the-agent-itself\n---\n\n# m\n",
+        _NATIVE_POLICY_VERIFIED.replace(
+            "kind: policy", "kind: metric"
+        ).replace("      - by: operator\n", "      - by: human\n"),
+        _NATIVE_POLICY_VERIFIED.replace(
+            "kind: policy", "kind: metric"
+        ).replace(
+            "    verified:\n      - by: operator\n", "    attester: the-agent-itself\n"
+        ),
     ):
         with pytest.raises(ValueError, match="system-owned"):
-            api.edit_proposal(
+            api.edit_pages_batch(
                 started["proposal"],
                 kept["revision"],
-                {"kind": "page", "section": "metrics", "name": "new", "content": forged},
+                [{"path": "knowledge/metrics/new.md", "content": forged}],
             )
-    assert not (worktree / "context_layer" / "metrics").exists()
+    assert not (worktree / "knowledge" / "metrics").exists()
     assert branch_of(project, started["proposal"]) == kept["revision"]
 
     # model YAML top-level trust claims are refused the same way
@@ -536,10 +589,6 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
         {"kind": "model", "name": "..", "content": "x: 1\n"},
         {"kind": "model", "name": "", "content": "x: 1\n"},
         {"kind": "model", "name": "a\\b", "content": "x: 1\n"},
-        {"kind": "page", "section": "../escape", "name": "p", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "..", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "-opt", "content": "# p\n"},
-        {"kind": "page", "section": "tables", "name": "a/b", "content": "# p\n"},
     ],
     ids=lambda e: f"{e.get('kind')}-{e.get('name') or e.get('section')}",
 )
@@ -552,6 +601,33 @@ def test_escaping_artifact_names_are_refused_before_any_git_write(tmp_path, edit
     started = api.start_proposal()
     with pytest.raises(ValueError):
         api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    assert dirty(project, started["proposal"]) == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "knowledge/../escape.md",
+        "knowledge/tables/../p.md",
+        "context_layer/tables/p.md",
+        "knowledge/tables/p.txt",
+    ],
+    ids=["parent-escape", "section-escape", "outside-knowledge", "non-page-suffix"],
+)
+def test_escaping_native_page_paths_are_refused_before_any_git_write(tmp_path, path):
+    """Ticket [4], native page-batch counterpart: traversal, non-knowledge and
+    non-page batch identities are refused centrally BEFORE any Git dispatch —
+    the candidate, worktree and history are untouched."""
+    project = git_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    with pytest.raises(ValueError):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": path, "content": "# p\n"}],
+        )
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
     assert dirty(project, started["proposal"]) == ""
 
@@ -579,28 +655,43 @@ def test_credential_bearing_edit_is_refused_before_any_write(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "pages",
+    [
+        [{"path": "knowledge/computations/event_count.md", "content": "# c\n"}],
+        [{"path": "knowledge/metrics/index.md", "content": "# i\n"}],
+        [{"path": "knowledge/policies/log.md", "content": "# l\n"}],
+    ],
+    ids=["computations-page", "index-page", "log-page"],
+)
+def test_system_owned_native_pages_are_refused(tmp_path, pages):
+    """Ticket [4], native batch counterpart: generated artifacts (computation
+    pages, index.md/log.md bookkeeping) are system-owned — the batch writer
+    refuses them before any Git dispatch."""
+    project = git_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    with pytest.raises(ValueError):
+        api.edit_pages_batch(started["proposal"], started["candidate_revision"], pages)
+    assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+    assert dirty(project, started["proposal"]) == ""
+
+
+@pytest.mark.parametrize(
     "edit",
     [
-        {"kind": "page", "section": "computations", "name": "event_count", "content": "# c\n"},
-        {"kind": "page", "section": "metrics", "name": "index", "content": "# i\n"},
-        {"kind": "page", "section": "policies", "name": "log", "content": "# l\n"},
         {"kind": "model", "name": "events", "content": "x: 1\n", "approved": True},
         {"kind": "graph", "content": "x: 1\n", "attester": "the-agent-itself"},
         {"kind": "seed_notes", "content": "x\n", "validated": True},
     ],
     ids=[
-        "computations-section",
-        "index-page",
-        "log-page",
         "model-approval-claim",
         "graph-attester-claim",
         "seed-validated-claim",
     ],
 )
 def test_system_owned_artifacts_and_claim_smuggling_are_refused(tmp_path, edit):
-    """Ticket [4]: generated artifacts (computations/index/log) are
-    system-owned, and a caller cannot smuggle approval/attestation claims into
-    an edit envelope — the discriminated contract is exact."""
+    """Ticket [4]: a caller cannot smuggle approval/attestation claims into an
+    edit envelope — the discriminated contract is exact."""
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -898,39 +989,58 @@ def served(tmp_path_factory):
 
 
 def _generated_table_page(resource: str) -> str:
-    """A committed generated-style table page: the core-owned ``resource``
-    binding and ``ariadne`` schema/observations block, a catalog citation and
-    authored summary only (no core-owned body sections in this minimal form)."""
+    """A committed generated-style NATIVE Table page (spec0009 §9): the
+    core-owned ``resource`` binding and ``ariadne`` schema/observations
+    facts live under ``ariadne_profile.native`` beside the ``core_ref``
+    identity, and the catalog citation is one of the page's own native
+    sources (the quality reports' ``source_ids`` resolve against it)."""
     meta = {
-        "type": "table",
-        "title": "demo.main.orders",
-        "description": "One row per order.",
+        "id": "entity:orders-table",
+        "title": "Orders",
+        "entity_types": ["table"],
         "tags": ["table"],
+        "summary": "One row per order.",
+        "lifecycle": "approved",
+        "visibility": "public",
         "sources": [
-            {
-                "id": "catalog-demo-main-orders",
-                "resource": resource,
-                "title": "catalog and profile of demo.main.orders",
-            }
+            {"id": "src-orders-catalog", "title": "Catalog and profile, 2026-01-01"}
         ],
-        "resource": resource,
-        "ariadne": {
-            "schema": [
-                {
-                    "column": "order_id",
-                    "type": "BIGINT",
-                    "nullable": "unknown",
-                    "default": "unknown",
-                    "comment": "unknown",
-                }
-            ],
-            "observations": {
-                "observed_at": "2026-01-01T00:00:00+00:00",
-                "scope": "full",
-                "row_count": 3,
-                "candidate_keys": ["order_id"],
-                "columns": {"order_id": {"null_count": 0, "distinct_count": 3}},
-                "citation": resource,
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "table",
+            "core_ref": {"kind": "resource", "id": resource},
+            "native": {
+                "type": "table",
+                "title": "demo.main.orders",
+                "description": "One row per order.",
+                "tags": ["table"],
+                "resource": resource,
+                "ariadne": {
+                    "schema": [
+                        {
+                            "column": "order_id",
+                            "type": "BIGINT",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        }
+                    ],
+                    "observations": {
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                        "scope": "full",
+                        "row_count": 3,
+                        "candidate_keys": ["order_id"],
+                        "columns": {"order_id": {"null_count": 0, "distinct_count": 3}},
+                        "citation": resource,
+                    },
+                },
+                "sources": [
+                    {
+                        "id": "catalog-demo-main-orders",
+                        "resource": resource,
+                        "title": "catalog and profile of demo.main.orders",
+                    }
+                ],
             },
         },
     }
@@ -970,9 +1080,16 @@ def _quality_block(resource: str, reported_at: str) -> dict:
 
 def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
     """A real temporary Git data project whose initial commit carries one
-    generated-style table page; returns (project, the canonical resource)."""
+    native generated-style Table page inside a minimal producer-valid KB;
+    returns (project, the canonical resource)."""
     import base64
     import json as _json
+
+    from lumio_wiki.source_references import (
+        SOURCE_REFERENCE_MANIFEST_BASENAME,
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
 
     payload = _json.dumps(["demo", "demo", "main", "orders"], separators=(",", ":"))
     resource = "ariadne://table/" + base64.urlsafe_b64encode(payload.encode("utf-8")).decode(
@@ -980,9 +1097,35 @@ def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
     ).rstrip("=")
     project = tmp_path / "proj"
     scaffold_artifacts(project)
-    (project / "context_layer" / "tables").mkdir(parents=True, exist_ok=True)
-    (project / "context_layer" / "tables" / "orders.md").write_text(
-        _generated_table_page(resource), encoding="utf-8"
+    kb = project / "knowledge" / "tables"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "orders.md").write_text(_generated_table_page(resource), encoding="utf-8")
+    # the categorized KB control (the established declared-vocabulary idiom:
+    # the proven category/entity-type set extended with the technical
+    # categories) and the KB source-reference manifest
+    (project / "knowledge" / "lumio.yaml").write_text(
+        "version: 2\n"
+        "mode: categorized\n"
+        "categories:\n"
+        "  - name: policies\n"
+        "  - name: references\n"
+        "  - name: metrics\n"
+        "  - name: datasets\n"
+        "  - name: tables\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    policy: {}\n"
+        "    computation: {}\n"
+        "    reference: {}\n"
+        "    metric: {}\n"
+        "    dataset: {}\n"
+        "    table: {}\n",
+        encoding="utf-8",
+    )
+    (project / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(version=1, namespace="urn:demo:orders")
+        )
     )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
@@ -994,7 +1137,7 @@ def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
         "ariadne.yaml",
         "data/seed_notes.md",
         "semantic_layer/models/events.yml",
-        "context_layer/tables/orders.md",
+        "knowledge",
     )
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project, resource
@@ -1003,74 +1146,339 @@ def git_project_with_generated_table_page(tmp_path: Path) -> tuple[Path, str]:
 def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_claims(
     tmp_path,
 ):
-    """Issue #53 (spec 0013 §2): ordinary page editing adds the supplied
-    ``ariadne_quality`` profile without changing the protected
-    resource/schema/observations — the authored extension is NOT a system
-    claim (the edit seam accepts it), while the core-owned bindings stay
-    unforgeable and a malformed declaration fails the shared authoring gate
-    before any human admission."""
-    from ariadne.context import _load_frontmatter_meta, _page_contract_errors
+    """Issue #53 (spec 0013 §2), C6 native migration (spec0035 §6): the
+    public native page-batch seam accepts the supplied ``ariadne_quality``
+    profile without changing the protected resource binding or the core-
+    owned schema/observations — the authored extension is NOT a system
+    claim, the native trust/generated claims stay unforgeable, and a
+    malformed declaration fails the producer structural gate inside the
+    batch writer before any byte is written (never a query refusal,
+    spec §5/§7 AC6)."""
+    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import QUALITY_MAX_TEXT_CHARS, QUALITY_PROFILE_MAX_BYTES
 
     project, resource = git_project_with_generated_table_page(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     worktree = worktree_of(project, started["proposal"])
-    page = worktree / "context_layer" / "tables" / "orders.md"
+    page = worktree / "knowledge" / "tables" / "orders.md"
     original = page.read_text(encoding="utf-8")
 
     def with_quality(reported_at: str) -> str:
         meta = _load_frontmatter_meta(original)
-        meta["ariadne_quality"] = _quality_block(resource, reported_at)
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = _quality_block(
+            resource, reported_at
+        )
         front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
         return f"---\n{front}\n---\n\n# Orders\n"
 
-    # the ordinary edit lands: authored metadata, not a system-owned claim
-    edited = api.edit_proposal(
+    # the ordinary batch lands: authored metadata, not a system-owned claim —
+    # the complete candidate passed the producer structural gate inside the
+    # batch writer (an invalid page set is refused before any byte)
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            "kind": "page",
-            "section": "tables",
-            "name": "orders",
-            "content": with_quality("2026-01-15T00:00:00+00:00"),
-        },
+        [
+            {
+                "path": "knowledge/tables/orders.md",
+                "content": with_quality("2026-01-15T00:00:00+00:00"),
+            }
+        ],
     )
     assert edited["changed"] is True
     added = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-    assert added["resource"] == resource  # the core binding is untouched
     before = _load_frontmatter_meta(original)
-    assert added["ariadne"] == before["ariadne"]  # schema/observations untouched
-    assert added["sources"] == before["sources"]
-    # the added profile passes the shared authoring gate
-    assert _page_contract_errors(worktree, page, "table") == []
+    added_native = added["ariadne_profile"]["native"]
+    before_native = before["ariadne_profile"]["native"]
+    # the core binding is untouched
+    assert added_native["resource"] == before_native["resource"] == resource
+    assert added_native["ariadne"] == before_native["ariadne"]  # schema/observations untouched
+    assert added_native["sources"] == before_native["sources"]
+    assert added["ariadne_profile"]["core_ref"] == before["ariadne_profile"]["core_ref"]
+    assert added_native["ariadne_quality"] == _quality_block(
+        resource, "2026-01-15T00:00:00+00:00"
+    )  # the authored profile landed verbatim
 
-    # a malformed (naive-timestamp) declaration fails authoring validation —
-    # BEFORE human admission, never as a query refusal (spec §5/§7 AC6)
-    naive = api.edit_proposal(
-        started["proposal"],
-        edited["revision"],
-        {
-            "kind": "page",
-            "section": "tables",
-            "name": "orders",
-            "content": with_quality("2026-01-15T00:00:00"),
-        },
-    )
-    assert naive["changed"] is True  # the seam edits; the GATE owns the refusal
-    errors = _page_contract_errors(worktree, page, "table")
-    assert errors and "naive" in errors[0]
+    # a malformed (naive-timestamp) declaration refuses INSIDE the batch —
+    # the retained Core authoring gate over the producer-parsed flat native
+    # metadata names the field BEFORE any byte is written (the producer
+    # structural gate stands behind it), never as a later query refusal
+    # (spec §5/§7 AC6)
+    with pytest.raises(ValueError, match="naive timestamp is rejected"):
+        api.edit_pages_batch(
+            started["proposal"],
+            edited["revision"],
+            [
+                {
+                    "path": "knowledge/tables/orders.md",
+                    "content": with_quality("2026-01-15T00:00:00"),
+                }
+            ],
+        )
+    assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
+
+    # the retained spec0013 §2 authoring rule: a declared evidence period is
+    # [start, end) — a backwards (start >= end) declaration refuses INSIDE
+    # the same batch writer by name, before any byte (never a producer-
+    # accepted shape a consumer would have to disclose around); the retained
+    # Core gate names it first, the aligned producer gate stands behind it
+    backwards = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    backwards["reports"][0]["checks"][0]["tested_period"] = {
+        "field": "order_date",
+        "start": "2026-09-01T00:00:00+00:00",
+        "end": "2026-08-01T00:00:00+00:00",
+    }
+
+    def with_quality_block(block: dict) -> str:
+        meta = _load_frontmatter_meta(original)
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = block
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        return f"---\n{front}\n---\n\n# Orders\n"
+
+    with pytest.raises(ValueError, match="start < end"):
+        api.edit_pages_batch(
+            started["proposal"],
+            edited["revision"],
+            [{"path": "knowledge/tables/orders.md", "content": with_quality_block(backwards)}],
+        )
+    assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
 
     # the protected resource binding itself stays unforgeable (unchanged seam)
-    with pytest.raises(ValueError, match="system-owned"):
-        api.edit_proposal(
+    with pytest.raises(ValueError, match="trust/generated claim"):
+        api.edit_pages_batch(
             started["proposal"],
-            naive["revision"],
-            {
-                "kind": "page",
-                "section": "tables",
-                "name": "orders",
-                "content": page.read_text(encoding="utf-8").replace(
-                    resource, resource[:-4] + "XXXX"
-                ),
-            },
+            edited["revision"],
+            [
+                {
+                    "path": "knowledge/tables/orders.md",
+                    "content": page.read_text(encoding="utf-8").replace(
+                        resource, resource[:-4] + "XXXX"
+                    ),
+                }
+            ],
         )
+    assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added  # nothing was written
+
+    # ---- R1 (C6 fix) expanded public malformed-declaration matrix: every
+    # variant the old weaker producer gate accepted silently, each refused
+    # with its named diagnostic at the same public batch seam, before any
+    # byte is written.
+    def refuse(block_text: str, diagnostic: str) -> None:
+        with pytest.raises(ValueError, match=diagnostic):
+            api.edit_pages_batch(
+                started["proposal"],
+                edited["revision"],
+                [{"path": "knowledge/tables/orders.md", "content": block_text}],
+            )
+        assert _load_frontmatter_meta(page.read_text(encoding="utf-8")) == added
+
+    null_reported = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_reported["reports"][0]["reported_at"] = None
+    refuse(with_quality_block(null_reported), "must be an aware instant")
+
+    null_bound = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_bound["reports"][0]["scope"]["period"] = {
+        "field": "order_date",
+        "start": None,
+        "end": "2026-08-01T00:00:00+00:00",
+    }
+    refuse(with_quality_block(null_bound), "period start must be an aware instant")
+
+    duplicate_check = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    duplicate_check["reports"][0]["checks"].append(
+        dict(duplicate_check["reports"][0]["checks"][0])
+    )
+    refuse(with_quality_block(duplicate_check), "duplicates check id")
+
+    null_population = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    null_population["reports"][0]["checks"][0]["tested_population"] = None
+    refuse(with_quality_block(null_population), "tested_population must be supplied")
+
+    partial_watermark = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    partial_watermark["reports"][0]["watermark"] = {  # 'field' missing entirely
+        "kind": "other",
+        "value": 7,
+        "meaning": "a counted boundary",
+        "units": "rows",
+        "timezone": "UTC",
+        "observed_at": "2026-01-15T00:00:00+00:00",
+    }
+    refuse(with_quality_block(partial_watermark), "watermark field must be supplied")
+
+    # an unsupported YAML variant type (a !!set where the grammar wants a
+    # list) is a NAMED refusal — never a serialization TypeError crash
+    set_source_ids = re.sub(
+        r"source_ids:\n\s*- catalog-demo-main-orders",
+        "source_ids: !!set {catalog-demo-main-orders, extra}",
+        with_quality("2026-01-15T00:00:00+00:00"),
+    )
+    assert "!!set" in set_source_ids  # the raw variant reached the page text
+    refuse(set_source_ids, "source_ids must be a nonempty list")
+
+    # D1 (C6 owner-a4, single-delta review): a non-list native sources SHAPE
+    # (an int where the producer grammar wants the source-record list)
+    # refuses at the same public batch seam with a NAMED sources-list
+    # diagnostic — the prewrite Core quality gate must not crash with a raw
+    # TypeError iterating the producer-parsed scalar before the named
+    # refusal can fire, and not with a misleading citation-resolution error
+    sources_scalar = _load_frontmatter_meta(with_quality("2026-01-15T00:00:00+00:00"))
+    sources_scalar["ariadne_profile"]["native"]["sources"] = 7
+    scalar_front = yaml.safe_dump(sources_scalar, sort_keys=False, allow_unicode=True).strip()
+    refuse(f"---\n{scalar_front}\n---\n\n# Orders\n", "sources must be a list")
+
+    # unsupported QUALITY keys of UNLIKE sortable types (an int and a string
+    # in the same mapping) reject with the named unsupported-field
+    # diagnostic at root AND nested report level — never a sorted() TypeError
+    mixed_root = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    mixed_root[7] = "seven"
+    mixed_root["unsupported"] = "extra"
+    refuse(with_quality_block(mixed_root), "unsupported field")
+    mixed_report = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    mixed_report["reports"][0][7] = "seven"
+    mixed_report["reports"][0]["unsupported"] = "extra"
+    refuse(with_quality_block(mixed_report), "unsupported field")
+
+    # the producer's INDEPENDENT structural gate shows the same type-safe
+    # named diagnostic: Core catches these first on the public batch path,
+    # so K's own caller is exercised through its public structural surface
+    from lumio_wiki.ariadne_context import native_metadata_errors
+
+    k_errors = native_metadata_errors(
+        "knowledge/tables/orders.md native",
+        {
+            "type": "table",
+            "title": "orders",
+            "description": "orders table",
+            "tags": ["table"],
+            "sources": [{"id": "catalog-demo-main-orders", "resource": resource}],
+            "resource": resource,
+            "ariadne_quality": mixed_root,
+        },
+        kind="table",
+    )
+    assert any("unsupported field" in error for error in k_errors)
+
+    # the normalized-byte bound follows the RETAINED Core normalization
+    # (default separators, insertion order) — a profile whose compact form
+    # fits but whose normalized form does not refuses by name. The boundary
+    # is computed independently here from the two documented JSON forms.
+    import json as _json
+
+    def _sizes(block: dict) -> tuple[int, int]:
+        compact = len(
+            _json.dumps(block, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        )
+        normalized = len(_json.dumps(block, ensure_ascii=False).encode())
+        return compact, normalized
+
+    # an otherwise-VALID near-bound profile: the size is grown through
+    # additional DISTINCT checks (inside the per-report check-count limit)
+    # with every text field under its 1024-character cap — never through one
+    # oversized description, which the text cap would refuse first for the
+    # wrong diagnostic. The padding search is bounded by the text cap itself
+    # and fail-fast: the first straddling padding wins, else the fixture
+    # itself is broken (never an unbounded loop).
+    near_bound = _quality_block(resource, "2026-01-15T00:00:00+00:00")
+    checks = near_bound["reports"][0]["checks"]
+    base_criterion = checks[0]["criterion"]
+    for index in range(1, 8):
+        checks.append(
+            {
+                "id": f"completeness-{index:02d}",
+                "kind": "completeness",
+                "outcome": "unknown",
+                "criterion": base_criterion,
+                "tested_population": "all orders",
+                "tested_period": None,
+            }
+        )
+    assert len({check["id"] for check in checks}) == len(checks)  # distinct ids
+    for padding in range(QUALITY_MAX_TEXT_CHARS - len(base_criterion) + 1):
+        for check in checks:
+            check["criterion"] = base_criterion + "x" * padding
+        compact, normalized = _sizes(near_bound)
+        if compact <= QUALITY_PROFILE_MAX_BYTES < normalized:
+            break
+    else:
+        raise AssertionError(
+            "the near-bound fixture never straddled the normalized-byte bound — "
+            "a fixture construction defect, not a production claim"
+        )
+    assert all(
+        len(check["criterion"]) <= QUALITY_MAX_TEXT_CHARS for check in checks
+    )  # the cap holds for the profile that reaches the byte boundary
+    refuse(with_quality_block(near_bound), "UTF-8")
+
+    # a VALID explicit period: null stays accepted (non-time-bounded
+    # evidence) — restate the positive shape the first leg already landed
+    explicit_null = _quality_block(resource, "2026-01-16T00:00:00+00:00")
+    assert explicit_null["reports"][0]["scope"]["period"] is None
+    landed = api.edit_pages_batch(
+        started["proposal"],
+        edited["revision"],
+        [{"path": "knowledge/tables/orders.md", "content": with_quality_block(explicit_null)}],
+    )
+    assert landed["changed"] is True
+
+    # ---- recovered invariant (the deleted test_refresh_preserves_supplied_
+    # quality_profile_without_touching_core_facts): an authored quality
+    # profile survives a REAL schema refresh verbatim while the core-owned
+    # facts regenerate around it.
+    from tests.test_git_authoring import approved, complete_bundle_project, write_parquet
+
+    def _page_with_quality(page_text: str, block: dict) -> str:
+        meta = _load_frontmatter_meta(page_text)
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = block
+        front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+        body = page_text.split("---", 2)[2]
+        return f"---\n{front}\n---{body}"
+
+    project2 = complete_bundle_project(tmp_path / "refresh")
+    api2 = AuthoringProject(project2)
+    started2 = api2.start_proposal()
+    approved(api2, project2, started2)
+    asset = {"source": "events", "catalog": None, "schema": "events", "table": "events"}
+    first = api2.refresh_schema(started2["proposal"], started2["candidate_revision"], [asset])
+    assert first["changed"] is True
+    table_entry = next(p for p in first["pages"] if p["kind"] == "table")
+    table_rel = table_entry["path"]
+    table_file = worktree_of(project2, started2["proposal"]) / table_rel
+    table_meta = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+    events_resource = table_meta["ariadne_profile"]["native"]["resource"]
+    citation_id = table_meta["ariadne_profile"]["native"]["sources"][0]["id"]
+    events_quality = _quality_block(events_resource, "2026-01-15T00:00:00+00:00")
+    events_quality["reports"][0]["source_ids"] = [citation_id]
+    authored = api2.edit_pages_batch(
+        started2["proposal"],
+        first["revision"],
+        [
+            {
+                "path": table_rel,
+                "content": _page_with_quality(
+                    table_file.read_text(encoding="utf-8"), events_quality
+                ),
+            }
+        ],
+    )
+    assert authored["changed"] is True
+    before_refresh = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+
+    # the physical source changes (a new column arrives): the refresh
+    # regenerates the core-owned schema facts and KEEPS the authored profile
+    write_parquet(
+        project2 / "data" / "events.parquet",
+        [(1, "a", "n1"), (2, "b", "n2")],
+        ["id", "label", "note"],
+    )
+    second = api2.refresh_schema(started2["proposal"], authored["revision"], [asset])
+    assert second["changed"] is True
+    after_refresh = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
+    schema_columns = [
+        row["column"]
+        for row in after_refresh["ariadne_profile"]["native"]["ariadne"]["schema"]
+    ]
+    assert "note" in schema_columns  # the core-owned facts DID regenerate
+    assert (
+        after_refresh["ariadne_profile"]["native"]["ariadne_quality"]
+        == before_refresh["ariadne_profile"]["native"]["ariadne_quality"]
+    )  # the authored profile survived verbatim

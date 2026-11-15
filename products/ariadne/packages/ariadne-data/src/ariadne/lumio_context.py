@@ -1,7 +1,6 @@
-"""Optional local Lumio binding for spec0029 r2; no SDK import in standalone."""
+"""Native Lumio binding for admitted Core Bound Releases (spec0035)."""
 
 # pyright: reportMissingImports=false
-# Optional SDK is qualified in the external M1 environment, not the editor's environment.
 
 import hashlib
 import importlib.metadata
@@ -60,7 +59,7 @@ def digest(value):
 # join revision 3's frozen table only; the SUPPORT default and the frozen
 # revision-1/2 tables never change, so older matching admissions keep their
 # own contracts and never silently gain operations.
-IMPLEMENTED_PROFILE_REVISIONS = (1, 2, 3)
+IMPLEMENTED_PROFILE_REVISIONS = (1, 2, 3, 4)
 _INTEGRATED_OPERATIONS = (
     "get_metric",
     "query_metrics",
@@ -70,6 +69,13 @@ _INTEGRATED_OPERATIONS = (
 )
 #: The revision-3 (#84) query-expanded operations (spec0032 §10.3).
 _REVISION3_OPERATIONS = ("query_detail", "query_records", "define_metric")
+#: The spec0035 C4 (#112) producer extension: revision 4 joins the frozen
+#: revision-3 query operations with the answer_example producer profile and
+#: the two Example operations; the SUPPORT default and the frozen
+#: revision-1/2/3 tables never change, so older matching admissions keep
+#: their own contracts and never silently gain them.
+_REVISION4_PROFILES = ("answer_example",)
+_REVISION4_OPERATIONS = ("save_example", "search_examples")
 #: The §10.2 existing-check catalog: each id names the check that actually
 #: executes, with exactly the operations it executes for (the current-source
 #: symbol is binding; implementations add no entries). Response/transport
@@ -105,6 +111,14 @@ def capability_table(revision: int) -> dict:
         # older matching admissions never silently gain operations.
         operations = [*operations, *_REVISION3_OPERATIONS]
         unsupported = [op for op in unsupported if op not in _REVISION3_OPERATIONS]
+    if revision >= 4:
+        # spec0035 C4 (#112): the answer_example producer profile and the two
+        # Example operations join THIS revision's frozen table only; the
+        # SUPPORT default and the immutable revision-1/2/3 tables stay
+        # untouched, so older matching admissions never silently gain them.
+        profiles = [*profiles, *_REVISION4_PROFILES]
+        operations = [*operations, *_REVISION4_OPERATIONS]
+        unsupported = [op for op in unsupported if op not in _REVISION4_OPERATIONS]
     return {
         "storage": SUPPORT["storage"],
         "profiles": profiles,
@@ -660,6 +674,20 @@ def candidate(root, kb_root, revision):
         # captured technical profile, hidden or unreferenced included.
         elif profile.kind in ("dataset", "table", "computation"):
             errors.extend(_technical_identity_errors(where, profile, sanctioned))
+            # R1 (C6 fix, spec0009 §9): the retained Core meaning/edit gate over
+            # the captured PRODUCER-PARSED flat native metadata — an externally
+            # edited candidate cannot carry a table ariadne_quality profile the
+            # Core authoring gate would refuse (the public batch writer runs the
+            # same gate at edit time; this closes the materialized-candidate
+            # route). Advisory metadata only: never a query permission input.
+            if profile.kind == "table" and "ariadne_quality" in profile.native:
+                from lumio_wiki.ariadne_context import disclose_native
+
+                from ariadne import context
+
+                errors.extend(
+                    context._quality_profile_errors(where, disclose_native(profile.native))
+                )
     if not errors:
         expected = sanctioned
         actual = {
@@ -725,7 +753,7 @@ def execution_identity():
 
 
 def validation_build_identity(root):
-    """Standalone never resolves the optional SDK, even for evidence applicability."""
+    """Internal inputs without a selector have no native build identity."""
     if not (Path(root) / "context_integration.yaml").is_file():
         return None
     return execution_identity()
@@ -839,7 +867,7 @@ def _s3_transport(profile, binding, bucket: str):
     URL style honored through obstore's documented option). Credentials come
     only from the declared ENV NAMES and never enter the returned identity
     view; the optional obstore dependency resolves only inside this call,
-    so standalone Core never imports it."""
+    so the local Knowledge transport never imports it."""
     import os
 
     try:
@@ -962,6 +990,23 @@ def _frozen_s3_runtime(manifest: dict):
     return location, local_publication_metadata_store(identity)
 
 
+def _require_integrated_retention(source_context) -> None:
+    """Integrated admission keeps required retention (F1; spec0035 §3/AC12).
+
+    A deliberately disabled private profile is a standalone-only exception and
+    cannot author or admit an integrated release: refuse before any release
+    build, binding write, or activation. Read/frozen paths never pass a
+    source_context here, so valid reads are untouched.
+    """
+    if source_context is not None and not source_context.retention_required:
+        raise ValueError(
+            "integrated admission requires required original retention; the "
+            "selected private profile declares retention 'disabled', which is a "
+            "standalone-only exception — restore retention 'required' before "
+            "authoring or admitting this release"
+        )
+
+
 def prepare_release(
     project,
     proposal,
@@ -976,6 +1021,7 @@ def prepare_release(
     source_context=None,
 ):
     """Stateless composite preview; future receipts never enter its consent digest."""
+    _require_integrated_retention(source_context)
     import msgspec
     from lumio_wiki import git_authoring as native
     from lumio_wiki.s3_location import build_published_manifest
@@ -1185,6 +1231,7 @@ def _s3_navigation_capability() -> None:
 
 
 def publish_and_verify(preview, *, source_context=None):
+    _require_integrated_retention(source_context)
     import msgspec
     from lumio_wiki.git_authoring import S3PublicationRecord, publish_revision
 
@@ -1455,9 +1502,22 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
     consumed = [page, *binding.required_policies]
     now = _now if _now is not None else context._assessment_now()
     signals = [context._page_view(p.citation, disclose_native(p.native), now) for p in consumed]
-    computation = context._computation_meta(Path(context_dir), metric)
-    if computation is not None:
-        signals.append(context._page_view(f"computations/{metric}.md", computation, now))
+    computation = None
+    if int((manifest.get("selector") or {}).get("support_revision", 1) or 1) >= 2:
+        # C2 (spec0035 §5): the supported revision-2 route resolves the
+        # computation signal ONLY from the exact authorized producer view —
+        # the scope-filtered public ContextSnapshot — matched by its exact
+        # core_ref semantic identity through the producer's public parse.
+        # No classic context_layer read and no raw snapshot filesystem scan:
+        # an out-of-scope page is absent, never disclosed.
+        native_found = _native_computation_from_view(snapshot, model, metric)
+        if native_found is not None:
+            computation = native_found[1]
+            signals.append(context._page_view(native_found[0], computation, now))
+    else:
+        computation = context._computation_meta(Path(context_dir), metric)
+        if computation is not None:
+            signals.append(context._page_view(f"computations/{metric}.md", computation, now))
     result = {
         "metric_page": page.content,
         "policies": [p.content for p in binding.required_policies],
@@ -1482,6 +1542,42 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
             governed_note="governed: true means admitted, not independently value-attested",
         )
     return result
+
+
+def _native_computation_from_view(snapshot, model: str, metric: str) -> tuple[str, dict] | None:
+    """The authorized snapshot's native Computation page for one governed
+    metric (revision-2 supported route; spec0035 §5): resolved ONLY from the
+    exact authorized producer view — the scope-filtered public
+    ``ContextSnapshot`` pages — matched by its exact core_ref semantic
+    identity through the producer's public frontmatter parse (never a Core
+    KB parser, never a raw snapshot filesystem scan). An out-of-scope page
+    is not in the view, so its existence, path, title, provenance or
+    evidence can never leak into the query signals; a missing or unreadable
+    page is the same generic absent-caveat as the legacy path — never a
+    failure, never an invented attestation. Returns ``(page-relative path,
+    native envelope)``."""
+    from lumio_wiki import parse_frontmatter
+
+    wanted = f"{model}::{metric}"
+    for page in snapshot.pages:
+        if page.kind != "computation":
+            continue
+        try:
+            full, _body, _start = parse_frontmatter(page.content, page.path)
+        except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
+            continue
+        profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+        core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
+        if (
+            isinstance(profile, dict)
+            and profile.get("kind") == "computation"
+            and isinstance(core_ref, dict)
+            and core_ref.get("kind") == "semantic"
+            and core_ref.get("id") == wanted
+        ):
+            native = profile.get("native")
+            return page.path, native if isinstance(native, dict) else {}
+    return None
 
 
 def _input_context_page_view(page, manifest, now):
@@ -1844,6 +1940,139 @@ def search_context(manifest, query, limit=10):
             }
         )
     return hits
+
+
+def search_examples(manifest, query, limit=10, include_history=False, include_sql=False):
+    """Search admitted Answer Examples in the pinned Bound Release through
+    the scoped SDK views (spec0035 §4, AC8/14): visibility scope applies
+    before matching, the producer ``answer_example`` kind filters the typed
+    scoped view BEFORE ranking and limiting, staleness is evaluated at read
+    time against the pinned cited bytes, and the exact submitted SQL provenance
+    is opt-in only. Search never executes SQL and never returns a saved
+    historical number as a current answer — reuse always reruns the recorded
+    method through the governed runtime (fresh recalculation is C7's)."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    from ariadne import answer_examples
+
+    listing, read, search = _navigation_gate()
+    location, expected, metadata_store = _navigation_identity(manifest)
+
+    def _listing():
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return listing(location, expected)
+        return listing(location, expected, metadata_store=metadata_store)
+
+    def _read(path):
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return read(location, expected, path)
+        return read(location, expected, path, metadata_store=metadata_store)
+
+    def _search(query, page_limit):
+        if metadata_store is None:  # local: exact pre-r4 call shape
+            return search(location, expected, query, limit=page_limit, kinds=("answer_example",))
+        return search(
+            location,
+            expected,
+            query,
+            limit=page_limit,
+            metadata_store=metadata_store,
+            kinds=("answer_example",),
+        )
+
+    # Kind filtering happens inside the SDK scoped view BEFORE matching,
+    # ranking and limiting; the search limit is the actual visible Example
+    # count, so staleness exclusion (a Core read-time meaning check) keeps
+    # its pre-limit semantics exactly like the retired store's ranking.
+    total = sum(1 for page in _listing() if page.kind == "answer_example")
+    if not total:
+        return []
+    results = _search(query, total)
+    if not results:
+        return []
+    ranked = []
+    for hit in results:
+        page = hit.page
+        meta = disclose_native(page.native)
+        citations = meta.get("citations") or []
+        stale = False
+        for entry in citations:
+            try:
+                cited = _read(str(entry.get("path")))
+            except (ValueError, KeyError, OSError, TypeError):
+                stale = True  # a missing/hidden/unreadable citation is stale
+                break
+            if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get(
+                "sha256"
+            ):
+                stale = True
+                break
+        if stale and not include_history:
+            continue  # stale history never occupies a result slot by default
+        submitter = meta.get("submitter") or {}
+        provenance = {
+            "submitter": submitter.get("identity"),
+            "generated": (meta.get("answer") or {}).get("captured"),
+            "sources": citations,
+        }
+        ranked.append(
+            (
+                0 if not stale else 1,
+                -hit.score,
+                page.path,
+                {
+                    "id": page.entity_id,
+                    "status": "stable",
+                    "stale": stale,
+                    "question": meta.get("question"),
+                    "interpretation": meta.get("interpretation"),
+                    "method": meta.get("method"),
+                    "provenance": provenance,
+                    "path": page.path,
+                    "entity_id": page.entity_id,
+                    "published_version": page.published_version,
+                    "citation": page.citation,
+                    "bound_release": manifest["digest"],
+                },
+                meta,
+            )
+        )
+    ranked.sort(key=lambda item: item[:3])
+    selected = ranked[:limit]
+    if include_sql:
+        for *_, hit, meta in selected:
+            hit["provenance"]["sql"] = answer_examples.validated_sql_provenance(
+                meta, f"answer example {hit['id']!r}"
+            )
+    return [hit for *_, hit, _meta in selected]
+
+
+def candidate_term_entries(kb_root, revision):
+    """The candidate-side Reference entries for the ONE shared resolver core
+    (spec0035 §2): the producer's PUBLIC candidate parse
+    (:func:`lumio_wiki.git_authoring.capture_revision` reads the exact Git
+    blobs of ``revision``) supplies the pages, and each structured Reference
+    is adapted in memory exactly like the pinned native resolver above —
+    ``disclose_native`` over the producer-parsed flat native metadata, no
+    Core-side KB YAML parse, no second matcher. Ordinary pages stay
+    documentation; bookkeeping pages are not Compiled Pages at all."""
+    from lumio_wiki.ariadne_context import disclose_native
+    from lumio_wiki.git_authoring import capture_revision
+
+    root = Path(kb_root)
+    if not root.is_dir():
+        return []  # a candidate without a knowledge subtree has no References
+    entries: list[tuple[str, dict, bool]] = []
+    for page in capture_revision(root, revision).kb.pages:
+        profile = page.ariadne_profile
+        native = disclose_native(profile.native) if profile is not None else None
+        if not isinstance(native, dict):
+            continue
+        extension = native.get("ariadne")
+        if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
+            continue  # ordinary pages stay documentation, never References
+        entries.append((page.path, {"type": "reference", **native}, False))
+    return entries
 
 
 def resolve_term(

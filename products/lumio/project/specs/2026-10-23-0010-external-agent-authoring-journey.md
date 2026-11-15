@@ -1,5 +1,9 @@
 # Specification 0010: External-agent authoring journey
 
+**Approved 2026-11-09:** The owner accepted this scoped clarification with shared spec0034 revision 5 and plan amendment revision 1 (“Freigegeben. Ticketize”). No implementation grant is implied.
+
+**Scoped shared-workspace clarification — 2026-11-09:** [Shared spec0034 §12.4](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md#124-retention-exception) permits an explicitly owner-confirmed non-required-retention mode only for standalone managed document knowledge. This is not this independent-host handoff journey: its CLI/default candidate calls, transfer bundles and publishing environment retain all required-original gates below. A future native implementation must use an explicit opt-in at the managed boundary, not infer permission from a missing Artifact Store or silently relax this specification. Integrated Ariadne admission is not covered by that exception.
+
 **Approved scoped follow-up, 2026-11-04 (outside approved revision 5):** [shared spec0034](../../../../project/specs/2026-11-04-0034-agent-first-shared-workspaces.md) defines owner-managed team contribution through existing agent apps. This specification continues to own the independent-host Git/bootstrap/private-handoff route; that route is not the selected default contributor setup. Existing source and admission guarantees remain. The approved new plans own the managed route; this notice neither executes nor supersedes this independent-host revision.
 
 Status: approved design with scoped owner amendments. Written revision: 5.
@@ -256,6 +260,20 @@ Bind every managed page to the exact selected source digest. Retain and verify
 original bytes before reporting successful managed ingestion. A failure may
 leave immutable private registration/artifacts that a retry reuses, but must not
 report a complete candidate or silently substitute hash-only retention.
+
+### 3.1 Explicit verbatim preservation (scoped amendment, 2026-11-11)
+
+Owner-approved with shared spec0035's native preservation/inspection disposition (“Scoped SDK repair (Recommended)”, then “Approve contract (Recommended)”). This additive producer seam preserves the existing distilled protocol and independent Lumio defaults; it creates no second authoring lifecycle, model requirement or new source authority.
+
+`CandidateSourceRecord` gains exactly two optional fields, both defaulting to `None`: `verbatim_page: str | None` selects one authored request-page filename for that Source, and `expected_text_digest: str | None` is the expected SHA-256 of its exact converted body. They are separate from `intent: new|update`. Existing strict version-1 candidate JSON accepts these known optional fields, still rejects unknown keys/invalid shapes or digests, and behaves unchanged when both are absent. `CandidateRequest`, `ExtractionResult` and extraction-record shape otherwise remain unchanged; no mutable default is introduced.
+
+Each selected page must resolve uniquely among the request pages and declare the paired Source ID in its source citations. Missing counterpart/digest, unknown selector, colliding page filenames or multiple selected Sources claiming the same verbatim page refuse rather than guess. A candidate may contain multiple verbatim documents/pages and ordinary distilled pages; there is no one-page-per-candidate limit. These checks also apply at the public structured `ingest_candidate` boundary, not only the JSON loader.
+
+Read selected page text without universal-newline translation. The managed frontmatter uses a canonical LF closing delimiter; the existing parser returns the closing delimiter's one structural LF as the first body character. Require and remove exactly that one structural character for comparison, without stripping or rejecting any following actual source-leading blank lines. The remaining body, including CRLF where retained by extraction, trailing newlines and literal page-break markers even inside fenced code, must hash to `expected_text_digest`. The complete-page parse bypasses only distiller page splitting, newline trimming and summary injection; native routing, stable Entity identity, ontology, Claim, cross-page and whole-candidate atomic validation remain mandatory. When routing-only metadata is stripped, reconstruct the closing `---` directly followed by the original parser body: adding another newline would corrupt the validated body. Distilled callers keep their existing transformations.
+
+The digest is an expectation check against the supplied page, not independent authentication that conversion occurred. The managed workspace caller exposes an explicit per-source `verbatim: true` choice, checks the actual native extraction record from the original bytes, refuses its incomplete flag, and compares the caller's body to the exact extraction text before constructing the request. No clipping, silent distilled substitute or model invocation satisfies verbatim intake. Original-byte digest verification, retention, private material placement and new/update identity checks remain unchanged. A mismatch or unsupported/ambiguous preservation request refuses before a partial authored candidate or private registration caused by that request; retries retain the existing native atomic/recovery guarantees.
+
+Observable acceptance: a native multi-document verbatim candidate preserves exact converted bodies (leading/trailing blank lines, LF/CRLF and literal delimiter examples); default distilled behavior remains unchanged; mismatch, incomplete extraction and ambiguous binding refuse. This amendment is implemented through the existing producer candidate lifecycle and scoped managed caller, not Core compatibility ingestion. Capture checkpoint: planning-contract v1, installed provenance unknown; existing vocabulary/architecture suffice, with no separate glossary/ADR change.
 
 ## 4. Human review and native Git submission
 

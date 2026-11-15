@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ariadne-data"
 version = "0.8.0"
-description = "Governed metrics for autonomous agents: OKF context layer + OSI semantic layer behind one MCP facade"
+description = "Governed metrics for autonomous agents: one Lumio knowledge foundation plus the OSI semantic layer behind one MCP facade"
 readme = "README.md"
 requires-python = ">=3.14"  # ADR-0008 scoped amendment (spec 0026): 3.12/3.13 support ends here
 dependencies = [
@@ -14,11 +14,16 @@ dependencies = [
     "openai>=1.40",
     "pyyaml>=6.0",
     "jsonschema>=4.18",  # spec 0028 §2: pinned ODCS v3.2.0 structural validation (Draft 2019-09)
+    # spec0035/ADR-0029: the Lumio SDK is MANDATORY (the native KB, its public
+    # setup/authoring contracts and page mutations are the one knowledge path);
+    # MCP/cloud/model capabilities stay optional extras. The floor names the
+    # coordinated SDK release 0.7.0 — published 0.6.0 lacks the public
+    # empty-setup exports Core consumes.
+    "lumio-wiki>=0.7,<0.8",
 ]
 
 [project.scripts]
 ariadne = "ariadne.cli:main"  # the local JSON CLI (spec 2026-09-23-0001 §4)
-ariadne-ingest = "ariadne.ingest:main"
 ariadne-validate = "ariadne.validate:main"
 ariadne-serve = "ariadne.serve:main"  # the MCP facade; combined toolset by default (G6)
 # The Analyst/Authoring registrations of the same adapter (spec 0009 §6, issue #38):
@@ -40,9 +45,11 @@ mcp = [
 spreadsheets = [
     "openpyxl>=3.1,<4",  # stored XLSX cells/formula presence only; never Excel execution
 ]
-# ADR-0009 document ingestion: the lumio-wiki-researched converter stack. Optional
-# so the base install stays lightweight; ariadne-ingest fails with install guidance
-# when a converter is missing. dev gains the same deps so the test suite covers them.
+# ADR-0009 document conversion, now serving the NATIVE intake's bounded
+# Seed-Notes document parts only (spec0035/ADR-0029: onboarding itself is
+# Lumio-native; the retired ariadne-ingest orchestration and CLI are gone).
+# Optional so the base install stays lightweight. dev gains the same deps so
+# the test suite covers them.
 documents = [
     "liteparse>=2.4.0",  # PDF
     "markitdown[docx]>=0.1.6",  # docx/pptx/xlsx
@@ -75,8 +82,6 @@ addopts = "-q"
 venvPath = "../../../.."
 venv = ".venv"
 exclude = ["build", "**/.venv", "examples/trace-data/data/docs"]
-# The separately installed Agent keeps its own pyright configuration in
-# ariadne-agent/pyproject.toml (outside this workspace member).
 executionEnvironments = [
     { root = ".", extraPaths = ["src"] },
 ]

@@ -44,7 +44,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.context import _load, core_body_sections
+from ariadne.context import _load, _quality_profile_errors, core_body_sections
 from ariadne.ingest import _SECRET_PATTERNS
 from ariadne.lumio_context import knowledge_path  # pyright: ignore[reportMissingImports]
 from ariadne.sources import _DSN_PASSWORD_RE
@@ -80,6 +80,20 @@ _GENERATED_FILES = frozenset({"index.md", "log.md"})
 # the variable from matching). Shared with proposal artifact edits.
 _AWS_ASSIGNMENT_RE = re.compile(
     r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
+)
+
+# The fresh-setup guidance for a retired-format project (spec0035 §6/AC10):
+# the new release supports only the native knowledge/ contract — an old
+# standalone project refuses before any mutation and is never reset or
+# converted; its files and snapshots stay untouched.
+_UNSUPPORTED_PROJECT_GUIDANCE = (
+    "This release supports only the native knowledge/ contract (spec0035): the "
+    "retired standalone context_layer/ path is not supported and is never "
+    "converted, activated or reset. Create a FRESH project with 'ariadne-init "
+    "<target> --namespace <namespace> --private-profile <profile>' (explicit "
+    "selections; Git must already exist) and deliberately re-onboard the "
+    "needed content into it through normal authoring and review; old approvals "
+    "do not transfer. Nothing was read, written or modified here."
 )
 
 # The fail-closed instruction for an interrupted Git proposal transition
@@ -378,6 +392,27 @@ def check_artifact_name(name: object, *, what: str) -> str:
     return name
 
 
+# The native-profile trust/generated claim families (spec0029 §1.5 native
+# metadata, mirrored onto ariadne_profile.native): stamped verification,
+# attestation/attester facts, core-attached receipt summaries, the canonical
+# resource binding and the generated ``ariadne`` schema/observations block
+# are system-owned under the SAME inherited-verbatim rule as the outer
+# frontmatter; the ``ariadne`` reference extension is the authored exception
+# (the exact existing authored-Reference exception, mirrored at the kind).
+_NATIVE_SYSTEM_CLAIM_KEYS = frozenset(
+    {
+        "verified",
+        "generated",
+        "stale_after",
+        "attestation",
+        "attester",
+        "ariadne_evidence",
+        "resource",
+        "ariadne",
+    }
+)
+
+
 def _literal(rel: str) -> str:
     """One artifact path as a LITERAL Git pathspec: the magic prefix pins
     exact-name semantics at the dispatch seam, so a validated path can never
@@ -492,8 +527,6 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
     base = _claim_map(rel, base_text) or {}
     claims = _claim_map(rel, content) or {}
     system_keys = _SYSTEM_CLAIM_KEYS
-    if PurePosixPath(rel).parts[:2] == ("context_layer", "references"):
-        system_keys = _SYSTEM_CLAIM_KEYS - {"ariadne"}  # the authored extension (K2)
     forged = sorted(
         key for key in system_keys & claims.keys() if key not in base or base[key] != claims[key]
     )
@@ -511,11 +544,34 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
             "inherited unchanged from the base revision are allowed, remove the "
             "claim and retry"
         )
-    # The core-owned BODY sections of an inherited generated page (marked by
-    # the base's generated-facts claims) are system facts too: forged or
-    # dropped rendered schema/observation/history facts must refuse even when
-    # every frontmatter claim is carried verbatim (issue #41)
-    if PurePosixPath(rel).suffix == ".md" and {"ariadne", "resource"} & base.keys():
+    # spec0035 C1 fix (F2): the producer-owned native profile carries the SAME
+    # system-owned trust/generated claims under ``ariadne_profile.native`` —
+    # the identical inherited-verbatim rule applies there, with the exact
+    # existing authored-Reference exception mirrored at the native kind (the
+    # ``ariadne`` reference extension stays caller-authorable). The SDK stays
+    # independent: this is Core's own authorship boundary over its profile.
+    native_system = _NATIVE_SYSTEM_CLAIM_KEYS
+    proposed_profile = claims.get("ariadne_profile")
+    base_profile = base.get("ariadne_profile")
+    inherited_kind = None
+    inherited_slot: dict = {}
+    base_has_generated_block = False
+    if isinstance(base_profile, dict):
+        inherited_kind = base_profile.get("kind")
+        base_native = base_profile.get("native")
+        if isinstance(base_native, dict):
+            inherited_slot = base_native
+            base_has_generated_block = (
+                inherited_kind != "reference" and "ariadne" in base_native
+            )
+    # The generated rendered BODY of an inherited native generated page is
+    # core-owned exactly like the outer generated pages: altering, dropping or
+    # adding the rendered Schema/Observations sections refuses even when every
+    # metadata claim compares equal (F2 completion — core_body_sections is the
+    # existing comparison).
+    if PurePosixPath(rel).suffix == ".md" and (
+        {"ariadne", "resource"} & base.keys() or base_has_generated_block
+    ):
         base_sections = core_body_sections(base_text)
         sections = core_body_sections(content)
         body_forged = sorted(
@@ -529,6 +585,33 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
                 "Observations and Schema history sections are regenerated by "
                 "refresh_schema, never authored in a proposal; carry them "
                 "unchanged and edit the authored sections only"
+            )
+    if isinstance(proposed_profile, dict) or isinstance(base_profile, dict):
+        proposed = proposed_profile if isinstance(proposed_profile, dict) else {}
+        # Only edits that remain authored References may change this extension.
+        if proposed.get("kind") == "reference" and inherited_kind in (None, "reference"):
+            native_system = native_system - {"ariadne"}  # the authored extension
+        slot = proposed.get("native")
+        if not isinstance(slot, dict):
+            slot = {}
+        forged_native = sorted(
+            key
+            for key in native_system & slot.keys()
+            if key not in inherited_slot or inherited_slot[key] != slot[key]
+        )
+        # REMOVING a stamped native claim the base carried is the same forgery
+        forged_native = sorted(
+            set(forged_native) | (native_system & inherited_slot.keys() - slot.keys())
+        )
+        if forged_native:
+            raise ValueError(
+                f"the edit of {rel!r} introduces, changes or removes the native "
+                f"trust/generated claim(s) {forged_native} under ariadne_profile.native "
+                "— verification, attestation and generated schema facts are stamped "
+                "by the system (the authored Reference ariadne extension excepted, "
+                "like the retired context_layer exception); never authored or "
+                "dropped in a proposal — inherit them unchanged from the base "
+                "revision"
             )
 
 
@@ -546,9 +629,8 @@ def _assert_scope(rel: str) -> None:
         raise ValueError(
             f"artifact path {rel!r} is outside the proposal artifact scope (ariadne.yaml, "
             "data/seed_notes.md, semantic_layer/models/*.yml, semantic_layer/graph.yml, "
-            "contracts/*.ya?ml, contract_bindings.yaml, "
-            "context_layer/{datasets,tables,references,references/joins,policies,"
-            "metrics,skills}/*.md)"
+            "contracts/*.ya?ml, contract_bindings.yaml, context_integration.yaml, "
+            "knowledge/**/*.md native knowledge pages)"
         )
     refuse_generated(rel)  # generated artifacts are never USER-editable
 
@@ -585,17 +667,9 @@ def _in_user_scope(rel: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
         return True  # spec 0028 §3: producer contract documents (flat)
-    if (
-        parts[0] == "context_layer"
-        and len(parts) >= 3
-        and parts[1] in _OKF_PAGE_SECTIONS
-        and pure.suffix == ".md"
-    ):
-        if parts[1] == "references":
-            # K2 (issue #42, spec 0010 §3): general References live directly
-            # under references/; the join References keep references/joins/.
-            return len(parts) == 3 or (len(parts) == 4 and parts[2] == "joins")
-        return True
+    # C6 (spec0035 §6): the retired standalone context_layer/ scope is gone —
+    # user-editable Context pages live only in the native knowledge/ subtree
+    # (knowledge_path, already accepted above).
     return False
 
 
@@ -690,21 +764,17 @@ def _scope_files(project: Path) -> list[str]:
                 raise GitError(f"initial contract {path.name!r} must not be a symlink")
             if path.is_file():
                 rels.append(path.relative_to(project).as_posix())
-    for section in _OKF_PAGE_SECTIONS:
-        root = project / "context_layer" / section
-        if root.is_dir():
-            rels.extend(
-                path.relative_to(project).as_posix()
-                for path in sorted(root.rglob("*.md"))
-                if path.is_file() and path.name not in _GENERATED_FILES
-            )
-    examples = project / "answer_examples"
-    if examples.is_dir():
-        rels.extend(
-            path.relative_to(project).as_posix()
-            for path in sorted(examples.glob("*.md"))
-            if path.is_file() and path.name not in _GENERATED_FILES
-        )
+    for rel in sorted(
+        path
+        for path in sorted(contracts.iterdir())
+        if path.is_file() and path.suffix in _MODEL_SUFFIXES
+    ) if contracts.is_dir() else []:
+        rels.append(rel.relative_to(project).as_posix())
+    # C6 (spec0035 §6): the retired standalone context_layer/ and
+    # answer_examples/ initial-revision walks are gone — the native contract's
+    # initial artifact revision commits the registry, Seed Notes, OSI models,
+    # graph, contracts and the native knowledge/ subtree only (a legacy
+    # project refuses at the shared project gate before any proposal exists).
     return rels
 
 
@@ -820,6 +890,70 @@ def _admitted_baseline(project: Path) -> str | None:
     return None if current is None else current["commit"]
 
 
+def refuse_unsupported_project(project: str | Path) -> None:
+    """Refuse an unsupported retired project/admission BEFORE any mutation
+    (AC10, spec0035 §6): the gate validates the ACTUAL native project format —
+    served ``context_layer/`` pages without a valid ``knowledge/`` Knowledge
+    Base (Control File + Source Reference Manifest), a dummy/placeholder
+    ``knowledge/`` directory without that state, or a pinned admission whose
+    snapshot serves retired Context pages without the native KB state — with
+    fresh-setup guidance and no conversion, reset or filesystem change. The
+    shared project-open path (proposals, discovery and the query runtime)
+    calls this so runtime rejection never lives only in the scaffolder.
+    Projects carrying the real native KB state (including mixed intermediate
+    candidates on the migration line) and plain onboarding-empty projects are
+    supported here."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        load_control_file,
+        load_source_reference_manifest,
+    )
+    from lumio_wiki.knowledge_base import (  # pyright: ignore[reportMissingImports]
+        ControlFileError,
+    )
+    from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImports]
+        SourceReferenceError,
+    )
+
+    project = Path(project)
+
+    def _native_kb_state(kb_dir: Path) -> bool:
+        """Producer-parse the ACTUAL KB identity (F4 completion): Control File
+        and Source Reference Manifest must load and validate. Presence of the
+        files alone never establishes support, and page validity is NEVER
+        consulted here (AC7: unrelated mutable working-copy drafts cannot
+        block a valid pinned admission)."""
+        if not kb_dir.is_dir():
+            return False
+        try:
+            manifest = load_source_reference_manifest(kb_dir)
+            control = load_control_file(kb_dir)
+        except (ControlFileError, SourceReferenceError):
+            return False
+        return manifest is not None and control is not None
+
+    knowledge = project / "knowledge"
+    native_kb = _native_kb_state(knowledge)
+    context_layer = project / "context_layer"
+    retired_pages = context_layer.is_dir() and any(context_layer.rglob("*.md"))
+    unsupported = (retired_pages and not native_kb) or (knowledge.is_dir() and not native_kb)
+    if not unsupported:
+        # A pinned admission must ALSO be the native contract: its snapshot
+        # serving retired Context pages without the native KB state is the
+        # legacy admitted format — never silently re-opened or re-validated.
+        from ariadne import admission  # lazy: admission imports proposals at load
+
+        record = admission.load_current(project)
+        if record is not None:
+            admission.refuse_unsupported_admission_snapshot(project, record)
+    if unsupported:
+        raise ValueError(
+            f"{project} uses the retired standalone Context layout or carries a "
+            "knowledge/ directory without the native Knowledge Base state (Control "
+            "File + Source Reference Manifest); "
+            + _UNSUPPORTED_PROJECT_GUIDANCE
+        )
+
+
 def start_proposal(project: str | Path, *, base_revision: str | None = None) -> dict:
     """Start ONE isolated authoring proposal in the fixed data project: a
     system-generated ID, its branch ``ariadne/proposal/<id>`` and its dedicated
@@ -834,6 +968,7 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     revisions (equal until the first edit)."""
     project = Path(project).resolve()
     _require_repo(project)
+    refuse_unsupported_project(project)  # AC10: before any state exists
     _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
     _require_git_identity(project)
     with _file_lock(project / LOCKS_REL / "project.lock"):
@@ -1033,57 +1168,251 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
-def add_answer_example(
-    project: str | Path, proposal: str, expected_revision: str, example_id: str, content: str
-) -> dict:
-    """Commit one new Example at its generated artifact identity only.
 
-    This narrow seam shares proposal locking, revision checks and exact-path
-    staging with ordinary edits without making ``answer_examples/`` a general
-    authoring file surface. Existing identities are never overwritten.
-    """
+
+# ------------------------------------------------- native KB page batches
+
+# One knowledge-page edit of a complete batch: exactly the documented fields.
+_PAGE_EDIT_KEYS = frozenset({"path", "content"})
+
+
+def check_page_batch(pages: object) -> list[tuple[str, str]]:
+    """Validate one complete knowledge-page batch BEFORE any write: a non-empty
+    list of objects carrying exactly ``{path, content}``, every ``path`` a
+    native KB page identity (``knowledge/…​.md`` — generated bookkeeping and
+    non-page files are refused) and every ``content`` within the shared
+    content boundary. Returns ``(rel, content)`` pairs; a repeated path is a
+    duplicate-target conflict, never last-writer-wins."""
+    if not isinstance(pages, list) or not pages:
+        raise ValueError(
+            "a page batch is a non-empty JSON list of {path, content} objects — "
+            "one coherent candidate revision or no accepted batch"
+        )
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for index, page in enumerate(pages):
+        if not isinstance(page, dict) or set(page) != _PAGE_EDIT_KEYS:
+            raise ValueError(
+                f"pages[{index}] must be an object with exactly the fields "
+                "['content', 'path'] — approval/attestation claims and arbitrary "
+                "metadata are system-owned"
+            )
+        rel = page["path"]
+        if not isinstance(rel, str) or not knowledge_path(rel) or not rel.endswith(".md"):
+            raise ValueError(
+                f"pages[{index}].path {rel!r} is not a knowledge/ Compiled Page "
+                "identity — only native knowledge pages route through the "
+                "complete-batch writer (index.md/log.md are system-owned)"
+            )
+        if PurePosixPath(rel).name in _GENERATED_FILES:
+            refuse_generated(rel)
+        if rel in seen:
+            raise ValueError(
+                f"the batch carries {rel!r} twice — two writes for one page are "
+                "a duplicate-target conflict, never last-writer-wins"
+            )
+        seen.add(rel)
+        content = page["content"]
+        check_artifact_content(f"page {rel!r}", content)
+        pairs.append((rel, content))
+    return pairs
+
+
+def edit_page_batch(
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
+    pages: list,
+    *,
+    core_generated: bool = False,
+) -> dict:
+    """Apply ONE complete knowledge-page batch through the PUBLIC native
+    writer inside the existing proposal lock/revision discipline (AC4,
+    spec0035 §2): the whole batch is validated as one candidate by the SDK
+    (``write_pages_into_worktree`` — new and revised pages together, never
+    sequential single-page writes) before any byte is written, so mutually
+    linked pages are accepted together and a dangling reference or invalid
+    metadata rejects the batch without accepting a partial page set. Core
+    then stages ONLY the writer's returned intended paths, commits on the
+    proposal branch and updates the recorded candidate revision AFTER the
+    commit; an interrupted transition stays human-resolution evidence.
+
+    Preserved guards: the stale-expected-revision refusal, the identical-batch
+    no-op, the shared pre-write content boundary, the forged system-owned
+    claim boundary per page and the untracked-draft refusal. OSI/model draft
+    edits keep their separate :func:`edit_proposal` handling — this seam is
+    only for ``knowledge/`` pages.
+
+    ``core_generated=True`` is the CORE-AUTHORED regeneration seam of the
+    explicit schema refresh and the revision-2 native finalize (spec0035 §6):
+    deterministic Core generation may change the system-owned claims
+    (``ariadne_profile`` native families, ``core_ref``) it derives against
+    operator-approved inputs. It is never caller-facing — the public
+    ``AuthoringProject.edit_pages_batch`` surface never forwards it."""
     project = Path(project).resolve()
-    example_id = check_artifact_name(example_id, what="answer example ID")
-    rel = f"answer_examples/{example_id}.md"
-    check_artifact_content(f"answer example {example_id!r}", content)
-    _load_record(project, proposal)
-    worktree = project / WORKTREES_REL / proposal
+    pairs = check_page_batch(pages)
+    _load_record(project, proposal)  # identity/belonging errors surface early
+    worktree_root = project / WORKTREES_REL / proposal
     with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
-        record = _load_record(project, proposal)
+        record = _load_record(project, proposal)  # authoritative under the lock
         _check_coherent(project, record)
         current = record["candidate_revision"]
         if expected_revision != current:
             raise ValueError(
                 f"stale revision: proposal {proposal} is at candidate {current}, the "
-                f"save-example expected {expected_revision} — re-read the candidate "
-                "and retry with the current revision; nothing was written"
+                f"batch expected {expected_revision} — re-read the candidate and retry "
+                "with the current candidate revision; nothing was written"
             )
-        if _read_blob(project, current, rel) is not None:
-            raise ValueError(f"answer example {example_id!r} already exists in candidate {current}")
-        _require_git_identity(project)
-        _refuse_untracked_new_artifact(project, worktree, rel, current)
-        _safe_write(worktree, rel, content)
-        literal = _literal(rel)
-        _git(["add", "-f", "--", literal], worktree)
-        _git(["commit", "-m", f"ariadne: add answer example {example_id}", "--", literal], worktree)
-        revision = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
-        record["candidate_revision"] = revision
-        _store_record(project, record)
-    return {"proposal": proposal, "revision": revision, "changed": True, "path": rel}
+        return _edit_page_batch_locked(
+            project,
+            proposal,
+            record,
+            current,
+            worktree_root,
+            pairs,
+            core_generated=core_generated,
+        )
 
 
-# ------------------------------------------- G4 (issue #36): finalize + evidence
+def _edit_page_batch_locked(
+    project: Path,
+    proposal: str,
+    record: dict,
+    current: str,
+    worktree_root: Path,
+    pairs: list[tuple[str, str]],
+    *,
+    core_generated: bool = False,
+) -> dict:
+    """The lock-held body of :func:`edit_page_batch`. Callers that ALREADY
+    hold the proposal lock — the revision-2 finalize pass inside
+    ``validate_proposal`` — submit their generated batch through here with
+    their authoritative record and revision; the lock is never re-acquired
+    (a non-reentrant re-lock inside the finalize would deadlock)."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        load_knowledge_base,
+        parse_frontmatter,
+    )
+    from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports]
+        GitAuthoringError,
+        write_pages_into_worktree,
+    )
+    from lumio_wiki.ingest import ProposedPage  # pyright: ignore[reportMissingImports]
 
-# The ONLY paths the deterministic finalize pass may change in a worktree
-# (issue #36/G4): metric pages (mechanical enrichment), computation pages and
-# the bookkeeping index trees (spec §4). Any OTHER change at finalize time
-# marks an interrupted transition — human resolution, never a silent commit.
-_FINALIZE_PATH_RE = re.compile(
-    r"^(?:context_layer/metrics/[^/]+\.md"
-    r"|context_layer/computations/[^/]+\.md"
-    r"|context_layer(?:/[^/]+)*/index\.md"
-    r"|answer_examples/index\.md)$"
-)
+    # spec0035 C1 fix (F3): the producer-owned page identity decides where
+    # a title actually lives. A path-addressed batch entry whose declared
+    # canonical title/alias resolves to a DIFFERENT recorded page (an
+    # identity mix-up would otherwise write the wrong page while staging
+    # the addressed one) refuses BEFORE any write or claim check — the
+    # addressed path and the native destination must be the same page.
+    kb, kb_report = load_knowledge_base(worktree_root / "knowledge")
+    by_title: dict = {}
+    by_alias: dict = {}
+    by_path: dict = {}
+    if kb_report.is_valid:
+        for page in kb.pages:
+            if not page.path:
+                continue
+            by_title[page.title] = page
+            by_path[page.path] = page
+            for alias in page.aliases:
+                by_alias[alias] = page
+    identical = True
+    proposed: list = []
+    for rel, content in pairs:
+        base_content = _read_blob(project, current, rel)
+        if base_content is not None and base_content == content.encode("utf-8"):
+            continue  # an identical page edit contributes no change
+        identical = False
+        if not (worktree_root / rel).exists():
+            _refuse_untracked_new_artifact(project, worktree_root, rel, current)
+        meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+        title = meta.get("title") if isinstance(meta, dict) else None
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(
+                f"page {rel!r} carries no non-empty canonical title — the "
+                "native writer addresses every page by its declared title"
+            )
+        # R1 (C6 fix, spec0009 §9 quality amendment): the retained Core
+        # authoring gate over the PRODUCER-PARSED flat native metadata — a
+        # table page carrying ariadne_quality passes K's structural check
+        # inside the batch writer AND Core's meaning/edit validation here,
+        # BEFORE any byte is written (the classic edit path lost this gate
+        # when the classic bundle retired; quality stays advisory metadata,
+        # never a query permission input).
+        profile = meta.get("ariadne_profile") if isinstance(meta, dict) else None
+        native = profile.get("native") if isinstance(profile, dict) else None
+        kind = profile.get("kind") if isinstance(profile, dict) else None
+        if (
+            isinstance(native, dict)
+            and "ariadne_quality" in native
+            and (kind == "table" or native.get("type") == "table")
+        ):
+            quality_errors = _quality_profile_errors(rel, native)
+            if quality_errors:
+                raise ValueError("; ".join(quality_errors))
+        kb_rel = PurePosixPath(rel).relative_to("knowledge").as_posix()
+        recorded = by_title.get(title) or by_alias.get(title)
+        occupant = by_path.get(kb_rel)
+        if recorded is not None and recorded.path != kb_rel:
+            raise ValueError(
+                f"page {rel!r} declares canonical title {title!r}, which resolves "
+                f"to the recorded page knowledge/{recorded.path} — a path-addressed "
+                "batch cannot redirect or relabel a page (aliases resolve the same "
+                "way): address its recorded identity or author the change through "
+                "review; nothing was written"
+            )
+        if recorded is None and occupant is not None and occupant.title != title:
+            raise ValueError(
+                f"page {rel!r} is the recorded page of {occupant.title!r} but the "
+                f"batch declares {title!r} — a path-addressed batch cannot relabel "
+                "a page to a different identity: address the recorded title or "
+                "author the change through review; nothing was written"
+            )
+        if not core_generated:
+            _refuse_forged_claims(rel, content, base_content)
+        proposed.append(ProposedPage(relative_path=kb_rel, title=title, markdown=content))
+    if identical:
+        return {
+            "proposal": proposal,
+            "revision": current,
+            "changed": False,
+            "paths": [rel for rel, _content in pairs],
+            "count": len(pairs),
+        }  # identical batch: no commit, candidate unchanged
+    # The complete candidate validates as ONE batch before any byte: a
+    # dangling reference or invalid metadata refuses with the worktree,
+    # branch and record untouched (the writer restores any partial state).
+    try:
+        result = write_pages_into_worktree(
+            worktree_root / "knowledge",
+            proposed,
+            operation="ariadne candidate page batch",
+        )
+    except GitAuthoringError:
+        raise
+    _require_git_identity(project)
+    # Stage ONLY the returned intended paths (literal pathspecs), then
+    # commit; the recorded candidate revision updates AFTER the commit —
+    # a core-authored commit the record never saw is the interrupted
+    # transition signature the coherence gate refuses for the human.
+    intended = [f"knowledge/{kb_path}" for kb_path in result.written]
+    literal = [_literal(rel) for rel in intended]
+    _git(["add", "-f", "--", *literal], worktree_root)
+    _git(
+        ["commit", "-m", f"ariadne: page batch ({len(intended)} pages)", "--", *literal],
+        worktree_root,
+    )
+    new_revision = _git(["rev-parse", "HEAD"], worktree_root).stdout.strip()
+    record["candidate_revision"] = new_revision
+    _store_record(project, record)
+    return {
+        "proposal": proposal,
+        "revision": new_revision,
+        "changed": True,
+        "paths": intended,
+        "count": len(intended),
+    }
 
 
 def scope_blobs(project: Path, revision: str) -> list[tuple[str, bytes]]:
@@ -1130,40 +1459,6 @@ def refuse_untracked_scope(project: Path, record: dict) -> None:
                 )
 
 
-def commit_generated(project: Path, record: dict, *, message: str) -> str | None:
-    """Commit the finalize pass's changes in the proposal worktree: stage and
-    commit EXACTLY the service-generated paths that changed (each pinned as a
-    LITERAL pathspec, never ``git add .``), persist the new candidate revision
-    durably, and return it — or None when nothing changed (the deterministic
-    no-op: no commit, the candidate revision stays). CALLER holds the proposal
-    lock and ran :func:`_check_coherent` before the finalize pass; any change
-    outside the finalize-owned set is an interrupted transition refused for
-    human resolution."""
-    proposal = record["id"]
-    worktree = project / WORKTREES_REL / proposal
-    changed: list[str] = []
-    for line in _git(
-        ["status", "--porcelain", "--untracked-files=all"], worktree
-    ).stdout.splitlines():
-        if not line.strip():
-            continue
-        rel = line[3:].rsplit(" -> ", 1)[-1]
-        if _FINALIZE_PATH_RE.match(rel):
-            changed.append(rel)
-        else:
-            raise ValueError(
-                f"the worktree of proposal {proposal} carries the change {rel!r} outside "
-                "the generated-artifact paths the finalize pass owns" + _HUMAN_RESOLUTION
-            )
-    if not changed:
-        return None
-    _require_git_identity(project)
-    literal = [_literal(rel) for rel in changed]
-    _git(["add", "-f", "-A", "--", *literal], worktree)
-    _git(["commit", "-m", message, "--", *literal], worktree)
-    record["candidate_revision"] = _git(["rev-parse", "HEAD"], worktree).stdout.strip()
-    _store_record(project, record)
-    return record["candidate_revision"]
 
 
 def _validation_path(project: Path, proposal: str, revision: str) -> Path:

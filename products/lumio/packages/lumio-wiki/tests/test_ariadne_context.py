@@ -45,6 +45,7 @@ from lumio_wiki.ariadne_context import (
 from lumio_wiki.artifact_store import InMemoryArtifactStore
 from lumio_wiki.git_authoring import (
     GitAuthoringError,
+    build_restored_root_record,
     ingest_into_worktree,
     merge_entities_in_worktree,
     preview_publication,
@@ -58,6 +59,7 @@ from lumio_wiki.knowledge_base import _parse_frontmatter as parse_frontmatter
 from lumio_wiki.knowledge_base import load_knowledge_base
 from lumio_wiki.location import FilesystemLocation, PublishedFilesystemLocation
 from lumio_wiki.s3_location import S3Location, S3Manifest, _get_bytes
+from lumio_wiki.source_inspection import read_local_published_bindings
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
@@ -535,6 +537,37 @@ def test_ariadne_context_journey(tmp_path):
     )
     assert first_policy.content == fixture_policy.decode()
     assert "# Retail Return Policy" in first_policy.content
+
+    # --- Bounded restore disposition (spec0034 §12.5): the standalone
+    # source-inspection seam accepts a qualifying moved-target restore
+    # record, while the shared public Context API stays strict irrespective
+    # of any marker — the expected Context identity is unchanged. The marker
+    # is genuinely qualifying: public builder, real imported receipt bytes,
+    # exact resolved live destination, deterministic binding. ---
+    moved = tmp_path / "published-moved"
+    shutil.copytree(destination, moved)
+    moved_receipts = moved / ".lumio-publication" / "receipts"
+    record = build_restored_root_record(
+        destination=moved,
+        workspace_id="context-journey",
+        restored_at="2026-11-11T00:00:00+00:00",
+        # Provenance only — never a substitute for the destination/import
+        # verification the record's consumers perform.
+        source_backup_manifest_sha256=hashlib.sha256(
+            (moved / "versions" / revision / "manifest.json").read_bytes()
+        ).hexdigest(),
+        imported_versions={
+            path.stem: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(moved_receipts.glob("*.json"))
+        },
+    )
+    (moved / ".lumio-publication" / "restore.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    standalone_receipt, _standalone_sealed = read_local_published_bindings(moved, revision)
+    assert standalone_receipt.activated is True
+    with pytest.raises(UnadmittedInputError):
+        open_published_context(PublishedFilesystemLocation(moved, version=revision), expected)
 
 
 # ---------------------------------------------------------------------------
@@ -2102,3 +2135,41 @@ def test_scoped_s3_navigation_requires_exact_private_admission(tmp_path):
         pinned2, expected2, aurora_path, metadata_store=metadata
     )
     assert aurora_v2.content == aurora_v2_text
+
+
+def test_answer_example_operation_reports_structural_errors():
+    """F5 (spec0035 C4): a malformed method.operation — a list or a mapping —
+    yields named field-path diagnostics through the public parse gate, never
+    a TypeError from frozenset membership. The base record is independently
+    authored from the producer contract; only the operation value varies."""
+    from lumio_wiki.ariadne_context import parse_ariadne_profile
+
+    native = {
+        "type": "answer_example",
+        "title": "Saved order example",
+        "description": "Persisted identity probe.",
+        "tags": ["answer-example"],
+        "sources": [],
+        "question": "What is the order number format?",
+        "interpretation": "A composite globally unique order number.",
+        "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+        "submitter": {"identity": "expert:dana", "attestation": "Confirmed."},
+        "citations": [{"path": "metrics/revenue.md", "sha256": "a" * 64}],
+        "answer": {
+            "captured": "2026-11-11T00:00:00+00:00",
+            "excerpt": '{"metric":"revenue"}',
+            "result_digest": "b" * 64,
+        },
+    }
+    ok, clean = parse_ariadne_profile(
+        {"version": 1, "kind": "answer_example", "native": dict(native)}, where="probe.md"
+    )
+    assert ok is not None and clean == []
+    for malformed in (["get_metric"], {"name": "revenue"}):
+        broken = dict(native)
+        broken["method"] = {"operation": malformed, "arguments": {"name": "revenue"}}
+        profile, errors = parse_ariadne_profile(
+            {"version": 1, "kind": "answer_example", "native": broken}, where="probe.md"
+        )
+        assert profile is None
+        assert any("method.operation must be one of" in e for e in errors), errors

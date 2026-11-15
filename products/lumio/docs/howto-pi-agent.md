@@ -37,10 +37,12 @@ export LUMIO_WORKSPACE_ALLOWED_MODELS='APPROVED_PROVIDER/APPROVED_MODEL'
 
 After reloading Pi, run `/workspace` (connection guidance and model
 disclosure status) and `/mcp` (inspect `lumio-workspace`). Reads use
-`workspace_status`, `read_knowledge`, and `search_knowledge`. Reads are
-blocked for any provider/model outside the owner's allowlist — including
-after a model switch — and history carrying workspace results never travels
-to a nonallowed model.
+`workspace_status`, `read_knowledge`, `search_knowledge`, and
+`retrieve_knowledge` (bounded citation-ready Evidence; pass the exact
+`published_version` a citation names to reread that admitted publication, and
+use the returned stable Entity IDs for follow-ups). Reads are blocked for any
+provider/model outside the owner's allowlist — including after a model switch
+— and history carrying workspace results never travels to a nonallowed model.
 
 ## 2. Contribute a document (text or binary)
 

@@ -1,5 +1,7 @@
 # Specification 0009: Ariadne Context Profile and pinned SDK consumption
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Ariadne consumes the Lumio foundation obligatorily; Lumio remains independent and owns knowledge lifecycle operations. Core retains technical fact generation and analytics governance, not parallel page management. Generic Lumio capabilities and native source/privacy rules are not retired by Ariadne's compatibility cleanup. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved managed-source consumer follow-up — 2026-10-23:**
 [Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
 owns integrated admission using a private profile. The additive shared source
@@ -63,12 +65,30 @@ A profiled page adds an optional typed `ariadne_profile` envelope:
 | Field | Profile-v1 contract |
 | :--- | :--- |
 | `version` | Exact integer 1; no coercion or latest-version dispatch. |
-| `kind` | One of `dataset`, `table`, `reference`, `policy`, `metric`, `computation`, `skill`. Kind is application metadata, not a global Lumio ontology type. |
+| `kind` | One of `dataset`, `table`, `reference`, `policy`, `metric`, `computation`, `skill`, `answer_example`. Kind is application metadata, not a global Lumio ontology type. |
 | `native` | Losslessly retained supported Ariadne OKF metadata; its existing nested `ariadne` extension/evidence, source-qualified field scope and identifiers are not flattened or guessed. Body remains the native Compiled Page body, not a second body copy. |
 | `required_policies` | Explicit list of exact `{namespace, entity_id}` references, mandatory even when empty for metric and Policy pages. It is distinct from native/canonical provenance sources. |
 | `metric_ref` | Required for metric pages: exact native model/metric identity. No generated replacement ID or title match. |
 | `core_ref` | Explicit native Resource or semantic identity when the page annotates an Ariadne-owned artifact; required for dataset/table/computation annotations. No executable definition is copied into Lumio. |
 | `ontology_refs` | Optional explicit declared namespace/identifier/immutable-revision references; no title-derived equivalence. |
+
+**`answer_example` kind (approved C4 producer extension).** Shared
+specification 0035 (Lumio-owned Context Layer, task C4) adds the
+`answer_example` producer kind to this existing kind table; Ariadne
+specifications 0007 (saved answer examples) and 0023 (Answer Example SQL
+provenance) remain the retained field/meaning oracles for its `native`
+metadata (question, interpretation, structured method, optional
+parameters/project, self-declared submitter attestation, digest citations,
+system-derived exact `sql_provenance`, and the bounded historical answer
+with its result digest). The producer contract here is structural only:
+Lumio validates shapes, string and size bounds, and the fixed
+`submitted_result.sql` provenance descriptor; it never imports Ariadne,
+never executes stored or submitted SQL, never admits metrics, never treats
+Example citations as required Policies or joins, and never presents a saved
+historical answer as a current result. Analytical meaning, citation-digest
+verification, consent and the system-owned/reserved field boundary stay
+Core (Ariadne) authority. No new envelope fields, versions or second
+Example index are introduced by this kind.
 
 The `native` slot supports the existing Ariadne metadata families in the
 source contracts below: typed page/resource identity, structured provenance,
@@ -375,6 +395,66 @@ proposed and unstarted. This amendment grants no target integration, push,
 issue update, software release, production-source permission, private app adoption
 or real KB publication. Earlier planning-only notices record the original
 capture; they do not override this narrowly scoped subsequent L1 authorization.
+
+**Scoped quality-profile amendment — owner-approved 2026-11-12 (C6 continuation
+capture; documentation of an owner-approved contract, no new ADR/schema
+version/issue publication).** Shared specification 0035 task C6 captures the
+owner-approved OPTIONAL `ariadne_quality` native field, KIND-SCOPED to `table`
+profile pages only (absent stays unchanged; the existing envelope/version/public
+view fields are untouched). Structural producer validation ONLY, in
+`src/lumio_wiki/ariadne_context.py` (records.py/__init__.py only if an actual
+existing record/export requires it): the exact closed v1 grammar is retained 1:1
+from the approved Ariadne source-quality sources — `products/ariadne/project/
+specs/2026-10-06-0013-source-quality-evidence.md` (approved revision 2) and its
+paired plan/Core validator (`ariadne/context.py` `_quality_profile_errors` and
+its closed constants): `version` exact integer 1 (boolean refused), root closed
+`{version, reports}`, at most 8 reports, at most 8 checks per report, at most 8
+`source_ids`; ID/version/field/actor strings ≤128 chars; description/criterion/
+population/meaning/provenance ≤1024; cadence ≤256; units/timezone ≤64; the
+normalized profile ≤8192 UTF-8 bytes; closed vocabularies (asset|subset,
+snapshot|version, pass|fail|unknown, event_time|ingestion_time|snapshot_as_of|
+other); required/optional report fields exactly as the Core validator. Duplicate
+IDs, unsupported fields/versions, malformed variant types, naive datetimes and
+plain dates reject with NAMED FIELD diagnostics — never a TypeError/unhashable
+crash, never an invented timezone; aware-instant disclosure follows the existing
+SDK temporal rules. No SQL/script/command executable slots exist; descriptions
+are inert text. Each report's `asset` must equal the page's FLAT
+`native.resource` (the canonical physical table resource); `source_ids` are
+citation IDs resolving EXACT `native.sources[].id` entries, and every selected
+source must declare a nonempty `resource` — citation IDs are not resource URI
+strings and authorize no external fetch/acquisition/registration/permission.
+K owns structural validation/preservation/binding-local checks ONLY: reports
+are SUPPLIED CLAIMS — never authenticated execution, independent measurements,
+current healthy state, Policy/grant authority, or query refusal inputs. Core
+keeps advisory meaning, applicability/freshness/coverage/period/version
+interpretation, output/report limits, and the authoring/source-binding/forged-
+fact checks on the NATIVE edit/candidate paths; expired or unknown evidence
+stays honestly disclosed; rows/SQL/governed answers are unchanged. Structural
+overlap with the Core authoring gate is permitted as approved. The C6 consumer
+of the scope-filtered snapshot resolves metric identities ONLY through the
+existing `ContextSnapshot.bindings` (`metric_entity_id`/`metric_ref`), table
+identity through the exact flat `native.resource`, and KB-relative citations
+through VISIBLE pinned page paths to their exact canonical resources — no public
+view expansion, no hidden-page disclosure, no second parser/index, no raw
+filesystem access. The seven owner-authorized verification nodes (C6 continuation
+budget): `integration/tests/lumio_local_context.py::test_multi_metric_context_
+precedes_execution`, `integration/tests/lumio_local_context.py::
+test_integrated_technical_profiles_preserve_evidence_and_curated_content`,
+`integration/tests/lumio_contribution_review.py::
+test_contribution_review_covers_document_and_metric`,
+`tests/test_answer_examples.py::test_native_example_save_search_never_opens_sources`,
+`integration/tests/lumio_metric_mvp.py::test_legacy_project_refuses_without_mutation`,
+`tests/test_git_proposals.py::test_table_page_edit_adds_supplied_quality_metadata_
+without_touching_core_claims` (MIGRATE/KEEP — the authoring invariant), and
+`tests/test_data_signals.py::test_expired_report_preserves_rows_sql_and_discloses_
+as_of_evidence` (MIGRATE to real supported producer quality metadata, same
+rows/SQL/as-of oracle). The C6 continuation also carries the parent-approved
+direct final caller removal of the single vacuous `_bundle_errors` invocation in
+`ariadne/contribution_review.py::_static_validation` (diff-proven last caller of
+the retired classic gate; no stub restoration) — the one necessary caller delta
+beyond the earlier C6 caller-scope list. This amendment grants no target
+integration, push, issue update, release, live-source permission or publication
+authority; no new ADR or schema version is created.
 
 ## Approved local navigation amendment — L2/A2, 2026-10-20
 

@@ -4,6 +4,8 @@ status: accepted
 
 # ADR-0027: Public Ariadne–Lumio monorepo with independent packages
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The former symmetric package-independence and separate standalone-Core promises are superseded: Ariadne requires lumio-wiki; Lumio remains independent. Product layout, public package identities and separate release families remain. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped extension, 2026-11-04:** [ADR-0028](0028-agent-first-shared-workspaces.md) and [spec0034 §10](../specs/2026-11-04-0034-agent-first-shared-workspaces.md#10-technical-realization) define adding a separate optional `lumio-workspace` deployment package as a fourth workspace member plus a Pi client package. The owner approved this scoped membership amendment with #85; root non-distribution, independent SDK/Core installs, optional integration and the private-app exclusion remain. Existing accepted decisions and release authority remain unchanged outside that membership amendment; implementation/publication require separate authority.
 
 The owner selected existing `legout/ariadne` as the target on 2026-10-21.

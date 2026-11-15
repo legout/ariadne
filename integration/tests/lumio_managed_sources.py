@@ -45,6 +45,10 @@ BASELINE_ORIGINAL_DIGEST = "e534894a04abb692671f08d2a9f779963568fe894ea7a286a0ad
 NEW_ORIGINAL = b"New operating note: retain this additional original exactly.\n"
 NEW_ORIGINAL_DIGEST = "f2c5e1f6b876265dd960ec3ba18ea48fd005e5c36996e3e525ec0632849b7d07"
 
+# the cited model source is retained like any original: genuine bytes, artifact-derived digest
+MODEL_SOURCE = "model-retail_sales"
+COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
+
 BASELINE_PAGE = """---
 id: "entity:managed-baseline"
 title: "Managed Baseline"
@@ -182,8 +186,15 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
         metadata["synthetic"] = True
         write_page(path, metadata, body)
     (tree / "knowledge" / BASELINE_PAGE_PATH).write_text(BASELINE_PAGE)
+    model_original = (tree / "semantic_layer" / "models" / "retail_sales.yml").read_bytes()
+    model_digest = hashlib.sha256(model_original).hexdigest()
     (tree / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
-        _manifest({BASELINE_ENTITY: (BASELINE_SOURCE, BASELINE_ORIGINAL_DIGEST)})
+        _manifest(
+            {
+                BASELINE_ENTITY: (BASELINE_SOURCE, BASELINE_ORIGINAL_DIGEST),
+                COMPUTATION_ENTITY: (MODEL_SOURCE, model_digest),
+            }
+        )
     )
     base_revision = reconcile_knowledge(project, proposal, base_revision)
     base_review = _review(api, proposal, base_revision)
@@ -197,10 +208,12 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     profile = private / "profile.json"
     registry = SourceRegistry(registry_root)
     registry.register_version(BASELINE_SOURCE, BASELINE_ORIGINAL)
+    registry.register_version(MODEL_SOURCE, model_original)
     store = LocalDirectoryArtifactStore(store_root)
     assert _retain(store, registry, BASELINE_SOURCE, BASELINE_ORIGINAL) == (
         BASELINE_ORIGINAL_DIGEST
     )
+    assert _retain(store, registry, MODEL_SOURCE, model_original) == model_digest
     _profile(profile, registry_root, store_root)
     destination = tmp_path / "published"
 
@@ -286,6 +299,7 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
             {
                 BASELINE_ENTITY: (BASELINE_SOURCE, BASELINE_ORIGINAL_DIGEST),
                 NEW_ENTITY: (NEW_SOURCE, NEW_ORIGINAL_DIGEST),
+                COMPUTATION_ENTITY: (MODEL_SOURCE, model_digest),
             }
         )
     )
@@ -308,9 +322,11 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
         BASELINE_ORIGINAL_DIGEST
     )
     assert _retain(store, registry, NEW_SOURCE, NEW_ORIGINAL) == NEW_ORIGINAL_DIGEST
+    assert _retain(store, registry, MODEL_SOURCE, model_original) == model_digest
     preview = _python_preview(project, new_review, destination, profile, base_revision)
     alternate = LocalDirectoryArtifactStore(alternate_store_root)
     _retain(alternate, registry, BASELINE_SOURCE, BASELINE_ORIGINAL)
+    _retain(alternate, registry, MODEL_SOURCE, model_original)
     _retain(alternate, registry, NEW_SOURCE, NEW_ORIGINAL)
     _profile(profile, registry_root, alternate_store_root)
     with pytest.raises(ValueError, match="composite review changed"):

@@ -1,5 +1,7 @@
 # Product-oriented Ariadne–Lumio repository layout
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The directory layout and ownership remain. Statements preserving optional integration or a Core install without the SDK are superseded by mandatory Ariadne -> lumio-wiki; Lumio remains independent. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved scoped follow-up outside approved revision 1, 2026-11-04:** [spec0034 §10](2026-11-04-0034-agent-first-shared-workspaces.md#10-technical-realization) places the optional workspace service under `products/lumio/packages/lumio-workspace/` and its Pi client under `products/lumio/clients/pi-workspace/`. The owner approved a fourth uv member and its exact layout-test amendment with #85; implementation is not started or newly authorized. Product ownership, root coordination-only behavior and existing private-app/Agent boundaries remain unchanged.
 
 Status: **approved, revision 1** (2026-10-21).
@@ -57,6 +59,8 @@ products/
     packages/
       ariadne-data/          # package README, manifest, src/, native unit tests
       ariadne-agent/         # separate environment; NOT a workspace member
+                            # (retired and removed 2026-11-12 — host agents
+                            #  only, Ariadne ADR-0027; historical line)
     docs/
     project/                # Ariadne-owned ADRs, specs, plans and research
     examples/
@@ -107,7 +111,7 @@ The mapping covers tracked content; ignored local outputs are not product source
 | Current source | Target owner/path |
 | --- | --- |
 | `packages/ariadne-data/` | `products/ariadne/packages/ariadne-data/` |
-| `ariadne-agent/` | `products/ariadne/packages/ariadne-agent/` |
+| `ariadne-agent/` | `products/ariadne/packages/ariadne-agent/` (retired and removed 2026-11-12 — host agents only, [Ariadne ADR-0027](../../products/ariadne/project/adr/0027-host-agents-only.md); historical mapping) |
 | `packages/lumio-wiki/` | `products/lumio/packages/lumio-wiki/` |
 | `packages/lumio-lancedb/` | `products/lumio/packages/lumio-lancedb/` |
 | `CONTEXT.md` | `products/ariadne/CONTEXT.md` |
@@ -194,10 +198,12 @@ for the **same three** supported members, now at their product paths. Preserve
 every third-party resolution and published requirement, including Core's
 `duckdb>=1.0,<2`. Local editable source paths change; package identities do not.
 
-The Agent stays outside that workspace with its separate environment/resolution.
-Its repository-relative Core/typing references must resolve the new sibling
-location. Moving the directory does not install or qualify Tau, remove its
-external dependency, add an Agent release gate or authorize private-path cleanup.
+The Agent stayed outside that workspace with its separate environment/resolution
+until its retirement and removal (2026-11-12, host agents only —
+[Ariadne ADR-0027](../../products/ariadne/project/adr/0027-host-agents-only.md));
+this paragraph is preserved as history. Moving the directory did not install or
+qualify Tau, remove its external dependency, add an Agent release gate or
+authorize private-path cleanup.
 
 Native Core test/lint settings remain with Core. Lumio's product-wide test/lint
 selection is scoped to `products/lumio/` using appropriate configuration files;

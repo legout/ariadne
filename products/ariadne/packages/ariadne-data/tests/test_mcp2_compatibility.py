@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.admission import main as admit_main  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.query_results import (  # noqa: E402
     cell_limit_refusal,
@@ -33,30 +32,60 @@ from tests.test_git_authoring import (  # noqa: E402
 
 PROTOCOL_VERSION = "2025-06-18"
 
+# spec0032 §10.3: only an explicit revision-3 selector opt-in unfreezes the
+# query operations for THIS synthetic MCP project's admission; the shared
+# complete_bundle_project default (revision 2) stays untouched.
+_REVISION3_SELECTOR = (
+    "version: 1\n"
+    "mode: integrated\n"
+    "subtree: knowledge\n"
+    "namespace: urn:uuid:authoring-fixture\n"
+    "profile: ariadne-context/1\n"
+    "support_revision: 3\n"
+    "policy_bindings:\n"
+    "  version: 1\n"
+    "  bindings:\n"
+    "    - subject: {kind: metric, identity: events::event_count}\n"
+    "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
+    "      operations: [get_metric, query_metrics]\n"
+    "      enforcement: null\n"
+)
+
+# spec0032 §3/§10.5: the one consumed physical table needs its exact native
+# Table Context before any SQL (canonical catalog asset of the probe source).
+_PROBE_TABLE = {"source": "probe", "catalog": "probe", "schema": "main", "table": "uni"}
+
 
 def _admit_project(project: Path) -> None:
+    from ariadne import admission
+
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    refreshed = api.refresh_schema(
+        started["proposal"], started["candidate_revision"], [_PROBE_TABLE]
+    )
+    validated = api.validate_proposal(started["proposal"], refreshed["revision"])
     assert validated["ok"] is True, validated["errors"]
     review = api.review_proposal(started["proposal"])
+    assert review["revision"] == validated["revision"]
     assert review["report"]["ok"] is True
-    assert (
-        admit_main(
-            [
-                "--project",
-                str(project),
-                "--proposal",
-                review["proposal"],
-                "--revision",
-                review["revision"],
-                "--reviewed-digest",
-                review["review_digest"],
-                "--confirm",
-            ]
-        )
-        == 0
+    composite = admission.overall_review(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        destination=project.parent / "published",
+        expected_current="none",
+    )
+    admission.admit_revision(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:synthetic-operator",
+        overall_preview=composite,
+        confirmed_overall_digest=composite["digest"],
     )
 
 
@@ -75,6 +104,17 @@ def _project(root: Path, *, row_count: int = 2, admit: bool = True) -> Path:
     registry_path.write_text(yaml.safe_dump(registry, sort_keys=False), encoding="utf-8")
     run_git(project, "add", "--", "ariadne.yaml")
     run_git(project, "commit", "-q", "-m", "human: add synthetic MCP source", "--", "ariadne.yaml")
+    (project / "context_integration.yaml").write_text(_REVISION3_SELECTOR, encoding="utf-8")
+    run_git(project, "add", "--", "context_integration.yaml")
+    run_git(
+        project,
+        "commit",
+        "-q",
+        "-m",
+        "human: opt this MCP project into revision 3 serving",
+        "--",
+        "context_integration.yaml",
+    )
     if admit:
         _admit_project(project)
     return project
@@ -90,7 +130,13 @@ class _StdioServer:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+            env={
+                **os.environ,
+                "PYTHONPATH": os.pathsep.join(
+                    [str(REPO_ROOT / "src")]
+                    + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+                ),
+            },
         )
 
     def __enter__(self):
@@ -342,16 +388,20 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
                 {
                     "name": "envelope_probe",
                     "description": "d",
-                    "source": "probe.uni",
+                    "source": "probe.main.uni",
                     "expression": "MAX(txt)",
                     "dimensions": ["txt"],
                 }
             )
         )
     )  # ephemeral under default limits: nothing was written
-    ceiling = max(refusal_floor + 64, (full_dict_bytes + full_env_bytes) // 2)
-    # the narrowed retry fits, the full envelope cannot, refusals stay representable
+    lower = max(refusal_floor + 64, full_dict_bytes, narrowed_env)
+    assert lower < full_env_bytes  # prove the fixture has a valid separating interval
+    ceiling = (lower + full_env_bytes) // 2
+    # the input selection simultaneously fits representable refusal, plain
+    # JSON and the narrowed full frame, but excludes the FULL MCP frame
     assert refusal_floor <= ceiling
+    assert full_dict_bytes <= ceiling
     assert narrowed_env <= ceiling < full_env_bytes
     # the ad-hoc definition is smaller than the narrowed record result, so its
     # own refusal needs its own (tighter) ceiling in a second session below
@@ -425,7 +475,7 @@ def test_lowered_envelope_refuses_without_writing_and_narrowed_retry_fits(tmp_pa
                 "definition": {
                     "name": "envelope_probe",
                     "description": "d",
-                    "source": "probe.uni",
+                    "source": "probe.main.uni",
                     "expression": "MAX(txt)",
                     "dimensions": ["txt"],
                 }

@@ -5,9 +5,9 @@ Public-seam tests: every invocation goes through ``ariadne.cli.main(argv, stdin)
 contract — exactly one JSON value + newline on stdout for success, exactly one
 ``{"error": {"type", "message"}}`` object on stderr plus a nonzero exit for
 failure, and no success value on stdout for a failed invocation. The synthetic
-retail project and its admitted revision are built through Git Authoring; the
-database is deterministic — no network, no LLM. Behavior parity is asserted
-against the public project runtime factory.
+retail project is one REAL native Knowledge Base (public initializer plus Git
+Authoring admission); the database is deterministic — no network, no LLM.
+Behavior parity is asserted against the public project runtime factory.
 """
 
 import asyncio
@@ -29,84 +29,272 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
-from tests.test_git_admission import admit  # noqa: E402
 from tests.test_git_authoring import approved, run_git  # noqa: E402
 from tests.test_serve import (  # noqa: E402
     GOLDEN_OKF,
     GOLDEN_OSI,
     GOLDEN_POLICY_EMEA,
     GOLDEN_POLICY_STATUS,
+    GOTCHA_1,
+    GOTCHA_2,
     seed_demo_db,
 )
 
+# The retail demo's authored native identity (spec0035 §2: one explicit
+# namespace, machine-local private profile and publication destination OUTSIDE
+# the content repository, beside the project root) and the one catalog asset
+# whose generated native Table profile binds ``demo.main.orders``.
+NAMESPACE = "urn:uuid:retail-demo-cli"
+_PRIVATE_PROFILE = "ariadne-private-profile.json"
+_PUBLISHED = "published"
+_DEMO_ASSET = {"source": "demo", "catalog": "demo", "schema": "main", "table": "orders"}
+
+# Each governed OSI metric's typed Policy closure: the seed-note rules its
+# sanctioned expression implements — the fixture's preserved financial meaning
+# (billable-status exclusion for every number, the EMEA cutover for amounts).
+_METRIC_CLOSURE = {
+    "gross_margin": ("order-status-billing", "emea-currency-cutover"),
+    "gross_revenue": ("order-status-billing", "emea-currency-cutover"),
+    "cogs": ("order-status-billing", "emea-currency-cutover"),
+    "order_count": ("order-status-billing",),
+}
+# The OSI model's governed meanings, authored beside their definitions.
+_METRIC_DESCRIPTIONS = {
+    "gross_margin": "Ratio of sums, not an average of per-row margins",
+    "gross_revenue": "Billed revenue in USD excluding non-billable statuses",
+    "cogs": "Direct cost of goods in USD excluding non-billable statuses",
+    "order_count": "Count of billable orders",
+}
+# The gross-margin page keeps the golden governed-definition body (both
+# gotcha rules, verbatim); the base metrics restate their own rule citations.
+_METRIC_BODIES = {
+    "gross_margin": GOLDEN_OKF.split("---", 2)[2],
+    "gross_revenue": (
+        f"# gross_revenue\n\nGoverned definition: {GOTCHA_1}; pre-2024 EMEA "
+        f"amounts follow the cutover rule ({GOTCHA_2}).\n"
+    ),
+    "cogs": (
+        f"# cogs\n\nGoverned definition: {GOTCHA_1}; pre-2024 EMEA product "
+        f"costs follow the cutover rule ({GOTCHA_2}).\n"
+    ),
+    "order_count": f"# order_count\n\nGoverned definition: {GOTCHA_1}.\n",
+}
+
+
+def _native_policy_page(slug: str, title: str, rule: str, tag: str, body: str) -> str:
+    """One producer-native Policy page: the original Golden policy body
+    verbatim inside its typed native wrapper (identity/metadata unchanged)."""
+    return (
+        "---\n"
+        f'id: "entity:{slug}"\n'
+        f'title: "{title}"\n'
+        "entity_types:\n  - policy\n"
+        f"tags: [policy, {tag}]\n"
+        f'summary: "{rule}."\n'
+        "lifecycle: approved\n"
+        "visibility: public\n"
+        "sources:\n"
+        "  - id: seed-notes\n"
+        "    title: Seed notes\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: policy\n"
+        "  required_policies: []\n"
+        "  native:\n"
+        "    type: policy\n"
+        f"    title: {title}\n"
+        f"    description: {rule}.\n"
+        f"    tags: [policy, {tag}]\n"
+        "    status: stable\n"
+        "    stale_after: 2027-12-31\n"
+        "    sources:\n"
+        "      - id: seed-notes\n"
+        "        title: Seed notes\n"
+        "        resource: data/seed_notes.md\n"
+        f"---{body}"
+    )
+
+
+def _native_metric_page(metric: str, policies: tuple[str, ...]) -> str:
+    """One producer-native Metric page: ``metric_ref`` binds the OSI metric,
+    ``required_policies`` carries its typed Policy closure (spec0035 §5)."""
+    required = "".join(
+        f"    - namespace: {NAMESPACE}\n      entity_id: entity:{policy}\n" for policy in policies
+    )
+    sources = "".join(f"  - id: {policy}\n    title: {policy}\n" for policy in policies)
+    native_sources = "".join(
+        f"      - id: {policy}\n        title: {policy}\n"
+        f"        resource: policies/{policy}.md\n"
+        for policy in policies
+    )
+    description = _METRIC_DESCRIPTIONS[metric]
+    return (
+        "---\n"
+        f'id: "entity:{metric.replace("_", "-")}"\n'
+        f'title: "{metric}"\n'
+        "entity_types:\n  - metric\n"
+        "tags: [metric]\n"
+        f'summary: "{description}."\n'
+        "lifecycle: approved\n"
+        "visibility: public\n"
+        f"sources:\n{sources}"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: metric\n"
+        "  metric_ref:\n"
+        f"    model: orders\n    metric: {metric}\n"
+        "  required_policies:\n"
+        f"{required}"
+        "  native:\n"
+        "    type: metric\n"
+        "    status: stable\n"
+        f"    title: {metric}\n"
+        f"    description: {description}.\n"
+        "    tags: [metric]\n"
+        "    stale_after: 2027-12-31\n"
+        "    sources:\n"
+        f"{native_sources}"
+        f"    governed_by: policies/{policies[0]}.md\n"
+        "    dimensions:\n      - region\n      - status\n      - order_date\n"
+        "    grain:\n      primary_key: [order_id]\n"
+        "      cardinality_enforcement: strict_1_to_1\n"
+        f"---\n{_METRIC_BODIES[metric]}"
+    )
+
+
+def _selector_text() -> str:
+    """The revision-4 integrated selector: the §10.1 opt-in plus the authored
+    binding inventory classifying every metric's complete typed closure."""
+    bindings = "".join(
+        f"    - subject: {{kind: metric, identity: orders::{metric}}}\n"
+        f"      policy: {{namespace: {NAMESPACE}, entity_id: entity:{policy}}}\n"
+        "      operations: [get_metric, query_metrics]\n"
+        "      enforcement: null\n"
+        for metric, policies in _METRIC_CLOSURE.items()
+        for policy in policies
+    )
+    return (
+        "version: 1\nmode: integrated\nsubtree: knowledge\n"
+        f"namespace: {NAMESPACE}\nprofile: ariadne-context/1\nsupport_revision: 4\n"
+        f"policy_bindings:\n  version: 1\n  bindings:\n{bindings}"
+    )
+
 
 def create_git_demo_project(root: Path) -> tuple[Path, Path]:
-    """Build and human-admit the synthetic retail project through Git Authoring."""
-    root.mkdir(parents=True, exist_ok=True)
-    db = seed_demo_db(root / "demo.db")
-    (root / "ariadne.yaml").write_text(
-        "sources:\n  - name: demo\n    type: sqlite\n    path: demo.db\n", encoding="utf-8"
-    )
-    metric_body = GOLDEN_OKF.split("---", 2)[2]
-    artifacts = {
-        "data/seed_notes.md": (
-            "# Seed notes\n\nExclude CANCELLED and RETURNED rows. "
-            "Convert pre-2024 EMEA EUR/GBP values before aggregation.\n"
-        ),
-        "semantic_layer/models/orders.yml": GOLDEN_OSI,
-        "context_layer/metrics/gross_margin.md": (
-            "---\ntype: metric\nstatus: draft\ntitle: Gross margin\n"
-            "description: Ratio of summed billable revenue and cost.\ntags: [metric]\n"
-            "sources:\n  - {id: orders, resource: demo.main.orders, title: Orders}\n"
-            "  - {id: currency-rates, resource: demo.main.currency_conversion_rate, "
-            "title: Currency conversion rates}\n"
-            "  - {id: order-status-billing, resource: policies/order-status-billing.md, "
-            "title: Order status billing}\n"
-            "  - {id: emea-currency-cutover, resource: policies/emea-currency-cutover.md, "
-            "title: EMEA currency cutover}\n---" + metric_body
-        ),
-        "context_layer/policies/order-status-billing.md": GOLDEN_POLICY_STATUS,
-        "context_layer/policies/emea-currency-cutover.md": GOLDEN_POLICY_EMEA,
-        "context_layer/tables/orders.md": (
-            "---\ntype: table\ntitle: Orders\ndescription: One row per order.\n"
-            "tags: [table]\nresource: demo.main.orders\n"
-            "sources:\n  - {id: orders, resource: demo.main.orders, title: Orders}\n"
-            "grain:\n  primary_key: [order_id]\n  cardinality_enforcement: STRICT_1_TO_1\n"
-            "---\n\n# Orders\n"
-        ),
-        "context_layer/references/joins/orders--customers.md": (
-            "---\ntype: reference\ntitle: Orders and customers\n"
-            "description: Order/customer reference.\ntags: [reference]\n"
-            "sources:\n  - {id: seed-notes, resource: data/seed_notes.md, title: Seed notes}\n"
-            "---\n\n# Orders and customers\n"
-        ),
-        "context_layer/skills/run-the-demo.md": (
-            "---\ntype: skill\ntitle: Run the retail demo\n"
-            "description: Query the admitted retail model.\ntags: [skill]\n"
-            "sources:\n  - {id: seed-notes, resource: data/seed_notes.md, title: Seed notes}\n"
-            "---\n\n# Run the retail demo\n"
-        ),
-    }
-    for rel, content in artifacts.items():
-        path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+    """Build and human-admit the synthetic retail project as one real native
+    Knowledge Base: the public initializer scaffolds ``knowledge/`` (explicit
+    namespace and machine-local private profile, actual Control File + Source
+    Reference Manifest), the human base revision adds the demo SQLite source,
+    the OSI model and the typed native metric/Policy pages, and one Git
+    proposal carries the generated Table profile (``refresh_schema``), full
+    native validation and the composite human admission."""
+    from ariadne import admission
+    from ariadne.init import main as init_main
 
+    root.mkdir(parents=True, exist_ok=True)
     run_git(root, "init", "-q")
     run_git(root, "config", "user.name", "Ariadne Tests")
     run_git(root, "config", "user.email", "tests@ariadne.local")
-    tracked = ["ariadne.yaml", *artifacts]
+    with redirect_stdout(io.StringIO()):
+        assert init_main(
+            [
+                str(root),
+                "--namespace",
+                NAMESPACE,
+                "--private-profile",
+                str(root.parent / _PRIVATE_PROFILE),
+            ]
+        ) == 0
+    db = seed_demo_db(root / "data" / "demo.db")
+    (root / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: data/demo.db\n",
+        encoding="utf-8",
+    )
+    (root / "data" / "seed_notes.md").write_text(
+        "# Seed notes\n\nExclude CANCELLED and RETURNED rows. "
+        "Convert pre-2024 EMEA EUR/GBP values before aggregation.\n",
+        encoding="utf-8",
+    )
+    model = root / "semantic_layer" / "models" / "orders.yml"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_text(GOLDEN_OSI, encoding="utf-8")
+    # The init-seeded Control File plus the computations category the finalize
+    # pass needs — the established category-extension idiom (ADR-0009): the
+    # human base revision declares the vocabulary the generated sanctioned-SQL
+    # Computation pages occupy (the computation Entity Type is already seeded).
+    control = root / "knowledge" / "lumio.yaml"
+    control.write_text(
+        control.read_text(encoding="utf-8").replace(
+            "  - metrics\n", "  - metrics\n  - computations\n"
+        ),
+        encoding="utf-8",
+    )
+    pages = {
+        "policies/order-status-billing.md": _native_policy_page(
+            "order-status-billing",
+            "Order status billing",
+            GOTCHA_1,
+            "billing",
+            GOLDEN_POLICY_STATUS.split("---", 2)[2],
+        ),
+        "policies/emea-currency-cutover.md": _native_policy_page(
+            "emea-currency-cutover",
+            "EMEA currency cutover",
+            GOTCHA_2,
+            "currency",
+            GOLDEN_POLICY_EMEA.split("---", 2)[2],
+        ),
+        **{
+            f"metrics/{metric}.md": _native_metric_page(metric, policies)
+            for metric, policies in _METRIC_CLOSURE.items()
+        },
+    }
+    kb = root / "knowledge"
+    for rel, content in pages.items():
+        page = kb / rel
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(content, encoding="utf-8")
+    (root / "context_integration.yaml").write_text(_selector_text(), encoding="utf-8")
+    tracked = [
+        "AGENTS.md",
+        ".env.example",
+        ".gitignore",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/orders.yml",
+        "context_integration.yaml",
+        "knowledge",
+    ]
     run_git(root, "add", "--", *tracked)
     run_git(root, "commit", "-q", "-m", "human: synthetic retail project", "--", *tracked)
     api = AuthoringProject(root)
     started = api.start_proposal()
     approved(api, root, started)
-    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    refreshed = api.refresh_schema(
+        started["proposal"], started["candidate_revision"], [_DEMO_ASSET]
+    )
+    validated = api.validate_proposal(started["proposal"], refreshed["revision"])
     assert validated["ok"] is True, validated["errors"]
     review = api.review_proposal(started["proposal"])
     assert review["revision"] == validated["revision"]
     with redirect_stdout(io.StringIO()):
-        assert admit(root, review) == 0
+        composite = admission.overall_review(
+            root,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=root.parent / _PUBLISHED,
+            expected_current="none",
+        )
+        admission.admit_revision(
+            root,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            confirmed_by="human:synthetic-operator",
+            overall_preview=composite,
+            confirmed_overall_digest=composite["digest"],
+        )
     return root, db
 
 

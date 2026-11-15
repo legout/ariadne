@@ -1,11 +1,18 @@
-"""Internal confirmed empty managed-KB creation (spec 0010 §2.2, plan 0010 J5a).
+"""Public confirmed empty managed-KB creation (spec 0010 §2.2, plan 0010 J5a).
 
-One ephemeral preview → digest → guarded apply path shared by the headless
-``--confirm`` route and the interactive wizard. Nothing here persists an
-approval state: the setup digest authorizes exactly one freshly revalidated
-action list, and every write happens only inside :func:`apply_plan` after
-that recheck. Native Git keeps ownership of commits; this module never
-initializes Git, switches branches, stages, commits or pushes.
+One ephemeral preview → digest → guarded apply path, exposed through the
+package root (:mod:`lumio_wiki`) as the supported entry point for consumers
+that prepare a NEW Knowledge Base for their own project layout. The
+contract: :func:`plan_empty_setup` validates explicit selections (namespace,
+private profile location, target) and returns one recheckable
+:class:`EmptySetupPlan`; :func:`recheck_plan` rebuilds it from fresh facts
+and refuses drift; :func:`apply_plan` performs exactly the confirmed actions
+through caller-supplied configuration-write callbacks. Nothing here persists
+an approval state: the setup digest authorizes exactly one freshly
+revalidated action list, and every write happens only inside
+:func:`apply_plan` after that recheck. Native Git keeps ownership of commits;
+this module never initializes Git, switches branches, stages, commits or
+pushes, and it never touches source data or credentials.
 """
 
 from __future__ import annotations

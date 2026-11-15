@@ -19,6 +19,7 @@ stashes, resets, checks out, rebases, merges, pushes, or deletes branches.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -527,6 +528,169 @@ def _load_sealed(destination: Path, version: str) -> SealedSourceReferences:
         raise GitAuthoringError(
             f"sealed source references for {version!r} are malformed: {exc}"
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Bounded SDK restore disposition (spec0034 §12.5, 2026-11-11).
+#
+# A completed bounded restore persists a private restore record at the
+# published destination binding the exact resolved live destination and the
+# exact imported version/receipt-byte digests. The record's binding is
+# deterministic canonical-content integrity, NOT a signature or new-target
+# consent: only already-activated imported historical admissions of a valid,
+# live-bound record tolerate the moved-path receipt check, and every other
+# identity, file, sealed, namespace, and validator check stays strict.
+# ---------------------------------------------------------------------------
+
+RESTORE_RECORD_SCHEMA_VERSION = 1
+_RESTORE_RECORD_KIND = "restored-root"
+_RESTORE_RECORD_TEXT_FIELDS = (
+    "workspace_id",
+    "restored_at",
+    "destination",
+    "binding",
+    "source_backup_manifest_sha256",
+)
+
+
+def restored_root_record_binding(
+    *,
+    workspace_id: str,
+    restored_at: str,
+    destination: str,
+    source_backup_manifest_sha256: str,
+    imported_versions: dict[str, str],
+) -> str:
+    """Deterministic canonical-content binding of one restore record's core.
+
+    Detects moved, copied, or edited records; every consumer re-derives it.
+    This is integrity, not authentication — store provenance is not
+    permission, and the strict receipt identity checks remain authoritative.
+    """
+    core = json.dumps(
+        {
+            "kind": _RESTORE_RECORD_KIND,
+            "schema_version": RESTORE_RECORD_SCHEMA_VERSION,
+            "workspace_id": workspace_id,
+            "restored_at": restored_at,
+            "destination": destination,
+            "source_backup_manifest_sha256": source_backup_manifest_sha256,
+            "imported_versions": imported_versions,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(core.encode("utf-8")).hexdigest()
+
+
+def build_restored_root_record(
+    *,
+    destination: str | Path,
+    workspace_id: str,
+    restored_at: str,
+    source_backup_manifest_sha256: str,
+    imported_versions: dict[str, str],
+) -> dict[str, object]:
+    """Build the private restore record for one completed bounded restore.
+
+    ``destination`` is the exact resolved live published destination the
+    record authorizes; ``imported_versions`` maps each imported Published
+    Version label to the SHA-256 of its imported admission-receipt bytes.
+    """
+    resolved = str(Path(destination).resolve())
+    return {
+        "kind": _RESTORE_RECORD_KIND,
+        "schema_version": RESTORE_RECORD_SCHEMA_VERSION,
+        "workspace_id": workspace_id,
+        "restored_at": restored_at,
+        "destination": resolved,
+        "binding": restored_root_record_binding(
+            workspace_id=workspace_id,
+            restored_at=restored_at,
+            destination=resolved,
+            source_backup_manifest_sha256=source_backup_manifest_sha256,
+            imported_versions=imported_versions,
+        ),
+        "source_backup_manifest_sha256": source_backup_manifest_sha256,
+        "imported_versions": dict(imported_versions),
+    }
+
+
+def _restored_root_authorization(destination: Path) -> dict[str, object] | None:
+    """Return the valid restore record for THIS resolved destination, if any.
+
+    Absent, malformed, bound-to-another-target, copied, or edited records
+    return ``None``: no destination tolerance follows anywhere.
+    """
+    record_path = destination / PRIVATE_OPERATIONS_DIR / "restore.json"
+    try:
+        raw = json.loads(record_path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or set(raw) != set(_RESTORE_RECORD_TEXT_FIELDS) | {
+        "kind",
+        "schema_version",
+        "imported_versions",
+    }:
+        return None
+    if any(not isinstance(raw[field], str) for field in _RESTORE_RECORD_TEXT_FIELDS):
+        return None
+    imported = raw["imported_versions"]
+    if not isinstance(imported, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in imported.items()
+    ):
+        return None
+    if (
+        raw["kind"] != _RESTORE_RECORD_KIND
+        or raw["schema_version"] != RESTORE_RECORD_SCHEMA_VERSION
+        or raw["destination"] != str(destination.resolve())
+    ):
+        return None
+    if restored_root_record_binding(
+        workspace_id=raw["workspace_id"],
+        restored_at=raw["restored_at"],
+        destination=raw["destination"],
+        source_backup_manifest_sha256=raw["source_backup_manifest_sha256"],
+        imported_versions=imported,
+    ) != raw["binding"]:
+        return None
+    return raw
+
+
+def _imported_receipt_digest(
+    record: dict[str, object], version: str, destination: Path
+) -> bool:
+    """Whether the live receipt bytes are exactly the imported ones.
+
+    Later added, swapped, or unimported receipts stay subject to the normal
+    strict identity checks.
+    """
+    imported = record["imported_versions"]
+    expected = imported.get(version) if isinstance(imported, dict) else None
+    if not isinstance(expected, str):
+        return False
+    try:
+        actual = hashlib.sha256(_receipt_path(destination, version).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return actual == expected
+
+
+def _tolerates_moved_destination(
+    receipt: PublicationReceipt, version: str, destination: Path
+) -> bool:
+    """Whether this exact receipt may use the bounded moved-path tolerance.
+
+    Only an already-activated imported historical admission of a valid,
+    live-destination-bound restore record qualifies; pending imports never
+    gain activation or read permission from the pointer or the record.
+    """
+    if not receipt.activated:
+        return False
+    record = _restored_root_authorization(destination)
+    return record is not None and _imported_receipt_digest(record, version, destination)
 
 
 def _verify_written(path: Path, expected: bytes) -> None:
@@ -2206,10 +2370,15 @@ def publish_revision(
     sealed_raw = msgspec.json.encode(sealed)
 
     with mutation_lock(destination_path):
+        # Moved-imported same-version re-admission refuses BEFORE any
+        # version/sealed/store mutation, under the destination lock
+        # (spec0034 §12.5): a refusal must never rewrite imported sealed
+        # provenance or leave a partially mutated restored target.
+        _refuse_moved_imported_receipt_overwrite(destination_path, version)
         location = PublishedFilesystemLocation(destination_path)
         observed = location.read_pointer()
         _check_pointer_expectation(observed, expected_current, version)
-        _reconcile_active_receipt(destination_path, observed)
+        _reconcile_active_receipt(destination_path, observed, restored_destination=True)
         version_dir = published_version_path(destination_path, version)
         receipt_path = _receipt_path(destination_path, version)
         locked_retry = _retry_admitted_publication(
@@ -2355,6 +2524,19 @@ def _retry_admitted_publication(
     receipt = _load_receipt(destination, version)
     if confirm_digest != receipt.review_digest:
         return None
+    if (
+        receipt.destination != str(destination)
+        and _restored_root_authorization(destination) is not None
+    ):
+        # Bounded restore disposition (spec0034 §12.5): an old destination's
+        # confirmation can never activate or recover a copied receipt at a
+        # moved target. A restore marker is not new-target consent; the
+        # fresh reviewed confirmation of the new target is required.
+        raise ConfirmationRefused(
+            "the stored admission receipt was admitted at a different "
+            "destination; a restored target requires a fresh reviewed "
+            "confirmation"
+        )
     _verify_receipt_identity(receipt, captured, destination)
     if _normalize_expected(expected_current) != receipt.expected_current:
         raise ConfirmationRefused(
@@ -2413,7 +2595,44 @@ def _retry_admitted_publication(
     return _reconcile_receipt_activation(destination, receipt, before_activation=before_activation)
 
 
-def _reconcile_active_receipt(destination: Path, version: str | None) -> None:
+def _refuse_moved_imported_receipt_overwrite(destination: Path, version: str) -> None:
+    """A restored target's imported admission receipts stay immutable.
+
+    Same-version re-admission through the ordinary publication path must not
+    overwrite an imported receipt that was admitted at the moved-from
+    destination (spec0034 §12.5); an explicit approved recovery path for
+    such re-admission is outside the bounded grant. Same-destination
+    receipts keep the existing identity/idempotency semantics unchanged.
+    """
+    record = _restored_root_authorization(destination)
+    if record is None:
+        return
+    receipt_path = _receipt_path(destination, version)
+    try:
+        existing = receipt_path.read_bytes()
+    except FileNotFoundError:
+        return
+    imported = record["imported_versions"]
+    expected = imported.get(version) if isinstance(imported, dict) else None
+    if not isinstance(expected, str) or hashlib.sha256(existing).hexdigest() != expected:
+        return
+    try:
+        existing_receipt = msgspec.json.decode(existing, type=PublicationReceipt)
+    except msgspec.DecodeError as exc:
+        raise GitAuthoringError(
+            f"the imported admission receipt for {version!r} is malformed: {exc}"
+        ) from exc
+    if existing_receipt.destination != str(destination):
+        raise GitAuthoringError(
+            f"the restored target's imported admission receipt for {version!r} "
+            "is immutable; re-admitting this existing version at the moved "
+            "destination is outside the bounded restore disposition"
+        )
+
+
+def _reconcile_active_receipt(
+    destination: Path, version: str | None, *, restored_destination: bool = False
+) -> None:
     """Persist an already-observed activation before a later pointer transition."""
     if version is None:
         return
@@ -2421,7 +2640,13 @@ def _reconcile_active_receipt(destination: Path, version: str | None) -> None:
     if not receipt_path.exists():
         return  # legacy Published Versions have no Git-authoring receipt
     receipt = _load_receipt(destination, version)
-    if receipt.version != version or receipt.destination != str(destination):
+    if receipt.version != version:
+        raise GitAuthoringError(
+            f"the active Published Version {version!r} does not match its admission receipt"
+        )
+    if receipt.destination != str(destination) and not (
+        restored_destination and _tolerates_moved_destination(receipt, version, destination)
+    ):
         raise GitAuthoringError(
             f"the active Published Version {version!r} does not match its admission receipt"
         )
@@ -2635,7 +2860,11 @@ class RollbackReview(msgspec.Struct, frozen=True):
 
 
 def _verify_version_complete(
-    destination: Path, version: str, expected_fingerprint: str | None = None
+    destination: Path,
+    version: str,
+    expected_fingerprint: str | None = None,
+    *,
+    restored_destination: bool = False,
 ) -> tuple[Any, PublicationReceipt, SealedSourceReferences]:
     """Verify one immutable version completely; return (manifest, receipt).
 
@@ -2672,7 +2901,13 @@ def _verify_version_complete(
         or receipt.subtree != manifest.subtree
         or receipt.manifest_digest != manifest.source_reference_digest
         or receipt.validator_contract != manifest.format_identity
-        or receipt.destination != str(destination.resolve())
+    ):
+        raise GitAuthoringError(
+            f"the admission receipt for {version!r} does not agree with its "
+            f"published manifest; refusing over inconsistent records"
+        )
+    if receipt.destination != str(destination.resolve()) and not (
+        restored_destination and _tolerates_moved_destination(receipt, version, destination)
     ):
         raise GitAuthoringError(
             f"the admission receipt for {version!r} does not agree with its "
@@ -2695,7 +2930,9 @@ def _rollback_review(
 ) -> RollbackReview:
     """Build the rollback review (and its digest) from verified facts only."""
     version = validate_published_version(version)
-    manifest, receipt, sealed = _verify_version_complete(destination, version)
+    manifest, receipt, sealed = _verify_version_complete(
+        destination, version, restored_destination=True
+    )
     expected = _normalize_expected(expected_current)
     observed = PublishedFilesystemLocation(destination).read_pointer()
     _check_pointer_expectation(observed, expected_current, version)
@@ -2980,7 +3217,9 @@ def rollback_publication(
                     "is configured; rollback is refused until the exact bound "
                     "artifacts can be verified"
                 )
-            _manifest, _receipt, sealed = _verify_version_complete(destination_path, review.version)
+            _manifest, _receipt, sealed = _verify_version_complete(
+                destination_path, review.version, restored_destination=True
+            )
             snapshot = PublishedFilesystemLocation(
                 destination_path, version=review.version
             ).resolve()
@@ -2990,7 +3229,7 @@ def rollback_publication(
                 _coverage_entries(snapshot.pages, sealed.bindings),
             )
         active_version = PublishedFilesystemLocation(destination_path).read_pointer()
-        _reconcile_active_receipt(destination_path, active_version)
+        _reconcile_active_receipt(destination_path, active_version, restored_destination=True)
         atomic_write_bytes(published_pointer_path(destination_path), _pointer_bytes(review.version))
         return PublishedFilesystemLocation(destination_path).read_manifest(review.version)
 

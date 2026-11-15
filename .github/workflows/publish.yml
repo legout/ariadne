@@ -2,9 +2,10 @@ name: publish
 
 # Core-only release (owner decision 2026-10-19, ADR-0018) on the core-v*
 # release channel (spec 0030 §5): a core-vX.Y.Z tag builds and publishes
-# ariadne-data only, from one Core output directory (dist/core). ariadne-agent
-# and tau-mcp are excluded until separately authorized; their versions and
-# sources stay unchanged. Release qualification pairs the exact PUBLISHED
+# ariadne-data only, from one Core output directory (dist/core). (The
+# separately distributed ariadne-agent package was retired and removed
+# 2026-11-12 — host agents only, Ariadne ADR-0027.) Release qualification
+# pairs the exact PUBLISHED
 # lumio-wiki 0.5.0 producer wheel, fetched by immutable PyPI URL and verified
 # against its recorded SHA-256 — never a workspace or source-built unreleased
 # substitute (producer-first public pairing, spec 0030 §5). The tag must equal

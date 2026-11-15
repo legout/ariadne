@@ -30,13 +30,13 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+import yaml
 
 from ariadne import (
     execution,
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
 )
 from ariadne.execution import DeadlineBudget
-from ariadne.query import _QueryRuntimeSession as QueryRuntime
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +50,7 @@ semantic_model:
     datasets:
       - name: groups3
         source: groups3
+        primary_key: [grp]
         fields:
           - name: grp
             expression: {dialects: [{dialect: ANSI_SQL, expression: grp}]}
@@ -65,6 +66,7 @@ semantic_model:
     datasets:
       - name: plain
         source: plain
+        primary_key: [val]
         fields:
           - name: val
             expression: {dialects: [{dialect: ANSI_SQL, expression: val}]}
@@ -77,7 +79,10 @@ semantic_model:
     datasets:
       - name: cells
         source: cells
+        primary_key: [id]
         fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
           - name: txt
             expression: {dialects: [{dialect: ANSI_SQL, expression: txt}]}
             dimension: {}
@@ -90,7 +95,10 @@ semantic_model:
     datasets:
       - name: uni
         source: uni
+        primary_key: [id]
         fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
           - name: txt
             expression: {dialects: [{dialect: ANSI_SQL, expression: txt}]}
             dimension: {}
@@ -103,6 +111,7 @@ semantic_model:
     datasets:
       - name: tricky
         source: tricky
+        primary_key: [id]
         fields:
           - name: __ariadne_cell_overflow_0
             expression: {dialects: [{dialect: ANSI_SQL, expression: __ariadne_cell_overflow_0}]}
@@ -118,7 +127,10 @@ semantic_model:
     datasets:
       - name: enums
         source: enums
+        primary_key: [id]
         fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
           - name: label
             expression: {dialects: [{dialect: ANSI_SQL, expression: label}]}
             dimension: {}
@@ -132,21 +144,108 @@ semantic_model:
 # envelope dialect defines)
 
 
+# Policy-less probe metrics share a governing Reference, not an invented Policy.
+_PROBE_NAMESPACE = "urn:uuid:s1-probe-fixture"
+_PROBE_CONTROL = (
+    "version: 2\n"
+    'mode: "categorized"\n'
+    "categories:\n"
+    "  - name: references\n"
+    "  - name: metrics\n"
+    "  - name: computations\n"
+    "  - name: tables\n"
+    "  - name: datasets\n"
+    "ontology:\n"
+    "  entity_types:\n"
+    "    reference: {}\n"
+    "    metric: {}\n"
+    "    computation: {}\n"
+    "    table: {}\n"
+    "    dataset: {}\n"
+    "  predicates: {}\n"
+    "  redirects: {}\n"
+)
+_PROBE_SELECTOR = (
+    "version: 1\nmode: integrated\nsubtree: knowledge\n"
+    f"namespace: {_PROBE_NAMESPACE}\nprofile: ariadne-context/1\nsupport_revision: 3\n"
+    "policy_bindings:\n  version: 1\n  bindings: []\n"
+)
+_PROBE_NOTES = (
+    "---\n"
+    'id: "entity:probe-notes"\n'
+    'title: "Probe notes"\n'
+    "entity_types:\n  - reference\n"
+    "tags: [probe]\n"
+    'summary: "The probe fixtures governing notes."\n'
+    "lifecycle: approved\n"
+    "visibility: public\n"
+    "sources:\n"
+    '  - id: seed-notes\n    title: Seed notes\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: reference\n"
+    "  native:\n"
+    "    type: reference\n"
+    '    title: "Probe notes"\n'
+    '    description: The probe fixtures governing notes.\n'
+    "    tags:\n      - probe\n"
+    "    sources:\n"
+    '      - id: seed-notes\n        title: Seed notes\n'
+    "---\n\n# Probe notes\n\nThe probe tables.\n"
+)
+
+
+def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str) -> str:
+    """One policy-less native Metric page (spec0035 §5: no invented Policy)."""
+    dimensions = (
+        f"    dimensions:\n      - {dimension}\n" if dimension else "    dimensions: []\n"
+    )
+    return (
+        "---\n"
+        f'id: "entity:{metric.replace("_", "-")}"\n'
+        f'title: "{metric}"\n'
+        "entity_types:\n  - metric\n"
+        "tags: [metric]\n"
+        f'summary: "{metric} over the probe fixture."\n'
+        "lifecycle: approved\n"
+        "visibility: public\n"
+        "sources:\n"
+        '  - id: seed-notes\n    title: Seed notes\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: metric\n"
+        "  metric_ref:\n"
+        f"    model: {model}\n    metric: {metric}\n"
+        "  required_policies: []\n"
+        "  native:\n"
+        "    type: metric\n"
+        "    status: stable\n"
+        f"    title: {metric}\n"
+        f'    description: "{metric} over the probe fixture."\n'
+        "    tags: [metric]\n"
+        "    sources:\n"
+        '      - id: seed-notes\n        title: Seed notes\n'
+        f"{dimensions}"
+        "    governed_by: references/probe-notes.md\n"
+        "    grain:\n"
+        f"      primary_key: [{key}]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        f"---\n\n# {metric}\n\n{metric} over the probe fixture.\n"
+    )
+
+
 @pytest.fixture(scope="module")
 def served(tmp_path_factory):
-    """One tiny real local served tree + SQLite attach: three groups, an
-    ungrouped 10/20/30 population, oversized/unicode cell tables and a large
-    cited metric page for the metadata-overflow case."""
+    """One tiny admitted native probe project over its SQLite attach: three
+    groups, an ungrouped 10/20/30 population, oversized/unicode cell tables
+    and the enum/collision probes — the governed seam for every limits and
+    deadline case (Table coverage is refreshed for the two tables the ad-hoc
+    and record operations consume)."""
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_admission import admit
+    from tests.test_git_authoring import approved, run_git
+
     root = tmp_path_factory.mktemp("s1_served")
-    models = root / "semantic_layer" / "models"
-    models.mkdir(parents=True)
-    models.joinpath("probe.yml").write_text(_MODELS, encoding="utf-8")
-    context = root / "context_layer" / "metrics"
-    context.mkdir(parents=True)
-    # a served metric page large enough to overflow a lowered total budget
-    context.joinpath("total.md").write_text(
-        "# total\n\n" + ("required policy guidance body. " * 160), encoding="utf-8"
-    )
     db = root / "probe.db"
     con = sqlite3.connect(db)
     con.execute("CREATE TABLE groups3 (grp TEXT, val DOUBLE)")
@@ -166,17 +265,85 @@ def served(tmp_path_factory):
     con.executemany("INSERT INTO enums VALUES (?, ?)", [(1, "ok"), (2, "l" * 40)])
     con.commit()
     con.close()
-    return root, db
+
+    project = root / "project"
+    models = project / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    # the same six probe models, qualified for the attached catalog
+    qualified = _MODELS
+    for table in ("groups3", "plain", "cells", "uni", "tricky", "enums"):
+        qualified = qualified.replace(f"source: {table}\n", f"source: demo.main.{table}\n")
+    (models / "probes.yml").write_text(qualified, encoding="utf-8")
+    (project / "ariadne.yaml").write_text(
+        f"sources:\n  - name: demo\n    type: sqlite\n    path: {db}\n",
+        encoding="utf-8",
+    )
+    kb = project / "knowledge"
+    (kb / "references").mkdir(parents=True)
+    (kb / "metrics").mkdir(parents=True)
+    (kb / "lumio.yaml").write_text(_PROBE_CONTROL, encoding="utf-8")
+    (kb / ".lumio-authoring.yaml").write_text(
+        f"version: 1\nnamespace: \"{_PROBE_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
+        encoding="utf-8",
+    )
+    (kb / "references" / "probe-notes.md").write_text(_PROBE_NOTES, encoding="utf-8")
+    for model, metric, dimension, key in (
+        ("groups", "total", "grp", "grp"),
+        ("plain", "plain_total", None, "val"),
+        ("cellprobe", "n", "txt", "id"),
+        ("uniprobe", "u", "txt", "id"),
+        ("collisionprobe", "t", "__ariadne_cell_overflow_0", "id"),
+        ("enumprobe", "e", "label", "id"),
+    ):
+        (kb / "metrics" / f"{metric}.md").write_text(
+            _probe_metric_page(model, metric, dimension, key), encoding="utf-8"
+        )
+    (project / "context_integration.yaml").write_text(_PROBE_SELECTOR, encoding="utf-8")
+    run_git(project, "init", "-q")
+    run_git(project, "config", "user.name", "Ariadne Tests")
+    run_git(project, "config", "user.email", "tests@ariadne.local")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "semantic_layer",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(project, "commit", "-q", "-m", "human: probe fixture base")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    refreshed = api.refresh_schema(
+        started["proposal"],
+        started["candidate_revision"],
+        [
+            {"source": "demo", "catalog": "demo", "schema": "main", "table": "groups3"},
+            {"source": "demo", "catalog": "demo", "schema": "main", "table": "enums"},
+        ],
+    )
+    validated = api.validate_proposal(started["proposal"], refreshed["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(project, review) == 0
+    return project, db
 
 
 def make_runtime(served, **limits):
-    root, db = served
-    return QueryRuntime(
-        root / "semantic_layer",
-        root / "context_layer",
-        db,
-        query_limits=limits or None,
-    )
+    """The host-owned ceilings ride the project's operator config (tightening
+    only); no-limits calls reset the section to the defaults."""
+    from ariadne.query import QueryRuntime as ProjectRuntime
+
+    project, _db = served
+    registry = project / "ariadne.yaml"
+    document = yaml.safe_load(registry.read_text(encoding="utf-8"))
+    if limits:
+        document["query"] = limits
+    else:
+        document.pop("query", None)
+    registry.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return ProjectRuntime.open_project(project)
 
 
 class _SpyConnection:
@@ -270,7 +437,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
                     {
                         "name": "probe_metric",
                         "description": "three groups",
-                        "source": "groups3",
+                        "source": "demo.main.groups3",
                         "expression": "SUM(val)",
                         "dimensions": ["grp"],
                     }
@@ -343,7 +510,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
                     {
                         "name": "nested_probe",
                         "description": "nested output",
-                        "source": "groups3",
+                        "source": "demo.main.groups3",
                         "expression": "list(val)",
                         "dimensions": [],
                     }
@@ -366,7 +533,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
                         {
                             "name": "nested_param_probe",
                             "description": "d",
-                            "source": "groups3",
+                            "source": "demo.main.groups3",
                             "expression": expression,
                             "dimensions": [],
                         }
@@ -453,13 +620,28 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert result["result"]["has_more_matching"] is True
 
     elif case == "rows_fit_but_metadata_overflows":
+        from ariadne.authoring import AuthoringProject
+        from ariadne.query import QueryRuntime as ProjectRuntime
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
+
+        # the admitted native project: the row fits while the served metadata overflows
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+        assert admit(project, review) == 0
+        registry = project / "ariadne.yaml"
+        registry.write_text(
+            registry.read_text(encoding="utf-8") + "\nquery:\n  response_bytes: 2000\n",
+            encoding="utf-8",
+        )
         # 2000 clears the refusal-form floor (every refusable representation
-        # must fit) while the required cited page (~4.6KB) still overflows it
-        rt = make_runtime(served, response_bytes=2000)
+        # must fit) while the served answer's metadata still overflows it
+        rt = ProjectRuntime.open_project(project)
         with pytest.raises(QueryResultError) as raised:
-            asyncio.run(rt.get_metric("total"))
+            asyncio.run(rt.get_metric("event_count"))
         assert raised.value.code == "result_byte_limit"
-        # the single aggregate row fits; the required cited page does not —
+        # the single aggregate row fits; the served metadata does not —
         # refusal, never a dropped Policy body.
         assert raised.value.observed["rows_lower_bound"] == 0
 
@@ -570,7 +752,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         definition = {
             "name": "ephemeral_probe",
             "description": "ephemeral sequence",
-            "source": "groups3",
+            "source": "demo.main.groups3",
             "expression": "SUM(val)",
             "dimensions": ["grp"],
         }
@@ -636,7 +818,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
                     {
                         "name": "bounded_refusal_probe",
                         "description": "d",
-                        "source": "groups3",
+                        "source": "demo.main.groups3",
                         "expression": "SUM(val)",
                         "dimensions": ["grp"],
                     }
@@ -672,21 +854,12 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
     elif case == "host_config_file_tightens_the_cli":
         from ariadne import cli
         from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import admit, admitted_ready
-        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)
-        review, _ = admitted_ready(
-            api,
-            project,
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
-        )
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
         assert admit(project, review) == 0
         capsys.readouterr()
         registry = project / "ariadne.yaml"
@@ -834,7 +1007,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
                     {
                         "name": "deadline_probe",
                         "description": "d",
-                        "source": "groups3",
+                        "source": "demo.main.groups3",
                         "expression": "SUM(val)",
                         "dimensions": [],
                     }
@@ -843,22 +1016,31 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(execution, "_deadline_clock", real)
 
     elif case == "expiry_between_phases_never_returns_success":
-        rt = make_runtime(served)
+        from ariadne.authoring import AuthoringProject
+        from ariadne.query import QueryRuntime as ProjectRuntime
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
+
+        project = complete_bundle_project(tmp_path)
+        api = AuthoringProject(project)
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+        assert admit(project, review) == 0
+        rt = ProjectRuntime.open_project(project)
         for jump_after in (2, 4, 6):  # deterministic expiry at varying phase points
             monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(jump_after))
             with pytest.raises(QueryResultError) as raised:
-                asyncio.run(rt.get_metric("total"))
+                asyncio.run(rt.get_metric("event_count"))
             assert raised.value.code == "execution_deadline"
 
     elif case == "request_budget_spans_construction_and_first_operation":
+        from ariadne.query import QueryRuntime as ProjectRuntime
+
         real = time.monotonic
         offset = {"s": 0.0}
         monkeypatch.setattr(execution, "_deadline_clock", lambda: real() + offset["s"])
         budget = DeadlineBudget(20)
-        rt = QueryRuntime(
-            served[0] / "semantic_layer",
-            served[0] / "context_layer",
-            served[1],
+        rt = ProjectRuntime.open_project(
+            served[0],
             deadline_budget=budget,  # request-lifecycle construction: ONE budget
         )
         # construction alone consumed more than the 20s deadline: the FIRST
@@ -876,21 +1058,12 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
     elif case == "cli_threads_one_request_budget_through_construction":
         from ariadne import cli
         from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import admit, admitted_ready
-        from tests.test_git_authoring import POLICY_PAGE, complete_bundle_project
+        from tests.test_git_admission import _policy_edit, admit, admitted_ready
+        from tests.test_git_authoring import complete_bundle_project
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)
-        review, _ = admitted_ready(
-            api,
-            project,
-            {
-                "kind": "page",
-                "section": "policies",
-                "name": "all-events-count",
-                "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-            },
-        )
+        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
         assert admit(project, review) == 0
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(
@@ -912,7 +1085,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
                     {
                         "name": "post_collection_probe",
                         "description": "d",
-                        "source": "groups3",
+                        "source": "demo.main.groups3",
                         "expression": "SUM(val)",
                         "dimensions": [],
                     }
@@ -924,16 +1097,13 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert body["persistence"] == {"status": "not_saved"}
 
     elif case == "non_result_request_discards_the_request_budget":
+        from ariadne.query import QueryRuntime as ProjectRuntime
+
         real = time.monotonic
         offset = {"s": 0.0}
         monkeypatch.setattr(execution, "_deadline_clock", lambda: real() + offset["s"])
         budget = DeadlineBudget(20)
-        rt = QueryRuntime(
-            served[0] / "semantic_layer",
-            served[0] / "context_layer",
-            served[1],
-            deadline_budget=budget,
-        )
+        rt = ProjectRuntime.open_project(served[0], deadline_budget=budget)
         asyncio.run(rt.list_metrics())  # the non-result call that "constructed"
         offset["s"] = 25.0  # that request is long over
         result = asyncio.run(rt.get_metric("total"))  # must NOT inherit it

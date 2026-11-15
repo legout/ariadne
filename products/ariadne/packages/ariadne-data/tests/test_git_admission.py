@@ -29,6 +29,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -46,8 +47,11 @@ from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.validate import candidate_scope_digest  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    METRIC_PAGE,
-    POLICY_PAGE,
+    NATIVE_METRIC_PAGE,
+    NATIVE_METRIC_REL,
+    NATIVE_POLICY_PAGE,
+    NATIVE_POLICY_REL,
+    NATIVE_SELECTOR,
     approved,
     branch_of,
     complete_bundle_project,
@@ -77,12 +81,13 @@ def blobs_of(project: Path, revision: str) -> dict[str, bytes]:
     return {rel: blob for rel, blob in proposals.scope_blobs(project, revision)}
 
 
-def admitted_ready(api: AuthoringProject, project: Path, edit: dict) -> tuple[dict, dict]:
-    """The full admitable journey: start, approve, one edit, validate (ok),
-    review. Returns (review, validated) envelopes of the exact final revision."""
+def admitted_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> tuple[dict, dict]:
+    """The full admitable journey: start, approve, one native page batch,
+    validate (ok), review. Returns (review, validated) envelopes of the exact
+    final revision."""
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    edited = api.edit_pages_batch(started["proposal"], started["candidate_revision"], pages)
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is True and validated["errors"] == []
     review = api.review_proposal(started["proposal"])
@@ -94,6 +99,20 @@ def admitted_ready(api: AuthoringProject, project: Path, edit: dict) -> tuple[di
 def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tuple default
     project: Path, review: dict, *, confirm: bool = True, extra: Sequence[str] = ()
 ) -> int:
+    # Spec0035 composite admission through the real CLI: the display call shows
+    # the composite preview; only re-running with --confirm and that preview's
+    # exact digest activates. The synthetic fixture operator publishes with
+    # public visibility to a stable destination OUTSIDE the project; the
+    # expected-current baseline is the currently admitted publication ('none'
+    # for the first) — a real compare-and-swap, never a fabricated pointer.
+    current = project / CURRENT
+    expected = (
+        json.loads(current.read_text(encoding="utf-8"))["bound_release"]["knowledge"][
+            "published_version"
+        ]
+        if current.exists()
+        else "none"
+    )
     argv = [
         "--project",
         str(project),
@@ -103,11 +122,24 @@ def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tupl
         review["revision"],
         "--reviewed-digest",
         review["review_digest"],
+        "--context-destination",
+        str(project.parent / "published"),
+        "--context-expected-current",
+        expected,
+        "--visibility",
+        "public",
         *extra,
     ]
-    if confirm:
-        argv.append("--confirm")
-    return admit_cli(argv)
+    if not confirm:
+        return admit_cli(argv)  # display-only: the composite preview, no activation
+    preview = io.StringIO()
+    with redirect_stdout(preview):
+        code = admit_cli(argv)
+    if code != 0:
+        return code  # the real CLI refusal (its stderr) reaches the caller unchanged
+    return admit_cli(
+        [*argv, "--confirm", "--overall-digest", json.loads(preview.getvalue())["digest"]]
+    )
 
 
 def test_standalone_initial_proposal_ignores_unrelated_knowledge_symlink(tmp_path):
@@ -155,16 +187,76 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     project-owned stores without moving one snapshot byte."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
-    review, journey = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
+    review, journey = admitted_ready(api, project, _policy_edit("The rule body, revised."))
+    # revision-4 table + answer-examples category + events Table page — inputs required below
+    import base64
+
+    events_payload = json.dumps(["events", None, "events", "events"], separators=(",", ":"))
+    events_uri = "ariadne://table/" + base64.urlsafe_b64encode(
+        events_payload.encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    table_page = (
+        "---\n"
+        'id: "entity:events-table"\n'
+        'title: "Events Table"\n'
+        "entity_types:\n  - table\n"
+        "tags:\n  - events\n"
+        'summary: "The events fact table."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - id: "owner-notes"\n'
+        '    title: "Owner notes"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: table\n"
+        "  core_ref:\n"
+        "    kind: resource\n"
+        f'    id: "{events_uri}"\n'
+        "  native:\n"
+        "    type: table\n"
+        '    title: "Events Table"\n'
+        '    description: "The events fact table."\n'
+        "    tags:\n      - events\n"
+        f'    resource: "{events_uri}"\n'
+        "    grain:\n"
+        "      primary_key: [id]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        "    sources:\n"
+        '      - id: "owner-notes"\n'
+        '        title: "Owner notes"\n'
+        "---\n\n"
+        "# Events Table\n\nThe event rows the fixture registers.\n"
     )
+    tree = worktree_of(project, review["proposal"])
+    (tree / "context_integration.yaml").write_text(
+        NATIVE_SELECTOR.replace("support_revision: 2", "support_revision: 4"),
+        encoding="utf-8",
+    )
+    control = tree / "knowledge" / "lumio.yaml"
+    control.write_text(
+        control.read_text(encoding="utf-8")
+        .replace("  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n")
+        .replace("    metric: {}\n", "    metric: {}\n    answer-example: {}\n"),
+        encoding="utf-8",
+    )
+    (tree / "knowledge" / "tables").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge" / "tables" / "events-table.md").write_text(table_page, encoding="utf-8")
+    run_git(
+        tree,
+        "add",
+        "--",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/tables/events-table.md",
+    )
+    run_git(tree, "commit", "-q", "-m", "human: select revision-4 capabilities")
+    revision = run_git(tree, "rev-parse", "HEAD").strip()
+    reconcile(project, review["proposal"], review["revision"], revision)
+    revalidated = api.validate_proposal(review["proposal"], revision)
+    assert revalidated["ok"] is True, revalidated["errors"]
+    review = api.review_proposal(review["proposal"])
+    journey = {"started": journey["started"], "validated": revalidated}
     revision = review["revision"]
     proposal = review["proposal"]
 
@@ -175,9 +267,10 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     # the display step verifies the reviewed digest but admits NOTHING
     assert admit(project, review, confirm=False) == 0
     displayed = json.loads(capsys.readouterr().out)
-    assert displayed["review"]["review_digest"] == review["review_digest"]
-    assert displayed["review"]["report"]["ok"] is True
-    assert "confirm" in displayed["confirmation_required"].lower()
+    assert displayed["core_review"]["review_digest"] == review["review_digest"]
+    assert displayed["core_review_digest"] == review["review_digest"]
+    assert displayed["core_review"]["report"]["ok"] is True
+    assert displayed["digest"]  # the composite the operator confirms verbatim
     assert not (project / CURRENT).exists()
 
     pre_commit = branch_of(project, proposal)
@@ -210,9 +303,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     assert files == set(pre_blobs)
     for rel, blob in pre_blobs.items():
         assert (snapshot / rel).read_bytes() == blob
-    policy_text = (snapshot / "context_layer" / "policies" / "all-events-count.md").read_text(
-        encoding="utf-8"
-    )
+    policy_text = (snapshot / NATIVE_POLICY_REL).read_text(encoding="utf-8")
     assert "The rule body, revised." in policy_text
     assert "verified:" not in policy_text  # admission never decorates reviewed bytes
     assert run_git(project, "ls-files", "--", ".ariadne") == ""  # state stays untracked
@@ -235,15 +326,10 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
 
     # a later authoring HEAD never changes the admitted answers (AC4): the
     # pinned revision serves until a separately admitted revision replaces it
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "A later authoring edit."),
-        },
+        _policy_edit("A later authoring edit."),
     )
     assert api.validate_proposal(proposal, moved["revision"])["ok"] is True
     assert branch_of(project, proposal) != revision
@@ -288,7 +374,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
                 },
                 "submitter": "analyst",
                 "attestation": "self-declared",
-                "sources": ["context_layer/metrics/event_count.md"],
+                "sources": ["metrics/event-count.md"],
             }
         )
     )
@@ -305,7 +391,7 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
             revision=saved["candidate_revision"],
         )
     )
-    assert hits and hits[0]["id"] == saved["id"] and hits[0]["status"] == "draft"
+    assert hits and hits[0]["id"] == f"entity:{saved['id']}" and hits[0]["status"] == "draft"
     fresh.con.close()
 
     # none of it moved one pinned byte
@@ -315,19 +401,22 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
 # ------------------------------------- [2] exact-evidence admission refusals
 
 
-def _validated_ready(api: AuthoringProject, project: Path, edit: dict) -> dict:
-    """Start/approve/one edit/validate(ok)/review; returns the review envelope."""
-    review, _journey = admitted_ready(api, project, edit)
+def _validated_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> dict:
+    """Start/approve/one native page batch/validate(ok)/review; returns the
+    review envelope."""
+    review, _journey = admitted_ready(api, project, pages)
     return review
 
 
-def _policy_edit(text: str) -> dict:
-    return {
-        "kind": "page",
-        "section": "policies",
-        "name": "all-events-count",
-        "content": POLICY_PAGE.replace("The rule body.", text),
-    }
+def _policy_edit(text: str) -> list[dict]:
+    """The governed fixture policy page as one native page-batch object with
+    its rule body revised to ``text`` (the live edit contract)."""
+    return [
+        {
+            "path": NATIVE_POLICY_REL,
+            "content": NATIVE_POLICY_PAGE.replace("The rule body.", text),
+        }
+    ]
 
 
 def test_admission_requires_explicit_confirmation_and_refuses_dirty_or_moved_candidates(
@@ -371,7 +460,7 @@ def test_admission_requires_explicit_confirmation_and_refuses_dirty_or_moved_can
     run_git(worktree, "checkout", "--", "data/seed_notes.md")
 
     # a candidate that moved past its validated revision is a different revision
-    moved = api.edit_proposal(proposal, revision, _policy_edit("A later edit."))
+    moved = api.edit_pages_batch(proposal, revision, _policy_edit("A later edit."))
     assert admit(project, review) == 1
     error = json.loads(capsys.readouterr().err)["error"]
     assert "current candidate" in error["message"] and moved["revision"] != revision
@@ -473,7 +562,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     assert admit(project, first_review) == 0
     first = read_current(project)
 
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"],
         first["commit"],
         _policy_edit("Second candidate body."),
@@ -743,18 +832,18 @@ def test_reconcile_never_clears_exhausted_repair_state_or_inconsistent_transitio
     # exhaust the three bounded validation rounds with changed broken candidates
     revision = started["candidate_revision"]
     for removed in ("one", "two", "three"):
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             revision,
-            {
-                "kind": "page",
-                "section": "metrics",
-                "name": "event_count",
-                "content": METRIC_PAGE.replace(
-                    "resource: policies/all-events-count.md",
-                    f"resource: policies/removed-{removed}.md",
-                ),
-            },
+            [
+                {
+                    "path": NATIVE_METRIC_REL,
+                    "content": NATIVE_METRIC_PAGE.replace(
+                        "resource: policies/all-events-count.md",
+                        f"resource: policies/removed-{removed}.md",
+                    ),
+                }
+            ],
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
@@ -803,7 +892,7 @@ def test_sessions_pin_one_admission_across_later_admissions(tmp_path):
     # a second admission on the same proposal: the FIRST session keeps serving
     # its pinned revision (session-level coherent pinning)
     session1 = QueryRuntime.open_project(project)
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
@@ -832,7 +921,7 @@ def test_open_project_uses_exact_supplied_admission_record(tmp_path, monkeypatch
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
     assert admit(project, first_review) == 0
     first = read_current(project)
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
@@ -1065,7 +1154,7 @@ def test_a_stale_review_of_an_advanced_baseline_never_activates(tmp_path, capsys
     # descends from C1 and its review binds the no-admission baseline
     b_started = api.start_proposal(base_revision=a_review["revision"])
     approved(api, project, b_started)
-    b_edit = api.edit_proposal(
+    b_edit = api.edit_pages_batch(
         b_started["proposal"], b_started["candidate_revision"], _policy_edit("B's body.")
     )
     b_validated = api.validate_proposal(b_started["proposal"], b_edit["revision"])
@@ -1243,7 +1332,7 @@ def test_reconcile_refuses_an_interrupted_commit_record_disagreement(tmp_path, m
 
     monkeypatch.setattr(proposals, "_store_record", store_boom)
     with pytest.raises(OSError, match="simulated record-store crash"):
-        api.edit_proposal(
+        api.edit_pages_batch(
             started["proposal"], stale_revision, _policy_edit("An edit that crashed.")
         )
     monkeypatch.undo()
@@ -1278,7 +1367,7 @@ def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path
     assert admit(project, review) == 0
     record = read_current(project)
     snapshot = project / record["snapshot"]
-    page = snapshot / "context_layer" / "policies" / "all-events-count.md"
+    page = snapshot / NATIVE_POLICY_REL
     original = page.read_text(encoding="utf-8")
 
     runtime = QueryRuntime.open_project(project)
@@ -1329,7 +1418,7 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     capsys.readouterr()
     first = read_current(project)
 
-    second_edit = api.edit_proposal(
+    second_edit = api.edit_pages_batch(
         first_review["proposal"], first["commit"], _policy_edit("Second body.")
     )
     assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"]

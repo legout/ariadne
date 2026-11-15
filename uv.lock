@@ -65,6 +65,7 @@ source = { editable = "products/ariadne/packages/ariadne-data" }
 dependencies = [
     { name = "duckdb" },
     { name = "jsonschema" },
+    { name = "lumio-wiki" },
     { name = "openai" },
     { name = "pyyaml" },
     { name = "sqlglot" },
@@ -99,6 +100,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.18" },
     { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
+    { name = "lumio-wiki", editable = "products/lumio/packages/lumio-wiki", specifier = ">=0.7,<0.8" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'dev'", specifier = ">=0.1.6" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==2.2.0" },
@@ -927,7 +929,7 @@ provides-extras = ["embeddings", "s3"]
 
 [[package]]
 name = "lumio-wiki"
-version = "0.6.0"
+version = "0.7.0"
 source = { editable = "products/lumio/packages/lumio-wiki" }
 dependencies = [
     { name = "msgpack" },
@@ -985,7 +987,7 @@ dependencies = [
     { name = "authlib" },
     { name = "httpx" },
     { name = "itsdangerous" },
-    { name = "lumio-wiki", extra = ["documents", "mcp"] },
+    { name = "lumio-wiki", extra = ["documents", "mcp", "s3"] },
     { name = "mcp" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -995,6 +997,9 @@ dependencies = [
 analytics = [
     { name = "ariadne-data", extra = ["spreadsheets"] },
 ]
+retrieval = [
+    { name = "lumio-lancedb" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1002,12 +1007,13 @@ requires-dist = [
     { name = "authlib", specifier = ">=1.6,<2" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "itsdangerous", specifier = ">=2.2,<3" },
-    { name = "lumio-wiki", extras = ["documents", "mcp"], editable = "products/lumio/packages/lumio-wiki" },
+    { name = "lumio-lancedb", marker = "extra == 'retrieval'", editable = "products/lumio/packages/lumio-lancedb" },
+    { name = "lumio-wiki", extras = ["documents", "mcp", "s3"], editable = "products/lumio/packages/lumio-wiki" },
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "starlette", specifier = ">=1.7,<2" },
     { name = "uvicorn", specifier = ">=0.54,<1" },
 ]
-provides-extras = ["analytics"]
+provides-extras = ["analytics", "retrieval"]
 
 [[package]]
 name = "lxml"

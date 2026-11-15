@@ -5,6 +5,8 @@ amends: ADR-0026, ADR-0029
 
 # ADR-0030: Native Ariadne Context Profile through an additive SDK
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The dependency becomes mandatory on the Ariadne consumer side only. Lumio remains independently usable, owns native knowledge operations and imports no Ariadne execution stack. No duplicate Core bundle or generic OKF round-trip is retained. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 Approved consumer follow-up, 2026-10-23:
 [Ariadne spec0033](../../../ariadne/project/specs/2026-10-23-0033-managed-knowledge-authoring.md)
 consumes a Lumio-owned private source configuration/resolver, approved in

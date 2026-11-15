@@ -12,8 +12,8 @@ from typing import Any
 
 import yaml
 
-from ariadne import admission, answer_examples, authoring_inputs, context, query_results
-from ariadne.context import list_pages, read_page, resolve_term, search_pages
+from ariadne import admission, answer_examples, authoring_inputs, context, proposals, query_results
+from ariadne.context import resolve_term
 from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
     CONSUMER_PROFILE,
 )
@@ -482,6 +482,30 @@ class _DiscoverySession:
             )
         return [*entries, hint]
 
+    def save_example(
+        self,
+        submission: dict,
+        *,
+        proposal: str | None = None,
+        expected_revision: str | None = None,
+    ) -> dict:
+        """Save one explicit Example as an unadmitted native candidate —
+        source-free: the managed save rides this discovery session and the
+        source builder is never constructed for authoring (spec0035 C4)."""
+        self._refuse_unsupported("save_example")
+        if self._managed is None or self._project is None:
+            raise ValueError("Git Example authoring requires a managed --project")
+        self._recheck_pinned()
+        from ariadne import answer_examples
+
+        return answer_examples.save_candidate_example(
+            submission,
+            self._project,
+            self._managed["commit"],
+            proposal=proposal,
+            expected_revision=expected_revision,
+        )
+
     async def search_examples(
         self,
         query: str,
@@ -512,13 +536,19 @@ class _DiscoverySession:
             )
         if self._managed is not None:
             self._recheck_pinned()
-            return answer_examples.search_admitted(
-                self.context_dir.parent,
+        if self._context_snapshot is not None:
+            from ariadne import lumio_context
+
+            assert self._managed is not None
+            result = lumio_context.search_examples(
+                self._managed["bound_release"],
                 query,
                 limit=limit,
                 include_history=include_history,
                 include_sql=include_sql,
             )
+            self._refuse_oversized_response(result)
+            return result
         if self._source_free:
             return []
         raise ValueError("Examples are available only from a Git admission or explicit candidate")
@@ -542,8 +572,8 @@ class _DiscoverySession:
         Integrated projects navigate the pinned scoped SDK facade (A2,
         spec0029 §1.3): native Lumio lexical ranking over the published
         visible page set with verbatim passages and coordinates — never the
-        legacy context_layer filesystem, never a source connection. The
-        legacy snapshot read remains for standalone admissions."""
+        legacy context_layer filesystem, never a source connection. Public
+        sessions require an admitted native release."""
         self._refuse_unsupported("search_context")
         if self._source_free:
             return []
@@ -558,7 +588,13 @@ class _DiscoverySession:
             )
             self._refuse_oversized_response(result)
             return result
-        return search_pages(query, limit, [(self.context_dir, False)])
+        # C6 (spec0035 §6): the classic OKF snapshot search is retired — the
+        # shared open gates refuse retired formats before any session exists,
+        # so a session without the pinned native release refuses honestly.
+        raise ValueError(
+            "no admitted native Context snapshot is available for this "
+            "project; author and admit a reviewed candidate revision first"
+        )
 
     async def resolve_term(self, request: str | dict, *, part: int = 1) -> dict:
         """Resolve one shared business term or exact ``{resource, column}``
@@ -606,39 +642,19 @@ class _DiscoverySession:
             result["admission"] = self._admission_view(self._managed)
             self._refuse_oversized_response(result)
             return result
-        result = resolve_term(
-            [(self.context_dir, False)],
-            request,
-            part=part,
-            # K4 (issue #44): the admitted human mapping confirmations of the
-            # pinned revision ride the resolver — a mapping reports confirmed
-            # only while the recorded selection binds its exact effective
-            # assertion identity and unchanged verified evidence. K4 fix pass
-            # (finding 3): the operator's evidence age budget (the same
-            # inspection.receipt_max_age_hours host config the receipt gate
-            # uses) drives the explicit as_of/stale freshness states, and a
-            # matching confirmation over EXPIRED evidence is withheld as
-            # current guidance (needs-revalidation, history disclosed).
-            confirmations=(self._managed or {}).get("confirmed_mappings"),
-            evidence_max_age_hours=(
-                authoring_inputs.project_inspection_limits(self._project)["receipt_max_age_hours"]
-                if self._project is not None
-                else None
-            ),
+        # C6 (spec0035 §6): the classic OKF snapshot term resolution is
+        # retired — term resolution rides the pinned native release only.
+        raise ValueError(
+            "no admitted native Context snapshot is available for this "
+            "project; author and admit a reviewed candidate revision first"
         )
-        if self._managed is not None:
-            # the resolved terms identify the admitted revision they came from
-            result["admission"] = self._admission_view(self._managed)
-        return result
-
     async def list_context_pages(self) -> list[dict]:
         """List admitted Context metadata without opening a source.
 
         Integrated projects list the pinned scoped SDK facade's visible
         pages (A2, spec0029 §1.3); profiled entries reuse this session's
         already-verified native metadata for the advisory view, and no page
-        body is read per row. The legacy snapshot read remains for standalone
-        admissions."""
+        body is read per row. C6: the legacy snapshot read is retired."""
         self._refuse_unsupported("list_context_pages")
         if self._source_free:
             return []
@@ -654,15 +670,18 @@ class _DiscoverySession:
             )
             self._refuse_oversized_response(result)
             return result
-        return list_pages([(self.context_dir, False)])
+        # C6 (spec0035 §6): the classic OKF snapshot read is retired.
+        raise ValueError(
+            "no admitted native Context snapshot is available for this "
+            "project; author and admit a reviewed candidate revision first"
+        )
 
     async def read_context_page(self, path: str) -> dict:
         """Read one exact page from the admitted Context snapshot.
 
         Integrated projects read the pinned scoped SDK facade's complete
         canonical page (A2, spec0029 §1.3); hidden and unknown paths refuse
-        identically. The legacy snapshot read remains for standalone
-        admissions."""
+        identically. C6: the legacy snapshot read is retired."""
         self._refuse_unsupported("read_context_page")
         if self._source_free:
             raise ValueError("no admitted Context snapshot; use Authoring for a candidate")
@@ -675,7 +694,11 @@ class _DiscoverySession:
             result = lumio_context.read_context_page(self._managed["bound_release"], path)
             self._refuse_oversized_response(result)
             return result
-        return read_page(path, self.context_dir, draft=False)
+        # C6 (spec0035 §6): the classic OKF page read is retired.
+        raise ValueError(
+            "no admitted native Context snapshot is available for this "
+            "project; author and admit a reviewed candidate revision first"
+        )
 
 
 class DiscoveryRuntime:
@@ -689,6 +712,10 @@ class DiscoveryRuntime:
     @classmethod
     def open_project(cls, project: str | Path) -> _DiscoverySession:
         root = Path(project).resolve()
+        # AC10/spec0035 §6: the shared retired-format gate applies to the
+        # ordinary CLI/discovery open path too — admitted and unadmitted
+        # branches alike refuse before any state is read or created.
+        proposals.refuse_unsupported_project(root)
         if admission.load_current(root) is None:
             return _DiscoverySession(
                 root / "semantic_layer",

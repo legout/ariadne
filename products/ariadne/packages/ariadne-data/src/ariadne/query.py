@@ -1,4 +1,4 @@
-"""Query workflow: the five governed + ad-hoc operations (QueryRuntime).
+"""Governed and Ad-hoc query workflow (QueryRuntime).
 
 :class:`QueryRuntime` owns everything the served tree offers to consuming
 agents (spec 2026-09-23-0001 §3, ADR-0012; moved here from
@@ -9,15 +9,15 @@ compilation, execution, context, or grain logic:
 
     list_metrics()                     -> served governed metrics with descriptions
     list_datasets()                    -> [{name, columns: [{name, type}]}] from the attach
-    search_context(query)              -> ranked matches over context_layer/**/*.md
+    search_context(query)              -> ranked SDK matches in the pinned native release
     resolve_term(request)              -> shared terminology resolution (spec
                                           0010 §6): bounded concept/representation
                                           matches with exact bindings, scope,
                                           ambiguity and unconfirmed claims
     get_metric(name, dimensions, range)-> rows PLUS the compiled SQL (provenance),
-                                          governed: true + context (rev 10): the full
-                                          served OKF metric page plus the full bodies
-                                          of every policy its frontmatter cites
+                                          governed: true + native Context: the full
+                                          Metric page and every required Policy
+                                          from the same pinned release
     define_metric(definition)          -> ephemeral OSI model -> render -> read-only
                                           execution -> rows + SQL + governed: false +
                                           persistence: not_saved
@@ -69,21 +69,15 @@ from sqlglot import (  # pyright: ignore[reportMissingImports] — same
 )
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
-# Issue #19 (ADR-0015, spec 2026-09-29-0007): the answer-example store is a
-# separate transport-neutral module — the runtime only contributes its selected
-# roots; examples never touch compilation, execution or governed context.
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
-    answer_examples,
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
+    proposals,  # AC10: the shared retired-format refusal in the project-open path
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
-    data_signals,
+    data_signals_pinned,
 )
-
-# Shared Context Layer (issue #33, ADR-0016): retrieval, citation attachment and
-# deterministic OKF generation live in ariadne.context.
 from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
 
 # Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
@@ -133,10 +127,6 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
 from ariadne.sql_authority import (  # pyright: ignore[reportMissingImports] — new-module drift
     AdHocAuthority,
     assert_ad_hoc_authority,
-)
-from ariadne.validate import (  # pyright: ignore[reportMissingImports] — drift
-    _registry_identity,
-    served_tree_digest,
 )
 
 # MetricFlow's metric-name schema, enforced again at lowering time — reject up
@@ -418,22 +408,29 @@ class _QueryRuntimeSession(_DiscoverySession):
             # session's pinned snapshot bytes and source identity first — a
             # hand-edited snapshot or a withdrawn approval is a staleness refusal.
             self._recheck_pinned()
-        required_context = None
-        if self._context_snapshot is not None:
-            assert self._managed is not None
-            from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+        if self._context_snapshot is None:
+            # C6 (spec0035 §6): the classic OKF context envelope is retired —
+            # every governed answer resolves its required Context through the
+            # pinned native release (the shared open gates refuse retired
+            # formats before any session exists).
+            raise ValueError(
+                "no admitted native Context snapshot is available for this "
+                "project; author and admit a reviewed candidate revision first"
+            )
+        assert self._managed is not None
+        from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
-            required_context = lumio_context.metric_context(
-                self._context_snapshot,
-                self._managed["bound_release"],
-                self.context_dir,
-                self._metrics[name]["model"]["semantic_model"][0]["name"],
-                name,
-            )
-            query_results.account_rows(self._limits, {"context": required_context}, [])
-            query_results.finalize_response(
-                self._limits, {"context": required_context}, response_measure=self._measure
-            )
+        required_context = lumio_context.metric_context(
+            self._context_snapshot,
+            self._managed["bound_release"],
+            self.context_dir,
+            self._metrics[name]["model"]["semantic_model"][0]["name"],
+            name,
+        )
+        query_results.account_rows(self._limits, {"context": required_context}, [])
+        query_results.finalize_response(
+            self._limits, {"context": required_context}, response_measure=self._measure
+        )
         # Compiled by our sqlglot renderer (ADR-0008) from the served OSI models —
         # never tool input (spec §6): the executor only ever receives SQL returned
         # by the compile step. The statement guard is defense in depth on this
@@ -474,9 +471,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             "rows": bounded.rows,
             "sql": sql,
             "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
-            "context": (
-                required_context if required_context is not None else self._metric_context(name)
-            ),
+            "context": required_context,
         }
         if self._managed is not None:
             # Issue #37/G5: revision/route provenance alongside the existing
@@ -493,8 +488,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         # so consumed == requested here — and period correspondence is only
         # assessed for a report whose period field IS the model's ``is_time``
         # field, the one field the range predicates.
-        result["data_signals"] = data_signals(
-            self.context_dir,
+        result["data_signals"] = data_signals_pinned(
+            self._context_snapshot,
             {name: self._direct_table_dependencies(name)},
             requested_period=_requested_period(range, inclusive_end=True),
             period_fields=self._model_time_fields(name),
@@ -602,63 +597,50 @@ class _QueryRuntimeSession(_DiscoverySession):
     def _admitted(self) -> tuple[SemanticGraph, dict]:
         """The admitted graph + record, or the structured refusal (spec rev 1
         "Failure and compatibility behavior": a stable error code, before any
-        SELECT executes). The served-tree digest is RE-CHECKED here, not just at
-        construction: a long-lived server must see a hand-edited model, graph,
-        or cited Policy as a stale admission, exactly like one constructed after
-        the edit (the digest re-hash is a handful of small files; the loaded
-        graph itself stays the admitted bytes). The MANAGED Git route (issue
-        #37/G5) pins the admission the same way over its snapshot bytes and
-        approved source identity."""
-        if self._managed is not None:
-            if self._graph is None:
-                raise PlannerError(
-                    # K4 (issue #44): a context-only admitted snapshot names the
-                    # missing CATALOG (a specific refusal), never a broken
-                    # admission — the snapshot is validly admitted, it carries
-                    # no semantic models.
-                    "missing_catalog" if self._context_only else "not_admitted",
-                    self._admission_reason
-                    or "the pinned snapshot carries no admitted multi-fact graph",
-                )
-            self._recheck_pinned()
-            return self._graph, self._managed
-        if self._admission is None or self._graph is None:
+        SELECT executes). The MANAGED Git route (issue #37/G5) pins the
+        admission over its snapshot bytes and approved source identity; C6
+        retired the db/registry artifact-session route — governed serving
+        requires the Git admission, never a mutable served-tree digest."""
+        if self._managed is None:
             raise PlannerError(
                 "not_admitted",
-                self._admission_reason or "the served tree carries no admitted multi-fact graph",
+                "a valid Git admission is required for governed serving — the "
+                "managed Git route never serves mutable project files",
             )
-        current = served_tree_digest(self._semantic_dir, self.context_dir)
-        if current != self._admission["served_digest"]:
+        if self._graph is None:
             raise PlannerError(
-                "admission_stale",
-                "the served layers changed after admission "
-                f"(served digest {current[:12]}… != recorded "
-                f"{self._admission['served_digest'][:12]}…) — revalidate and re-admit "
-                "before serving the graph as governed",
+                # K4 (issue #44): a context-only admitted snapshot names the
+                # missing CATALOG (a specific refusal), never a broken
+                # admission — the snapshot is validly admitted, it carries
+                # no semantic models.
+                "missing_catalog" if self._context_only else "not_admitted",
+                self._admission_reason
+                or "the pinned snapshot carries no admitted multi-fact graph",
             )
-        bound = (self._admission.get("validation") or {}).get("registry_digest")
-        registry_digest, _label = _registry_identity(self._admission_db, self._admission_sources)
-        if bound is not None and registry_digest != bound:
-            raise PlannerError(
-                "admission_stale",
-                "the approved source registry changed after admission — revalidate and "
-                "re-admit before serving the graph as governed",
-            )
-        return self._graph, self._admission
+        self._recheck_pinned()
+        return self._graph, self._managed
 
-    def _sdk_metric_contexts(self, request: dict) -> dict[str, dict] | None:
+    def _sdk_metric_contexts(self, request: dict) -> dict[str, dict]:
         """Q2 (spec0029 §1.2): on an integrated Bound Release, resolve every
         requested metric's exact SDK Context Binding and complete required
         Policy Closure from the one pinned published version, then prove the
         COMBINED mandatory context fits the complete-response budget — all
         before any planner/live-audit/bind/SELECT work. An unbound, hidden or
         incomplete binding refuses here; an answer that cannot carry its
-        required context never executes. Returns ``None`` on the standalone
-        route (the unchanged OKF context path applies) and an empty mapping
-        for a malformed request (the planner's structured request validation
-        still owns that refusal, before its own live audits)."""
+        required context never executes. C6: the retired standalone ``None``
+        route is gone — a session without the pinned native release refuses
+        honestly, and an empty mapping is returned for a malformed request
+        (the planner's structured request validation still owns that
+        refusal, before its own live audits)."""
         if self._context_snapshot is None:
-            return None
+            # C6 (spec0035 §6): the standalone OKF context route is retired —
+            # the shared open gates refuse retired formats before any session
+            # exists, so a governed request without the pinned native release
+            # refuses honestly instead of falling back.
+            raise ValueError(
+                "no admitted native Context snapshot is available for this "
+                "project; author and admit a reviewed candidate revision first"
+            )
         assert self._managed is not None
         from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -985,8 +967,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         many-to-one paths, aligned aggregate merge), the per-request live
         relationship audits, the single-statement guard, and an EXPLAIN bind
         before the one guarded SELECT executes. The response carries the rows,
-        the compiled SQL, a bounded lineage plan, per-metric OKF metric + Policy
-        context with the independent attestation state, and the local admission
+        the compiled SQL, a bounded lineage plan, per-metric native Metric + Policy
+        Context with the independent attestation state, and the local admission
         provenance — ``governed: true`` only because a human admitted the exact
         validated revision."""
         self._refuse_unsupported("query_metrics")
@@ -995,8 +977,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # metric's exact SDK binding and complete Policy Closure resolve as ONE
         # unit, and the COMBINED mandatory context must fit the complete-response
         # budget — BEFORE planning, the live relationship audits, bind or SELECT.
-        # An answer that cannot carry its required context never executes; the
-        # standalone route keeps the unchanged OKF context path below.
+        # An answer that cannot carry its required Context never executes.
         sdk_contexts = self._sdk_metric_contexts(request)
         # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
@@ -1011,7 +992,6 @@ class _QueryRuntimeSession(_DiscoverySession):
             bounded = self._collect(plan.sql, budget)
         if budget.expired():  # no complete answer after expiry (spec 0014 §6)
             raise query_results.deadline_refusal(budget.seconds)
-        now = context._assessment_now()  # one clock value for every metric's context (spec 0011 §2)
         result = {
             "metrics": list(plan.metrics),
             "dimensions": list(plan.dimensions),
@@ -1041,11 +1021,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "relationship_audit": plan.relationship_audit,
             },
             "governed": True,
-            "context": (
-                {name: sdk_contexts[name] for name in plan.metrics}
-                if sdk_contexts is not None
-                else {name: self._metric_context(name, _now=now) for name in plan.metrics}
-            ),
+            "context": {name: sdk_contexts[name] for name in plan.metrics},
             "admission": self._admission_view(admission),
         }
         # Issue #54 (spec 0013 §4): the additive advisory source-quality view
@@ -1059,8 +1035,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         # mislabel material lookback evidence as inapplicable), and period
         # correspondence is only assessed for a report whose period field is
         # one of the conformed time dimension's native member fields.
-        result["data_signals"] = data_signals(
-            self.context_dir,
+        result["data_signals"] = data_signals_pinned(
+            self._context_snapshot,
             self._plan_table_dependencies(graph, plan),
             requested_period=_plan_requested_period(plan.fetch_bounds),
             period_fields=self._conformed_time_fields(graph, plan.time_dimension),
@@ -1103,8 +1079,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # the admitted graph's proven edges, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical lookup tables with full published
-        # views before ANY planner, live audit, bind or SELECT work; the
-        # standalone route keeps the unchanged path below
+        # views before ANY planner, live audit, bind or SELECT work.
         detail_context = None
         if self._context_snapshot is not None:
             resources = self._detail_static_resources(graph, request)
@@ -1179,8 +1154,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         # catalog dataset's canonical resource, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical table with a full published view before
-        # ANY planner work, bind or SELECT; the standalone route keeps the
-        # unchanged path below
+        # ANY planner work, bind or SELECT.
         records_context = None
         if self._context_snapshot is not None:
             # F3 shared seam: the NATIVE static validation (single ownership,
@@ -1311,21 +1285,11 @@ class _QueryRuntimeSession(_DiscoverySession):
         proposal: str | None = None,
         expected_revision: str | None = None,
     ) -> dict:
-        """Save one explicit Example as an unadmitted Git proposal candidate."""
-        self._refuse_unsupported("save_example")
-        self._discard_request_budget()
-        if self._managed is not None:
-            if self._project is None:
-                raise ValueError("Git Example authoring requires a managed --project")
-            return answer_examples.save_candidate_example(
-                submission,
-                self._project,
-                self.context_dir.parent,
-                self._managed["commit"],
-                proposal=proposal,
-                expected_revision=expected_revision,
-            )
-        raise ValueError("a Git admission is required for Example authoring")
+        """Source-free delegation (spec0035 C4): Example authoring rides the
+        discovery session — the source builder is never constructed for it."""
+        return super().save_example(
+            submission, proposal=proposal, expected_revision=expected_revision
+        )
 
     async def search_examples(
         self,
@@ -1346,15 +1310,6 @@ class _QueryRuntimeSession(_DiscoverySession):
             proposal=proposal,
             revision=revision,
         )
-
-    def _metric_context(self, name: str, *, _now: datetime | None = None) -> dict:
-        """The shared context implementation over this runtime's served context
-        dir (spec rev 10 §8.21; contract and containment in
-        :func:`ariadne.context.metric_context`). ``_now`` propagates one
-        operation-wide assessment instant (spec 0011 §2) through the internal
-        seam only — the public ``metric_context`` signature stays unchanged
-        (issue #48 fix)."""
-        return context._metric_context(self.context_dir, name, now=_now)
 
     async def define_metric(self, definition: dict) -> dict:
         """Ad-hoc path: normalize -> compile gate -> bounded read-only execution
@@ -1396,8 +1351,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # the stage-4 complete Context/enforcement/budget preflight — an
             # integrated Bound Release consumes every allowed nested source
             # with a full published Table view BEFORE the grain guard (a data
-            # read), compile, bind or SELECT; the standalone route keeps the
-            # unchanged path below
+            # read), compile, bind or SELECT.
             adhoc_context = None
             if self._context_snapshot is not None:
                 # the extraction above never returns "skip": an unresolved
@@ -1507,6 +1461,10 @@ class QueryRuntime:
         admission_record: dict | None = None,
     ) -> _QueryRuntimeSession:
         root = Path(project).resolve()
+        # AC10/spec0035 §6: a retired standalone-format project refuses in the
+        # shared project-open path with fresh-setup guidance — never converted,
+        # reset, or served from its retired pages.
+        proposals.refuse_unsupported_project(root)
         if admission_record is not None:
             if discovery is not None:
                 raise ValueError(

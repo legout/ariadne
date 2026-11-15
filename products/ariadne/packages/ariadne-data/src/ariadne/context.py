@@ -1,27 +1,27 @@
-"""Shared Context Layer (OKF) module (spec 2026-10-02-0009 §2 "Module
-ownership", ADR-0016).
+"""Shared Context Layer (OKF) technical-facts module (spec 2026-10-02-0009 §2
+"Module ownership", ADR-0016, C6 cutover per spec0035 §6).
 
-Everything deterministic about OKF pages lives here so Query
-(:mod:`ariadne.query`), the Authoring workflows (:mod:`ariadne.author`,
-:mod:`ariadne.ingest`) share deterministic helpers here; this module has no
-authoring or admission workflow:
+Core's deterministic technical evidence lives here: the shared technical
+machinery consumed by the native Context path (:mod:`ariadne.lumio_context`),
+the advisory quality view and the authoring workflows. This module has no
+authoring, serving or admission workflow (the classic bundle search,
+envelope context, per-type OKF page gates, classic finalization, index
+generation and classic page builders were removed with their retired routes;
+computation-page reads for historical revision-1 native releases remain):
 
-- context retrieval: token-aware ranked search over explicitly selected OKF
-  roots (:func:`search_pages`) and the governed citation attachment
-  (:func:`metric_context`: the full served metric page plus the full bodies of
-  every policy its frontmatter cites, collapsing to the null form — never
-  failing a query);
-- deterministic candidate finalization: the per-type frontmatter contract
-  (:func:`_page_contract_errors`, :func:`_bundle_errors`) and
-  :func:`finalize_candidate` generate metric metadata, computations and indexes
-  before the candidate commit is validated;
 - K2 structured References and terminology resolution (spec 0010 §§5–6, issue
   #42): the versioned ``ariadne`` extension of a Reference page is validated by
   the shared per-type gate (:func:`_reference_extension_errors` — malformed
   supported declarations and author-fabricated approval/measurement claims are
   rejected; legacy References stay readable), and the shared read-only
   :func:`resolve_term` resolves terms and exact field bindings with bounded
-  alternatives, unconfirmed claims and actual citations.
+  alternatives, unconfirmed claims and actual citations;
+- the advisory quality view (spec 0013 §4) through the pinned typed-SDK
+  entry (:func:`data_signals_pinned`) over ONE shared disclosure assembly;
+- native technical page builders (:func:`build_native_table_page`,
+  :func:`build_native_dataset_page`, the native finalize derivation) and the
+  measurement/mapping evidence machinery (digests, evidence views,
+  confirmation bindings, quality profiles).
 
 Ranking, full Policy bodies, candidate labels and attestation semantics remain
 unchanged. This module guides interpretation and never computes metrics or
@@ -34,9 +34,8 @@ import hashlib
 import json
 import math
 import re
-from collections import Counter
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -61,331 +60,27 @@ _HEADING_RE = re.compile(r"#{1,6}\s+(.+?)\s*$")
 
 # Excerpt bound: chars of context kept on each side of the matched token before
 # snapping outward to whole words (spec: bounded, verbatim).
-_EXCERPT_RADIUS = 60
 
 
-# ------------------------------------------------------------- context search
 
 
-def _fence_mask(lines: list[str]) -> list[bool]:
-    """True for lines that delimit or sit inside a fenced code block — ``` or
-    ~~~. A fence closes only on the same marker with a run at least as long as
-    the opener and nothing else on the line (CommonMark: a ~~~ line inside a
-    ~~~~ fence stays literal). Fenced text is generated/machine content (SQL,
-    code) whose identifiers merely echo page names — the spec's "incidental
-    occurrences" — so it scores at half weight and its headings never
-    establish a section (spec: every Markdown category stays searchable;
-    fenced-only occurrences still hit)."""
-    mask: list[bool] = []
-    marker = ""  # active fence marker char; "" when not fenced
-    needed = 0  # closing run length the active fence requires
-    for line in lines:
-        stripped = line.lstrip()
-        char = stripped[:1]
-        run = len(stripped) - len(stripped.lstrip(char))
-        if char in ("`", "~") and run >= 3:
-            if not marker:
-                marker, needed = char, run  # opener: an info string may follow
-                mask.append(True)
-            elif char == marker and run >= needed and not stripped[run:].strip():
-                marker, needed = "", 0  # closer: same marker, long enough, bare
-                mask.append(True)
-            else:
-                mask.append(True)  # fence-ish line stays literal inside the fence
-        else:
-            mask.append(bool(marker))
-    return mask
 
 
-def _locate_passage(
-    lines: list[str], mask: list[bool], body_start: int, terms: set[str]
-) -> tuple[str, int, int, str | None]:
-    """Deterministically pick the passage a hit points at (spec rev 1): scan the
-    body lines first — a body match is preferred over a frontmatter-only match —
-    then the frontmatter, in file order; the leftmost token match on the first
-    matching line wins (fenced lines may carry the passage). Returns (excerpt,
-    line_start, line_end, section) with inclusive 1-based line coordinates; the
-    section is the nearest ATX heading at or before the passage, outside fenced
-    code, or None for frontmatter/heading-less matches (no body evidence is
-    fabricated)."""
-    for index in [*range(body_start, len(lines)), *range(body_start)]:
-        line = lines[index]
-        token = next(
-            (m for m in _QUERY_TOKEN_RE.finditer(line.lower()) if m.group() in terms), None
-        )
-        if token is None:
-            continue
-        start, end = token.span()
-        lo = max(0, start - _EXCERPT_RADIUS)
-        hi = min(len(line), end + _EXCERPT_RADIUS)
-        while lo > 0 and start - lo < _EXCERPT_RADIUS and not line[lo - 1].isspace():
-            lo -= 1  # keep whole words at the left clip
-        while hi < len(line) and hi - end < _EXCERPT_RADIUS and not line[hi].isspace():
-            hi += 1  # keep whole words at the right clip
-        if index >= body_start:
-            section = _enclosing_heading(lines, mask, body_start, index)
-        else:
-            section = None
-        return line[lo:hi], index + 1, index + 1, section
-    raise AssertionError("a positive score implies a matched line")  # pragma: no cover
 
 
-def _enclosing_heading(
-    lines: list[str], mask: list[bool], body_start: int, index: int
-) -> str | None:
-    """The nearest ATX heading at or above line `index` that is not inside a
-    fenced code block (spec: headings inside fences never establish a section,
-    and a passage on a heading line names that heading)."""
-    section = None
-    for position, line in enumerate(lines[body_start : index + 1], start=body_start):
-        if not mask[position] and (heading := _HEADING_RE.match(line)):
-            section = heading.group(1)
-    return section
 
 
-def search_pages(query: str, limit: int, roots: list[tuple[Path, bool]]) -> list[dict]:
-    """Rank OKF pages under caller-selected roots by query-token frequency; each
-    hit points at its passage. The caller supplies a descriptive draft label,
-    which never establishes admission.
-
-    Spec 2026-09-23-0002: ranking is deterministic and token-aware (whole
-    ``[a-z0-9]+`` tokens, so incidental substrings like "order" inside
-    "orders" no longer crowd out real matches; fenced code tokens count at
-    half weight so generated SQL echoes rank below prose without hiding a
-    fenced-only match; ties sort by path, preserving caller root order for
-    duplicate paths). Every hit additionally carries ``excerpt`` (a bounded
-    verbatim substring of ``content`` around the first matched token),
-    inclusive 1-based ``line_start``/``line_end`` covering that excerpt,
-    and ``section`` (the containing ATX heading outside fenced code, else
-    ``None`` — a frontmatter-only match never fabricates a body section;
-    a body match is preferred over a frontmatter match). Nonpositive
-    limits and queries with no matching token return ``[]``."""
-    if limit <= 0:
-        return []
-    now = _assessment_now()  # one observational instant for the whole search (spec 0011 §2)
-    terms = _QUERY_TOKEN_RE.findall(query.lower())
-    hits: list[dict] = []
-    for root, draft in roots:
-        for path in sorted(root.rglob("*.md")):
-            text = path.read_text(encoding="utf-8")
-            lines = text.split("\n")
-            mask = _fence_mask(lines)
-            prose: Counter[str] = Counter()
-            code: Counter[str] = Counter()
-            for line, fenced in zip(lines, mask):
-                (code if fenced else prose).update(_QUERY_TOKEN_RE.findall(line.lower()))
-            score = 2 * sum(prose[term] for term in terms) + sum(code[term] for term in terms)
-            if not score:
-                continue
-            frontmatter = _FRONTMATTER_RE.match(text)
-            body_start = text[: frontmatter.start(2)].count("\n") if frontmatter else 0
-            excerpt, line_start, line_end, section = _locate_passage(
-                lines, mask, body_start, set(terms)
-            )
-            rel = path.relative_to(root).as_posix()
-            hits.append(
-                {
-                    "path": rel,
-                    "score": score,  # relative ranking value, not a frequency contract
-                    "draft": draft,  # caller-supplied read-view label, not admission
-                    "content": text,  # full OKF page: the rules are the payload
-                    "excerpt": excerpt,
-                    "line_start": line_start,
-                    "line_end": line_end,
-                    "section": section,
-                    # spec 0011 §4: every hit carries the advisory envelope of ITS
-                    # returned page, built from the already-read text — no second
-                    # read, no ranking or eligibility authority
-                    "context_signals": _context_signals([_page_view(rel, _page_meta(text), now)]),
-                }
-            )
-    hits.sort(key=lambda hit: (-hit["score"], hit["path"]))
-    return hits[:limit]
 
 
-def _page_title(meta: dict, text: str) -> str | None:
-    """A page's display title (spec 0015): declared frontmatter ``title``, else
-    the first ATX heading outside fenced code, else ``None`` — never invented."""
-    title = meta.get("title")
-    if isinstance(title, str) and title.strip():
-        return title.strip()
-    lines = text.split("\n")
-    for line, fenced in zip(lines, _fence_mask(lines)):
-        if not fenced and line.startswith("# "):
-            return line[2:].strip()
-    return None
 
 
-def list_pages(roots: list[tuple[Path, bool]]) -> list[dict]:
-    """Enumerate every OKF page under caller-selected roots (spec 0015): the
-    token-free directory view over the same roots :func:`search_pages` ranks —
-    metadata only (``path``, ``draft``, ``title`` and advisory
-    ``context_signals``), never page bodies. Root order is preserved and pages
-    are sorted within each root."""
-    now = _assessment_now()
-    pages: list[dict] = []
-    for root, draft in roots:
-        root = root.resolve()
-        for path in sorted(root.rglob("*.md")):
-            text = path.read_text(encoding="utf-8")
-            rel = path.relative_to(root).as_posix()
-            meta = _page_meta(text)
-            pages.append(
-                {
-                    "path": rel,
-                    "draft": draft,
-                    "title": _page_title(meta, text),
-                    "context_signals": _context_signals([_page_view(rel, meta, now)]),
-                }
-            )
-    return pages
 
 
-def read_page(path: str, root: Path, *, draft: bool) -> dict:
-    """Read one exact OKF page by context-root-relative POSIX path (spec 0015):
-    full ``content`` plus ``draft``, ``context_signals`` and the resolved
-    ``path``. Only an exact ``.md`` file directly under ``root`` reads — an
-    absolute, backslashed, root-escaping (``..`` or symlink), non-markdown
-    or unknown path raises ``ValueError`` naming the rejected path: never a
-    search fallback, never an empty success."""
-    if not isinstance(path, str) or not path or "\\" in path:
-        raise ValueError(f"unknown context page: {path!r}")
-    rel = PurePosixPath(path)
-    if (
-        rel.is_absolute()
-        or not path.endswith(".md")
-        or any(part in ("", ".", "..") for part in rel.parts)
-    ):
-        raise ValueError(f"unknown context page: {path!r}")
-    root = root.resolve()
-    candidate = (root.joinpath(*rel.parts)).resolve()
-    if not candidate.is_relative_to(root) or not candidate.is_file():
-        raise ValueError(f"unknown context page: {path!r}")
-    text = candidate.read_text(encoding="utf-8")
-    rel_str = candidate.relative_to(root).as_posix()
-    meta = _page_meta(text)
-    return {
-        "path": rel_str,
-        "draft": draft,
-        "content": text,
-        "context_signals": _context_signals([_page_view(rel_str, meta, _assessment_now())]),
-    }
 
 
-# --------------------------------------------------------- citation attachment
 
 
-class _RequiredContextUnavailable(Exception):
-    """Internal marker: the existing metric-context assembly path failed at
-    this bundle-relative path (spec 0011 §5: missing/unreadable required
-    metric/Policy context — advisory disclosure, never a query failure)."""
 
-    def __init__(self, path: str) -> None:
-        super().__init__(path)
-        self.path = path
-
-
-def _collapsed_context(path: str) -> dict:
-    """The one required-context fallback shape (spec rev 10 §8.21 + spec 0011
-    §5): the exact null/empty payload plus the path-specific
-    ``context_unavailable`` warning — nothing was successfully assembled, so
-    no page (and no undiscoverable dependency) is claimed assessed."""
-    return {
-        "metric_page": None,
-        "policies": [],
-        "context_signals": {
-            "pages": [],
-            "warnings": [{"code": "context_unavailable", "path": path}],
-        },
-    }
-
-
-def metric_context(context_dir: Path, name: str) -> dict:
-    """Rev 10 (ADR-0011): the governed number ships with its caveats — the full
-    served OKF metric page (``context_layer/metrics/<name>.md``) plus the full
-    bodies of every policy page its frontmatter ``sources[]`` cites
-    (``policies/`` paths, resolved against the served context dir). When the
-    metric's computation page declares ``attestation: pending`` (ADR-0013:
-    admission is not independent value-attestation), the context carries that
-    caveat explicitly. Context problems NEVER fail the query — the number is
-    still governed: a missing metric page or an unresolvable policy reference
-    collapses to ``{metric_page: null, policies: []}`` and is logged nowhere.
-    Containment (defense in depth — served YAML names are not fully trusted):
-    the metric page must resolve inside the context root and every cited policy
-    under ``policies/``; a ``../..``-style traversal is just another
-    unresolvable reference — the context collapses to the null form and
-    nothing outside the context dir is ever read.
-
-    Spec 0011 §§4–5: the context additionally carries the additive
-    ``context_signals`` advisory envelope over exactly the consumed set — the
-    metric page, its directly cited Policy pages, and the computation page when
-    the existing computation-caveat path reads one. The required-context
-    fallback keeps its exact null/empty payload and adds the path-specific
-    ``context_unavailable`` warning. The assessment instant is the shared
-    internal clock seam (spec 0011 §2) — never a public argument (issue #48
-    fix: public signatures stay at their base contract)."""
-    return _metric_context(context_dir, name)
-
-
-def _metric_context(context_dir: Path, name: str, *, now: datetime | None = None) -> dict:
-    """``metric_context``'s implementation seam: identical contract, plus the
-    internal-only ``now`` that pins the single assessment instant of one
-    multi-metric operation (spec 0011 §2) — ``None`` means the shared internal
-    clock seam supplies it. Never part of the public API."""
-    assess = _assessment_now() if now is None else now
-    try:
-        root = context_dir.resolve()
-        page = root / "metrics" / f"{name}.md"
-        if not page.resolve().is_relative_to(root):
-            raise _RequiredContextUnavailable(f"metrics/{name}.md")
-        text = page.read_text(encoding="utf-8")
-        match = _FRONTMATTER_RE.match(text)
-        try:
-            meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
-        except yaml.YAMLError:
-            raise _RequiredContextUnavailable(f"metrics/{name}.md") from None
-        if not isinstance(meta, dict):
-            raise _RequiredContextUnavailable(f"metrics/{name}.md")
-        refs = (
-            source.get("resource") if isinstance(source, dict) else source
-            for source in meta.get("sources") or []
-        )
-        policies_root = root / "policies"
-        policies = []
-        policy_views: dict[str, dict] = {}
-        for ref in refs:
-            if not (isinstance(ref, str) and ref.startswith("policies/")):
-                continue
-            body = (root / ref).resolve()
-            if not body.is_relative_to(policies_root):
-                raise _RequiredContextUnavailable(ref)
-            try:
-                policy_text = body.read_text(encoding="utf-8")
-            except OSError, UnicodeDecodeError:
-                raise _RequiredContextUnavailable(ref) from None
-            policies.append(policy_text)
-            policy_views.setdefault(ref, _page_view(ref, _page_meta(policy_text), assess))
-        computation = _computation_meta(root, name)
-        pages = [_page_view(f"metrics/{name}.md", meta, assess), *policy_views.values()]
-        if computation is not None:  # consumed by the existing caveat path
-            pages.append(_page_view(f"computations/{name}.md", computation, assess))
-        context = {
-            "metric_page": text,
-            "policies": policies,
-            "context_signals": _context_signals(pages),
-        }
-        if computation is not None and computation.get("attestation") == "pending":
-            # ADR-0013/spec acceptance 5: admission does not establish an
-            # independent numeric attestation, so preserve the pending caveat.
-            context["attestation"] = "pending"
-            context["governed_note"] = (
-                "governed: true means admitted, not independently value-attested"
-            )
-        return context
-    except _RequiredContextUnavailable as miss:
-        return _collapsed_context(miss.path)
-    except Exception:  # missing page, unresolvable ref, traversal, unparsable frontmatter
-        return _collapsed_context(f"metrics/{name}.md")
 
 
 def _computation_meta(root: Path, name: str) -> dict | None:
@@ -449,155 +144,21 @@ def _load(text: str) -> tuple[dict | None, str]:
     return (yaml.safe_load(match.group(1)) or {}), match.group(2)
 
 
-# ------------------------------------------------------- the OKF page contract
-
 # ADR-0007 bundle contract, as amended by spec 0010 §3/§9 (issue #41):
 # every content type is CHECKED by its context_layer section and frontmatter
 # ``type``; presence is APPLICABLE (a section with pages must satisfy its
 # contract; absent sections are not invented categories).
-_BUNDLE_TYPES = {
-    "datasets": "dataset",
-    "tables": "table",
-    "references": "reference",
-    "references/joins": "reference",
-    "policies": "policy",
-    "metrics": "metric",
-    "computations": "computation",
-    "skills": "skill",
-}
-
 # Per-type required frontmatter beyond ``type`` itself (ADR-0007 bundle
 # contract, as documented in the authoring prompt and asserted per type in
 # tests/test_author.py). Fields attached mechanically after validation (metric
 # governed_by/dimensions/grain, computation runtime/attester) carry their own
 # targeted errors below, not this shared list.
-_BUNDLE_REQUIRED_FIELDS = {
-    "dataset": ("title", "description", "tags", "sources"),
-    "table": ("title", "description", "tags", "sources"),
-    "reference": ("title", "description", "tags", "sources"),
-    "policy": ("status", "title", "description", "tags", "sources"),
-    "metric": ("status", "title", "description", "tags", "sources"),
-    "computation": ("status", "title", "description", "tags", "sources"),
-    "skill": ("title", "description", "tags", "sources"),
-}
 
 
-def _page_contract_errors(staging: Path, page: Path, expected_type: str) -> list[str]:
-    """Contract violations of one candidate page (ADR-0007 required frontmatter per
-    type: every field the bundle contract documents and the per-type bundle
-    tests assert — an omission anywhere fails the gate with the field named)."""
-    rel = page.relative_to(staging).as_posix()
-    try:
-        text = page.read_text(encoding="utf-8")
-        meta = _load_frontmatter_meta(text)
-    except yaml.YAMLError as exc:
-        return [f"{rel}: frontmatter is not valid YAML: {exc}"]
-    if not meta:
-        return [f"{rel}: no frontmatter (needs type: {expected_type})"]
-    errors: list[str] = []
-    if str(meta.get("type") or "") != expected_type:
-        errors.append(f"{rel}: frontmatter type must be '{expected_type}'")
-    for key in _BUNDLE_REQUIRED_FIELDS[expected_type]:
-        if not meta.get(key):
-            errors.append(f"{rel}: {expected_type} page requires '{key}' frontmatter")
-    if expected_type == "table":
-        # Spec 0010 §3 (issue #41): a physical table may have UNKNOWN Grain —
-        # core-generated schema pages carry none, and a declared one must
-        # still be the well-formed ADR-0007 block (semantic Grain requirements
-        # on metric pages are unchanged below).
-        grain = meta.get("grain")
-        if grain is not None and (
-            not isinstance(grain, dict)
-            or not grain.get("primary_key")
-            or not grain.get("cardinality_enforcement")
-        ):
-            errors.append(
-                f"{rel}: a declared table grain block requires primary_key and "
-                "cardinality_enforcement (an undeclared physical Grain stays unknown)"
-            )
-        # C1 (issue #69, spec 0024 §3): the optional authored selection of
-        # observed filter values — validated here so a malformed mapping or a
-        # duplicate declaration fails AUTHORING validation before human
-        # admission, never first as a refresh refusal. Absent/empty is the
-        # valid legacy form (no published values).
-        errors.extend(
-            f"{rel}: authored {OBSERVED_VALUE_COLUMNS_KEY} {error}"
-            for error in _selection_shape_errors(meta.get(OBSERVED_VALUE_COLUMNS_KEY))
-        )
-        front = _FRONTMATTER_RE.match(text)
-        if front:
-            errors.extend(
-                f"{rel}: authored {OBSERVED_VALUE_COLUMNS_KEY} {error}"
-                for error in _duplicate_selection_declarations(front.group(1))
-            )
-        # Spec 0013 §2 (issue #53): the optional authored ``ariadne_quality``
-        # profile — validated here so malformed/unsupported declarations fail
-        # AUTHORING validation before human admission, never as a query
-        # refusal. A table page without the key is the plain legacy form.
-        errors.extend(_quality_profile_errors(rel, meta))
-    elif expected_type == "metric":
-        for key in ("governed_by", "dimensions", "grain"):  # attached mechanically
-            if not meta.get(key):
-                errors.append(
-                    f"{rel}: metric page lacks governed '{key}' frontmatter (no "
-                    "matching candidate OSI model metric?)"
-                )
-        resources = [
-            str(s.get("resource") if isinstance(s, dict) else s or "")
-            for s in meta.get("sources") or []
-        ]
-        if not any(r.startswith("policies/") for r in resources):
-            errors.append(
-                f"{rel}: metric page must cite at least one governing policy "
-                "(a policies/... source)"
-            )
-    elif expected_type == "computation":
-        for key in ("governed_by", "runtime"):
-            if not meta.get(key):
-                errors.append(f"{rel}: computation page requires '{key}' frontmatter")
-        # ADR-0007 scoped extension (ADR-0013): the honest ``attestation: pending``
-        # state stands in for an attester a new metric does not have; a real
-        # attester may be cited instead. Neither present = contract violation.
-        if not meta.get("attester") and meta.get("attestation") != "pending":
-            errors.append(
-                f"{rel}: computation page requires 'attester' frontmatter or the honest "
-                "'attestation: pending' state (ADR-0007 scoped extension)"
-            )
-    elif expected_type == "reference":
-        # K2 (issue #42, spec 0010 §5): a Reference page MAY carry the versioned
-        # ``ariadne`` extension; when present it is validated — malformed
-        # supported declarations and author-fabricated approval/measurement
-        # claims never pass the gate. A Reference WITHOUT the extension is the
-        # legacy form and stays readable unchanged.
-        errors.extend(_reference_extension_errors(rel, meta))
-    return errors
 
 
 # System-generated candidate bookkeeping (index trees, log) is not authored
 # content, so the per-type bundle gate does not check it.
-_BOOKKEEPING_NAMES = frozenset({"index.md", "log.md"})
-
-
-def _bundle_errors(staging: Path) -> list[str]:
-    """The hard ADR-0007 page-contract gate as amended by spec 0010 §3/§9
-    (issue #41): applicable pages, not artificial presence of every category.
-    Every section that carries pages satisfies its per-type contract — the
-    inherited page→OSI/cited-Policy dependencies of the per-type checks stay
-    binding; nothing is invented for absent categories."""
-    context = staging / "context_layer"
-    errors: list[str] = []
-    for section, expected_type in _BUNDLE_TYPES.items():
-        section_dir = context / section
-        pages = (
-            sorted(p for p in section_dir.glob("*.md") if p.name not in _BOOKKEEPING_NAMES)
-            if section_dir.is_dir()
-            else []
-        )
-        if not pages:
-            continue
-        for page in pages:
-            errors.extend(_page_contract_errors(staging, page, expected_type))
-    return errors
 
 
 # ---------------------------------------------- post-validation OKF enrichment
@@ -673,95 +234,8 @@ def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
     return index, all_parsed
 
 
-def _enrich_metric_pages(staging: Path, models: dict[str, dict]) -> None:
-    """Attach governed_by/dimensions/grain to staged metric pages (spec §8.15) —
-    derived from the staged OSI models, never trusted to LLM recall. A missing
-    description defaults to the metric name: index links carry it, and the
-    metric's own page must answer its name best in term-frequency search."""
-    metrics_dir = staging / "context_layer" / "metrics"
-    for path in sorted(metrics_dir.glob("*.md")) if metrics_dir.is_dir() else []:
-        info = models.get(path.stem)
-        if not info:
-            continue
-        existing = path.read_text(encoding="utf-8")
-        try:
-            description_missing = not _load_frontmatter_meta(existing).get("description")
-        except yaml.YAMLError:
-            continue  # unparseable draft frontmatter: the gate owns the error
-        updates = {
-            "governed_by": f"semantic_layer {info['model']}::{path.stem}",
-            "dimensions": info["dimensions"],
-            "grain": {
-                "primary_key": info["primary_key"],
-                "cardinality_enforcement": "STRICT_1_TO_1",
-            },
-        }
-        if description_missing:
-            updates["description"] = f"{path.stem.replace('_', ' ')} — governed metric"
-        path.write_text(_set_frontmatter(existing, updates), encoding="utf-8")
 
 
-def _write_computations(
-    staging: Path, models: dict[str, dict], *, attester: str | None = "tests/test_evals.py"
-) -> None:
-    """One computation page per governed metric (spec §8.15): the sanctioned
-    expression straight from the gate-checked model, runtime + attestation
-    status. Deterministic: the LLM is never asked to reproduce SQL the compile
-    gate already sanctions.
-
-    ``attester=None`` is the harness-led mode (ADR-0013 / ADR-0007 scoped
-    extension): a metric with no independent expected-value oracle carries an
-    honest ``attestation: pending`` — never an invented attester such as the
-    demo's ``tests/test_evals.py``.
-
-    ponytail: pages are deliberately term-sparse (generic h1, no name repetition,
-    no filler prose) — the query surface ranks context hits by term frequency
-    (search_pages), so generated boilerplate must never outrank the metric's
-    narrative page (spec §8.4)."""
-    comp_dir = staging / "context_layer" / "computations"
-    comp_dir.mkdir(parents=True, exist_ok=True)
-    for name, info in sorted(models.items()):
-        meta = {
-            "type": "computation",
-            "title": f"sanctioned SQL — {info['model']}::{name}",
-            "description": "Sanctioned computation: SQL, runtime, attester.",
-            "tags": ["computation"],
-            "status": "draft",
-            "governed_by": f"semantic_layer {info['model']}::{name}",
-            "runtime": "duckdb",
-            # the computation's recorded dataset sources — the semantic inputs
-            # attestation preservation is bound to (issue #36 criterion 2): a
-            # page that cannot prove its inputs unchanged conservatively
-            # regenerates instead of inheriting an attester
-            "dataset_sources": list(info["dataset_sources"]),
-            "sources": [
-                {
-                    "id": f"model-{info['model']}",
-                    "resource": f"../../semantic_layer/models/{info['model']}.yml",
-                    "title": f"{info['model']} OSI model",
-                }
-            ],
-        }
-        if attester is None:
-            meta["attestation"] = "pending"
-        else:
-            meta["attester"] = attester
-        front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-        oracle = (
-            "independent attestation pending — no expected-value oracle is cited "
-            "(compile and grain checks are not independent numeric attestation)"
-            if attester is None
-            else f"attestation `{attester}` golden values"
-        )
-        body = (
-            "# Sanctioned computation\n\n"
-            f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
-            "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
-            f"command (`ariadne get-metric`); {oracle}. "
-            "Business rules: cited metric page.\n\n"
-            "```sql\n" + info["expression"].strip() + "\n```\n"
-        )
-        (comp_dir / f"{name}.md").write_text(f"---\n{front}\n---\n\n{body}", encoding="utf-8")
 
 
 # ------------------------------------------- the Git-candidate finalize pass
@@ -769,78 +243,266 @@ def _write_computations(
 _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
 
 
-def _computation_matches(page: Path, name: str, info: dict) -> bool:
-    """True when the existing computation page is the SAME computation: same
-    governed_by identity, same sanctioned SQL expression AND the same dataset
-    sources — the computation's full semantic dependencies. A model edit that
-    keeps the expression text but changes what it reads (``events.events`` →
-    a filtered SELECT) is a CHANGED computation: identical SQL over different
-    inputs does not preserve an expected-value attestation (issue #36
-    criterion 2). Only a full match may keep its bytes — an unchanged
-    computation preserves its provenance and any independent expected-value
-    attestation it carries; a CHANGED computation cannot inherit its
-    predecessor's attestation and is regenerated with the honest
-    ``attestation: pending`` state (ADR-0013). A page recording no dataset
-    sources (a form the finalize never generated) proves nothing about its
-    inputs and conservatively regenerates."""
-    if not page.is_file():
-        return False
-    text = page.read_text(encoding="utf-8")
+
+
+def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
+    """The revision-2 native finalize derivation (spec0035 §6 C2 cutover): the
+    deterministic generated Computation content of the governed metric set as
+    producer-native ``knowledge/computations`` page specs for the ONE native
+    batch writer — no classic ``context_layer`` finalization, no classic index
+    generation. Evidence binding is DEFINITION- AND DEPENDENCY-COMPLETE for
+    authored and generated pages alike (owner-approved bounded completion of
+    the preserved classic ``_computation_matches``/source-only-attestation
+    principles): the CURRENT resolved sanctioned definition of every governed
+    metric comes from the EXISTING compiler (``render`` embeds the full
+    dependency closure, so a base-metric or field-mapping change reaches
+    derived metrics whose own expression string and dataset sources never
+    moved) — no new SQL/KB parser, no whole-tree digest, no data/source
+    access. A core-generated page still recording that exact resolved SQL and
+    dataset sources keeps its bytes verbatim, earned attestation included; a
+    generated page whose recorded definition no longer matches refreshes the
+    derived facts and clears the predecessor's obsolete attester/check down
+    to honest ``attestation: pending`` through the same atomic native batch,
+    preserving unrelated authored frontmatter and curated narrative. An
+    AUTHORED page is never rewritten by the finalize: one WITHOUT an
+    evidence claim (no attester, ``attestation`` absent/pending) claims
+    nothing and stays untouched, while one CARRYING an earned check that no
+    longer matches — or that never recorded — the current resolved definition
+    REFUSES validation with a named diagnostic for human resolution (an
+    unbound historical check is never quietly trusted). Unparseable model
+    drafts derive nothing — the validation gate owns the structural failure,
+    exactly like the classic pass. Returns ``(specs, errors)``; empty specs
+    is the no-op."""
+    models, all_parsed = _model_index(staging)
+    if not models or not all_parsed:
+        return [], []
+    from ariadne.render import render
+    from ariadne.semantic_graph import load_graph
+
     try:
-        meta = _load_frontmatter_meta(text)
-    except yaml.YAMLError:
-        return False  # malformed draft frontmatter: the gate owns the error
-    fence = _SQL_FENCE_RE.search(text)
-    return (
-        meta.get("governed_by") == f"semantic_layer {info['model']}::{name}"
-        and meta.get("dataset_sources") == info["dataset_sources"]
-        and fence is not None
-        and fence.group(1).strip() == info["expression"].strip()
+        graph = load_graph(staging / "semantic_layer")
+    except Exception:
+        graph = None  # the structural gate owns the loader failure
+    rendered: dict[str, str] = {}
+    if graph is not None:
+        for name, info in models.items():
+            envelope = graph.models.get(info["model"])
+            if envelope is None:
+                continue
+            try:
+                rendered[name] = render(envelope, metric=name).strip()
+            except Exception:
+                continue  # the compile gate owns the structural failure
+    comps_dir = staging / "knowledge" / "computations"
+    existing: dict[str, tuple[str, str]] = {}
+    if comps_dir.is_dir():
+        from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+            parse_frontmatter,
+        )
+
+        for page in sorted(comps_dir.glob("*.md")):
+            raw = page.read_text(encoding="utf-8")
+            try:
+                full, _body, _start = parse_frontmatter(raw, page.name)
+            except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
+                continue
+            profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+            core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
+            if isinstance(core_ref, dict) and core_ref.get("kind") == "semantic":
+                existing[str(core_ref.get("id"))] = (page.name, raw)
+    specs: list[dict] = []
+    errors: list[str] = []
+    for name, info in sorted(models.items()):
+        sanctioned = rendered.get(name)
+        page = existing.get(f"{info['model']}::{name}")
+        if page is None:
+            if sanctioned is not None:
+                specs.append(
+                    {
+                        "path": f"knowledge/computations/{name}.md",
+                        "content": _build_native_computation_page(name, info, sanctioned),
+                    }
+                )
+            continue  # no resolvable definition: the compile gate owns the failure
+        rel_name, raw = page
+        state, refusal = _native_computation_state(raw, name, info, sanctioned)
+        if refusal is not None:
+            errors.append(refusal)
+        if state == "stale" and sanctioned is not None:
+            specs.append(
+                {
+                    "path": f"knowledge/computations/{rel_name}",
+                    "content": _refresh_native_computation_page(raw, name, info, sanctioned),
+                }
+            )
+    return specs, errors
+
+
+def _native_computation_state(
+    text: str, name: str, info: dict, sanctioned: str | None
+) -> tuple[str, str | None]:
+    """``authored`` (skip: no evidence claim, an eligible claim, or bytes the
+    finalize never touches), ``stale`` (core-generated and no longer matching
+    the resolved definition: refresh) or ``refuse`` (an authored evidence
+    claim that cannot apply). ``sanctioned`` is the CURRENT resolved
+    sanctioned SQL of the metric from the existing compiler — the same
+    dependency-closure identity the compile gate sanctions; identity, marker
+    or raw own-expression strings alone are never definition proof."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        parse_frontmatter,
+    )
+
+    try:
+        full, body, _start = parse_frontmatter(text, name)
+    except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
+        return "authored", None
+    profile = full.get("ariadne_profile") if isinstance(full, dict) else None
+    native = profile.get("native") if isinstance(profile, dict) else None
+    native = native if isinstance(native, dict) else {}
+    generated = any(
+        isinstance(source, dict) and source.get("id") == f"model-{info['model']}"
+        for source in native.get("sources") or []
+    )
+    claims_evidence = "attester" in native or native.get("attestation") not in (
+        None,
+        "pending",
+    )
+    fence = _SQL_FENCE_RE.search(body or "")
+    recorded_sources = native.get("dataset_sources")
+    recorded_definition = fence is not None or isinstance(recorded_sources, list)
+    if generated:
+        if sanctioned is None:
+            return "authored", None  # the compile gate owns the definition failure
+        matches = (
+            fence is not None
+            and fence.group(1).strip() == sanctioned
+            and recorded_sources == list(info["dataset_sources"])
+        )
+        return ("current", None) if matches else ("stale", None)
+    if not claims_evidence:
+        return "authored", None  # pending/absent attestation claims nothing
+    if sanctioned is None:
+        return "authored", None  # the compile gate owns the definition failure
+    if not recorded_definition:
+        return "authored", (
+            f"knowledge/computations/{name}.md (its core_ref names"
+            f" {info['model']}::{name}): the page carries an independent"
+            " attestation bound to no recorded sanctioned definition (no"
+            " attested SQL fence or dataset sources) — an unbound historical"
+            " check is never trusted for the current executable bytes; record"
+            " the attested definition or withdraw the claim"
+        )
+    matches = (
+        fence is not None
+        and fence.group(1).strip() == sanctioned
+        and (
+            not isinstance(recorded_sources, list)
+            or recorded_sources == list(info["dataset_sources"])
+        )
+    )
+    if matches:
+        return "authored", None  # eligible: the earned check binds the current definition
+    return "authored", (
+        f"knowledge/computations/{name}.md (its core_ref names"
+        f" {info['model']}::{name}): the recorded independent attestation was"
+        " earned for a DIFFERENT sanctioned definition — the predecessor check"
+        " cannot apply to the current executable bytes; re-attest against the"
+        " current definition or withdraw the claim (the finalize never"
+        " rewrites authored content)"
     )
 
 
-def finalize_candidate(staging: Path) -> None:
-    """The deterministic finalize pass for Git-backed proposals (issue #36/G4,
-    spec §4: generated artifact content is finalized BEFORE the candidate
-    commit is validated): metric-page enrichment, computation pages and the
-    index trees — with NO wall-clock lifecycle stamping and no review
-    decoration. Existing page lifecycle frontmatter is not Git admission
-    authority: reviewed/governed state is supplied by the external admission
-    record (G5), so the committed pages are never restamped, and unchanged
-    inherited pages keep their bytes verbatim (deterministic output ⇒ an
-    unchanged retry is byte-identical and no-op revisions stay no-ops).
+def _refresh_native_computation_page(
+    text: str, name: str, info: dict, sanctioned: str
+) -> str:
+    """The surgical refresh of one STALE core-generated Computation page: the
+    derived facts (resolved sanctioned SQL fence, runtime, dataset sources)
+    update to the current definition and the predecessor's obsolete
+    attester/check is cleared down to the honest ``attestation: pending`` — a
+    prior numerical check is never carried onto executable bytes it did not
+    check. Every other byte of the page (identity, authored envelope,
+    lifecycle, sources, unrelated curated narrative) is preserved verbatim."""
+    from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
+        parse_frontmatter,
+    )
 
-    Unchanged computations are preserved byte-for-byte — their independent
-    attestation stays earned (unchanged is the FULL semantic dependency match:
-    governed identity, sanctioned SQL and dataset sources); changed or new
-    ones carry ``attestation:
-    pending`` — and computations of metrics that no longer exist are removed
-    (the generated set is always exactly the governed metric set). A model
-    file that does not parse — or whose structures are malformed — is an
-    invalid DRAFT (allowed at the edit seam):
-    the computation set cannot be derived, so nothing is generated or removed
-    and the validation gate reports the structural failure."""
-    models, all_parsed = _model_index(staging)
-    _enrich_metric_pages(staging, models)
-    comp_dir = staging / "context_layer" / "computations"
-    if all_parsed:
-        changed = {
-            name: info
-            for name, info in sorted(models.items())
-            if not _computation_matches(comp_dir / f"{name}.md", name, info)
-        }
-        if changed:
-            _write_computations(staging, changed, attester=None)
-        if comp_dir.is_dir():
-            for page in sorted(comp_dir.glob("*.md")):
-                if page.stem not in models:
-                    page.unlink()
-    _regenerate_indexes(staging / "context_layer")
-    examples = staging / "answer_examples"
-    if examples.is_dir():
-        from ariadne.answer_examples import _write_candidate_index
+    full, body, _start = parse_frontmatter(text, name)
+    profile = full.get("ariadne_profile")
+    native = profile.get("native") if isinstance(profile, dict) else None
+    if not isinstance(native, dict):  # pragma: no cover — state() parsed it before
+        return text
+    native.pop("attester", None)
+    native["attestation"] = "pending"
+    native["runtime"] = "duckdb"
+    native["dataset_sources"] = list(info["dataset_sources"])
+    new_fence = "```sql\n" + sanctioned + "\n```"
+    match = _SQL_FENCE_RE.search(body or "")
+    if match is not None:
+        body = body[: match.start()] + new_fence + body[match.end() :]
+    else:
+        body = (body or "").rstrip() + "\n\n" + new_fence + "\n"
+    front = yaml.safe_dump(full, default_flow_style=False, sort_keys=False).strip()
+    return f"---\n{front}\n---\n\n{body}"
 
-        _write_candidate_index(examples)
+
+def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> str:
+    """One honest generated native Computation page (spec0035 §6): the same
+    sanctioned-SQL provenance the classic finalize pass produced, as a
+    producer-native Computation profile anchored by its exact core_ref
+    semantic identity. The recorded SQL fence is the metric's CURRENT
+    RESOLVED sanctioned definition from the existing compiler (full
+    dependency closure — never the raw own-expression string), so evidence
+    binds the exact executable bytes. Deterministic from the gate-checked
+    model — no wall-clock stamp, an unchanged retry is byte-identical. The
+    page claims no independent attestation (``attestation: pending``), no
+    governing Policy edge and no curated meaning: the authored metric page
+    owns the narrative; this page exists so the governed answer still
+    discloses the sanctioned computation and its honest attestation state."""
+    semantic_id = f"{info['model']}::{name}"
+    model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
+    meta = {
+        "id": "entity:"
+        + semantic_id.replace("::", "-").replace("_", "-").lower()
+        + "-computation",
+        "entity_types": ["computation"],
+        "tags": ["computation"],
+        "title": f"sanctioned SQL — {semantic_id}",
+        "summary": "Sanctioned computation: SQL, runtime, attester.",
+        "lifecycle": "draft",
+        "visibility": "public",
+        "sources": [model_source],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "computation",
+            "core_ref": {"kind": "semantic", "id": semantic_id},
+            "required_policies": [],
+            "native": {
+                "type": "computation",
+                "status": "draft",
+                "title": f"sanctioned SQL — {semantic_id}",
+                "description": "Sanctioned computation: SQL, runtime, attester.",
+                "tags": ["computation"],
+                "attestation": "pending",
+                "sources": [model_source],
+                "runtime": "duckdb",
+                "dataset_sources": list(info["dataset_sources"]),
+            },
+        },
+    }
+    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
+    body = (
+        "# Sanctioned computation\n\n"
+        f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
+        "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
+        "command (`ariadne get-metric`); independent attestation pending — no "
+        "expected-value oracle is cited (compile and grain checks are not "
+        "independent numeric attestation). "
+        "Business rules: cited metric page.\n\n"
+        "```sql\n" + sanctioned + "\n```\n"
+    )
+    return f"---\n{front}\n---\n\n{body}"
+
+
 
 
 # -------------------------- K1 (issue #41): core-owned physical schema pages
@@ -1561,12 +1223,16 @@ def build_native_table_page(
     body = existing_body
     if not body.strip():
         body = (
-            f"# {title}\n\nGenerated physical table profile of the approved "
+            # the producer parse keeps the boundary newline IN the body, so
+            # the seeded placeholder carries it too and the emitted page —
+            # fence + body reassembled without an extra separator — is
+            # byte-stable across refreshes (an identical refresh is a no-op)
+            f"\n# {title}\n\nGenerated physical table profile of the approved "
             "catalog asset; the schema and observation facts live in the "
             "technical envelope. This body is curated operator space.\n"
         )
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    return f"---\n{front}---\n{body}", flags
+    return f"---\n{front}---{body}", flags
 
 
 def build_native_dataset_page(
@@ -1646,118 +1312,16 @@ def build_native_dataset_page(
     body = existing_body
     if not body.strip():
         body = (
-            f"# {title}\n\nGenerated Dataset Overview of the approved "
+            # same boundary-newline contract as the table builder above: the
+            # reassembled page is byte-stable across refreshes
+            f"\n# {title}\n\nGenerated Dataset Overview of the approved "
             "collection; the table links live in the technical envelope. This "
             "body is curated operator space.\n"
         )
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    return f"---\n{front}---\n{body}", flags
+    return f"---\n{front}---{body}", flags
 
 
-def build_table_page(
-    *,
-    asset: dict,
-    columns: list[dict],
-    profile: dict,
-    existing_text: str | None,
-    now: str,
-    source_binding: str | None = None,
-) -> tuple[str, dict]:
-    """Generate one physical table page's complete bytes from the approved
-    catalog/profile facts (spec 0010 §4, plan §2): frontmatter with the exact
-    resource and the core-owned ``ariadne.schema``/``ariadne.observations``
-    metadata, authored summary/meanings preserved outside the core-owned
-    sections, removed/type-changed columns' meanings retained as history, and
-    the observation timestamp REUSED when the schema and the measurements are
-    unchanged (identical inputs produce identical bytes — a no-op refresh).
-    ``source_binding`` (spec 0025 §4) rides the observation facts for
-    profile-backed sources only: the effective approval digest the
-    measurements were taken under, so identical candidate bytes cannot reuse
-    old-endpoint schema/value evidence unnoticed.
-    Returns ``(page text, change flags)``.
-    """
-    resource = asset["resource"]
-    try:
-        existing_meta = _load_frontmatter_meta(existing_text) if existing_text else {}
-    except yaml.YAMLError:
-        existing_meta = {}
-    existing_ariadne = existing_meta.get("ariadne") if isinstance(existing_meta, dict) else None
-    old_schema = existing_ariadne.get("schema") if isinstance(existing_ariadne, dict) else None
-    old_schema = old_schema if isinstance(old_schema, list) else None
-    old_observations = (
-        existing_ariadne.get("observations") if isinstance(existing_ariadne, dict) else None
-    )
-    old_observations = old_observations if isinstance(old_observations, dict) else {}
-    old_observed_at = (
-        old_observations.get("observed_at")
-        if isinstance(old_observations.get("observed_at"), str)
-        else None
-    )
-    flags = _schema_flags(old_schema, columns)
-    selection = _authored_selection(existing_text, resource)
-    value_evidence = (
-        _value_evidence(selection=selection, columns=columns, profile=profile, where=resource)
-        if selection
-        else None
-    )
-    facts = _observation_facts(
-        resource=resource,
-        profile=profile,
-        value_evidence=value_evidence,
-        source_binding=source_binding,
-    )
-    reuse_timestamp = (
-        old_observed_at is not None
-        and old_schema is not None
-        and old_schema == columns
-        and {k: v for k, v in old_observations.items() if k != "observed_at"} == facts
-    )
-    observed_at = old_observed_at if reuse_timestamp and old_observed_at is not None else now
-    observations = {"observed_at": observed_at, **facts}
-    citation = {
-        "id": f"catalog-{asset['source']}-{asset['schema']}-{asset['table']}",
-        "resource": resource,
-        "title": f"catalog and profile of {asset['source']}.{asset['schema']}.{asset['table']}",
-    }
-    meta: dict = {
-        "type": "table",
-        "title": f"{asset['source']}.{asset['schema']}.{asset['table']}",
-        "description": (
-            f"Physical table {asset['table']} of source {asset['source']} "
-            f"(schema {asset['schema']}). Row meaning: unknown — not yet authored."
-        ),
-        "tags": ["table", "schema"],
-    }
-    if isinstance(existing_meta, dict):
-        for key in ("title", "description", "tags"):
-            if existing_meta.get(key):
-                meta[key] = existing_meta[key]
-    meta["sources"] = _ensure_citation(
-        existing_meta.get("sources") if isinstance(existing_meta, dict) else None, citation
-    )
-    if isinstance(existing_meta, dict):
-        if existing_meta.get("grain") is not None:  # authored declared Grain preserved
-            meta["grain"] = existing_meta["grain"]
-        for key in sorted(set(existing_meta) - set(meta) - {"type", "ariadne", "resource"}):
-            meta[key] = existing_meta[key]  # authored extras preserved verbatim
-    meta["resource"] = resource
-    meta["ariadne"] = {"schema": columns, "observations": observations}
-    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    authored = ""
-    if existing_text:
-        _fm, authored = _load(existing_text)
-        if authored is None:
-            authored = ""
-    flags_with_old = {**flags, "_old_schema": old_schema or []}
-    body = _table_body(
-        asset=asset,
-        columns=columns,
-        observations=observations,
-        flags=flags_with_old,
-        observed_at=observed_at,
-        authored=authored,
-    )
-    return f"---\n{front}---\n\n{body}\n", flags
 
 
 # ------------- K2 (issue #42): structured References and term resolution
@@ -3159,65 +2723,6 @@ def resolve_term_entries(
     }
 
 
-def build_dataset_page(
-    *, collection: dict, tables: list[dict], existing_text: str | None
-) -> tuple[str, dict]:
-    """Generate one Dataset Overview page (``type: dataset``): the physical
-    collection's canonical resource and the links to EXACTLY the tables this
-    refresh documents — never every approved source (spec 0010 §3/§4).
-    Deterministic derivation, no timestamps. Returns ``(page text, flags)``
-    with the linked-table additions/removals versus the existing overview."""
-    resource = collection["resource"]
-    try:
-        existing_meta = _load_frontmatter_meta(existing_text) if existing_text else {}
-    except yaml.YAMLError:
-        existing_meta = {}
-    existing_ariadne = existing_meta.get("ariadne") if isinstance(existing_meta, dict) else None
-    old_tables = existing_ariadne.get("tables") if isinstance(existing_ariadne, dict) else None
-    old_tables = old_tables if isinstance(old_tables, list) else []
-    linked = [table["resource"] for table in tables]
-    flags = {
-        "added": sorted(set(linked) - set(old_tables)),
-        "removed": sorted(set(old_tables) - set(linked)),
-    }
-    source, schema = collection["source"], collection["schema"]
-    citation = {
-        "id": f"catalog-{source}-{schema}",
-        "resource": resource,
-        "title": f"catalog of {source}.{schema}",
-    }
-    meta: dict = {
-        "type": "dataset",
-        "title": f"{source}.{schema}",
-        "description": (
-            f"Dataset Overview of the physical collection {source}.{schema} of "
-            f"source {source} — {len(tables)} documented table"
-            + ("s" if len(tables) != 1 else "")
-            + "."
-        ),
-        "tags": ["dataset"],
-        "sources": _ensure_citation(
-            existing_meta.get("sources") if isinstance(existing_meta, dict) else None,
-            citation,
-        ),
-        "resource": resource,
-        "ariadne": {"tables": linked},
-    }
-    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
-    links = [
-        f"- [{table['table']}]({table['link']}) — `{table['table']}` "
-        f"({table['column_count']} columns)"
-        for table in tables
-    ]
-    body = (
-        f"# {source}.{schema}\n\n"
-        f"Dataset Overview of the physical collection `{source}.{schema}` (source "
-        f"`{source}`). The tables listed below are the ones this project "
-        "documents — an unrelated approved source is not silently asserted to "
-        "have been documented.\n\n"
-        f"## Tables\n\n" + "\n".join(links) + "\n"
-    )
-    return f"---\n{front}---\n\n{body}", flags
 
 
 # ---------------------------------------------- deterministic index generation
@@ -3247,54 +2752,10 @@ _FOLDER_BLURBS = {
 }
 
 
-def _index_for(directory: Path, served_context: Path) -> str:
-    """One index.md body: subdirectory links, then page links with the target's
-    frontmatter description (SPEC §8 progressive disclosure). Pages carrying a
-    canonical ``resource`` (spec 0010 §4: ``resource`` authoritative, filenames
-    navigational) append it as a trailing marker — the regenerated index is
-    the reader's resource->page resolution source (owner-approved fix4)."""
-    if directory == served_context:
-        heading = "Context Layer"
-    else:
-        heading = _SECTION_TITLES.get(directory.name, directory.name.capitalize())
-    lines = [f"# {heading}", ""]
-    for sub in sorted(p for p in directory.iterdir() if p.is_dir()):
-        if not any(sub.rglob("*.md")):
-            continue
-        rel = sub.relative_to(served_context)
-        blurb = _FOLDER_BLURBS.get(sub.name, "")
-        lines.append(f"* [{sub.name.capitalize()}]({rel.as_posix()}/) - {blurb}".rstrip(" -"))
-    for page in sorted(p for p in directory.glob("*.md") if p.name != "index.md"):
-        try:
-            meta, _ = _load(page.read_text(encoding="utf-8"))
-        except yaml.YAMLError:
-            meta = None  # unparseable frontmatter: fall back to the file stem
-        title = str((meta or {}).get("title") or page.stem.replace("_", " "))
-        desc = str((meta or {}).get("description") or "")
-        line = f"* [{title}]({page.name}) - {desc}".rstrip(" -")
-        resource = str((meta or {}).get("resource") or "")
-        if resource:
-            line += f" - resource: `{resource}`"
-        lines.append(line)
-    return "\n".join(lines).rstrip() + "\n"
 
 
-def _has_pages(directory: Path) -> bool:
-    """True when the directory or any descendant holds .md pages."""
-    return any(directory.rglob("*.md"))
 
 
-def _regenerate_indexes(served_context: Path) -> None:
-    """Regenerate index.md at the bundle root and in every folder that holds
-    pages (directly or below — the root links its section subdirs), from the
-    CURRENT served contents, so merge-surviving pages are indexed too."""
-    if not served_context.is_dir():
-        return
-    dirs = [served_context, *sorted(p for p in served_context.rglob("*") if p.is_dir())]
-    for directory in dirs:
-        if _has_pages(directory):
-            text = _index_for(directory, served_context)
-            (directory / "index.md").write_text(text, encoding="utf-8")
 
 
 # ------------------ advisory supplied source-quality evidence (spec 0013, #53)
@@ -3304,7 +2765,7 @@ def _regenerate_indexes(served_context: Path) -> None:
 # closed-shape declaration of SUPPLIED reports — a domain owner's/upstream
 # producer's reported claims with citations, never a core-produced
 # measurement or a new registry. The shared per-type gate validates it before
-# human admission; the shared :func:`data_signals` consumer reads it. Every
+# human admission; the pinned advisory consumer reads it. Every
 # bound below is an approved public-contract limit (plan §2), not an
 # adjustable mechanical budget.
 ARIADNE_QUALITY_VERSION = 1
@@ -3404,7 +2865,7 @@ def _quality_period_errors(period: object, where: str) -> list[str]:
     if not isinstance(period, dict):
         return [f"{where} must be a period mapping or null (explicitly non-time-bounded)"]
     errors: list[str] = []
-    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS)
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS, key=repr)
     if unknown:
         errors.append(f"{where} carries unsupported field(s) {unknown}")
     error = _quality_text_error(period.get("field"), f"{where} field", QUALITY_MAX_ID_CHARS)
@@ -3482,7 +2943,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             f"{ARIADNE_QUALITY_VERSION}, got {version!r}"
         ]
     errors: list[str] = []
-    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS)
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS, key=repr)
     if unknown:
         errors.append(f"{rel}: ariadne_quality carries unsupported field(s) {unknown}")
     binding = meta.get("resource")
@@ -3492,9 +2953,18 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             "— a page without an established table binding cannot carry a quality "
             "report (an asset is never guessed from a display name)"
         )
+    sources = meta.get("sources")
+    if not isinstance(sources, list):
+        # D1 (C6 owner-a4): a non-list native sources shape is a NAMED
+        # pre-interpretation refusal — never a TypeError iteration crash on
+        # the producer-parsed scalar and never a misleading citation error
+        return errors + [
+            f"{rel}: native sources must be a list to carry ariadne_quality — "
+            "source_ids resolve against the page's declared source records"
+        ]
     citation_resources = {
         source["id"]: source.get("resource")
-        for source in meta.get("sources") or []
+        for source in sources
         # a citation id must be a string: a later-edited non-string id (e.g.
         # ``id: [owner-report]``) simply resolves to nothing — malformed, but
         # never an unhashable-key crash out of the advisory reader
@@ -3514,7 +2984,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
         if not isinstance(report, dict):
             errors.append(f"{where} must be a mapping")
             continue
-        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS)
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS, key=repr)
         if unknown:
             errors.append(
                 f"{where} carries unsupported field(s) {unknown} — the profile is a "
@@ -3570,7 +3040,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
         if not isinstance(scope, dict):
             errors.append(f"{where} scope must be {{kind, description, population, period}}")
         else:
-            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS)
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS, key=repr)
             if unknown:
                 errors.append(f"{where} scope carries unsupported field(s) {unknown}")
             if scope.get("kind") not in QUALITY_SCOPE_KINDS:
@@ -3616,7 +3086,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
             if not isinstance(source_version, dict):
                 errors.append(f"{where} source_version must be {{kind, value}}")
             else:
-                unknown = sorted(set(source_version) - _QUALITY_VERSION_KEYS)
+                unknown = sorted(set(source_version) - _QUALITY_VERSION_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{where} source_version carries unsupported field(s) {unknown}")
                 if source_version.get("kind") not in QUALITY_VERSION_KINDS:
@@ -3656,7 +3126,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
                 if not isinstance(check, dict):
                     errors.append(f"{spot} must be a mapping")
                     continue
-                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS)
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{spot} carries unsupported field(s) {unknown}")
                 missing = sorted(_QUALITY_CHECK_KEYS - set(check))
@@ -3696,7 +3166,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
                     "{kind, value, field, meaning, units, timezone, observed_at}"
                 )
             else:
-                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS)
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS, key=repr)
                 if unknown:
                     errors.append(f"{where} watermark carries unsupported field(s) {unknown}")
                 kind = watermark.get("kind")
@@ -3750,120 +3220,15 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
 DATA_SIGNALS_VERSION = 1
 DATA_SIGNALS_MAX_METRICS = 64
 DATA_SIGNALS_MAX_ASSETS = 64
-DATA_SIGNALS_MAX_PAGES = 32
 DATA_SIGNALS_MAX_REPORTS = 128
 DATA_SIGNALS_MAX_BYTES = 64 * 1024
 _PAGE_FRONTMATTER_READ_BYTES = 64 * 1024
-
-
-def _read_page_meta_bounded(path: Path) -> dict | None:
-    """Frontmatter meta of one OKF page from a BOUNDED read — at most 64 KiB
-    of the file, never the body or external citations. ``None`` when the page
-    is unreadable or carries no parseable frontmatter: unknown evidence,
-    never a query failure."""
-    try:
-        with path.open("rb") as handle:
-            prefix = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return None
-    match = _FRONTMATTER_RE.match(prefix)
-    if not match:
-        return None
-    try:
-        meta = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError:
-        return None
-    return meta if isinstance(meta, dict) else None
-
-
 def _coerce_validated_instant(value: object) -> datetime:
     """The instant of a VALIDATED profile timestamp (aware datetime or aware
-    ISO string — the authoring gate rejected everything else)."""
+    ISO string — the producer authoring gate rejected everything else)."""
     if isinstance(value, datetime):
         return value
     return datetime.fromisoformat(str(value))
-
-
-# One enriched index line: the page link plus the trailing core-appended
-# resource marker ``resource: `ariadne://…` ``. The label may itself contain
-# ``]`` (authored titles are preserved verbatim), so the link ends at the
-# FIRST ``](`` — first-link-target semantics. Greedy prefix matching keeps
-# the LAST marker on a line — the one the generator appends — ahead of any
-# identical text authored into a description.
-_INDEX_RESOURCE_RE = re.compile(r"^\s*\*\s+\[(?:.*?)\]\(([^)\s]+)\).*\bresource:\s*`([^`]+)`")
-
-
-def _table_index_bindings(context_dir: Path) -> dict[str, str]:
-    """The resource->page resolution map of the system-generated
-    ``tables/index.md`` (spec 0010 §4: ``resource`` authoritative, page
-    filenames navigational; the owner-approved fix4 design makes the
-    regenerated index the reader's resolution source). ONE bounded metadata
-    read — at most 64 KiB — explicitly NOT charged against the 32-page
-    evidence budget. A missing or unreadable index, or one written by an
-    older core without resource markers, resolves nothing: every canonical
-    citation then degrades to a ``binding_unknown`` disclosure, never to a
-    scan. ponytail: duplicate-resource lines (an authoring anomaly — pages
-    bound to resources keep protected single resources) resolve to the
-    first line, matching the index's sorted page order."""
-    try:
-        with (context_dir / "tables" / "index.md").open("rb") as handle:
-            text = handle.read(_PAGE_FRONTMATTER_READ_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return {}
-    bindings: dict[str, str] = {}
-    for line in text.splitlines():
-        match = _INDEX_RESOURCE_RE.match(line)
-        if match and match.group(2) not in bindings:
-            name = match.group(1)
-            if name == Path(name).name and name.endswith(".md"):  # one served page file
-                bindings[match.group(2)] = f"tables/{name}"
-    return bindings
-
-
-def _direct_table_citations(
-    context_dir: Path, metric_names: list[str]
-) -> tuple[set[str], set[str]]:
-    """The DIRECTLY-cited table identities recorded on the CONSUMING metric
-    pages (``metrics/<name>.md`` frontmatter ``sources[]``): cited table page
-    paths (``tables/<plain-name>.md``) and cited canonical table resources
-    (``ariadne://table/…``). This is the consuming side of spec 0013 §4's
-    contract — a table page citing its own source is a self-citation, never a
-    citation by the metric — and it is resolved BEFORE any ``tables/*.md``
-    read, so only directly-cited pages ever enter evidence consideration. A
-    missing or unparseable metric page, a ``sources[]`` that is not a list,
-    bare display names, ``policies/...`` refs, non-plain page paths
-    (subdirectories, traversal — the citation names one served page file) and
-    malformed resources cite nothing: unknown coverage, never a guess."""
-    root = context_dir.resolve()
-    cited_pages: set[str] = set()
-    cited_resources: set[str] = set()
-    for name in metric_names:
-        page = root / "metrics" / f"{name}.md"
-        try:
-            if not page.resolve().is_relative_to(root):
-                continue  # containment: a crafted name is just another missing page
-        except OSError:
-            continue
-        meta = _read_page_meta_bounded(page)
-        sources = meta.get("sources") if meta else None
-        if not isinstance(sources, list):
-            continue
-        for source in sources:
-            resource = source.get("resource") if isinstance(source, dict) else None
-            if not (isinstance(resource, str) and resource):
-                continue
-            if resource.startswith("tables/"):
-                name_part = resource[len("tables/") :]
-                if name_part == Path(name_part).name and name_part.endswith(".md"):
-                    cited_pages.add(f"tables/{name_part}")
-                continue
-            try:
-                kind, _parts = parse_resource(resource)
-            except ValueError:
-                continue
-            if kind == "table":
-                cited_resources.add(resource)
-    return cited_pages, cited_resources
 
 
 def _period_disjoint(period: dict, requested: tuple[datetime | None, datetime | None]) -> bool:
@@ -3953,157 +3318,24 @@ def _report_view(
     return view
 
 
-def data_signals(
-    context_dir: str | Path,
+def _data_signals_state(
+    metric_names: list[str],
+    asset_order: list[str],
+    omitted_metrics: int,
+    omitted_assets: int,
+    omitted_pages: int,
     dependencies: dict[str, list[str | None]],
-    *,
-    requested_period: tuple[datetime | None, datetime | None] | None = None,
-    period_fields: set[str] | frozenset[str] | None = None,
+    bindings: dict[str, tuple[str, dict]],
+    unresolved: list[str],
+    now: datetime,
+    requested_period: tuple[datetime | None, datetime | None] | None,
+    period_fields: set[str] | frozenset[str] | None,
 ) -> dict:
-    """The shared read-only advisory quality-evidence view of spec 0013 §4
-    (plan 0013 §2): for every metric's DIRECT table dependencies — already
-    resolved to canonical table resources by the caller against the built
-    execution catalog — the directly cited physical-table pages under the
-    served ``tables/`` section are read (bounded: at most 64 KiB of
-    frontmatter per page, at most 32 pages physically read), and each page's
-    optional validated ``ariadne_quality`` reports are disclosed with their
-    age, applicability, limitations, checks and watermarks.
+    """The shared spec0013 §4 disclosure assembly behind the pinned advisory
+    entry :func:`data_signals_pinned` (pinned typed SDK metadata): coverage,
+    warnings, bounded elision and the deterministic 64 KiB convergence —
+    ONE semantic calculation, never a second advisory dialect."""
 
-    A page is DIRECTLY CITED only when the CONSUMING metric page
-    (``metrics/<name>.md``) records the citation in its own ``sources[]`` —
-    a ``tables/...`` page path or a canonical table resource (spec §4's
-    "admitted table citations"). Every citation is resolved to an EXACT
-    page path BEFORE any table-page read: a path citation names its page
-    directly, and a canonical-resource citation resolves through the
-    regenerated ``tables/index.md`` — the reader's resource->page resolution
-    source (spec 0010 §4: ``resource`` is authoritative, filenames
-    navigational; existing pages bound to resources keep their names) — via
-    ONE bounded index read that is explicitly NOT charged against the
-    page-read budget, with each resolved page's OWN frontmatter — its
-    declared ``resource`` — confirming the resolution as it is read.
-    Resolution is INDEX-ONLY: an index without resource markers (a
-    pre-existing served context), a missing/unreadable index or a citation
-    the index does not resolve degrades to a ``binding_unknown`` disclosure
-    for that citation — the query still succeeds, nothing is scanned. A
-    table page citing its own source is a self-citation and establishes
-    nothing. The resolved pages are the ONLY pages ever read: unrelated
-    pages are never read, never sorted against and never consume the
-    page-read budget, and each resolved page's declared binding is
-    cross-checked against the catalog-resolved direct dependencies
-    (same-named tables in distinct sources stay distinct assets). Citing
-    more pages than the budget reads is the one truncation scenario: a
-    cited page beyond it is disclosed under ``omitted``/``truncated``, never
-    silently assessed.
-
-    Coverage is honesty about EVIDENCE, not about data: ``complete`` means
-    every direct dependency is identified and covered by applicable parseable
-    report evidence (an expired or reported-failed report still covers an
-    identified dependency); ``partial`` means identified coverage is
-    incomplete; ``unknown`` means correspondence/evidence is unavailable. A
-    missing binding, a missing table citation, an absent optional profile or
-    a later-unreadable declared profile is explicit unknown coverage — the
-    last additionally warns ``data_evidence_unavailable``; a wholly absent
-    optional profile never warns merely for its absence. No pass outcome,
-    watermark recency or admission is ever presented as live health.
-
-    The optional ``requested_period`` (issue #54) is the runtime's own
-    requested query period as aware instants (either side may be ``None`` —
-    unbounded): it NEVER widens evidence, it only lets a mechanically
-    established period CONTRADICTION — the report's own declared evidence
-    period provably disjoint from the requested period — disclose that report
-    as ``inapplicable`` with the ``scope_mismatch`` limitation. The
-    contradiction additionally requires ``period_fields`` (W1 fix3): the
-    runtime-supplied set of fields the request's range actually predicates,
-    so a period declared on any other field stays unknown correspondence.
-    Overlap establishes nothing: applicability stays unknown on every
-    unproven axis.
-
-    The read is PURE (no restamp, no write, no fetch, no probe — retries
-    return another assessment of the same pinned bytes) and never fails a
-    numerically valid query: bounded counts and the total view size elide
-    trailing entries deterministically, count them under ``omitted`` and mark
-    ``truncated`` (elided evidence never leaves a complete/warning-free
-    claim). No recursive lineage traversal, directory-wide report discovery
-    or external read happens here — only the directly cited table pages of
-    the named dependencies."""
-    now = _assessment_now()
-    metric_names = list(dependencies)[:DATA_SIGNALS_MAX_METRICS]
-    omitted_metrics = len(dependencies) - len(metric_names)
-    asset_order: list[str] = []
-    for name in metric_names:
-        for resource in dependencies[name]:
-            if isinstance(resource, str) and resource and resource not in asset_order:
-                asset_order.append(resource)
-    omitted_assets = max(0, len(asset_order) - DATA_SIGNALS_MAX_ASSETS)
-    asset_order = asset_order[:DATA_SIGNALS_MAX_ASSETS]
-    wanted = set(asset_order)
-    # The directly-cited set resolved from the CONSUMING side before any
-    # table-page read (spec 0013 §4, issue #53's "exactly bound directly
-    # cited table"): the metric pages' recorded table citations name the
-    # pages (``tables/...`` paths) or canonical resources that may supply
-    # evidence. A table page citing its own source is a self-citation and
-    # establishes nothing; an uncited page — same resource or not — never
-    # enters evidence consideration.
-    cited_pages, cited_resources = _direct_table_citations(Path(context_dir), metric_names)
-    # The citation resolution, built BEFORE any table-page read (spec 0010
-    # §4 + the owner-approved fix4 design): a path citation names its page
-    # directly, and a canonical-resource citation resolves through the
-    # regenerated ``tables/index.md`` — ONE bounded metadata read, explicitly
-    # NOT charged against the 32-page evidence budget — to the exact page
-    # the index binds that resource to, each resolved page's OWN frontmatter
-    # (its declared ``resource``) confirming the resolution as it is read.
-    # Resolution is INDEX-ONLY: no ``tables/*.md`` walk, no generated-name
-    # convention, no scan loop — unrelated pages are never candidates, never
-    # read and never charged to the page-read budget. An index without
-    # resource markers (a pre-existing served context), a missing/unreadable
-    # index or a citation the index does not resolve degrades to a
-    # ``binding_unknown`` disclosure — the query still succeeds, nothing is
-    # scanned.
-    cited_wanted = cited_resources & wanted
-    resolved: dict[str, str] = {}
-    if cited_wanted:
-        for resource, page in _table_index_bindings(Path(context_dir)).items():
-            if resource in cited_wanted:
-                resolved[resource] = page
-    candidates: set[str] = set(cited_pages) | set(resolved.values())
-    bindings: dict[str, tuple[str, dict]] = {}
-    omitted_pages = 0
-    pages_read = 0
-    read_pages: set[str] = set()
-    tables_dir = Path(context_dir) / "tables"
-    if tables_dir.is_dir():
-        for rel in sorted(candidates):
-            if pages_read >= DATA_SIGNALS_MAX_PAGES:
-                # direct citations the read budget never reached — disclosed
-                # as omitted: citing more pages than the budget reads is the
-                # one truncation scenario, never silently assessed
-                omitted_pages = len(candidates) - pages_read
-                break  # the budget bounds pages physically read (plan §2)
-            pages_read += 1
-            read_pages.add(rel)
-            meta = _read_page_meta_bounded(tables_dir / Path(rel).name)
-            if not meta:
-                continue
-            resource = meta.get("resource")
-            # the identity cross-check of the cited pages against the runtime
-            # catalog: a directly-cited page still binds only when its declared
-            # resource is one of the catalog-resolved direct dependencies
-            if not (isinstance(resource, str) and resource in wanted):
-                continue
-            if (rel in cited_pages or resource in cited_resources) and resource not in bindings:
-                bindings[resource] = (rel, meta)  # the first cited page in sorted order binds
-    # honest degradation (owner-approved fix4 design): a canonical citation
-    # the index did not resolve at all, or whose resolved page was read but
-    # did not confirm the binding, is disclosed binding_unknown — never a
-    # guess and never a scan (a page the budget never reached stays covered
-    # by the omitted/truncated disclosure alone)
-    unresolved: list[str] = []
-    for resource in sorted(cited_wanted):
-        if resource in bindings:
-            continue
-        page = resolved.get(resource)
-        if page is None or page in read_pages:
-            unresolved.append(resource)
     state: dict[str, dict] = {}
     omitted_reports = 0
     reports_emitted = 0
@@ -4277,3 +3509,133 @@ def data_signals(
                 omitted_assets += 1
             else:
                 return view  # nothing left to elide: the terminal valid view
+
+
+def data_signals_pinned(
+    snapshot,
+    dependencies: dict[str, list[str | None]],
+    *,
+    requested_period: tuple[datetime | None, datetime | None] | None = None,
+    period_fields: set[str] | frozenset[str] | None = None,
+) -> dict:
+    """The spec0013 §4 advisory quality view over the PINNED scoped
+    ContextSnapshot (C6 native route, owner-approved quality contract):
+    the SAME semantic calculation and disclosure shape as the classic entry
+    (via the shared `_data_signals_state`), with the consuming metric pages
+    and the directly-cited table pages resolved from the REAL producer view —
+    metric identity ONLY through `snapshot.bindings` (`metric_entity_id` /
+    `metric_ref`, qualified model::metric — a bare name mapping to several
+    models stays honestly unknown, never a cross-match) and table identity
+    through the exact FLAT `native.resource`. Citations resolve SCOPE-FIRST
+    over the visible pinned pages: an exact visible KB-relative page path
+    resolves that page and reads its canonical resource; a canonical resource
+    URI matches the visible page whose resource equals it exactly; unknown or
+    hidden stays honestly unknown. No filesystem read, no second index, no
+    raw KB parse, no SQL/source probe on the advisory read; the view never
+    fails a numerically valid query and never invents evidence — a dependency
+    without a pinned technical page, or a page without an authored accepted
+    `ariadne_quality` profile, stays honestly unknown coverage."""
+    from lumio_wiki.ariadne_context import disclose_native
+
+    now = _assessment_now()
+    pages = tuple(snapshot.pages) if snapshot is not None else ()
+    bindings = tuple(snapshot.bindings) if snapshot is not None else ()
+    metric_names = list(dependencies)[:DATA_SIGNALS_MAX_METRICS]
+    omitted_metrics = len(dependencies) - len(metric_names)
+    asset_order: list[str] = []
+    for name in metric_names:
+        for resource in dependencies[name]:
+            if isinstance(resource, str) and resource and resource not in asset_order:
+                asset_order.append(resource)
+    omitted_assets = max(0, len(asset_order) - DATA_SIGNALS_MAX_ASSETS)
+    asset_order = asset_order[:DATA_SIGNALS_MAX_ASSETS]
+    wanted = set(asset_order)
+    # qualified metric identity through the REAL producer bindings (never a
+    # bare-name cross-match), then the metric page by its exact producer identity
+    bindings_by_metric: dict[str, list] = {}
+    for binding in bindings:
+        metric_ref = getattr(binding, "metric_ref", None)
+        name = getattr(metric_ref, "metric", None)
+        if isinstance(name, str) and name:
+            bindings_by_metric.setdefault(name, []).append(binding)
+    page_by_entity = {page.entity_id: page for page in pages}
+    # typed index over the VISIBLE pinned pages (deterministic order; the
+    # disclosed FLAT native metadata is the only metadata read)
+    metric_citations: dict[str, set[str]] = {}
+    tables: dict[str, tuple[str, dict]] = {}
+    resource_by_visible_path: dict[str, str] = {}
+    for page in sorted(pages, key=lambda item: item.path):
+        native_meta = disclose_native(page.native)
+        if not isinstance(native_meta, dict):
+            continue
+        if page.kind != "table":
+            continue
+        resource = native_meta.get("resource")
+        if not (isinstance(resource, str) and resource.startswith("ariadne://")):
+            continue
+        meta: dict = {"resource": resource}
+        # the Core advisory gate resolves the reports' source_ids against the
+        # page's own declared citations — carry them with the profile
+        sources_meta = native_meta.get("sources")
+        if isinstance(sources_meta, list):
+            meta["sources"] = sources_meta
+        quality = native_meta.get("ariadne_quality")
+        if quality is not None:
+            meta["ariadne_quality"] = quality
+        tables.setdefault(resource, (f"knowledge/{page.path}", meta))
+        resource_by_visible_path[page.path] = resource
+    for name in dict.fromkeys(metric_names):
+        candidates = bindings_by_metric.get(name) or []
+        if len(candidates) != 1:
+            continue  # absent/ambiguous qualified identity: honest unknown
+        binding = candidates[0]
+        metric_page = page_by_entity.get(getattr(binding, "metric_entity_id", None))
+        if metric_page is None:
+            continue
+        native_meta = disclose_native(metric_page.native)
+        sources = native_meta.get("sources") if isinstance(native_meta, dict) else None
+        if not isinstance(sources, list):
+            continue
+        cited = metric_citations.setdefault(name, set())
+        for source in sources:
+            resource = source.get("resource") if isinstance(source, dict) else None
+            if not (isinstance(resource, str) and resource):
+                continue
+            if not resource.startswith("ariadne://"):
+                # an exact visible KB-relative table page path resolves THAT
+                # page, then its canonical resource — never a URI comparison
+                resolved = resource_by_visible_path.get(resource)
+                if resolved is not None:
+                    cited.add(resolved)
+                continue
+            try:
+                citation_kind, _parts = parse_resource(resource)
+            except ValueError:
+                continue
+            if citation_kind == "table":
+                cited.add(resource)  # canonical URI: exact resource match below
+    bindings_resolved: dict[str, tuple[str, dict]] = {}
+    for resource in asset_order:
+        entry = tables.get(resource)
+        if entry is None:
+            continue  # no pinned technical page: the asset entry stays unknown
+        path, meta = entry
+        if any(resource in metric_citations.get(name, ()) for name in metric_names):
+            bindings_resolved[resource] = (path, meta)
+    cited_wanted: set[str] = set()
+    for name in metric_names:
+        cited_wanted |= {r for r in metric_citations.get(name, ()) if r in wanted}
+    unresolved = sorted(cited_wanted - set(bindings_resolved))
+    return _data_signals_state(
+        metric_names,
+        asset_order,
+        omitted_metrics,
+        omitted_assets,
+        0,  # the pinned set is already complete: no page-read budget exists
+        dependencies,
+        bindings_resolved,
+        unresolved,
+        now,
+        requested_period,
+        period_fields,
+    )

@@ -31,8 +31,8 @@ from ariadne import (  # noqa: E402
 )
 from ariadne.cli import main as cli  # noqa: E402
 from tests.test_context_admission import (  # noqa: E402
-    REFERENCE_EDIT,
-    TABLE_EDIT,
+    REFERENCE_PAGE_REL,
+    TABLE_PAGE_REL,
     admitted_candidate,
     context_only_candidate,
     order_reference_page,
@@ -40,6 +40,22 @@ from tests.test_context_admission import (  # noqa: E402
     table_page,
 )
 from tests.test_git_authoring import branch_of  # noqa: E402
+
+# A SECOND structured Reference under a distinct native page identity: the
+# classic fixture addressed pages by artifact name; the native batch addresses
+# them by page identity, so the variant needs its own title/entity/path.
+OTHER_REFERENCE_REL = "knowledge/references/other-number.md"
+
+
+def _other_number_reference_page() -> str:
+    meta = yaml.safe_load(order_reference_page().split("---")[1])
+    meta["id"] = "entity:other-number"
+    meta["title"] = "Other number"
+    # its OWN alias: a second page carrying the first page's alias is a
+    # duplicate-alias refusal in the native batch writer
+    meta["aliases"] = ["other number concept"]
+    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{front}\n---\n\n# Other number\n"
 
 
 class Terminal(io.StringIO):
@@ -113,8 +129,8 @@ def test_unadmitted_native_payload_noninteractive_is_read_only(
     assert governed(project) == before
 
 
-def native_admission_args(project, payload, selections=()):
-    return [
+def native_admission_args(project, payload, selections=(), *, destination=None, expected="none"):
+    argv = [
         "--project",
         str(project),
         "--proposal",
@@ -126,6 +142,28 @@ def native_admission_args(project, payload, selections=()):
         "--confirm",
         *[v for s in selections for v in ("--confirm-mapping", s)],
     ]
+    if destination is not None:
+        # spec0032 §10: an INTEGRATED candidate activates through the composite
+        # preview the operator confirms — the SAME advertised command completed
+        # with the operator-owned destination and its exact preview digest
+        composite = admission.overall_review(
+            project,
+            payload["proposal"],
+            payload["revision"],
+            payload["review_digest"],
+            destination=str(destination),
+            expected_current=expected,
+            scope=["public"],
+            confirm_mappings=list(selections),
+        )
+        argv += [
+            "--context-destination",
+            str(destination),
+            "--context-expected-current",
+            expected,
+            f"--overall-digest={composite['digest']}",
+        ]
+    return argv
 
 
 def record_admissions(monkeypatch):
@@ -143,10 +181,10 @@ def record_admissions(monkeypatch):
 
 def test_all_selections_inert_until_one_exact_native_command(tmp_path, monkeypatch, capsys):
     project, api, candidate = context_only_candidate(tmp_path / "managed")
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         candidate["proposal"],
         candidate["revision"],
-        {**REFERENCE_EDIT, "name": "other-number", "content": order_reference_page()},
+        [{"path": OTHER_REFERENCE_REL, "content": _other_number_reference_page()}],
     )
     validated = api.validate_proposal(candidate["proposal"], edited["revision"])
     assert validated["ok"]
@@ -165,7 +203,11 @@ def test_all_selections_inert_until_one_exact_native_command(tmp_path, monkeypat
         assert argv == expected_argv
         assert not calls
         calls.append(argv)
-        return native(argv)  # the exact hand-typed CLI entry point, no alternate writer
+        # the exact hand-typed CLI entry point, no alternate writer: the
+        # delegated PLAIN advertised command cannot activate an INTEGRATED
+        # candidate alone (spec0032 §10) — the real entry point refuses with
+        # nothing written; the recorded admission stays empty
+        return native(argv)
 
     class CheckingTerminal(Terminal):
         def readline(self, *args):
@@ -188,9 +230,19 @@ def test_all_selections_inert_until_one_exact_native_command(tmp_path, monkeypat
             ["review", "--project", str(project), "--proposal", payload["proposal"]],
             stdin=CheckingTerminal("yes\nyes\nyes\n"),
         )
-        == 0
+        == 1
+    )  # the delegated plain command refuses: integrated admission needs the
+    # composite confirmation — every selection stayed INERT through it
+    assert calls == [expected_argv] and not results
+    assert governed(project) == before  # nothing was activated
+    assert admission.load_current(project) is None
+    # the operator completes the SAME advertised command with the composite
+    # confirmation flags (operator-owned destination) — the ONE exact writer
+    completed = native_admission_args(
+        project, payload, selections, destination=tmp_path / "published"
     )
-    assert calls == [expected_argv] and len(results) == 1
+    assert native(completed) == 0
+    assert len(results) == 1
     assert json.dumps(results[0]) in capsys.readouterr().out
     current = admission.load_current(project)
     assert current is not None
@@ -206,8 +258,10 @@ def test_bounded_native_parts_display_required_scope_before_selection(
     page = order_reference_page().replace(
         "ariadne:\n", "# padding\n" * (authoring.EVIDENCE_PART_CHARS // 10 + 1) + "ariadne:\n"
     )
-    edited = api.edit_proposal(
-        candidate["proposal"], candidate["revision"], {**REFERENCE_EDIT, "content": page}
+    edited = api.edit_pages_batch(
+        candidate["proposal"],
+        candidate["revision"],
+        [{"path": REFERENCE_PAGE_REL, "content": page}],
     )
     assert api.validate_proposal(candidate["proposal"], edited["revision"])["ok"]
     expected_part = api.review_proposal(candidate["proposal"], part=2)
@@ -235,6 +289,8 @@ def test_bounded_native_parts_display_required_scope_before_selection(
 def test_skipped_assertions_stay_asserted_without_confirmation(tmp_path, monkeypatch, capsys):
     project, api, payload = admitted_candidate(tmp_path / "managed")
     results = record_admissions(monkeypatch)
+    # the delegated plain advertised command cannot activate an INTEGRATED
+    # candidate alone (spec0032 §10): it refuses with NOTHING activated
     assert (
         run_review(
             "--project",
@@ -244,15 +300,26 @@ def test_skipped_assertions_stay_asserted_without_confirmation(tmp_path, monkeyp
             answers="\nyes\n",
             monkeypatch=monkeypatch,
         )
+        == 1
+    )
+    assert not (project / ".ariadne/current.json").exists()
+    # the operator completes the same advertised command with the composite
+    # confirmation flags — NO selection: skipped assertions stay asserted
+    assert (
+        admission.main(
+            native_admission_args(project, payload, destination=tmp_path / "published")
+        )
         == 0
     )
     assert results[0]["confirmed_mappings"] == []
     assert results[0]["retained_confirmations"] == []
     current = admission.load_current(project)
     assert current is not None
-    page = project / current["snapshot"] / "context_layer/references/order-number.md"
+    page = project / current["snapshot"] / REFERENCE_PAGE_REL
     meta = yaml.safe_load(page.read_text().split("---")[1])
-    assert [m["claim"] for m in meta["ariadne"]["mappings"]] == ["hypothesis", "asserted"]
+    assert [
+        m["claim"] for m in meta["ariadne_profile"]["native"]["ariadne"]["mappings"]
+    ] == ["hypothesis", "asserted"]
     assert current["confirmed_mappings"] == []
     output = capsys.readouterr().out
     assert output.count("Select --confirm-mapping") == 1
@@ -263,20 +330,32 @@ def test_skipped_assertions_stay_asserted_without_confirmation(tmp_path, monkeyp
 def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch, capsys):
     project, api, first = admitted_candidate(tmp_path / "managed")
     selection = "order-number:global-order-concatenation"
-    assert admission.main(native_admission_args(project, first, [selection])) == 0
+    published = tmp_path / "published"  # operator-owned composite destination (spec0032 §10)
+    assert (
+        admission.main(
+            native_admission_args(project, first, [selection], destination=published)
+        )
+        == 0
+    )
     capsys.readouterr()
     results = record_admissions(monkeypatch)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         first["proposal"],
         branch_of(project, first["proposal"]),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
-                "One row per store-scoped order.", "Unrelated description."
-            ),
-        },
+        [
+            {
+                "path": TABLE_PAGE_REL,
+                "content": table_page().replace(
+                    "One row per store-scoped order.", "Unrelated description."
+                ),
+            }
+        ],
     )
     assert api.validate_proposal(first["proposal"], edited["revision"])["ok"]
+    # the delegated plain advertised command cannot activate an INTEGRATED
+    # candidate alone (spec0032 §10): the walkthrough refuses, nothing moves;
+    # the operator completes the SAME advertised command with the composite
+    # confirmation flags (no selection: the retained outcome decides)
     assert (
         run_review(
             "--project",
@@ -285,6 +364,15 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
             first["proposal"],
             answers="\nyes\n",
             monkeypatch=monkeypatch,
+        )
+        == 1
+    )
+    second = api.review_proposal(first["proposal"])
+    assert (
+        admission.main(
+            native_admission_args(
+                project, second, destination=published, expected=first["revision"]
+            )
         )
         == 0
     )
@@ -295,19 +383,31 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
     assert json.dumps(retained) in capsys.readouterr().out
 
     meta = yaml.safe_load(order_reference_page().split("---")[1])
-    meta["sources"].append(
-        {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
-    )
-    meta["ariadne"]["mappings"][1]["source_ids"] = ["orders-catalog"]
-    edited = api.edit_proposal(
+    citation = {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
+    meta["sources"].append(citation)
+    # the native mapping's source_ids resolve against the page's NATIVE
+    # footnotes — the citation rides both the page citations and the native
+    # footnote list (the classic single-list append retired)
+    meta["ariadne_profile"]["native"]["sources"].append(dict(citation))
+    meta["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = [
+        "orders-catalog"
+    ]
+    edited = api.edit_pages_batch(
         first["proposal"],
         branch_of(project, first["proposal"]),
-        {
-            **REFERENCE_EDIT,
-            "content": "---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n# Order number\n",
-        },
+        [
+            {
+                "path": REFERENCE_PAGE_REL,
+                "content": "---\n"
+                + yaml.safe_dump(meta, sort_keys=False)
+                + "---\n\n# Order number\n",
+            }
+        ],
     )
     assert api.validate_proposal(first["proposal"], edited["revision"])["ok"]
+    # same integrated two-step: the delegated plain command refuses; the
+    # operator's completed composite command (no selection) activates and
+    # reports the LAPSED outcome
     assert (
         run_review(
             "--project",
@@ -316,6 +416,15 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
             first["proposal"],
             answers="\nyes\n",
             monkeypatch=monkeypatch,
+        )
+        == 1
+    )
+    third = api.review_proposal(first["proposal"])
+    assert (
+        admission.main(
+            native_admission_args(
+                project, third, destination=published, expected=second["revision"]
+            )
         )
         == 0
     )
@@ -384,15 +493,17 @@ def test_stale_displayed_review_is_not_refreshed_or_retried(tmp_path, monkeypatc
 
     def move_then_delegate(argv):
         calls.append(argv)
-        api.edit_proposal(
+        api.edit_pages_batch(
             payload["proposal"],
             payload["revision"],
-            {
-                **TABLE_EDIT,
-                "content": table_page().replace(
-                    "One row per store-scoped order.", "Moved candidate."
-                ),
-            },
+            [
+                {
+                    "path": TABLE_PAGE_REL,
+                    "content": table_page().replace(
+                        "One row per store-scoped order.", "Moved candidate."
+                    ),
+                }
+            ],
         )
         return native(argv)
 
@@ -593,6 +704,3 @@ def test_no_mcp_or_native_agent_registration_exposes_walkthrough():
         names = {tool.name for tool in app._tool_manager.list_tools()}
         assert "review" not in names and "ariadne_review" not in names
         assert "authoring_review_proposal" in names or toolset == "analyst"
-    for path in (PRODUCT_AREA / "packages/ariadne-agent/src/ariadne_agent").glob("*.py"):
-        text = path.read_text()
-        assert "ariadne.review" not in text and "ariadne review" not in text

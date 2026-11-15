@@ -120,4 +120,4 @@ Conversion alone grants neither source/data access nor business approval.
 
 ## Document inputs are different
 
-Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters. The `ariadne-ingest` command stages document-derived drafts; it does not serve them automatically. See the [CLI reference](cli.md#document-ingestion-and-static-validation).
+Documents supplied as authoring context are not query sources. Markdown and text are handled natively; the optional `ariadne-data[documents]` extra adds supported PDF, Office, and HTML converters for bounded Seed-Notes document parts. Documents are onboarded through Lumio's native intake (spec0035) — there is no separate ingest command or second Ariadne store. See the [CLI reference](cli.md#document-onboarding-and-static-validation).

@@ -46,13 +46,11 @@ from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     RESOLVE_TERM_LIMIT,
     RESOLVE_TERM_MAX_BYTES,
-    _page_contract_errors,
-    resolve_term,
 )
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_admission import admit  # noqa: E402 — the human-only G5 journey
-from tests.test_git_authoring import approved  # noqa: E402 — the operator's G3 step
+from tests.test_git_authoring import approved, record_of  # noqa: E402 — G3 step + record read
 
 # One store-scoped order identity: (ABC, 123123) -> ABC123123 and
 # (XYZ, 123123) -> XYZ123123 — the owner's illustrative example (spec §5),
@@ -141,6 +139,129 @@ def orders_project(tmp_path: Path) -> Path:
     models = project / "semantic_layer" / "models"
     models.mkdir(parents=True)
     (models / "orders.yml").write_text(MODEL_YML, encoding="utf-8")
+    # C6 (spec0035 §6): the native authoring surface — knowledge/ KB plus the
+    # revision-2 integrated selector whose authored §10.1 inventory binds the
+    # governed metric and its generated computation to the narrative Policy
+    # (enforcement null); the classic pages stay inert fixture payload.
+    kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "  - name: policies\n"
+        "  - name: metrics\n"
+        "  - name: computations\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "    policy: {}\n"
+        "    metric: {}\n"
+        "    computation: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:terms-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    (kb / "policies").mkdir(parents=True, exist_ok=True)
+    (kb / "metrics").mkdir(parents=True, exist_ok=True)
+    (kb / "policies" / "order-number-format.md").write_text(
+        "---\n"
+        'id: "entity:order-number-format"\n'
+        'title: "Order number format"\n'
+        "entity_types:\n  - policy\n"
+        "tags:\n  - policy\n"
+        'summary: "A global order number is the store prefix concatenated with'
+        ' the local order number."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        "  - id: seed-notes\n"
+        "    title: Seed notes\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: policy\n"
+        "  required_policies: []\n"
+        "  native:\n"
+        "    type: policy\n"
+        "    title: Order number format\n"
+        "    description: A global order number is the store prefix concatenated"
+        " with the local order number.\n"
+        "    tags:\n      - policy\n"
+        "    status: draft\n"
+        "    sources:\n"
+        "      - id: seed-notes\n"
+        "        title: Seed notes\n"
+        "        resource: data/seed_notes.md\n"
+        "---\n\n"
+        "# Order number format\n",
+        encoding="utf-8",
+    )
+    (kb / "metrics" / "order-number-count.md").write_text(
+        "---\n"
+        'id: "entity:order-number-count"\n'
+        'title: "order_number_count"\n'
+        "entity_types:\n  - metric\n"
+        "tags:\n  - metric\n"
+        'summary: "Count of orders."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        "  - id: order-number-format\n"
+        "    title: Order number format\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: metric\n"
+        "  metric_ref:\n"
+        "    model: orders\n"
+        "    metric: order_number_count\n"
+        "  required_policies:\n"
+        '    - namespace: "urn:uuid:terms-fixture"\n'
+        '      entity_id: "entity:order-number-format"\n'
+        "  native:\n"
+        "    type: metric\n"
+        "    title: order_number_count\n"
+        "    description: Count of orders.\n"
+        "    tags:\n      - metric\n"
+        "    status: draft\n"
+        # real required metric-native declarations from the fixture model: the
+        # three dimension fields and the dataset's declared composite key
+        "    dimensions:\n"
+        "      - store_id\n"
+        "      - local_order_number\n"
+        "      - global_order_number\n"
+        "    grain:\n"
+        "      primary_key: [store_id, local_order_number]\n"
+        "      cardinality_enforcement: strict_1_to_1\n"
+        "    sources:\n"
+        "      - id: order-number-format\n"
+        "        title: Order number format\n"
+        "        resource: policies/order-number-format.md\n"
+        "    governed_by: policies/order-number-format.md\n"
+        "---\n\n"
+        "# order_number_count\n"
+    )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:terms-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings:\n"
+        "    - subject: {kind: metric, identity: orders::order_number_count}\n"
+        "      policy: {namespace: urn:uuid:terms-fixture,"
+        " entity_id: entity:order-number-format}\n"
+        "      operations: [get_metric, query_metrics]\n"
+        "      enforcement: null\n",
+        encoding="utf-8",
+    )
     pages = {
         "context_layer/tables/orders.md": _page(
             "table", "orders", "# Orders\n\nOne row per store-scoped order.\n"
@@ -178,7 +299,20 @@ def orders_project(tmp_path: Path) -> Path:
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    scope = ["ariadne.yaml", "data/seed_notes.md", "semantic_layer/models/orders.yml", *pages]
+    # the native KB and the integrated selector are part of the initial
+    # revision — a candidate worktree without knowledge/ can neither author
+    # nor resolve native pages
+    scope = [
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "semantic_layer/models/orders.yml",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "knowledge/policies/order-number-format.md",
+        "knowledge/metrics/order-number-count.md",
+        *pages,
+    ]
     run_git(project, "add", "--", *scope)
     run_git(project, "commit", "-q", "-m", "human: initial artifacts")
     return project
@@ -209,12 +343,12 @@ def order_reference_page(orders: str | None = None) -> str:
     one unconfirmed prefix-mapping hypothesis citing the actual Seed Notes
     footnote."""
     orders = orders or orders_resource()
-    meta = {
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The shared order-number concept of the orders store.",
         "tags": ["reference", "term"],
-        "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
         "aliases": ["order number concept"],
         "ariadne": {
             "version": 1,
@@ -249,6 +383,22 @@ def order_reference_page(orders: str | None = None) -> str:
             ],
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference", "term"],
+        "summary": "The shared order-number concept of the orders store.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "aliases": ["order number concept"],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Order number\n\n"
@@ -259,11 +409,12 @@ def order_reference_page(orders: str | None = None) -> str:
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-REFERENCE_EDIT = {
-    "kind": "page",
-    "section": "references",
-    "name": "order-number",
-}
+REFERENCE_PAGE_REL = "knowledge/references/order-number.md"
+
+
+def reference_edit(content: str) -> list[dict]:
+    """The Reference page as one native page-batch object."""
+    return [{"path": REFERENCE_PAGE_REL, "content": content}]
 
 
 def candidate_with_reference(tmp_path: Path) -> tuple[Path, AuthoringProject, dict]:
@@ -273,10 +424,10 @@ def candidate_with_reference(tmp_path: Path) -> tuple[Path, AuthoringProject, di
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": order_reference_page()},
+        reference_edit(order_reference_page()),
     )
     return project, api, {"proposal": started["proposal"], "revision": edited["revision"]}
 
@@ -289,10 +440,10 @@ def admitted_with_reference(tmp_path: Path) -> tuple[Path, dict]:
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": order_reference_page()},
+        reference_edit(order_reference_page()),
     )
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is True and validated["errors"] == []
@@ -384,209 +535,44 @@ def test_order_number_resolves_alternatives_with_exact_bindings_and_unconfirmed_
     assert admitted_mapping["confirmation"] == "unconfirmed"
 
 
-# ------------------------------------- [2] the extension-v1 validation surface
-
-
-def _reference_errors(page: str) -> list[str]:
-    """The shared per-type gate's verdict on one staged Reference page."""
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        page_path = root / "context_layer" / "references" / "probe.md"
-        page_path.parent.mkdir(parents=True)
-        page_path.write_text(page, encoding="utf-8")
-        return _page_contract_errors(root, page_path, "reference")
-
-
-def _reference_with(mapping_overrides: dict | None = None, **ext_overrides) -> str:
-    page = yaml.safe_load(order_reference_page().split("---")[1])
-    if mapping_overrides is not None:
-        page["ariadne"]["mappings"][0].update(mapping_overrides)
-    page["ariadne"].update(ext_overrides)
-    front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    return f"---\n{front}\n---\n\n# Order number\n"
-
-
-def test_reference_extension_rejects_unsupported_versions_and_system_authority():
-    """The versioned extension accepts ONLY integer version 1, and a mapping
-    never carries author-fabricated approval/measurement claims: ``approved``,
-    ``confirmed`` and author-written measured counts/digests are unsupported
-    fields of the declared structure (the strict allowlist), so the shared
-    gate rejects them wherever they appear."""
-    # the well-formed declaration passes the shared gate
-    assert _reference_errors(order_reference_page()) == []
-    # unsupported version (integer but newer) and malformed version (string)
-    assert any(
-        "unsupported ariadne extension version 2" in error
-        for error in _reference_errors(_reference_with(version=2))
-    )
-    assert any(
-        "version must be the integer" in error
-        for error in _reference_errors(_reference_with(version="1"))
-    )
-    # author-supplied system authority inside a mapping
-    forged = _reference_errors(_reference_with(mapping_overrides={"confirmed": True}))
-    assert any("unsupported field(s) ['confirmed']" in error for error in forged)
-    approval = _reference_errors(_reference_with(mapping_overrides={"approved": True}))
-    assert any("unsupported field(s) ['approved']" in error for error in approval)
-    # author-written measured counts/digests
-    measured = _reference_errors(
-        _reference_with(mapping_overrides={"tested": 9_999, "digest": "deadbeef"})
-    )
-    assert any("unsupported field(s)" in error for error in measured)
-    # unsupported extension-level fields
-    extra = _reference_errors(_reference_with(dependency_digests={"x": "y"}))
-    assert any("unsupported field(s) ['dependency_digests']" in error for error in extra)
-
-
-def test_reference_extension_requires_resolvable_structure():
-    """Stable slug IDs, exact field/scope bindings, endpoints resolving within
-    the Reference and source_ids resolving ACTUAL page footnotes — the
-    structural half of the extension contract (duplicate declarations and
-    unresolvable endpoints/footnotes are malformed, never silent)."""
-    # endpoint representation IDs must resolve within the Reference
-    dangling = _reference_errors(_reference_with(mapping_overrides={"from": "no-such-rep"}))
-    assert any(
-        "does not resolve to a representation of this reference" in error for error in dangling
-    )
-    # source_ids must resolve to actual page footnotes
-    uncited = _reference_errors(_reference_with(mapping_overrides={"source_ids": ["ghost"]}))
-    assert any("resolves to no page footnote" in error for error in uncited)
-    # an asserted mapping requires cited domain evidence
-    asserted = _reference_errors(
-        _reference_with(mapping_overrides={"claim": "asserted", "source_ids": []})
-    )
-    assert any("an asserted mapping cites at least one source_id" in error for error in asserted)
-    # malformed family/claim/roles and non-slug IDs
-    assert any(
-        "family must be one of" in error
-        for error in _reference_errors(_reference_with(mapping_overrides={"family": "regex"}))
-    )
-    assert any(
-        "claim must be one of" in error
-        for error in _reference_errors(_reference_with(mapping_overrides={"claim": "proved"}))
-    )
-    assert any(
-        "reference_role must be one of" in error
-        for error in _reference_errors(_reference_with(reference_role="rule"))
-    )
-    assert any(
-        "id must be a stable lowercase slug" in error
-        for error in _reference_errors(_reference_with(mapping_overrides={"id": "Mapping One"}))
-    )
-    # duplicate representation IDs are malformed (IDs are stable, reused)
-    page = yaml.safe_load(order_reference_page().split("---")[1])
-    page["ariadne"]["representations"].append(dict(page["ariadne"]["representations"][0]))
-    duplicate_page = (
-        f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-        "\n---\n\n# x\n"
-    )
-    duplicate = _reference_errors(duplicate_page)
-    assert any("duplicates representation id 'local-order-number'" in error for error in duplicate)
-    # field bindings are exactly {resource, column} with canonical resources
-    bad_binding = yaml.safe_load(order_reference_page().split("---")[1])
-    bad_binding["ariadne"]["representations"][0]["fields"][0] = {
-        "resource": "orders",
-        "column": "local_order_number",
-    }
-    errors = _reference_errors(
-        f"---\n{yaml.safe_dump(bad_binding, default_flow_style=False, sort_keys=False).strip()}\n"
-        "---\n\n# x\n"
-    )
-    assert any("resource is not canonical" in error for error in errors)
-    extra_key = yaml.safe_load(order_reference_page().split("---")[1])
-    extra_key["ariadne"]["representations"][0]["fields"][0]["measured"] = True
-    errors = _reference_errors(
-        f"---\n{yaml.safe_dump(extra_key, default_flow_style=False, sort_keys=False).strip()}\n"
-        "---\n\n# x\n"
-    )
-    assert any("must be exactly {resource, column}" in error for error in errors)
-    bad_uri = yaml.safe_load(order_reference_page().split("---")[1])
-    bad_uri["ariadne"]["representations"][0]["fields"][0] = {
-        "resource": "ariadne://table/not-base64!",
-        "column": "local_order_number",
-    }
-    errors = _reference_errors(
-        f"---\n{yaml.safe_dump(bad_uri, default_flow_style=False, sort_keys=False).strip()}\n"
-        "---\n\n# x\n"
-    )
-    assert any("not canonical" in error for error in errors)
-    # the structured inspection candidate is validated by the K3 schema: a
-    # bare family key with no bindings stays a malformed-declaration error
-    early = _reference_errors(
-        _reference_with(mapping_overrides={"candidate": {"family": "prefix"}})
-    )
-    assert any("inspection candidate" in error for error in early)
-
-
-def test_legacy_references_without_the_extension_stay_readable():
-    """A Reference page WITHOUT the ariadne extension is the legacy form and
-    passes the shared gate unchanged (nothing is retroactively required)."""
-    legacy = _page("reference", "orders identity", "# orders identity\n")
-    assert _reference_errors(legacy) == []
-
-
-def test_null_extension_is_malformed_not_legacy_and_never_crashes_the_resolver(tmp_path):
-    """A PRESENT-but-null ``ariadne`` extension is the malformed form of a
-    supported extension, not the legacy ABSENT one: the shared gate reports a
-    page-contract error and the resolver refuses the page explicitly instead
-    of crashing on ``None``."""
-    page = yaml.safe_load(order_reference_page().split("---")[1])
-    page["ariadne"] = None
-    nulled = (
-        f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-        "\n---\n\n# Order number\n"
-    )
-    errors = _reference_errors(nulled)
-    assert any("null" in error for error in errors)
-    root = _context_root(tmp_path, {"references/nulled.md": nulled})
-    with pytest.raises(ValueError, match="malformed reference page.*null"):
-        resolve_term([(root, False)], "order number")
-
-
-def test_non_string_mapping_endpoints_get_contract_diagnostics_not_crashes():
-    """A mapping endpoint that is not a representation-id string — a list,
-    an object, an empty or null value — is a page-contract diagnostic naming
-    the endpoint; the gate never crashes on set membership over an unhashable
-    endpoint value."""
-    for key, endpoint in (
-        ("from", []),
-        ("from", {"representation": "local-order-number"}),
-        ("to", ""),
-        ("to", None),
-    ):
-        errors = _reference_errors(_reference_with(mapping_overrides={key: endpoint}))
-        assert any(f"{key} endpoint must be a representation id" in error for error in errors), (
-            key,
-            endpoint,
-        )
+# [2] the extension-v1 validation surface - DELETED with its exclusively
+# retired surface (C6 G3, spec0035 section 6): the classic per-type OKF
+# page-contract gate (`_reference_errors` staging a context_layer page) is
+# removed from production. The LIVE native invariants of that surface are
+# enforced at the producer envelope/ariadne-block validation (closed keys,
+# exact version, resolvable structure) inside the public page batch and the
+# candidate validation - asserted by the real-candidate tests below
+# (fabricated-confirmation refusal, authored-extension acceptance) and by the
+# resolver journeys.
 
 
 def test_git_validation_rejects_fabricated_confirmation_in_a_real_candidate(tmp_path):
-    """The shared gate rides the REAL Git validation journey: an edit seam
-    accepts an invalid draft (validation owns structural failures), and
-    validate_proposal reports the fabricated confirmation as a page-contract
-    error instead of admitting the claim."""
+    """The shared gate rides the REAL Git authoring journey: the fabricated
+    confirmation refuses at the PUBLIC batch seam — the producer structural
+    gate inside the batch writer rejects the unsupported ``confirmed`` field
+    before any byte is written, so the forged claim can never even enter a
+    candidate (the earlier honest boundary; validation keeps the same page
+    gate for anything that arrives by other means)."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     project = orders_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
     page = yaml.safe_load(order_reference_page().split("---")[1])
-    page["ariadne"]["mappings"][0]["confirmed"] = True
+    page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["confirmed"] = True
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     forged = f"---\n{front}\n---\n\n# Order number\n"
-    edited = api.edit_proposal(
-        started["proposal"],
-        started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": forged},
-    )
-    validated = api.validate_proposal(started["proposal"], edited["revision"])
-    assert validated["ok"] is False
-    assert any("unsupported field(s) ['confirmed']" in error for error in validated["errors"])
-    assert any(
-        check["name"] == "page_contract" and check["outcome"] == "failed"
-        for check in validated["report"]["checks"]
+    with pytest.raises(GitAuthoringError, match=r"unsupported field\(s\) \['confirmed'\]"):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            reference_edit(forged),
+        )
+    # the refusal wrote nothing: no candidate revision ever moved
+    assert (
+        record_of(project, started["proposal"])["candidate_revision"]
+        == started["candidate_revision"]
     )
 
 
@@ -596,12 +582,14 @@ def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
     (unlike a generated table page's core-owned ``ariadne`` facts)."""
     project, api, candidate = candidate_with_reference(tmp_path)
     page = yaml.safe_load(order_reference_page().split("---")[1])
-    page["ariadne"]["representations"][1]["aliases"].append("master order number")
+    page["ariadne_profile"]["native"]["ariadne"]["representations"][1]["aliases"].append(
+        "master order number"
+    )
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         candidate["proposal"],
         candidate["revision"],
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
     assert edited["changed"] is True
     resolved = api.resolve_term(candidate["proposal"], "master order number")
@@ -611,13 +599,50 @@ def test_reference_extension_edits_are_authored_not_forged_claims(tmp_path):
 # ------------------------------------- [3] resolver determinism and bounds
 
 
-def _context_root(tmp_path: Path, pages: dict[str, str]) -> Path:
-    root = tmp_path / "context_layer"
-    for rel, text in pages.items():
-        page = root / rel
-        page.parent.mkdir(parents=True, exist_ok=True)
-        page.write_text(text, encoding="utf-8")
-    return root
+def _term_page(index: int, *, description: str | None = None) -> str:
+    """One authored structured-Reference page with a DISTINCT page identity
+    (id/title/aliases — the KB refuses duplicate identities) whose single
+    representation matches the shared alias."""
+    meta = yaml.safe_load(order_reference_page().split("---")[1])
+    meta["id"] = f"entity:order-number-{index:02d}"
+    meta["title"] = f"Order number {index:02d}"
+    meta["aliases"] = [f"order number concept {index:02d}"]
+    native = meta["ariadne_profile"]["native"]
+    native["title"] = meta["title"]
+    if description is not None:
+        native["description"] = description
+    native["ariadne"]["representations"] = [
+        {
+            "id": f"rep-{index:02d}",
+            "aliases": ["shared term"],
+            "fields": [{"resource": orders_resource(), "column": "c"}],
+            "scope": [],
+        }
+    ]
+    native["ariadne"]["mappings"] = []
+    return (
+        f"---\n{yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()}"
+        "\n---\n\n# term\n"
+    )
+
+
+def _candidate_with_pages(
+    tmp_path: Path, pages: dict[str, str]
+) -> tuple[AuthoringProject, str]:
+    """A REAL candidate whose knowledge/ carries the authored reference pages
+    in ONE public page batch — the candidate resolver seam reads the
+    producer's public candidate parse of exactly this revision (spec0035 §2;
+    never a Core-side raw-KB collector)."""
+    project = orders_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    api.edit_pages_batch(
+        started["proposal"],
+        started["candidate_revision"],
+        [{"path": f"knowledge/{rel}", "content": text} for rel, text in pages.items()],
+    )
+    return api, started["proposal"]
 
 
 def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_path):
@@ -625,25 +650,10 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     representations return exactly the 20-match first part with the total and
     explicit truncation, part 2 completes the list, and uniqueness is never
     declared from a truncated result."""
-    pages = {}
-    for index in range(1, 26):
-        page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["ariadne"]["representations"] = [
-            {
-                "id": f"rep-{index:02d}",
-                "aliases": ["shared term"],
-                "fields": [{"resource": orders_resource(), "column": "c"}],
-                "scope": [],
-            }
-        ]
-        page["ariadne"]["mappings"] = []
-        pages[f"references/term-{index:02d}.md"] = (
-            f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-            "\n---\n\n# term\n"
-        )
-    root = _context_root(tmp_path, pages)
+    pages = {f"references/term-{index:02d}.md": _term_page(index) for index in range(1, 26)}
+    api, proposal = _candidate_with_pages(tmp_path, pages)
 
-    first = resolve_term([(root, False)], "shared term")
+    first = api.resolve_term(proposal, "shared term")
     assert RESOLVE_TERM_LIMIT == 20
     assert first["total_matches"] == 25  # ambiguity counts every eligible match
     assert first["ambiguous"] is True
@@ -652,12 +662,12 @@ def test_resolver_bounds_matches_with_explicit_truncation_and_continuation(tmp_p
     assert first["complete"] is False
     assert first["part"] == 1 and first["parts"] == 2
 
-    second = resolve_term([(root, False)], "shared term", part=2)
+    second = api.resolve_term(proposal, "shared term", part=2)
     assert len(second["matches"]) == 5
     assert second["complete"] is True
     assert second["truncated"] is True  # the full result spans more than this part
 
-    beyond = resolve_term([(root, False)], "shared term", part=3)
+    beyond = api.resolve_term(proposal, "shared term", part=3)
     assert beyond["matches"] == [] and beyond["complete"] is False
     assert beyond["exhausted"] is True
 
@@ -675,18 +685,19 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
     overflowed; ambiguity totals stay honest and byte-bounded continuation
     still works."""
     huge = yaml.safe_load(order_reference_page().split("---")[1])
-    huge["description"] = "A documented order-number concept. " + "detail " * 10_000
+    native = huge["ariadne_profile"]["native"]
+    native["description"] = "A documented order-number concept. " + "detail " * 10_000
     # oversized OPTIONAL metadata rides the same entry: its elision must be
     # named explicitly (spec 0011 §4) — a bounded disclosure never poses as a
     # complete warning-free assessment
-    huge["sources"] = [
+    native["sources"] = [
         {"id": "seed-notes", "resource": "data/seed_notes.md", "title": "note " * 40},
         *[
             {"id": f"seed-{i}", "resource": f"data/seed_notes_{i}.md", "title": "note " * 40}
             for i in range(11)
         ],
     ]
-    root = _context_root(
+    api, proposal = _candidate_with_pages(
         tmp_path,
         {
             "references/huge.md": (
@@ -695,7 +706,7 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
             )
         },
     )
-    first = resolve_term([(root, False)], "order number")
+    first = api.resolve_term(proposal, "order number")
     assert len(json.dumps(first).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert first["total_matches"] == 2 and first["ambiguous"] is True
     assert [match["representation"] for match in first["matches"]] == [
@@ -716,29 +727,18 @@ def test_resolver_response_parts_stay_under_the_64kib_ceiling(tmp_path):
 
     # byte-bounded continuation: matches that fit alone but not together split
     # across parts with honest totals and stable page/representation order
-    medium = {}
-    for index in range(1, 6):
-        page = yaml.safe_load(order_reference_page().split("---")[1])
-        page["description"] = f"Medium concept {index}. " + "detail " * 2_000
-        page["ariadne"]["representations"] = [
-            {
-                "id": f"rep-{index:02d}",
-                "aliases": ["shared term"],
-                "fields": [{"resource": orders_resource(), "column": "c"}],
-                "scope": [],
-            }
-        ]
-        page["ariadne"]["mappings"] = []
-        medium[f"references/term-{index:02d}.md"] = (
-            f"---\n{yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()}"
-            "\n---\n\n# term\n"
+    medium = {
+        f"references/term-{index:02d}.md": _term_page(
+            index, description=f"Medium concept {index}. " + "detail " * 2_000
         )
-    spread = _context_root(tmp_path / "medium", medium)
-    part_one = resolve_term([(spread, False)], "shared term")
+        for index in range(1, 6)
+    }
+    api, proposal = _candidate_with_pages(tmp_path / "medium", medium)
+    part_one = api.resolve_term(proposal, "shared term")
     assert len(part_one["matches"]) < 5  # the byte ceiling, not the count limit, bound this part
     assert len(json.dumps(part_one).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_one["total_matches"] == 5 and part_one["truncated"] is True
-    part_two = resolve_term([(spread, False)], "shared term", part=2)
+    part_two = api.resolve_term(proposal, "shared term", part=2)
     assert len(json.dumps(part_two).encode("utf-8")) < RESOLVE_TERM_MAX_BYTES
     assert part_two["complete"] is True
     ids = [m["representation"] for m in part_one["matches"] + part_two["matches"]]
@@ -749,8 +749,10 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
     """A page-level alias names the CONCEPT: matching it returns a concept-level
     entry carrying every representation identity, while representation aliases
     stay representation-level matches."""
-    root = _context_root(tmp_path, {"references/order-number.md": order_reference_page()})
-    concept = resolve_term([(root, False)], "Order Number Concept")
+    api, proposal = _candidate_with_pages(
+        tmp_path, {"references/order-number.md": order_reference_page()}
+    )
+    concept = api.resolve_term(proposal, "Order Number Concept")
     assert [match["level"] for match in concept["matches"]] == ["concept"]
     entry = concept["matches"][0]
     assert entry["representation"] is None
@@ -759,33 +761,54 @@ def test_resolver_reports_concept_matches_with_all_representations(tmp_path):
         "global-order-number",
     ]
     assert entry["mappings"] and entry["mappings"][0]["id"] == "local-to-global-prefix"
-    rep_match = resolve_term([(root, False)], "local order number")
+    rep_match = api.resolve_term(proposal, "local order number")
     assert rep_match["matches"][0]["level"] == "representation"
     assert rep_match["matches"][0]["representation"] == "local-order-number"
 
 
 def test_resolver_fails_explicitly_on_malformed_pages_and_requests(tmp_path):
-    """A malformed supported Reference fails the resolution explicitly (named
-    page and error), and malformed requests are actionable errors — never a
-    silent empty result."""
+    """A malformed supported Reference refuses at the PUBLIC batch seam (the
+    producer page gate owns structural failures before any candidate byte is
+    written — the earlier honest boundary), and malformed requests are
+    actionable errors — never a silent empty result."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     malformed = order_reference_page().replace("version: 1", "version: 2")
-    root = _context_root(tmp_path, {"references/broken.md": malformed})
-    with pytest.raises(ValueError, match="references/broken.md.*unsupported ariadne"):
-        resolve_term([(root, False)], "order number")
-    with pytest.raises(ValueError, match="non-empty term"):
-        resolve_term([(root, False)], "   ")
-    with pytest.raises(ValueError, match="exactly \\{resource, column\\}"):
-        resolve_term([(root, False)], {"resource": orders_resource()})
-    with pytest.raises(ValueError, match="canonical resource"):
-        resolve_term([(root, False)], {"resource": "orders", "column": "id"})
-    with pytest.raises(ValueError, match="positive integer"):
-        resolve_term([(root, False)], "order number", part=0)
-    # a page the resolver does not own (non-reference/legacy) is skipped
-    quiet = _context_root(
-        tmp_path / "quiet",
-        {"references/legacy.md": _page("reference", "legacy", "# legacy\n")},
+    project = orders_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    with pytest.raises(GitAuthoringError, match=r"references/broken\.md.*version"):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": "knowledge/references/broken.md", "content": malformed}],
+        )
+    api, proposal = _candidate_with_pages(
+        tmp_path / "valid", {"references/order-number.md": order_reference_page()}
     )
-    assert resolve_term([(quiet, False)], "order number")["matches"] == []
+    with pytest.raises(ValueError, match="non-empty term"):
+        api.resolve_term(proposal, "   ")
+    with pytest.raises(ValueError, match="exactly \\{resource, column\\}"):
+        api.resolve_term(proposal, {"resource": orders_resource()})
+    with pytest.raises(ValueError, match="canonical resource"):
+        api.resolve_term(proposal, {"resource": "orders", "column": "id"})
+    with pytest.raises(ValueError, match="positive integer"):
+        api.resolve_term(proposal, "order number", part=0)
+    # a page the resolver does not own (an ordinary page with NO structured
+    # reference profile — the proven plain-reference edit) is skipped: the
+    # authored legacy page is a valid v2 KB page, merely unstructured
+    legacy_meta = yaml.safe_load(order_reference_page().split("---", 2)[1])
+    del legacy_meta["ariadne_profile"]
+    legacy_page = (
+        f"---\n{yaml.safe_dump(legacy_meta, default_flow_style=False, sort_keys=False).strip()}"
+        "\n---\n\n# legacy order number\n"
+    )
+    api, proposal = _candidate_with_pages(
+        tmp_path / "quiet",
+        {"references/legacy.md": legacy_page},
+    )
+    assert api.resolve_term(proposal, "order number")["matches"] == []
 
 
 # ------------------------------------- [5] the shared adapters, one core

@@ -2,7 +2,7 @@
 
 | | |
 | :--- | :--- |
-| **Status** | Accepted (owner decision, Pi conversation 2026-10-03; **amended 2026-10-12 and 2026-10-19**) |
+| **Status** | Accepted (owner decision, Pi conversation 2026-10-03; **amended 2026-10-12 and 2026-10-19**). The `ariadne-agent` distribution-name clause below is historically superseded by [ADR-0027](0027-host-agents-only.md) (host agents only, 2026-11-12); the `ariadne-data` naming and all other constraints of this record stand. |
 | **Context** | [ADR-0012](0012-local-first-artifact-runtime.md), [ADR-0016](0016-modular-core-git-authoring.md) |
 
 ## Decision

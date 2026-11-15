@@ -171,6 +171,31 @@ def multi_metric_release(root: Path):
             {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
         )
         write_page(page, meta, body)
+    # the authored §10.1 binding inventory must classify the candidate's
+    # COMPLETE closure: both metric subjects gain the Cancelled Orders
+    # binding (the derived computation subjects carry empty closures)
+    import yaml
+
+    selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
+    selector["policy_bindings"]["bindings"].extend(
+        [
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+            {
+                "subject": {"kind": "metric", "identity": "retail_sales::completed_orders"},
+                "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+                "operations": ["get_metric", "query_metrics"],
+                "enforcement": None,
+            },
+        ]
+    )
+    (tree / "context_integration.yaml").write_text(
+        yaml.safe_dump(selector, sort_keys=False), encoding="utf-8"
+    )
     revision = reconcile_knowledge(project, started["proposal"], revision)
     validated = api.validate_proposal(started["proposal"], revision)
     assert validated["ok"] is True, validated["errors"]
@@ -472,6 +497,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # list: every visible page, SDK-sorted by exact path; metadata only.
     listed = _typed_list(results["list"])
     assert [entry["path"] for entry in listed] == [
+        "computations/revenue.md",  # the finalize pass's generated page
         "metrics/retail-revenue.md",
         "policies/retail-return-policy.md",
         "references/fulfilment-glossary.md",
@@ -939,6 +965,19 @@ def t2_reference_candidate(root: Path):
     profile["ontology_refs"] = [
         {"namespace": "urn:demo:catalog", "identifier": "retail-hierarchy", "revision": "r7"}
     ]
+    # Classify the appended required Policy explicitly (§10.1).
+    selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
+    selector["policy_bindings"]["bindings"].append(
+        {
+            "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+            "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+            "operations": ["get_metric", "query_metrics"],
+            "enforcement": None,
+        }
+    )
+    (tree / "context_integration.yaml").write_text(
+        yaml.safe_dump(selector, sort_keys=False), encoding="utf-8"
+    )
     write_page(metric, meta, body)
     (tree / "knowledge/lumio.yaml").write_text(
         CONTROL
@@ -1881,10 +1920,10 @@ def _p1_control() -> str:
 
     return CONTROL.replace(
         "  - name: metrics\n",
-        "  - name: metrics\n  - name: datasets\n  - name: tables\n  - name: computations\n",
+        "  - name: metrics\n  - name: datasets\n  - name: tables\n",
     ).replace(
         "    metric: {}\n",
-        "    metric: {}\n    dataset: {}\n    table: {}\n    computation: {}\n",
+        "    metric: {}\n    dataset: {}\n    table: {}\n",
     )
 
 
@@ -1898,6 +1937,11 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     import duckdb  # pyright: ignore[reportMissingImports] — qualified test env is external
 
     project = content_project(root)
+    # parent-dispositioned fixture adaptation (C2): the revision-2 project is
+    # PURE native — the scaffolded classic context_layer bundle (the hybrid
+    # graph-admission proof pages) is removed at the base; the governing
+    # Policy proof lives in producer-native metadata and PolicyClosure.
+    run_git(project, "rm", "-q", "-r", "--", "context_layer")
     con = duckdb.connect(str(project / "data" / "orders.duckdb"))
     # test-fixture DDL over test-local column constants
     # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
@@ -1917,20 +1961,10 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     )
     (project / "semantic_layer" / "models" / "status_lookup.yml").write_text(P1_LOOKUP_MODEL)
     (project / "semantic_layer" / "graph.yml").write_text(P1_GRAPH)
-    (project / "context_layer" / "metrics" / "label_count.md").write_text(P1_LOOKUP_OKF_METRIC_PAGE)
-    (project / "context_layer" / "metrics" / "revenue_plus_one.md").write_text(
-        P1_DERIVED_OKF_METRIC_PAGE
-    )
     unused_files: list[str] = []
     if unused_alias:
         (project / "semantic_layer" / "models" / "zz_unused_orders.yml").write_text(P1_UNUSED_MODEL)
-        (project / "context_layer" / "metrics" / "unused_order_count.md").write_text(
-            P1_UNUSED_OKF_METRIC_PAGE
-        )
-        unused_files = [
-            "semantic_layer/models/zz_unused_orders.yml",
-            "context_layer/metrics/unused_order_count.md",
-        ]
+        unused_files = ["semantic_layer/models/zz_unused_orders.yml"]
     (project / "context_integration.yaml").write_text(_p1_selector_text(bindings))
     run_git(
         project,
@@ -1939,8 +1973,6 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
         "semantic_layer/graph.yml",
         "semantic_layer/models/retail_sales.yml",
         "semantic_layer/models/status_lookup.yml",
-        "context_layer/metrics/label_count.md",
-        "context_layer/metrics/revenue_plus_one.md",
         "context_integration.yaml",
         *unused_files,
     )
@@ -2470,6 +2502,11 @@ P1_CASES = [
     pytest.param("native-source-unapproved-scalar", id="refusal-native-source-unapproved-scalar"),
     pytest.param("native-source-escape-scalar", id="refusal-native-source-escape-scalar"),
     pytest.param("table-core-ref-wrong-kind", id="refusal-table-core-ref-wrong-kind"),
+    pytest.param("multifact-uncited", id="refusal-multifact-uncited"),
+    pytest.param("restricted-computation", id="restricted-computation-no-leak"),
+    pytest.param("changed-computation", id="changed-computation-evidence"),
+    pytest.param("authored-evidence", id="authored-computation-evidence-binding"),
+    pytest.param("derived-dependency", id="derived-computation-dependency-evidence"),
 ]
 # Each refusal must name its §10 identifier: the unknown check id, the known
 # check id that never executes for the bound operation (with the operation),
@@ -2481,7 +2518,68 @@ P1_REFUSAL_TOKENS = {
     "missing-classification": ("entity:cancelled-orders",),
     "invented-obligation": ("entity:order-label-hygiene",),
     "wrong-revision-operation": ("query_detail",),
+    "multifact-uncited": ("revenue_plus_labels", "multi-fact definition"),
 }
+
+# F1 (review fix): a genuinely cross-fact composed definition (its graph
+# ownership spans the orders and order_status facts) whose native metric page
+# authors an EMPTY closure — the retained multi-fact governing-Policy
+# obligation must refuse regardless of the authored edge list.
+MULTIFACT_METRIC = """
+      - name: revenue_plus_labels
+        description: Cross-fact composed revenue and curated label count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: revenue + label_count
+"""
+
+MULTIFACT_METRIC_PAGE = (
+    "---\n"
+    'id: "entity:revenue-plus-labels"\n'
+    "entity_types:\n"
+    "  - metric\n"
+    "tags:\n"
+    "  - retail\n"
+    "  - operations\n"
+    'title: "Composed Revenue And Labels (Metric)"\n'
+    'summary: "Cross-fact composed metric for the governing-Policy obligation."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
+    "sources:\n"
+    '  - id: "src-composed-metric"\n'
+    '    title: "Composed metric review, 2026-10-22"\n'
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: metric\n"
+    "  metric_ref:\n"
+    '    model: "retail_sales"\n'
+    '    metric: "revenue_plus_labels"\n'
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: metric\n"
+    '    status: "stable"\n'
+    '    title: "Composed revenue and labels"\n'
+    '    description: "Cross-fact composed revenue and curated label count."\n'
+    "    tags:\n"
+    "      - operations\n"
+    "    stale_after: 2027-06-30\n"
+    "    sources:\n"
+    '      - id: "src-composed-metric"\n'
+    '        title: "Composed metric review, 2026-10-22"\n'
+    '    governed_by: "semantic_layer retail_sales::revenue_plus_labels"\n'
+    "    dimensions: []\n"
+    "    grain:\n"
+    "      primary_key: []\n"
+    '      cardinality_enforcement: "strict_1_to_1"\n'
+    "---\n"
+    "\n"
+    "# Composed Revenue And Labels (Metric)\n"
+    "\n"
+    "Cross-fact composed metric composing the orders and order_status facts;\n"
+    "its governing-Policy obligation is the retained graph contract's, not an\n"
+    "authored edge.\n"
+)
 
 
 @pytest.mark.parametrize("case", P1_CASES)
@@ -2516,6 +2614,300 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     status_resource = table_resource(**P1_STATUS_ASSET)
     collection = collection_resource("orders", "orders", "main")
     authored = _p1_bindings(orders_resource, status_resource)
+
+    if case == "authored-evidence":
+        # owner-approved bounded completion, survivor 1: an AUTHORED
+        # Computation's earned check binds to the CURRENT resolved sanctioned
+        # definition — evidence eligibility never bypasses on a missing
+        # core-generated marker. The finalize never rewrites authored bytes:
+        # obsolete evidence REFUSES for human resolution.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        revision = validated["revision"]
+        from ariadne.render import render
+        from ariadne.semantic_graph import load_graph
+
+        graph = load_graph(tree / "semantic_layer")
+        sanctioned = render(graph.models["retail_sales"], metric="revenue").strip()
+        comp = tree / "knowledge" / "computations" / "revenue.md"
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        meta["ariadne_profile"]["native"]["dataset_sources"] = ["orders.main.orders"]
+        body = body + "\n\n```sql\n" + sanctioned + "\n```\n"
+        write_page(comp, meta, body)
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        eligible = api.validate_proposal(started["proposal"], revision)
+        assert eligible["ok"] is True, eligible["errors"]
+        # the sanctioned definition changes: the predecessor check cannot apply
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        changed = api.edit_proposal(
+            started["proposal"],
+            eligible["revision"],
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text().replace(
+                    "THEN amount ELSE 0 END", "THEN amount ELSE 0.0 END"
+                ),
+            },
+        )
+        refused = api.validate_proposal(started["proposal"], changed["revision"])
+        assert refused["ok"] is False
+        diagnostics = "; ".join(refused["errors"])
+        for token in ("revenue", "predecessor check cannot apply"):
+            assert token in diagnostics, (case, token, diagnostics)
+        assert "an-independent-oracle" in comp.read_text()  # authored bytes never rewritten
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    if case == "derived-dependency":
+        # owner-approved bounded completion, survivor 2: a generated DERIVED
+        # metric's earned check binds to its RESOLVED sanctioned definition —
+        # a base metric change reaches it through the dependency closure even
+        # when its own expression string and dataset sources are unchanged.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        first = api.validate_proposal(started["proposal"], revision)
+        assert first["ok"] is True, first["errors"]
+        revision = first["revision"]
+        comp = tree / "knowledge" / "computations" / "revenue_plus_one.md"
+        assert comp.is_file(), "the finalize must generate the derived Computation"
+        assert (
+            "CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END" in comp.read_text()
+        ), "the generated page records the RESOLVED dependency, not the raw expression"
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-derived-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        body = body + "\nCURATED-DERIVED-NARRATIVE\n"
+        write_page(comp, meta, body)
+        title_before = meta["title"]
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        unchanged = api.validate_proposal(started["proposal"], revision)
+        assert unchanged["ok"] is True, unchanged["errors"]
+        assert unchanged["revision"] == revision, (
+            "an unchanged resolved definition keeps the attested bytes byte-stable"
+        )
+        # the BASE metric changes; the derived metric's own expression string
+        # and dataset_sources stay identical — its resolved SQL does not
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        changed = api.edit_proposal(
+            started["proposal"],
+            unchanged["revision"],
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text().replace(
+                    "THEN amount ELSE 0 END", "THEN amount ELSE 0.0 END"
+                ),
+            },
+        )
+        refreshed = api.validate_proposal(started["proposal"], changed["revision"])
+        assert refreshed["ok"] is True, refreshed["errors"]
+        meta, body = page_parts(comp)
+        native = meta["ariadne_profile"]["native"]
+        assert native["attestation"] == "pending"
+        assert "attester" not in native  # the predecessor check cannot apply
+        assert "ELSE 0.0 END" in body  # the resolved dependency updated
+        assert "ELSE 0 END" not in body  # the predecessor SQL is gone
+        assert "CURATED-DERIVED-NARRATIVE" in body  # unrelated curation preserved
+        assert native["dataset_sources"] == ["orders.main.orders"]  # own source list unchanged
+        assert meta["title"] == title_before
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    if case == "multifact-uncited":
+        # F1 (review fix): a genuinely cross-fact composed definition — graph
+        # ownership spans the orders and order_status facts — cannot erase its
+        # governing-Policy obligation with an authored empty closure: the
+        # retained multi-fact contract independently requires resolvable
+        # native Policy proof before validation/admission.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
+        revision = api.edit_proposal(
+            started["proposal"],
+            revision,
+            {
+                "kind": "model",
+                "name": "retail_sales",
+                "content": model.read_text() + MULTIFACT_METRIC,
+            },
+        )["revision"]
+        (tree / "knowledge" / "metrics" / "revenue-plus-labels.md").write_text(
+            MULTIFACT_METRIC_PAGE
+        )
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        assert (
+            inspect_ariadne_candidate(
+                str(tree / "knowledge"), revision, namespace=NAMESPACE
+            ).diagnostics
+            == ()
+        ), "the refusal must come from the retained graph obligation, not producer malformation"
+        refused = api.validate_proposal(started["proposal"], revision)
+        assert refused["ok"] is False
+        diagnostics = "; ".join(refused["errors"])
+        for token in P1_REFUSAL_TOKENS[case]:
+            assert token in diagnostics, (case, token, diagnostics)
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
+    if case == "restricted-computation":
+        # F2 (review fix): a RESTRICTED matching Computation page must not
+        # reach public query signals — the computation signal resolves from
+        # the scope-filtered producer view only, so an out-of-scope page is
+        # generically absent, never disclosed.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        comp = tree / "knowledge" / "computations" / "revenue.md"
+        meta, body = page_parts(comp)
+        meta["visibility"] = "restricted"
+        meta["ariadne_profile"]["native"]["sources"] = [
+            {"id": "src-hidden-computation", "title": "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE"}
+        ]
+        write_page(comp, meta, body)
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        review = api.review_proposal(started["proposal"])
+        activate(project, review, preview(project, review, tmp_path / "published"))
+        runtime = QueryRuntime.open_project(project)
+        try:
+            explained = asyncio.run(runtime.get_metric("revenue"))
+        finally:
+            runtime.con.close()
+        leaked = json.dumps(explained)
+        assert "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE" not in leaked, leaked
+        assert "computations/revenue.md" not in leaked
+        assert "attestation" not in explained["context"]
+        return
+
+    if case == "changed-computation":
+        # F3 (review fix): the native generated Computation binds the CURRENT
+        # sanctioned definition — unchanged inputs keep its bytes (and any
+        # earned attester) verbatim; a changed expression refreshes the
+        # derived facts, clears the predecessor attester and stays honest-
+        # pending, preserving unrelated curated narrative.
+        project = _p1_project(tmp_path, authored)
+        api = AuthoringProject(project)
+        started = api.start_proposal()
+        approved(api, project, started)
+        revision = contracted(
+            api,
+            started,
+            contract=ORDERS_CONTRACT.replace("region", "status").replace(
+                "mustBe: 60", "mustBe: 175"
+            ),
+            bindings=ORDERS_BINDINGS.replace("region", "status").replace(
+                "model: orders", "model: retail_sales"
+            ),
+        )
+        tree = worktree_of(project, started["proposal"])
+        revision = _p1_kb_candidate(project, api, started, revision)
+        validated = api.validate_proposal(started["proposal"], revision)
+        assert validated["ok"] is True, validated["errors"]
+        revision = validated["revision"]  # the finalize batch advanced the candidate
+        comp = tree / "knowledge" / "computations" / "label_count.md"
+        assert comp.is_file(), "the first validation must generate the Computation"
+        # a human earns an independent attester on the generated page and adds
+        # unrelated curated narrative; the sanctioned definition is unchanged
+        meta, body = page_parts(comp)
+        meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
+        del meta["ariadne_profile"]["native"]["attestation"]
+        body = body + "\nCURATED-LABEL-COUNT-NARRATIVE\n"
+        write_page(comp, meta, body)
+        title_before = meta["title"]
+        revision = reconcile_knowledge(project, started["proposal"], revision)
+        unchanged = api.validate_proposal(started["proposal"], revision)
+        assert unchanged["ok"] is True, unchanged["errors"]
+        assert unchanged["revision"] == revision, (
+            "an unchanged definition preserves the attested bytes: no finalize commit"
+        )
+        assert b"an-independent-oracle" in comp.read_bytes()
+        # a CHANGED sanctioned definition cannot inherit the predecessor's
+        # attestation: derived facts refresh, evidence clears, curation stays
+        changed_model = api.edit_proposal(
+            started["proposal"],
+            unchanged["revision"],
+            {
+                "kind": "model",
+                "name": "status_lookup",
+                "content": P1_LOOKUP_MODEL.replace(
+                    "expression: COUNT(*)", "expression: COUNT(DISTINCT status)"
+                ),
+            },
+        )
+        refreshed = api.validate_proposal(started["proposal"], changed_model["revision"])
+        assert refreshed["ok"] is True, refreshed["errors"]
+        meta, body = page_parts(comp)
+        native = meta["ariadne_profile"]["native"]
+        assert "COUNT(DISTINCT status)" in body
+        assert "COUNT(*)" not in body
+        assert native["attestation"] == "pending"
+        assert "attester" not in native
+        assert native["dataset_sources"] == ["orders.main.order_status"]
+        assert "CURATED-LABEL-COUNT-NARRATIVE" in body
+        assert meta["title"] == title_before  # unrelated authored frontmatter preserved
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
 
     if case != "admission":
         # independent disposable candidates: one project/proposal and ONE
@@ -2621,8 +3013,9 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         ),
     )
     tree = worktree_of(project, started["proposal"])
-    context_mirror = tree / "context_layer" / "tables" / "orders.md"
-    mirror_before = context_mirror.read_bytes()
+    # the pure revision-2 candidate carries no classic context_layer bundle:
+    # the C2 cutover never writes or reads one (spec0035 §2/§6)
+    assert not (tree / "context_layer").exists()
 
     revision = _p1_kb_candidate(project, api, started, revision, unused_alias=True)
 
@@ -2675,10 +3068,8 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     assert len(dataset_pages) == 1
     dataset_native = page_parts(dataset_pages[0])[0]["ariadne_profile"]["native"]
     assert sorted(dataset_native["ariadne"]["tables"]) == sorted([orders_resource, status_resource])
-    # no maintained context_layer mirror: the pre-existing OKF page bytes are
-    # untouched and refresh added no context_layer page
-    assert context_mirror.read_bytes() == mirror_before
-    assert not (tree / "context_layer" / "datasets").exists()
+    # no maintained context_layer mirror: refresh added no classic bundle page
+    assert not (tree / "context_layer").exists()
 
     # the handwritten curated marker survives a real second inspection
     # (authored summary/meaning preservation, §6) — and the #83 review-fix
@@ -2799,12 +3190,78 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
 
     # legacy and expanded admissions under the SAME candidate build keep
     # their respective frozen capability tables (§10.3: a legacy manifest is
-    # revision 1 without rewriting its bytes; no automatic upgrade)
-    from integration.tests.lumio_metric_mvp import ready
+    # revision 1 without rewriting its bytes; no automatic upgrade). The
+    # genuinely historical revision-1 candidate: the authored selector
+    # carries NEITHER §10.1 opt-in key (the exact legacy bytes), the KB
+    # holds only revision-1 supported policy/reference profiles and NO
+    # governed metric (AC2: context is reviewable before any metric
+    # exists), so the native finalize derivation is a genuine no-op — the
+    # admission never needs a revision-2 capability and its bytes are never
+    # rewritten.
+    from tests.test_contracts import contract_project
 
-    legacy_project, _legacy_api, legacy_review = ready(tmp_path / "legacy")
+    from integration.tests.lumio_metric_mvp import (
+        BASELINE,
+        CONTROL,
+        SOURCE_REFERENCE_MANIFEST_BASENAME,
+        SourceReferenceManifest,
+        serialize_source_reference_manifest,
+    )
+
+    legacy_project = contract_project(tmp_path / "legacy")
+    run_git(legacy_project, "rm", "-q", "-r", "--", "context_layer")
+    run_git(legacy_project, "rm", "-q", "--", "semantic_layer/models/orders.yml")
+    legacy_kb = legacy_project / "knowledge"
+    for rel in ("policies/retail-return-policy.md", "references/order-number.md"):
+        target = legacy_kb / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((BASELINE / rel).read_bytes())
+    legacy_reference = legacy_kb / "references/order-number.md"
+    reference_meta, reference_body = page_parts(legacy_reference)
+    del reference_meta["ariadne_profile"]  # the proven plain-reference edit
+    write_page(legacy_reference, reference_meta, reference_body)
+    (legacy_kb / "lumio.yaml").write_text(CONTROL + "\n", encoding="utf-8")
+    (legacy_kb / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+    )
+    (legacy_project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:demo:retail\n"
+        "profile: ariadne-context/1\n",
+        encoding="utf-8",
+    )
+    run_git(
+        legacy_project,
+        "add",
+        "--",
+        "knowledge",
+        "context_integration.yaml",
+    )
+    run_git(
+        legacy_project,
+        "commit",
+        "-q",
+        "-m",
+        "human: pre-metric knowledge context under the legacy integrated selector",
+    )
+    legacy_api = AuthoringProject(legacy_project)
+    legacy_started = legacy_api.start_proposal()
+    approved(legacy_api, legacy_project, legacy_started)
+    legacy_validated = legacy_api.validate_proposal(
+        legacy_started["proposal"], legacy_started["candidate_revision"]
+    )
+    assert legacy_validated["ok"] is True, legacy_validated["errors"]
+    # the no-op derivation rewrote nothing: the validated revision IS the
+    # candidate revision (a legacy manifest is never regenerated)
+    assert legacy_validated["revision"] == legacy_started["candidate_revision"]
+    legacy_review = legacy_api.review_proposal(legacy_started["proposal"])
+    assert legacy_review["source_approved"] is True
     activate(
-        legacy_project, legacy_review, preview(legacy_project, legacy_review, tmp_path / "legacy-p")
+        legacy_project,
+        legacy_review,
+        preview(legacy_project, legacy_review, tmp_path / "legacy-p"),
     )
     legacy_manifest = json.loads((legacy_project / ".ariadne" / "current.json").read_text())[
         "bound_release"

@@ -34,8 +34,13 @@ from lumio_wiki.git_authoring import (
 )
 from lumio_wiki.knowledge_base import KnowledgeBaseError
 from lumio_wiki.mutation import mutation_lock
-from lumio_wiki.private_profile import PrivateProfileError, ResolvedPrivateSources
+from lumio_wiki.private_profile import (
+    PrivateProfileError,
+    ResolvedPrivateSources,
+    load_private_profile,
+)
 from lumio_wiki.source_inspection import (
+    ResolvedSourceBinding,
     SourceInspectionError,
     fetch_verified_artifact,
     resolve_source_reference_binding,
@@ -62,7 +67,7 @@ class ReviewContext:
     authoring: AuthoringReview
     publication: PublicationReview
     resources: ResolvedPrivateSources
-    source_availability: dict[tuple[str, str], bool | None]
+    source_availability: dict[tuple[str, str], bool | None] | None
     source_impact: list[dict]
     binding: dict
     source_inspection_permitted: bool
@@ -168,6 +173,32 @@ class ReviewService:
             )
         return authoring
 
+    def _require_required_retention_context(self) -> None:
+        """Integrated workspaces cannot review or publish the exception (F1).
+
+        Eligibility follows the CURRENT workspace context, never the persisted
+        task shape: a pending standalone document prepared before analytics was
+        enabled must refuse here instead of publishing no-original content in
+        a context where original retention is required (spec0035 §3/AC12,
+        spec0034 §12.4/AC25). Read-only check before any resource resolution.
+        """
+        if self.analytics is None:
+            return
+        try:
+            profile = load_private_profile(
+                self.publication.profile_path, kb_root=self.authoring_path
+            )
+        except PrivateProfileError as exc:
+            raise ReviewError(str(exc), code="stale_review") from exc
+        if profile.retention != "required":
+            raise ReviewError(
+                "this workspace is analytics-enabled (integrated) and requires "
+                "original retention; the selected private profile declares "
+                "retention 'disabled', which is a standalone-only exception — "
+                "restore retention 'required' and confirm setup before review",
+                code="retention_context_incompatible",
+            )
+
     def _context(self, actor: Actor, task_id: str) -> ReviewContext | AnalyticsReviewContext:
         if not self.state.permits(self.workspace_id, actor, "review"):
             raise ReviewError(
@@ -178,6 +209,7 @@ class ReviewService:
             raise ReviewError("review task is not available", code="task_not_found", status=404)
         if operation.status != "pending_review":
             raise ReviewError("the candidate is not pending review", code="review_not_pending")
+        self._require_required_retention_context()
         if _analytics_task(operation):
             if self.analytics is None:
                 raise ReviewError(
@@ -202,20 +234,52 @@ class ReviewService:
                     code="setup_required",
                 )
             resources = self.publication.resources()
+            # Current separate inspect_source permission precedes any
+            # inspection-specific availability probing or private registry
+            # metadata lookup (spec0035 §3, spec0034 §12.3/AC13).
+            inspection_permitted = self.state.permits(
+                self.workspace_id, actor, "inspect_source"
+            )
             # Preserve the native submission ancestry check independently of
             # the complete effective review against the admitted publication.
             self._authoring(task_kb, repo_root, submission_base, candidate, resources)
             admitted = self.publication.current_version()
             if admitted is None:
-                raise ReviewError(
-                    "no admitted Git baseline is available for a complete effective review",
-                    code="incomplete_review_scope",
-                )
-            base = resolve_full_commit(repo_root, admitted)
+                # First publication with no admitted baseline: review the
+                # complete candidate against the verified owner-confirmed
+                # setup baseline — never the immediate continuation
+                # predecessor — so approval cannot activate undisclosed
+                # ancestor content. The explicit expected predecessor stays
+                # "none" (never an unchecked mode).
+                setup_base = self.state.setup_base_revision(self.workspace_id, attachment)
+                if setup_base is None:
+                    raise ReviewError(
+                        "the owner-confirmed setup baseline is unavailable for a "
+                        "complete first-publication review",
+                        code="incomplete_review_scope",
+                    )
+                try:
+                    base = resolve_full_commit(repo_root, setup_base)
+                except GitAuthoringError as exc:
+                    raise ReviewError(
+                        "the owner-confirmed setup baseline is unavailable for a "
+                        "complete first-publication review",
+                        code="incomplete_review_scope",
+                    ) from exc
+                expected_current = "none"
+            else:
+                base = resolve_full_commit(repo_root, admitted)
+                expected_current = admitted
             authoring = self._authoring(task_kb, repo_root, base, candidate, resources)
             captured = capture_revision(task_kb, candidate)
-            publication = self.publication.preview(task_kb, candidate, admitted, resources)
-            availability = self._source_availability(captured, resources)
+            publication = self.publication.preview(
+                task_kb, candidate, expected_current, resources
+            )
+            availability = (
+                self._source_availability(captured, resources)
+                if inspection_permitted
+                else None
+            )
             source_impact: list[dict] = []
             proposed_sources: dict[str, str] = {}
             if operation.response.get("kind") == "enrichment" or operation.response.get(
@@ -294,7 +358,7 @@ class ReviewService:
             availability,
             source_impact,
             binding,
-            self.state.permits(self.workspace_id, actor, "inspect_source"),
+            inspection_permitted,
             "",
         )
 
@@ -330,7 +394,13 @@ class ReviewService:
 
     def inspect_source(
         self, actor: Actor, task_id: str, source_id: str, entity_id: str
-    ) -> tuple[str, str]:
+    ) -> tuple[ResolvedSourceBinding, bytes]:
+        """Return the candidate's exact binding and verified original bytes.
+
+        Binary originals must stay bytes end to end: the caller decides the
+        delivery form, so no UTF-8 decoding or extracted-text substitution
+        happens here (spec0034 §12.3).
+        """
         if not self.state.permits(self.workspace_id, actor, "inspect_source"):
             raise ReviewError(
                 "source inspection requires its separate capability",
@@ -357,11 +427,9 @@ class ReviewService:
                 source_id,
                 entity_id=entity_id,
             )
-            raw = fetch_verified_artifact(artifact_store, binding)
-            text = raw.decode("utf-8")
-        except (SourceInspectionError, UnicodeDecodeError) as exc:
+            return binding, fetch_verified_artifact(artifact_store, binding)
+        except SourceInspectionError as exc:
             raise ReviewError(str(exc), code="source_unavailable") from exc
-        return binding.filename or source_id, text
 
     def decide(self, actor: Actor, task_id: str, action_digest: str, decision: str) -> dict:
         if decision not in {"approve", "reject", "request_changes"}:
@@ -591,6 +659,18 @@ def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
     may_inspect = context.source_inspection_permitted
     for source in page.sources:
         digest = context.captured.manifest.bindings.get(page.id, {}).get(source.id)
+        if context.source_availability is None:
+            # Plain review: no availability probing and no private registry
+            # metadata — one static authorization-required state regardless
+            # of original presence (spec0034 §12.3/AC13). Authored attribution
+            # and the reviewed manifest binding stay visible.
+            facts = [
+                f"attribution: {source.title or 'unknown'}",
+                f"source version: {digest or 'unbound'}",
+                "source inspection requires separate authorization",
+            ]
+            items.append(f"<li>{html.escape('; '.join(facts))}</li>")
+            continue
         version = registry.find_version(source.id, digest) if digest and registry else None
         available = context.source_availability.get((page.id, source.id))
         availability = {
@@ -915,6 +995,15 @@ def render_review(
         else:
             for source in captured.sources:
                 source_id = source.id
+                if context.source_availability is None:
+                    # Plain review: one static authorization-required state,
+                    # never a presence-conditioned link or label (spec0035 §3,
+                    # spec0034 §12.3/AC13).
+                    support.append(
+                        f"{html.escape(source_id)} "
+                        "(source inspection requires separate authorization)"
+                    )
+                    continue
                 availability = context.source_availability.get((captured.id, source_id))
                 label = {
                     None: "public-only or no retained original",

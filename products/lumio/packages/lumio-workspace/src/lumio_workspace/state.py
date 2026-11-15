@@ -674,6 +674,17 @@ class WorkspaceState:
             ).fetchone()
         return row is not None
 
+    def setup_base_revision(self, workspace_id: str, attachment_digest: str) -> str | None:
+        """Return the owner-confirmed baseline bound to the verified attachment."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT base_revision FROM setup_records "
+                "WHERE workspace_id = ? AND attachment_digest = ? AND base_revision IS NOT NULL "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (workspace_id, attachment_digest),
+            ).fetchone()
+        return row[0] if row is not None else None
+
     def capabilities(self, workspace_id: str, actor: Actor) -> tuple[str, ...]:
         with self._connect() as connection:
             rows = connection.execute(

@@ -691,7 +691,7 @@ def _safe_frontmatter(markdown: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _strip_ingest_routing_fields(markdown: str) -> str:
+def _strip_ingest_routing_fields(markdown: str, *, complete_page: bool = False) -> str:
     """Strip ingest-only routing/review fields from publishable frontmatter.
 
     ``category`` is Content Category routing (the category path encodes it; the
@@ -702,6 +702,11 @@ def _strip_ingest_routing_fields(markdown: str) -> str:
     page's free-form type (``type``) is retained as page semantics.
     The frontmatter is only rewritten when an ingest-only field is present,
     so sources that never declare them round-trip unchanged.
+
+    A complete verbatim page (spec0010 §3.1) reconstructs the closing ``---``
+    DIRECTLY followed by the parser's original body (which already starts
+    with the delimiter's one structural LF) — adding another newline would
+    corrupt the validated converted body.
     """
     try:
         data, body, _ = _parse_frontmatter(markdown, Path("proposal.md"))
@@ -722,6 +727,8 @@ def _strip_ingest_routing_fields(markdown: str) -> str:
     data.pop("compound_revision", None)
     data.pop("move_from_path", None)
     frontmatter = yaml.encode(data).decode("utf-8").strip()
+    if complete_page:
+        return f"---\n{frontmatter}\n---{body}"
     return f"---\n{frontmatter}\n---\n{body}"
 
 
@@ -737,7 +744,9 @@ def _configured_category_names(kb) -> set[str]:
     return {category.name for category in control.categories}
 
 
-def _extract_page_records(markdown: str, filename: str | None, kb) -> list[ProposedPage]:
+def _extract_page_records(
+    markdown: str, filename: str | None, kb, *, complete_page: bool = False
+) -> list[ProposedPage]:
     """Slice a single distilled source into one or more proposed Compiled Pages.
 
     A Knowledge Source may distil into several Compiled Pages. The
@@ -758,11 +767,17 @@ def _extract_page_records(markdown: str, filename: str | None, kb) -> list[Propo
     the publishable Markdown (the category path encodes the category; ``type`` is
     retained as page semantics). Legacy Flat Mode (no Control File) keeps the
     original single root-level page.
+
+    ``complete_page`` (spec0010 §3.1) parses one authored complete verbatim
+    page: distiller page splitting, newline trimming and summary injection
+    are skipped so the converted body stays byte-exact; routing, identity,
+    ontology and whole-candidate validation still apply.
     """
     configured = _configured_category_names(kb)
     pages: list[ProposedPage] = []
-    for document in _split_distilled_pages(markdown):
-        ensured = _ensure_summary(document)
+    documents = [markdown] if complete_page else _split_distilled_pages(markdown)
+    for document in documents:
+        ensured = document if complete_page else _ensure_summary(document)
         data = _safe_frontmatter(ensured)
         declared_category = _extract_scalar(data, "category") or None
         page_type = _extract_scalar(data, "type")
@@ -784,7 +799,7 @@ def _extract_page_records(markdown: str, filename: str | None, kb) -> list[Propo
         # distiller omits it, no boilerplate is fabricated. A categorized
         # page without a rationale is blocked by ``_validate_page_routing``
         # so a reviewing Maintainer classifies it (issue #78, P2.6).
-        published = _strip_ingest_routing_fields(ensured)
+        published = _strip_ingest_routing_fields(ensured, complete_page=complete_page)
         pages.append(
             ProposedPage(
                 relative_path=relative_path,

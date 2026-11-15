@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Host agents only — Ariadne Agent retired (ADR-0027)** — the separately
+  installed `ariadne-agent` package and its Tau (`tau-ai`/`tau-mcp`)
+  dependencies/tests are removed from this repository (owner decision
+  2026-11-12): humans operate their own host agents against Ariadne's
+  existing CLI/MCP/skill surfaces; no Ariadne-specific agent backend or
+  replacement framework exists. Historical records keep their approvals as
+  history. No release qualification is implied by this entry.
+
 ## 0.8.0 - 2026-11-07
 
 - **Whole-contribution review and commit check (#91, A2)** — the new

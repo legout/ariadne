@@ -2,10 +2,10 @@
 
 Use these procedures when maintaining schemas, business terms, identifier mappings, and routing guidance in an Ariadne project. They assume the relevant source identity is operator-approved and you are working in the intended project route. For artifact shapes, limits, and role capabilities, see the [context knowledge reference](../reference/context-knowledge.md). For the authority model, see [How Ariadne works](../explanations/how-ariadne-works.md).
 
-The paths and page-edit examples below describe standalone Core. Integrated
-projects keep curated context in the Lumio `knowledge/` subtree and use the
-[Bound Release contract](../../../../integration/docs/reference/lumio-bound-releases.md); do not create a
-second editable context mirror. [The local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+Curated context lives in the Lumio `knowledge/` subtree and follows the
+[Bound Release contract](../../../../integration/docs/reference/lumio-bound-releases.md).
+The standalone `context_layer/` route is retired; do not create a second
+editable context mirror. [The local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
 shows that route with supplied files.
 
 ## Refresh a table schema
@@ -31,8 +31,11 @@ Dataset/Table profile pages inside `knowledge/tables/` and
 `knowledge/datasets/` — bound by exact `core_ref` resource identity,
 validated with the whole captured KB, and served through the pinned SDK.
 Curated descriptions, authored native metadata and page bodies survive
-regeneration; the legacy `context_layer` route is unchanged for revision-1
-and standalone projects. These revision-2 contracts are implemented in this
+regeneration. C6 (spec0035 §6): the classic `context_layer` refresh route is
+retired — a candidate whose capability revision lacks the native technical
+kinds refuses the refresh with explicit opt-in guidance before any access,
+while historical admitted releases keep their exact read support. These
+revision-2 contracts are implemented in this
 repository's source candidate; published package pairs have not acquired
 them.
 
@@ -82,7 +85,7 @@ Omitting the selection does not confirm a new assertion. Changed, stale, or conf
 
 ## Add a Context Routing Map
 
-When useful destinations or known business gaps exist, author an ordinary Reference at `context_layer/references/context-routing.md` through the normal proposal edit. Keep it to a short business orientation, question families, links to existing definitions and full Policies, and explicit unresolved questions. Do not copy metric formulas, SQL, Policy bodies, or observed values into it.
+When useful destinations or known business gaps exist, author an ordinary Reference at `knowledge/references/context-routing.md` through the normal proposal edit. Keep it to a short business orientation, question families, links to existing definitions and full Policies, and explicit unresolved questions. Do not copy metric formulas, SQL, Policy bodies, or observed values into it.
 
 Use the stable page on retries. If that path already contains an unrelated Reference, resolve the collision with the owner rather than overwriting it. Review the map with the full candidate; admission does not validate its business interpretation. An absent map is fine: normal discovery remains available.
 
@@ -91,6 +94,37 @@ Use the stable page on retries. If that path already contains an unrelated Refer
 During requested authoring, the packaged Ariadne skill reads the existing Seed Notes and admitted/candidate context first. It then asks only for missing information that affects the current proposal—such as row grain, date conventions, units, exclusions, or code meanings. Preserve unresolved answers instead of filling gaps with assumptions.
 
 Before preparing selected observed-value metadata, show the owner the exact table and columns and get explicit selection. Source approval is not consent to publish observed values. Business confirmation, schema refresh, and technical validation never admit the candidate or independently attest metric values.
+
+## Retain sources for a managed publication
+
+These are operator actions for a machine-local Lumio profile with
+`retention: required`. Source approval for SQL access does not register or
+retain originals. Core does not register cited sources automatically.
+
+1. Inspect the candidate's cited source IDs, including generated Computation
+   pages. For example, `retail_sales::revenue` cites `model-retail_sales`;
+   its original is the exact candidate `semantic_layer/models/retail_sales.yml`
+   bytes, not a later working-copy revision.
+2. Use the native operator APIs `SourceRegistry.register_version` and
+   `retain_artifact` with those genuine bytes and the selected private registry
+   and artifact store. Derive the content digest from the original bytes;
+   retain the same version rather than substituting another file.
+3. Bind the exact page Entity ID, source ID and digest in the native Source
+   Reference Manifest. In the example, the binding is
+   `entity:retail-sales-revenue-computation` → `model-retail_sales:<digest>`.
+   Keep registry/store paths in the private profile, never in public pages.
+4. Revalidate and review the complete candidate after manifest edits. Obtain
+   a fresh overall admission preview with an **absolute**
+   `--context-private-profile` path, inspect its source configuration and
+   retention coverage, then confirm only that preview's exact digest.
+
+A different registry/store configuration needs fresh consent even when its
+retained bytes are identical. Missing required coverage refuses activation;
+inspect the reported publication outcome before retrying rather than forcing
+pointers, inventing hashes or marking genuine originals synthetic. After
+admission, ordinary scoped knowledge readers need no private registry or
+originals store. See the [Bound Release contract](../../../../integration/docs/reference/lumio-bound-releases.md)
+for the preview/confirmation and activation boundaries.
 
 ## Work with a context-only candidate
 

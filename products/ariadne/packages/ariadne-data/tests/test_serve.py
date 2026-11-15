@@ -1,16 +1,16 @@
-"""MCP adapter boundaries and private numerical-session contract tests.
+"""MCP adapter boundaries and the governed native-session contract tests.
 
-The deterministic demo DB and authored artifact bytes live only in synthetic
-temporary fixtures. Numerical expectations come from
-``tests/fixtures/expected_metrics.json`` or independent SQL; public project
-admission is exercised in the Git lifecycle tests.
+The governed seam is one admitted native retail demo project (the S2
+journey); the standalone ad-hoc ``define_metric`` guards keep the sanctioned
+private numerical session (models + demo DB, no admission). Numerical
+expectations come from ``tests/fixtures/expected_metrics.json`` or
+independent SQL; public project admission is exercised in the Git lifecycle
+tests.
 """
 
 import asyncio
 import importlib.util
 import json
-import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -220,29 +220,118 @@ def seed_demo_db(db_path: Path) -> Path:
     return db_path
 
 
+# Passage coordinates below are hand-counted from this native Reference (spec0002).
+PASSAGE_PAGE = '''---
+id: "entity:passage-demo"
+title: "Passage demo"
+entity_types:
+  - reference
+tags: [passage]
+summary: "revenue rules summary with a xylophone marker"
+lifecycle: approved
+visibility: public
+sources:
+  - id: seed-notes
+    title: Seed notes
+ariadne_profile:
+  version: 1
+  kind: reference
+  native:
+    type: reference
+    title: Passage demo
+    description: revenue rules summary
+    tags:
+      - passage
+    sources:
+      - id: seed-notes
+        title: Seed notes
+---
+
+# Real heading above
+
+Revenue rules live in this paragraph.
+
+```
+# Fenced not a heading
+```
+
+The zebra clause applies after the fence.
+
+# Later heading
+
+Ignored trailing body.
+
+## Code corner
+
+```
+# Fake fenced heading
+quokka lives only inside this fenced block
+```
+
+~~~
+# Tilde fake heading
+wombat drafts inside a tilde fence
+~~~
+
+Yacc paragraph after the tilde fence.
+
+## Outer heading
+
+~~~~
+~~~
+# Fake nested-tilde heading
+pangolin note inside the four-tilde fence
+~~~~
+
+Okapi paragraph after the four-tilde fence.
+'''
+
+
 @pytest.fixture(scope="module")
 def served(tmp_path_factory):
-    """Synthetic artifact roots and demo DB for the private numerical seam."""
-    tmp = tmp_path_factory.mktemp("query-fixture")
-    db = seed_demo_db(tmp / "demo.db")
-    served = tmp / "artifacts"
-    models = served / "semantic_layer" / "models"
-    models.mkdir(parents=True)
-    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
-    metrics = served / "context_layer" / "metrics"
-    policies = served / "context_layer" / "policies"
-    metrics.mkdir(parents=True)
-    policies.mkdir(parents=True)
-    (metrics / "gross_margin.md").write_text(GOLDEN_OKF, encoding="utf-8")
-    (policies / "order-status-billing.md").write_text(GOLDEN_POLICY_STATUS, encoding="utf-8")
-    (policies / "emea-currency-cutover.md").write_text(GOLDEN_POLICY_EMEA, encoding="utf-8")
-    return served, db
+    """One admitted native retail demo (the S2 journey) plus one second
+    admitted proposal adding the passage-demo Reference page — the governed
+    seam; the demo DB backs independent SQL."""
+    from ariadne.authoring import AuthoringProject
+    from tests.test_cli import create_git_demo_project
+    from tests.test_git_admission import admit
+    from tests.test_git_authoring import approved
+
+    project, db = create_git_demo_project(tmp_path_factory.mktemp("demo") / "project")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    paged = api.edit_pages_batch(
+        started["proposal"],
+        started["candidate_revision"],
+        [{"path": "knowledge/references/passage-demo.md", "content": PASSAGE_PAGE}],
+    )
+    validated = api.validate_proposal(started["proposal"], paged["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(project, review) == 0
+    return project, db
 
 
 @pytest.fixture(scope="module")
 def facade(served):
-    served_dir, db = served
-    return Facade(served_dir / "semantic_layer", served_dir / "context_layer", db)
+    from ariadne.query import QueryRuntime
+
+    project, _db = served
+    return QueryRuntime.open_project(project)
+
+
+@pytest.fixture(scope="module")
+def private(tmp_path_factory):
+    """The sanctioned private numerical session (models + demo DB, no
+    admission): the standalone ad-hoc ``define_metric`` route's seam."""
+    tmp = tmp_path_factory.mktemp("adhoc-fixture")
+    db = seed_demo_db(tmp / "demo.db")
+    models = tmp / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "orders.yml").write_text(GOLDEN_OSI, encoding="utf-8")
+    (tmp / "context_layer").mkdir()
+    return Facade(tmp / "semantic_layer", tmp / "context_layer", db), db
 
 
 def rows_by_region(result, column):
@@ -320,8 +409,7 @@ def test_list_metrics_includes_dimensions_and_routing_hint(facade):
     assert "status" in by_name["order_count"]["dimensions"]
 
 
-def test_range_filters_on_primary_date_dimension(facade, served):
-    _, db = served
+def test_range_filters_on_primary_date_dimension(facade):
     full = asyncio.run(facade.get_metric("order_count", ["region"]))
     ranged = asyncio.run(
         facade.get_metric("order_count", ["region"], range={"start": "2025-01-01"})
@@ -335,10 +423,11 @@ def test_range_filters_on_primary_date_dimension(facade, served):
 def test_tool_descriptions_carry_routing_language(served):
     """Spec rev 4: the MCP registry is the agent's map — descriptions must route
     unmodeled questions to the ad-hoc path."""
+    from ariadne.query import QueryRuntime
     from ariadne.serve import build_app
 
-    served_dir, db = served
-    app = build_app(Facade(served_dir / "semantic_layer", served_dir / "context_layer", db))
+    project, _db = served
+    app = build_app(QueryRuntime, project=str(project))
     desc = {tool.name: tool.description or "" for tool in asyncio.run(app.list_tools())}
     assert "no governed metric answers" in desc["define_metric"]
     assert "define_metric" in desc["list_datasets"]
@@ -382,10 +471,11 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
     Context Layer page listing and path-addressed reading, ADR-0020); never a
     source-approval, Git Review Admission or example-review tool (ADR-0013/#20:
     review is human-only; the surfaces are tool-surface separation, spec §6)."""
+    from ariadne.query import QueryRuntime
     from ariadne.serve import build_app
 
-    served_dir, db = served
-    app = build_app(Facade(served_dir / "semantic_layer", served_dir / "context_layer", db))
+    project, _db = served
+    app = build_app(QueryRuntime, project=str(project))
     tools = asyncio.run(app.list_tools())
     assert {tool.name for tool in tools} == {
         "list_metrics",
@@ -439,21 +529,24 @@ def test_get_metric_responses_carry_governed_true(facade):
 
 
 def test_governed_get_metric_carries_context_with_policy_bodies(facade):
-    """The governed response carries the full metric page AND the full bodies of
-    both policies its sources[] cites (gross_margin cites order-status-billing
-    and emea-currency-cutover)."""
+    """The governed response carries the full metric page AND the full bodies
+    of both policies its closure requires (gross_margin requires
+    order-status-billing and emea-currency-cutover)."""
     result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
     context = result["context"]
     assert GOTCHA_1 in context["metric_page"]  # the metric page itself, full text
+    assert GOTCHA_2 in context["metric_page"]
     assert len(context["policies"]) == 2
-    assert GOTCHA_1 in context["policies"][0]  # order-status-billing body
-    assert GOTCHA_2 in context["policies"][1]  # emea-currency-cutover body
+    bodies = context["policies"]  # closure order is not part of the contract
+    assert any(GOTCHA_1 in body for body in bodies)  # order-status-billing body
+    assert any(GOTCHA_2 in body for body in bodies)  # emea-currency-cutover body
 
 
-def test_adhoc_define_metric_carries_context_null(facade):
+def test_adhoc_define_metric_carries_context_null(private):
     """Ad-hoc metrics have no served page: context is exactly null."""
+    session, _db = private
     result = asyncio.run(
-        facade.define_metric(
+        session.define_metric(
             {
                 "name": "context_probe_metric",
                 "description": "ad-hoc answers carry no served context",
@@ -467,213 +560,145 @@ def test_adhoc_define_metric_carries_context_null(facade):
     assert result["context"] is None
 
 
-def test_missing_metric_page_collapses_context_without_failing(served, tmp_path):
-    """A served tree whose context dir lacks the metric page still answers:
-    the fallback is the null form, never a query error — now also disclosing
-    the §5 context_unavailable warning for exactly that metric page path
-    (spec 0011 §5: its undiscoverable Policy dependencies are not claimed to
-    have been assessed)."""
-    served_dir, db = served
-    naked = Facade(served_dir / "semantic_layer", tmp_path, db)
-    result = asyncio.run(naked.get_metric("gross_margin", ["region"]))
-    assert result["governed"] is True
-    assert result["rows"]
-    assert result["context"]["metric_page"] is None  # the old payload semantics
-    assert result["context"]["policies"] == []
-    assert result["context"]["context_signals"] == {
-        "pages": [],
-        "warnings": [{"code": "context_unavailable", "path": "metrics/gross_margin.md"}],
-    }
+# C6 fallback retirement: native write, browsing and pinned-digest guards replace raw reads.
 
 
-def test_unresolvable_policy_reference_collapses_context_without_failing(served, tmp_path):
-    """A metric page citing a policies/ path that does not resolve collapses the
-    whole context to the null form (spec rev 10: one fallback shape, no failure,
-    nothing logged)."""
-    served_dir, db = served
-    context_dir = tmp_path / "context_layer"
-    (context_dir / "metrics").mkdir(parents=True)
-    (context_dir / "metrics" / "gross_margin.md").write_text(
-        "---\ntype: metric\nstatus: stable\nsources:\n"
-        "  - {id: gone, resource: policies/missing-policy.md}\n---\n\n# Gross margin\n",
-        encoding="utf-8",
-    )
-    facade = Facade(served_dir / "semantic_layer", context_dir, db)
-    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
-    assert result["governed"] is True
-    assert result["context"]["metric_page"] is None
-    assert result["context"]["policies"] == []
-    assert result["context"]["context_signals"] == {
-        "pages": [],
-        "warnings": [{"code": "context_unavailable", "path": "policies/missing-policy.md"}],
-    }
+def test_missing_required_policy_refuses_at_the_write_gate(tmp_path):
+    """The retired collapse-and-continue fallback is gone: a metric page
+    citing a missing Policy refuses at the native batch-write gate — before
+    validation, admission, compile or any SQL execution."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    from ariadne.authoring import AuthoringProject
+    from tests import test_git_authoring
+
+    project = test_git_authoring.complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    dangling = test_git_authoring.NATIVE_METRIC_PAGE.replace(
+        "policies/all-events-count.md", "policies/missing-policy.md"
+    ).replace("entity:all-events-count", "entity:missing-policy")
+    with pytest.raises(
+        GitAuthoringError,
+        match="required policy entity 'entity:missing-policy' does not exist",
+    ):
+        api.edit_pages_batch(
+            started["proposal"],
+            started["candidate_revision"],
+            [{"path": test_git_authoring.NATIVE_METRIC_REL, "content": dangling}],
+        )
 
 
-def test_metric_page_name_traversal_collapses_context_without_reading_outside(served, tmp_path):
-    """Containment: a served metric name that escapes the context dir (a model
-    YAML is not fully trusted) never reads outside context_layer/ — the page
-    collapses to the null form and the external file's content is absent."""
-    served_dir, db = served
-    secret = served_dir / "secret.md"  # context_layer/metrics/../../secret.md lands here
-    secret.write_text("TOP_SECRET_TRAVERSAL_PAYLOAD", encoding="utf-8")
-    facade = Facade(
-        served_dir / "semantic_layer",
-        served_dir / "context_layer",
-        db,
-    )
-    context = facade._metric_context("../../secret")
-    assert context["metric_page"] is None and context["policies"] == []
-    assert context["context_signals"]["warnings"] == [
-        {"code": "context_unavailable", "path": "metrics/../../secret.md"}
-    ]
-    assert "TOP_SECRET_TRAVERSAL_PAYLOAD" not in json.dumps(context)
+def test_get_metric_discloses_expired_and_deprecated_policy_signals(tmp_path):
+    """Spec0011 §§5/8: advisory Policy states preserve the retail golden,
+    baseline rows/SQL/governance and full rules; assessment changes no bytes."""
+    from datetime import date
 
+    import yaml
 
-def test_policy_ref_traversal_collapses_context_without_reading_dotenv(served, tmp_path):
-    """Containment: a cited policy ``policies/../../.env`` must resolve under
-    ``policies/`` — it does not, so the whole context collapses to the null form
-    while the query itself still answers, and the .env content never leaks."""
-    served_dir, db = served
-    context_dir = tmp_path / "context_layer"
-    (context_dir / "metrics").mkdir(parents=True)
-    (context_dir / "metrics" / "gross_margin.md").write_text(
-        "---\ntype: metric\nstatus: stable\nsources:\n"
-        "  - {id: theft, resource: policies/../../.env}\n---\n\n# Gross margin\n",
-        encoding="utf-8",
-    )
-    dotenv = tmp_path / ".env"  # context_layer/policies/../../.env resolves here
-    dotenv.write_text("OPENAI_API_KEY=sk-traversal-secret\n", encoding="utf-8")
-    facade = Facade(served_dir / "semantic_layer", context_dir, db)
-    result = asyncio.run(facade.get_metric("gross_margin", ["region"]))
-    assert result["governed"] is True and result["rows"]  # the query never fails
-    context = result["context"]
-    assert context["metric_page"] is None and context["policies"] == []
-    assert context["context_signals"]["warnings"] == [
-        {"code": "context_unavailable", "path": "policies/../../.env"}
-    ]
-    assert "sk-traversal-secret" not in json.dumps(result)
+    from ariadne.authoring import AuthoringProject
+    from ariadne.query import QueryRuntime
+    from tests.test_cli import NAMESPACE, create_git_demo_project
+    from tests.test_git_admission import admit, read_current
+    from tests.test_git_authoring import approved, run_git
 
-
-def test_get_metric_discloses_expired_and_deprecated_policy_signals(served, tmp_path):
-    """Spec 0011 §5/§8 AC3 — the focused core regression: a metric consuming an
-    expired and a deprecated Policy returns the SAME rows/SQL/governed label
-    (pinned here against the hand-computed fixture AND the unmodified tree),
-    keeps the full authored rule bodies, and the advisory envelope names both
-    Policy paths with the §5 codes. Expectations derive from §5: a reached
-    supported expiry is context_stale, an explicitly declared deprecated
-    status is context_deprecated — nothing else changes."""
-    served_dir, db = served
-    context_dir = tmp_path / "context_layer"
-    shutil.copytree(served_dir / "context_layer", context_dir)
-    expired = context_dir / "policies" / "order-status-billing.md"
-    # the slimmed golden fixture carries no lifecycle metadata: the spec 0011
-    # §3/§5 states under test are authored into the COPY explicitly — a past
-    # supported expiry, an explicitly deprecated status, and (metric page) a
-    # declared review_needed status, empty verified list and FUTURE stamp
-    expired.write_text(
-        re.sub(
-            r"^status: draft$",
-            "status: draft\nstale_after: 2020-01-01",
-            expired.read_text(),
-            count=1,
-            flags=re.M,
-        ),
-        encoding="utf-8",
-    )
-    deprecated = context_dir / "policies" / "emea-currency-cutover.md"
-    deprecated.write_text(
-        deprecated.read_text().replace("status: draft", "status: deprecated", 1),
-        encoding="utf-8",
-    )
-    metric_page = context_dir / "metrics" / "gross_margin.md"
-    metric_page.write_text(
-        metric_page.read_text(encoding="utf-8").replace(
-            "status: draft",
-            "status: review_needed\n"
-            "stale_after: 2030-01-01\n"
-            "verified: []\n"
-            "generated:\n"
-            "  by: ariadne-author",
-            1,
-        ),
-        encoding="utf-8",
-    )
-    # the consumed computation page (generated into admitted snapshots by the
-    # finalize pass; hand-placed here — the private numerical seam generates
-    # nothing) enters spec 0011 §5's consumed set exactly when it is readable
-    computation = context_dir / "computations" / "gross_margin.md"
-    computation.parent.mkdir(parents=True, exist_ok=True)
-    computation.write_text(
-        "---\n"
-        "type: computation\n"
-        "title: sanctioned SQL — orders::gross_margin\n"
-        "description: The sanctioned SQL, runtime and attestation record.\n"
-        "tags: [computation]\n"
-        "status: review_needed\n"
-        "runtime: duckdb\n"
-        "sources:\n"
-        "  - id: model-orders\n"
-        "    resource: ../../semantic_layer/models/orders.yml\n"
-        "    title: orders OSI model\n"
-        "---\n\n# Sanctioned computation\n",
-        encoding="utf-8",
-    )
-    before = {page: page.read_bytes() for page in (expired, deprecated)}
-    warned = Facade(served_dir / "semantic_layer", context_dir, db)
+    project, _db = create_git_demo_project(tmp_path / "project")
+    admitted_base = read_current(project)["commit"]
+    run_git(project, "merge", "--ff-only", admitted_base)
+    assert run_git(project, "rev-parse", "HEAD").strip() == admitted_base
     baseline = asyncio.run(
-        Facade(
-            served_dir / "semantic_layer",
-            served_dir / "context_layer",
-            db,
-        ).get_metric("gross_margin", ["region"])
+        QueryRuntime.open_project(project).get_metric("gross_margin", ["region"])
     )
-    result = asyncio.run(warned.get_metric("gross_margin", ["region"]))
+    policy_paths = (
+        "knowledge/policies/order-status-billing.md",
+        "knowledge/policies/emea-currency-cutover.md",
+    )
+    edits = []
+    for relative, changes in (
+        (policy_paths[0], {"stale_after": date(2020, 1, 1)}),
+        (policy_paths[1], {"status": "deprecated"}),
+        (
+            "knowledge/metrics/gross_margin.md",
+            {
+                "status": "review_needed",
+                "stale_after": date(2030, 1, 1),
+                "verified": [],
+                "generated": {"by": "ariadne-author"},
+            },
+        ),
+    ):
+        _opening, front, body = (project / relative).read_text(encoding="utf-8").split("---", 2)
+        meta = yaml.safe_load(front)
+        meta["ariadne_profile"]["native"].update(changes)
+        edits.append(
+            {"path": relative, "content": f"---\n{yaml.safe_dump(meta, sort_keys=False)}---{body}"}
+        )
+    # Historical system-owned metadata belongs in the human base, not an agent edit.
+    for edit in edits:
+        (project / edit["path"]).write_text(edit["content"], encoding="utf-8")
+    run_git(project, "add", "--", *(edit["path"] for edit in edits))
+    run_git(project, "commit", "-q", "-m", "human: inherited advisory metadata")
+    human_base = run_git(project, "rev-parse", "HEAD").strip()
+    api = AuthoringProject(project)
+    started = api.start_proposal(base_revision=human_base)
+    assert started["base_revision"] == human_base
+    approved(api, project, started)
+    validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(project, review) == 0
+    record = read_current(project)
+    snapshot = project / record["snapshot"]
+    before = {snapshot / path: (snapshot / path).read_bytes() for path in policy_paths}
 
-    # numeric invariance: identical to the unmodified tree AND the independent
-    # hand-computed oracle (tests/fixtures/expected_metrics.json); row order is
-    # not part of the contract (no ORDER BY in the compiled SQL)
+    result = asyncio.run(QueryRuntime.open_project(project).get_metric("gross_margin", ["region"]))
     assert sorted(result["rows"], key=lambda row: row["region"]) == sorted(
         baseline["rows"], key=lambda row: row["region"]
     )
     assert result["sql"] == baseline["sql"]
     assert result["governed"] == baseline["governed"] is True
     assert_matches_fixture(rows_by_region(result, "gross_margin"), "gross_margin")
-
-    # full authored rule bodies stay the payload (ADR-0011)
     assert GOTCHA_1 in result["context"]["metric_page"]
     assert GOTCHA_2 in result["context"]["metric_page"]
-    assert GOTCHA_1 in result["context"]["policies"][0]
-    assert GOTCHA_2 in result["context"]["policies"][1]
+    assert any(GOTCHA_1 in body for body in result["context"]["policies"])
+    assert any(GOTCHA_2 in body for body in result["context"]["policies"])
 
+    expected_citations = {
+        path: f"{NAMESPACE} {entity} v{record['commit']} {path}"
+        for path, entity in (
+            ("metrics/gross_margin.md", "entity:gross-margin"),
+            ("policies/order-status-billing.md", "entity:order-status-billing"),
+            ("policies/emea-currency-cutover.md", "entity:emea-currency-cutover"),
+        )
+    }
+    # Native Computation signals use the SDK-relative locator, unlike Metric/Policy citations.
+    expected_citations["computations/gross_margin.md"] = "computations/gross_margin.md"
     signals = result["context"]["context_signals"]
-    assert [page["path"] for page in signals["pages"]] == [
-        "metrics/gross_margin.md",
-        "policies/order-status-billing.md",
-        "policies/emea-currency-cutover.md",
-        "computations/gross_margin.md",
+    views = {page["path"]: page for page in signals["pages"]}
+    assert len(signals["pages"]) == 4
+    assert set(views) == set(expected_citations.values())
+    expected_warnings = [
+        {"code": "context_stale", "path": expected_citations["policies/order-status-billing.md"]},
+        {
+            "code": "context_deprecated",
+            "path": expected_citations["policies/emea-currency-cutover.md"],
+        },
     ]
-    assert signals["warnings"] == [
-        {"code": "context_stale", "path": "policies/order-status-billing.md"},
-        {"code": "context_deprecated", "path": "policies/emea-currency-cutover.md"},
-    ]
-    # the metric page itself: its declared review_needed state is preserved
-    # (§4: page status is not staged/admitted identity and never warns), the
-    # stamped empty verification list stays unverified, and its own future
-    # stamp stays current without a warning
-    metric_view = signals["pages"][0]
+    assert sorted(signals["warnings"], key=lambda warning: warning["path"]) == sorted(
+        expected_warnings, key=lambda warning: warning["path"]
+    )
+    metric_view = views[expected_citations["metrics/gross_margin.md"]]
     assert metric_view["status"] == "review_needed"
     assert metric_view["verification_tier"] == "unverified" and metric_view["verified"] == []
-    assert metric_view["generated"]["by"] == "ariadne-author"
-    assert metric_view["freshness"]["state"] == "current"
-    assert signals["pages"][3]["status"] == "review_needed"  # the computation page too
-    # the expired Policy's YAML-native date discloses as an ISO string (§3)
-    assert signals["pages"][1]["freshness"] == {
+    assert metric_view["generated"] == {"by": "ariadne-author"}
+    assert metric_view["freshness"] == {"stale_after": "2030-01-01", "state": "current"}
+    assert views[expected_citations["policies/order-status-billing.md"]]["freshness"] == {
         "stale_after": "2020-01-01",
         "state": "stale",
     }
-    assert signals["pages"][2]["status"] == "deprecated"
-    # §8 AC9: the assessment is read-only — the warned pages are byte-identical
-    assert {page: page.read_bytes() for page in (expired, deprecated)} == before
+    assert views[expected_citations["policies/emea-currency-cutover.md"]]["status"] == "deprecated"
+    assert views[expected_citations["computations/gross_margin.md"]]["status"] == "draft"
+    assert {page: page.read_bytes() for page in before} == before
 
 
 _JOIN_SOURCE = (
@@ -683,11 +708,11 @@ _JOIN_SOURCE = (
 _MEAN_EXPR = "AVG(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount END)"
 
 
-def test_define_metric_adhoc_mean_per_customer(facade, served):
+def test_define_metric_adhoc_mean_per_customer(private):
     """§8.8: ephemeral agent-authored join source, fixture-checked."""
-    _, db = served
+    session, db = private
     result = asyncio.run(
-        facade.define_metric(
+        session.define_metric(
             {
                 "name": "mean_order_amount_per_customer",
                 "description": "Mean order amount per customer over billable orders",
@@ -719,10 +744,11 @@ def test_define_metric_adhoc_mean_per_customer(facade, served):
     assert actual == expected
 
 
-def test_define_metric_nonexistent_column_refuses(facade):
+def test_define_metric_nonexistent_column_refuses(private):
+    session, _db = private
     with pytest.raises(ValueError, match="nonexistent_col"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "broken_metric",
                     "description": "references a column that does not exist",
@@ -734,11 +760,12 @@ def test_define_metric_nonexistent_column_refuses(facade):
         )
 
 
-def test_define_metric_compile_error_surfaced_verbatim(facade):
+def test_define_metric_compile_error_surfaced_verbatim(private):
+    session, _db = private
     """A definition rejected by the compiler surfaces its error verbatim."""
     with pytest.raises(ValueError, match="could not parse expression"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "syntax_error_metric",
                     "description": "malformed aggregate",
@@ -750,10 +777,11 @@ def test_define_metric_compile_error_surfaced_verbatim(facade):
         )
 
 
-def test_define_metric_rejects_unsane_name(facade):
+def test_define_metric_rejects_unsane_name(private):
+    session, _db = private
     with pytest.raises(ValueError, match="lowercase snake_case"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "Bad Name!",
                     "description": "not a slug",
@@ -764,7 +792,8 @@ def test_define_metric_rejects_unsane_name(facade):
         )
 
 
-def test_define_metric_repeated_calls_are_ephemeral(facade):
+def test_define_metric_repeated_calls_are_ephemeral(private):
+    session, _db = private
     definition = {
         "name": "collision_probe_metric",
         "description": "same name twice",
@@ -772,8 +801,8 @@ def test_define_metric_repeated_calls_are_ephemeral(facade):
         "expression": "SUM(amount)",
         "dimensions": [],
     }
-    first = asyncio.run(facade.define_metric(dict(definition)))
-    second = asyncio.run(facade.define_metric(dict(definition)))
+    first = asyncio.run(session.define_metric(dict(definition)))
+    second = asyncio.run(session.define_metric(dict(definition)))
     assert first["rows"] == second["rows"]
     assert first["persistence"] == second["persistence"] == {"status": "not_saved"}
     assert "staged_as" not in first and "staged_context_as" not in first
@@ -787,7 +816,7 @@ def test_define_metric_does_not_create_a_context_draft(facade):
             {
                 "name": "page_probe_metric",
                 "description": description,
-                "source": "orders",
+                "source": "demo.main.orders",  # the catalog's exact identity
                 "expression": "SUM(amount)",
                 "dimensions": ["status"],
             }
@@ -802,11 +831,12 @@ def test_define_metric_does_not_create_a_context_draft(facade):
 _INJECTION_SOURCE = "orders) ; CREATE TEMP TABLE pwned(x int); SELECT * FROM (SELECT 1"
 
 
-def test_define_metric_rejects_multi_statement_compiled_sql(facade):
+def test_define_metric_rejects_multi_statement_compiled_sql(private):
+    session, _db = private
     """A crafted multi-statement source is rejected before any DuckDB call."""
     with pytest.raises(ValueError, match="exactly one statement"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "pwned_metric",
                     "description": "injection probe",
@@ -817,16 +847,17 @@ def test_define_metric_rejects_multi_statement_compiled_sql(facade):
             )
         )
     tables = {
-        row[0] for row in facade.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
+        row[0] for row in session.con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
     }
     assert "pwned" not in tables  # the smuggled DDL never ran
 
 
-def test_define_metric_allows_semicolon_inside_string_literal(facade):
+def test_define_metric_allows_semicolon_inside_string_literal(private):
+    session, _db = private
     """Parser correctness: a quoted semicolon in the compiled SQL must not trip
     the single-statement guard — the definition still compiles and executes."""
     result = asyncio.run(
-        facade.define_metric(
+        session.define_metric(
             {
                 "name": "quoted_semicolon_metric",
                 "description": "semicolon inside a string literal",
@@ -843,11 +874,12 @@ def test_define_metric_allows_semicolon_inside_string_literal(facade):
     assert result["rows"]  # executed: SUM(amount) over billable orders is nonzero
 
 
-def test_define_metric_rejects_fanned_out_join_source(facade):
+def test_define_metric_rejects_fanned_out_join_source(private):
+    session, _db = private
     """A non-unique join key violates the grain-preservation guard."""
     with pytest.raises(ValueError, match="grain-preservation invariant.*pivot"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "fanned_metric",
                     "description": "join key not unique on the joined side",
@@ -874,12 +906,13 @@ def test_grain_guidance_names_the_adr_0006_rubric():
     assert "GROUP BY" not in GRAIN_GUIDANCE  # rubric names replaced the bare phrasing
 
 
-def test_define_metric_rejects_cross_join_source(facade):
+def test_define_metric_rejects_cross_join_source(private):
+    session, _db = private
     """§13 grain guard: a CROSS (or comma) join has no key to prove unique —
     unbounded row multiplication is rejected outright."""
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "cross_metric",
                     "description": "cross join fans out unboundedly",
@@ -891,13 +924,14 @@ def test_define_metric_rejects_cross_join_source(facade):
         )
 
 
-def test_define_metric_rejects_on_true_cartesian_source(facade):
+def test_define_metric_rejects_on_true_cartesian_source(private):
+    session, _db = private
     """§13 grain guard correction: `ON TRUE` has zero equality keys — the old
     per-key loop never ran, so the cartesian product passed the guard and
     executed, returning inflated aggregates. Fail closed before compile."""
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "on_true_metric",
                     "description": "ON TRUE fans out unboundedly",
@@ -911,13 +945,14 @@ def test_define_metric_rejects_on_true_cartesian_source(facade):
         )
 
 
-def test_define_metric_rejects_non_equality_join_predicate(facade):
+def test_define_metric_rejects_non_equality_join_predicate(private):
+    session, _db = private
     """§13 grain guard correction: an ON with only a non-equality predicate has
     no attributable equality key to prove — the guard cannot establish grain
     preservation, so it fails closed with the grain guidance."""
     with pytest.raises(ValueError, match="grain-preservation invariant"):
         asyncio.run(
-            facade.define_metric(
+            session.define_metric(
                 {
                     "name": "inequality_metric",
                     "description": "inequality ON fans out without a provable key",
@@ -932,12 +967,13 @@ def test_define_metric_rejects_non_equality_join_predicate(facade):
         )
 
 
-def test_define_metric_allows_grain_preserving_join(facade):
+def test_define_metric_allows_grain_preserving_join(private):
+    session, _db = private
     """§13 grain guard upside: the many-to-one direction (orders ⋈ customers on
     the customers primary key) stays legitimate — same shape as the ad-hoc
     acceptance definition; the guard must not reject it."""
     result = asyncio.run(
-        facade.define_metric(
+        session.define_metric(
             {
                 "name": "guard_probe_metric",
                 "description": "many-to-one join on the unique side",
@@ -977,9 +1013,11 @@ RETRIEVAL_CORPUS = json.loads(
 
 
 def test_context_retrieval_corpus_recall_at_five(served):
-    """The checked-in corpus retrieves from the served Context Layer only."""
-    served_dir, db = served
-    facade = Facade(served_dir / "semantic_layer", served_dir / "context_layer", db)
+    """The checked-in corpus retrieves from the admitted Context only."""
+    from ariadne.query import QueryRuntime
+
+    project, _db = served
+    facade = QueryRuntime.open_project(project)
     top_k = RETRIEVAL_CORPUS["_meta"]["top_k"]
     for entry in RETRIEVAL_CORPUS["entries"]:
         hits = asyncio.run(facade.search_context(entry["question"]))
@@ -994,72 +1032,30 @@ def test_context_retrieval_corpus_recall_at_five(served):
             assert hits == [], entry["question"]
 
 
-def test_search_context_passage_coordinates_and_sections(served, tmp_path):
+def test_search_context_passage_coordinates_and_sections(served):
     """AC3/AC4: each hit carries a bounded verbatim excerpt with inclusive 1-based
     line coordinates and the containing heading — frontmatter-only matches have
     no invented section, headings inside fenced code (backtick or tilde) never
     name a section, a body match is preferred over a frontmatter match, and a
     query matching an actual heading line names that heading itself. A page
     whose only match is inside a fenced code block stays a hit (every Markdown
-    category remains searchable) and resolves to the surrounding real heading."""
-    served_dir, db = served
-    context = tmp_path / "context_layer"
-    (context / "policies").mkdir(parents=True)
-    page = (
-        "---\n"
-        "type: policy\n"
-        "title: Passage demo\n"
-        "description: revenue rules summary with a xylophone marker\n"
-        "---\n"
-        "\n"
-        "# Real heading above\n"
-        "\n"
-        "Revenue rules live in this paragraph.\n"
-        "\n"
-        "```\n"
-        "# Fenced not a heading\n"
-        "```\n"
-        "\n"
-        "The zebra clause applies after the fence.\n"
-        "\n"
-        "# Later heading\n"
-        "\n"
-        "Ignored trailing body.\n"
-        "\n"
-        "## Code corner\n"
-        "\n"
-        "```\n"
-        "# Fake fenced heading\n"
-        "quokka lives only inside this fenced block\n"
-        "```\n"
-        "\n"
-        "~~~\n"
-        "# Tilde fake heading\n"
-        "wombat drafts inside a tilde fence\n"
-        "~~~\n"
-        "\n"
-        "Yacc paragraph after the tilde fence.\n"
-        "\n"
-        "## Outer heading\n"
-        "\n"
-        "~~~~\n"
-        "~~~\n"
-        "# Fake nested-tilde heading\n"
-        "pangolin note inside the four-tilde fence\n"
-        "~~~~\n"
-        "\n"
-        "Okapi paragraph after the four-tilde fence.\n"
-    )
-    (context / "policies" / "passage-demo.md").write_text(page, encoding="utf-8")
-    facade = Facade(served_dir / "semantic_layer", context, db)
+    category remains searchable) and resolves to the surrounding real heading.
+    The passage page is the admitted demo's native Reference page; every
+    asserted coordinate is hand-counted from PASSAGE_PAGE's exact text."""
+    from ariadne.query import QueryRuntime
+
+    project, _db = served
+    facade = QueryRuntime.open_project(project)
 
     def hit_for(query):
-        return asyncio.run(facade.search_context(query))[0]
+        # Isolate passage evidence; the corpus test owns global top-five ranking.
+        hits = asyncio.run(facade.search_context(query, limit=20))
+        return next(hit for hit in hits if hit["path"] == "references/passage-demo.md")
 
     # Body match after a fenced block: the fence's fake heading is skipped, the
     # real heading above names the section.
     hit = hit_for("zebra")
-    assert hit["path"] == "policies/passage-demo.md" and hit["draft"] is False
+    assert hit["path"] == "references/passage-demo.md" and hit["draft"] is False
     assert "zebra" in hit["excerpt"]
     assert hit["excerpt"] in hit["content"]  # bounded verbatim substring
     lines = hit["content"].split("\n")
@@ -1085,25 +1081,25 @@ def test_search_context_passage_coordinates_and_sections(served, tmp_path):
     # no body section is fabricated.
     hit = hit_for("xylophone")
     assert "xylophone" in hit["excerpt"] and hit["excerpt"] in hit["content"]
-    assert hit["line_start"] == 4  # the description line, inside the frontmatter
+    assert hit["line_start"] == 7  # the authored canonical summary, inside the frontmatter
     assert hit["section"] is None
 
     # Fenced-only match: the page stays searchable (it is still a hit) and its
     # passage sits on the fenced line — the fence's own fake heading never names
     # the section; the real heading surrounding the fence does.
     hit = hit_for("quokka")
-    assert hit["path"] == "policies/passage-demo.md"
+    assert hit["path"] == "references/passage-demo.md"
     assert "quokka" in hit["excerpt"] and hit["excerpt"] in hit["content"]
-    assert hit["line_start"] == hit["line_end"] == 25  # the fenced quokka line
+    assert hit["line_start"] == hit["line_end"] == 45  # the fenced quokka line
     assert hit["section"] == "Code corner"
 
     # Tilde fences behave exactly like backtick fences: a fenced-only match
     # stays searchable, and the tilde block's fake heading neither names its own
     # passage nor establishes a section for subsequent passages.
     hit = hit_for("wombat")
-    assert hit["path"] == "policies/passage-demo.md"
+    assert hit["path"] == "references/passage-demo.md"
     assert "wombat" in hit["excerpt"] and hit["excerpt"] in hit["content"]
-    assert hit["line_start"] == hit["line_end"] == 30  # the tilde-fenced wombat line
+    assert hit["line_start"] == hit["line_end"] == 50  # the tilde-fenced wombat line
     assert hit["section"] == "Code corner"
     assert hit_for("yacc")["section"] == "Code corner"
 
@@ -1112,9 +1108,9 @@ def test_search_context_passage_coordinates_and_sections(served, tmp_path):
     # neither names its own passage nor establishes a section for the passage
     # after the real ~~~~ close.
     hit = hit_for("pangolin")
-    assert hit["path"] == "policies/passage-demo.md"
+    assert hit["path"] == "references/passage-demo.md"
     assert "pangolin" in hit["excerpt"] and hit["excerpt"] in hit["content"]
-    assert hit["line_start"] == hit["line_end"] == 40  # still inside the ~~~~ fence
+    assert hit["line_start"] == hit["line_end"] == 60  # still inside the ~~~~ fence
     assert hit["section"] == "Outer heading"
     assert hit_for("okapi")["section"] == "Outer heading"  # after the real close
 

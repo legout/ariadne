@@ -33,14 +33,14 @@ from tests.test_context_admission import (  # noqa: E402
     admitted_candidate as context_only_reviewed,
 )
 from tests.test_git_admission import (  # noqa: E402
-    admit as admit_via_cli,
-)
-from tests.test_git_admission import (  # noqa: E402
+    _policy_edit,
     admitted_ready,
     read_current,
 )
+from tests.test_git_admission import (  # noqa: E402
+    admit as admit_via_cli,
+)
 from tests.test_git_authoring import (  # noqa: E402
-    POLICY_PAGE,
     complete_bundle_project,
 )
 
@@ -99,16 +99,7 @@ def admitted_project(tmp_path: Path) -> Path:
 
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
-    review, _ = admitted_ready(
-        api,
-        project,
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        },
-    )
+    review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
     assert admit_via_cli(project, review) == 0
     return project
 
@@ -518,3 +509,55 @@ def test_status_labels_effective_storage_approval_without_credential_reads(tmp_p
     scaffold = report["sources"]["scaffold"]
     assert scaffold["effective_approval"] == "not-current"
     assert scaffold["approval"] is False
+
+
+def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys):
+    """R2 (C6 fix): an explicitly saved, human-admitted, visible Answer
+    Example is counted from the pinned scoped native SDK view — exactly one
+    admitted example reports total 1 / admitted 1 (hand-derived oracle: one
+    visible answer_example page exists in the pinned release; the retired
+    dict-shape probe always reported zero)."""
+    import io
+    import json
+
+    from tests.test_answer_examples import _SMALL_RESULT, _example_release, _submission
+    from tests.test_git_authoring import approved
+
+    project, api, review = _example_release(tmp_path / "project")
+    # the fixture itself activates the revision-4 base release; the Example
+    # rides a fresh candidate that is validated, reviewed and admitted here
+
+    # one explicit Example saved into a fresh candidate, validated, admitted
+    started = api.start_proposal()
+    approved(api, project, started)
+    from ariadne.cli import main as ariadne_cli
+
+    capsys.readouterr()
+    code = ariadne_cli(
+        [
+            "save-example",
+            "--project",
+            str(project),
+            "--proposal",
+            started["proposal"],
+            "--expected-revision",
+            started["candidate_revision"],
+        ],
+        stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT, sources=[]))),
+    )
+    assert code == 0
+    saved = json.loads(capsys.readouterr().out)
+    validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
+    assert validated["ok"] is True, validated["errors"]
+    example_review = api.review_proposal(saved["proposal"])
+    from integration.tests.lumio_metric_mvp import activate, preview
+
+    activate(
+        project, example_review, preview(project, example_review, tmp_path / "published")
+    )
+
+    report = status_json(capsys, "--project", str(project))
+    assert report["work_pending"]["answer_examples"] == {
+        "total": 1,
+        "by_status": {"admitted": 1},
+    }

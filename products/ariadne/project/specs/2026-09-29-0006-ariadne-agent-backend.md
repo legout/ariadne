@@ -2,7 +2,8 @@
 
 | | |
 | :--- | :--- |
-| **Status** | **Approved — revision 2 (packaging amendment)** |
+| **Status** | **Retired — 2026-11-12: superseded by [ADR-0027](../adr/0027-host-agents-only.md) (owner host-only decision: host agents wire through skills and/or MCP; no Ariadne-specific agent backend). Revision 2 (packaging amendment) historical status below is preserved unchanged.** |
+| **Status before retirement** | **Approved — revision 2 (packaging amendment)** |
 | **Approval** | Revision 1: owner, pi conversation 2026-09-29, approved the complete in-chat design for user-selected roles, an OpenAI-compatible model, a separate Python distribution, Tau without `tau_coding` runtime use, generic stdio MCP via the owned `tau-mcp` repository, and in-memory sessions. Revision 2: owner, subsequent pi conversation 2026-09-29, chose `ariadne-core` as the existing root distribution's new name, retaining `ariadne.*` imports and CLI names, and DuckDB as the sole engine for now; explicitly requested revised specifications and plans. Neither approval authorizes implementation. The release-version correction changes the compatibility target, not the approved behavior. |
 | **Scope** | Local Python conversation backend with Analyst and Authoring roles, streamed events, curated skill guidance, native Ariadne tools, and approved stdio MCP tools. A future UI can consume its Python interface. |
 | **Sources** | [Ariadne vocabulary](../../CONTEXT.md), [local-first runtime](2026-09-23-0001-local-artifact-runtime.md), [harness-led authoring](2026-09-24-0005-harness-led-authoring.md), [human Promotion gate](../adr/0003-staging-dir-review-gate.md), [Ariadne Agent decision](../adr/0014-embedded-tau-agent-backend.md). Dependency contract: `legout/tau-mcp:project/specs/2026-09-29-0002-embeddable-mcp-core.md`. |

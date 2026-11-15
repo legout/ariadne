@@ -11,7 +11,7 @@ commit recorded in spec 0009).
 
 Support boundary (v1, frozen with this module's committed result):
 
-- Envelope: exact integer ``version: 1``, one of the seven native kinds,
+- Envelope: exact integer ``version: 1``, one of the eight native kinds,
   ``native`` metadata, typed ``required_policies`` edges (mandatory — even
   when empty — on metric and policy pages), ``metric_ref`` (required on
   metric pages), ``core_ref`` (required on dataset/table/computation pages)
@@ -84,7 +84,16 @@ ARIADNE_EXTENSION_VERSION = 1
 #: The supported profile kinds (native OKF page types; application metadata,
 #: not a Lumio ontology type).
 ARIADNE_PROFILE_KINDS = frozenset(
-    {"dataset", "table", "reference", "policy", "metric", "computation", "skill"}
+    {
+        "dataset",
+        "table",
+        "reference",
+        "policy",
+        "metric",
+        "computation",
+        "skill",
+        "answer_example",
+    }
 )
 
 #: Kinds whose pages MUST declare ``required_policies`` (even when empty).
@@ -105,6 +114,10 @@ NATIVE_REQUIRED_FIELDS = {
     "policy": _NATIVE_BASE_REQUIRED + ("status",),
     "metric": _NATIVE_BASE_REQUIRED + ("status", "governed_by", "dimensions", "grain"),
     "computation": _NATIVE_BASE_REQUIRED + ("status",),
+    # spec0035 C4: the retained spec0007 required families; optional
+    # parameters/project/sql_provenance validate exactly when supplied.
+    "answer_example": _NATIVE_BASE_REQUIRED
+    + ("question", "interpretation", "method", "submitter", "answer"),
 }
 
 _ENVELOPE_KEYS = frozenset(
@@ -122,7 +135,16 @@ _ENVELOPE_KEYS = frozenset(
 # -- The frozen supported native families (Ariadne specs 0010/0011/0024). ---
 
 NATIVE_TYPES = frozenset(
-    {"dataset", "table", "reference", "policy", "metric", "computation", "skill"}
+    {
+        "dataset",
+        "table",
+        "reference",
+        "policy",
+        "metric",
+        "computation",
+        "skill",
+        "answer_example",
+    }
 )
 REFERENCE_ROLES = ("term", "identifier", "enum", "join")
 MAPPING_FAMILIES = ("equality", "prefix", "lookup")
@@ -160,9 +182,37 @@ NATIVE_KEYS = frozenset(
         "ariadne_evidence",
         "observed_value_columns",
         "dataset_sources",
+        # spec0035 C4: the producer-owned Answer Example families (structural
+        # only; Ariadne specs 0007/0023 keep their meanings, Core keeps the
+        # analytical meaning/consent/provenance authority).
+        "question",
+        "interpretation",
+        "method",
+        "parameters",
+        "project",
+        "submitter",
+        "citations",
+        "sql_provenance",
+        "answer",
     }
 )
 NATIVE_SOURCE_KEYS = frozenset({"id", "title", "url", "resource"})
+
+# -- The producer-owned Answer Example families (spec0035 C4; retained field
+# -- meanings live in Ariadne specs 0007/0023 — validated structurally only). --
+
+#: The only structured methods an Example may record (never standalone SQL).
+_ANSWER_EXAMPLE_OPERATIONS = frozenset({"get_metric", "define_metric"})
+#: spec0023 §2: the fixed provenance descriptor — the submitted result
+#: envelope's sql field, never a verified execution origin.
+_ANSWER_EXAMPLE_SQL_SOURCE = "submitted_result.sql"
+#: spec0007: the timestamped answer excerpt bound (UTF-8 bytes).
+_ANSWER_EXAMPLE_EXCERPT_BYTES = 8 * 1024
+_ANSWER_EXAMPLE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_ANSWER_EXAMPLE_KEYS = frozenset(
+    {"question", "interpretation", "method", "submitter", "answer"}
+)
+_ANSWER_EXAMPLE_OPTIONAL_KEYS = frozenset({"parameters", "project", "citations", "sql_provenance"})
 _EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
 _REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
 _MAPPING_KEYS = frozenset(
@@ -975,10 +1025,16 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
     if not isinstance(native, dict):
         return [f"{where} must be a mapping, got {type(native).__name__}"]
     errors: list[str] = []
-    unknown = sorted(set(native) - NATIVE_KEYS)
+    native_type = native.get("type")
+    # C6 quality-profile amendment (spec0009 §9): `ariadne_quality` is a
+    # kind-scoped OPTIONAL native field of TABLE profile pages only; every
+    # other kind still refuses it as an unsupported field.
+    allowed_keys = set(NATIVE_KEYS)
+    if kind == "table" or native_type == "table":
+        allowed_keys.add("ariadne_quality")
+    unknown = sorted(set(native) - allowed_keys)
     if unknown:
         errors.append(f"{where} carries unsupported native field(s) {unknown}")
-    native_type = native.get("type")
     if "type" in native:
         if not isinstance(native_type, str) or native_type not in NATIVE_TYPES:
             errors.append(f"{where} type must be one of {sorted(NATIVE_TYPES)}")
@@ -1077,6 +1133,8 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
                 f"{where} computation pages require 'attester' or the honest "
                 "'attestation: pending' state"
             )
+    if kind == "answer_example" or native_type == "answer_example":
+        errors.extend(_answer_example_native_errors(where, native))
     if "ariadne" in native:
         block = native["ariadne"]
         if kind == "reference" or native_type == "reference":
@@ -1090,8 +1148,589 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
                 f"{where} ariadne carries a reference/table/dataset metadata block — "
                 "unsupported for this kind"
             )
+    if (kind == "table" or native_type == "table") and "ariadne_quality" in native:
+        errors.extend(
+            _table_quality_native_errors(
+                f"{where} ariadne_quality",
+                native["ariadne_quality"],
+                resource=native.get("resource"),
+                sources=native.get("sources"),
+            )
+        )
     if "ariadne_evidence" in native:
         errors.extend(_evidence_errors(f"{where} ariadne_evidence", native["ariadne_evidence"]))
+    return errors
+
+
+def _answer_example_native_errors(where: str, native: dict) -> list[str]:
+    """Structural validation of the producer-owned Answer Example families
+    (spec0035 C4). The retained field meanings are Ariadne specs 0007/0023;
+    this gate checks shapes, string types and the published size bound only —
+    never meaning, consent, citation resolution or execution authority, which
+    stay Core-side. Pure: no I/O."""
+    errors: list[str] = []
+    unknown = sorted(
+        set(native)
+        - _ANSWER_EXAMPLE_KEYS
+        - _ANSWER_EXAMPLE_OPTIONAL_KEYS
+        - set(NATIVE_REQUIRED_FIELDS["answer_example"])
+        - {"type"}
+    )
+    if unknown:
+        errors.append(f"{where} carries unsupported answer_example field(s) {unknown}")
+    for key in ("question", "interpretation"):
+        if not _non_empty_str(native.get(key)):
+            errors.append(f"{where} {key} must be a non-empty string")
+    method = native.get("method")
+    if not isinstance(method, dict) or set(method) != {"operation", "arguments"}:
+        errors.append(
+            f"{where} method must be a mapping with exactly {{operation, arguments}}"
+        )
+    else:
+        if not isinstance(method["operation"], str) or (
+            method["operation"] not in _ANSWER_EXAMPLE_OPERATIONS
+        ):
+            errors.append(
+                f"{where} method.operation must be one of "
+                f"{sorted(_ANSWER_EXAMPLE_OPERATIONS)} (never standalone SQL)"
+            )
+        arguments = method["arguments"]
+        if (
+            not isinstance(arguments, dict)
+            or not arguments
+            or not all(_json_shaped(value) for value in arguments.values())
+        ):
+            errors.append(
+                f"{where} method.arguments must be a non-empty mapping of "
+                "JSON-shaped structured values (the arguments the named operation takes)"
+            )
+    if "parameters" in native and not _json_shaped(native["parameters"]):
+        errors.append(f"{where} parameters must be a JSON-shaped mapping")
+    if "project" in native and not _non_empty_str(native["project"]):
+        errors.append(f"{where} project must be a non-empty string")
+    submitter = native.get("submitter")
+    if not isinstance(submitter, dict) or set(submitter) != {"identity", "attestation"}:
+        errors.append(
+            f"{where} submitter must be a mapping with exactly {{identity, attestation}}"
+        )
+    elif not _non_empty_str(submitter["identity"]) or not _non_empty_str(
+        submitter["attestation"]
+    ):
+        errors.append(
+            f"{where} submitter identity and attestation must be non-empty strings"
+        )
+    citations = native.get("citations")
+    if not isinstance(citations, list):
+        errors.append(f"{where} citations must be a list of {{path, sha256}} mappings")
+    else:
+        for index, entry in enumerate(citations):
+            if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+                errors.append(
+                    f"{where} citations[{index}] must be exactly {{path, sha256}}"
+                )
+                continue
+            if not _non_empty_str(entry["path"]):
+                errors.append(f"{where} citations[{index}].path must be a non-empty string")
+            if not isinstance(entry["sha256"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
+                entry["sha256"]
+            ):
+                errors.append(
+                    f"{where} citations[{index}].sha256 must be a 64-hex digest"
+                )
+    if "sql_provenance" in native:
+        provenance = native["sql_provenance"]
+        if not isinstance(provenance, dict) or set(provenance) != {"source", "text"}:
+            errors.append(
+                f"{where} sql_provenance must be a mapping with exactly {{source, text}}"
+            )
+        else:
+            if provenance["source"] != _ANSWER_EXAMPLE_SQL_SOURCE:
+                errors.append(
+                    f"{where} sql_provenance.source must be the fixed descriptor "
+                    f"{_ANSWER_EXAMPLE_SQL_SOURCE!r} (never a verified execution origin)"
+                )
+            if not isinstance(provenance["text"], str) or not provenance["text"].strip():
+                errors.append(
+                    f"{where} sql_provenance.text must be a non-whitespace string"
+                )
+    answer = native.get("answer")
+    if not isinstance(answer, dict) or set(answer) != {"captured", "excerpt", "result_digest"}:
+        errors.append(
+            f"{where} answer must be a mapping with exactly "
+            "{captured, excerpt, result_digest}"
+        )
+    else:
+        if not _non_empty_str(answer["captured"]):
+            errors.append(f"{where} answer.captured must be a non-empty string")
+        excerpt = answer["excerpt"]
+        if not isinstance(excerpt, str):
+            errors.append(f"{where} answer.excerpt must be a string")
+        elif len(excerpt.encode("utf-8")) > _ANSWER_EXAMPLE_EXCERPT_BYTES:
+            errors.append(
+                f"{where} answer.excerpt exceeds the "
+                f"{_ANSWER_EXAMPLE_EXCERPT_BYTES}-byte bound"
+            )
+        if not isinstance(answer["result_digest"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
+            answer["result_digest"]
+        ):
+            errors.append(f"{where} answer.result_digest must be a 64-hex digest")
+    return errors
+
+
+# --- C6 quality-profile amendment (spec0009 §9, owner-approved 2026-11-12):
+# the OPTIONAL `ariadne_quality` native field of TABLE profile pages, with
+# structural validation ONLY. The closed v1 grammar is retained 1:1 from the
+# approved Ariadne source-quality contract (spec0013 r2 + the Core validator's
+# closed constants); K checks shape, types, bounds, vocabularies and the
+# binding-local asset/citation rules — never meaning, freshness interpretation,
+# applicability, execution authority or query refusal, which stay Core-side
+# advisory meaning. Reports are SUPPLIED CLAIMS, never authenticated execution
+# or current healthy state. Pure: no I/O, no dependency, never imports Ariadne.
+ARIADNE_QUALITY_VERSION = 1
+QUALITY_MAX_REPORTS = 8
+QUALITY_MAX_CHECKS = 8
+QUALITY_MAX_SOURCE_IDS = 8
+QUALITY_MAX_ID_CHARS = 128  # id/source-version value/field/actor strings
+QUALITY_MAX_TEXT_CHARS = 1024  # description/criterion/population/meaning/provenance
+QUALITY_MAX_CADENCE_CHARS = 256
+QUALITY_MAX_UNITS_CHARS = 64  # units/timezone
+QUALITY_MAX_BYTES = 8192  # the normalized (disclosed compact JSON) profile bound
+_QUALITY_ROOT_KEYS = frozenset({"version", "reports"})
+_QUALITY_REPORT_KEYS = frozenset(
+    {
+        "id",
+        "asset",
+        "source_ids",
+        "scope",
+        "reported_at",
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "checks",
+        "watermark",
+    }
+)
+_QUALITY_REPORT_OPTIONAL_KEYS = frozenset(
+    {
+        "observed_at",
+        "source_version",
+        "provenance",
+        "reported_by",
+        "cadence",
+        "valid_until",
+        "watermark",
+    }
+)
+_QUALITY_SCOPE_KEYS = frozenset({"kind", "description", "population", "period"})
+_QUALITY_PERIOD_KEYS = frozenset({"field", "start", "end"})
+_QUALITY_SOURCE_VERSION_KEYS = frozenset({"kind", "value"})
+_QUALITY_CHECK_KEYS = frozenset(
+    {"id", "kind", "outcome", "criterion", "tested_population", "tested_period"}
+)
+_QUALITY_WATERMARK_KEYS = frozenset(
+    {"kind", "value", "field", "meaning", "units", "timezone", "observed_at"}
+)
+_QUALITY_SCOPE_KINDS = ("asset", "subset")
+_QUALITY_SOURCE_VERSION_KINDS = ("snapshot", "version")
+_QUALITY_CHECK_OUTCOMES = ("pass", "fail", "unknown")
+_QUALITY_WATERMARK_KINDS = ("event_time", "ingestion_time", "snapshot_as_of", "other")
+
+
+def _quality_aware_instant(value: object, where: str) -> tuple[datetime | None, list[str]]:
+    """Parse one supplied aware ISO-8601 instant. Naive datetimes, plain
+    dates, non-temporal values and NULL reject with a NAMED field diagnostic
+    — never an invented timezone and never a crash. Callers that only validate
+    a genuinely optional field guard the call on the key's presence, exactly
+    like the retained Core gate."""
+    if value is None:
+        return None, [
+            f"{where} must be an aware instant (an ISO-8601 string or YAML "
+            "datetime with an explicit UTC offset) — null is not a declaration"
+        ]
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None, [f"{where} is not a valid ISO-8601 instant"]
+    else:
+        return None, [
+            f"{where} must be an ISO-8601 instant string with an explicit UTC "
+            "offset (a plain date is not an instant)"
+        ]
+    if not isinstance(parsed, datetime) or parsed.utcoffset() is None:
+        return None, [
+            f"{where} must carry an explicit UTC offset (naive datetimes and "
+            "plain dates are rejected)"
+        ]
+    return parsed, []
+
+
+def _quality_period_errors(period: object, where: str) -> list[str]:
+    """The closed `{field, start, end}` declared-evidence period with aware
+    instants ordered ``start < end`` (the retained spec0013 §2 authoring rule:
+    the period is interpreted ``[start, end)``); an explicit null is the
+    declared non-time-bounded form (omission is not a declaration — the
+    requiring caller owns that rule). Pure structural chronology between the
+    two declared bounds — no Core import, no dynamic freshness."""
+    if period is None:
+        return []
+    if not isinstance(period, dict):
+        return [f"{where} must be {{field, start, end}} or an explicit null"]
+    errors: list[str] = []
+    unknown = sorted(set(period) - _QUALITY_PERIOD_KEYS, key=repr)
+    if unknown:
+        errors.append(f"{where} carries unsupported field(s) {unknown}")
+    field = period.get("field")
+    if not isinstance(field, str) or not field.strip():
+        errors.append(f"{where} field must be a non-empty string")
+    elif len(field) > QUALITY_MAX_ID_CHARS:
+        errors.append(f"{where} field exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+    start, start_errors = _quality_aware_instant(period.get("start"), f"{where} start")
+    errors.extend(start_errors)
+    end, end_errors = _quality_aware_instant(period.get("end"), f"{where} end")
+    errors.extend(end_errors)
+    if start is not None and end is not None and not start < end:
+        errors.append(f"{where} must satisfy start < end (interpreted [start, end))")
+    return errors
+
+
+def _quality_normalized_bytes(profile: dict) -> int:
+    """The retained Core normalized form of the profile (spec0009 §9: the
+    contract says NORMALIZED, not compact): aware datetimes and plain dates
+    become ISO-8601 strings, containers are rebuilt in order, and the JSON is
+    emitted with the default separators and insertion order — the same shape
+    the Core authoring gate measures. Pure; no Core import."""
+    def normalize(value: object) -> object:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {key: normalize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return len(json.dumps(normalize(profile), ensure_ascii=False).encode("utf-8"))
+
+
+def _table_quality_native_errors(
+    where: str, profile: object, *, resource: object, sources: object
+) -> list[str]:
+    """Structural validation of the OPTIONAL `ariadne_quality` native field of
+    one TABLE profile page (spec0009 §9 quality-profile amendment, owner-
+    approved 2026-11-12). The closed v1 grammar is retained 1:1 from the
+    approved Ariadne source-quality contract: closed keys, exact version,
+    count/length/byte bounds, closed vocabularies, duplicate-ID detection and
+    the binding-local rules — each report's `asset` must equal the containing
+    page's canonical `native.resource`, and `source_ids` must resolve to the
+    page's actual `sources[].id` entries, every selected source declaring a
+    nonempty `resource`. Reports are SUPPLIED CLAIMS: no meaning, freshness
+    interpretation, applicability, execution authority or query refusal is
+    evaluated here (Core-side advisory meaning). Pure: no I/O."""
+    if not isinstance(profile, dict):
+        return [f"{where} must be a mapping"]
+    errors: list[str] = []
+    unknown = sorted(set(profile) - _QUALITY_ROOT_KEYS, key=repr)
+    if unknown:
+        errors.append(
+            f"{where} carries unsupported field(s) {unknown} — the profile is a "
+            "closed declaration with no sql/script/command or other executable "
+            "payload field; descriptions are inert text"
+        )
+    version = profile.get("version")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != ARIADNE_QUALITY_VERSION
+    ):
+        errors.append(
+            f"{where} version must be the exact integer {ARIADNE_QUALITY_VERSION}, "
+            f"got {version!r}"
+        )
+    reports = profile.get("reports")
+    if not isinstance(reports, list):
+        return errors + [f"{where} reports must be a list"]
+    if len(reports) > QUALITY_MAX_REPORTS:
+        errors.append(
+            f"{where} carries {len(reports)} reports — at most {QUALITY_MAX_REPORTS} "
+            "are declared per page"
+        )
+    binding = resource if isinstance(resource, str) else None
+    citation_resources: dict[str, str | None] = {}
+    if isinstance(sources, list):
+        for source in sources:
+            if isinstance(source, dict) and isinstance(source.get("id"), str):
+                entry_resource = source.get("resource")
+                citation_resources[source["id"]] = (
+                    entry_resource if isinstance(entry_resource, str) else None
+                )
+    report_ids: set[str] = set()
+    for position, report in enumerate(reports):
+        spot = f"{where} reports[{position}]"
+        if not isinstance(report, dict):
+            errors.append(f"{spot} must be a mapping")
+            continue
+        unknown = sorted(set(report) - _QUALITY_REPORT_KEYS, key=repr)
+        if unknown:
+            errors.append(
+                f"{spot} carries unsupported field(s) {unknown} — the profile is a "
+                "closed declaration with no sql/script/command or other executable "
+                "payload field; descriptions are inert text"
+            )
+        missing = sorted(_QUALITY_REPORT_KEYS - _QUALITY_REPORT_OPTIONAL_KEYS - set(report))
+        if missing:
+            errors.append(f"{spot} requires field(s) {missing}")
+        identifier = report.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            errors.append(f"{spot} id must be a nonempty stable string")
+        elif len(identifier) > QUALITY_MAX_ID_CHARS:
+            errors.append(f"{spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound")
+        elif identifier in report_ids:
+            errors.append(
+                f"{spot} duplicates report id {identifier!r} — report IDs are "
+                "stable: repeated findings update the same declaration"
+            )
+        else:
+            report_ids.add(identifier)
+        if isinstance(binding, str) and binding and report.get("asset") != binding:
+            errors.append(
+                f"{spot} asset must equal the containing page's canonical resource "
+                f"binding {binding!r} — a report is tied to its page's exact asset, "
+                "never a display-name match"
+            )
+        source_ids = report.get("source_ids")
+        if (
+            not isinstance(source_ids, list)
+            or not source_ids
+            or len(source_ids) > QUALITY_MAX_SOURCE_IDS
+            or not all(isinstance(source_id, str) and source_id for source_id in source_ids)
+        ):
+            errors.append(
+                f"{spot} source_ids must be a nonempty list of at most "
+                f"{QUALITY_MAX_SOURCE_IDS} citation ids"
+            )
+        else:
+            unresolved = [s for s in source_ids if s not in citation_resources]
+            if unresolved:
+                errors.append(
+                    f"{spot} source_ids {unresolved} resolves to no page sources[] "
+                    "citation — supplied evidence cites the page's actual sources"
+                )
+            resourceless = [s for s in source_ids if not citation_resources.get(s)]
+            if resourceless:
+                errors.append(
+                    f"{spot} source_ids {resourceless} cite a source without a "
+                    "resource — a citation is an identity, and needs one"
+                )
+        scope = report.get("scope")
+        if not isinstance(scope, dict):
+            errors.append(f"{spot} scope must be {{kind, description, population, period}}")
+        else:
+            unknown = sorted(set(scope) - _QUALITY_SCOPE_KEYS, key=repr)
+            if unknown:
+                errors.append(f"{spot} scope carries unsupported field(s) {unknown}")
+            if scope.get("kind") not in _QUALITY_SCOPE_KINDS:
+                errors.append(
+                    f"{spot} scope kind must be one of {list(_QUALITY_SCOPE_KINDS)}, "
+                    f"got {scope.get('kind')!r}"
+                )
+            for key in ("description", "population"):
+                value = scope.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} scope {key} must be a non-empty string")
+                elif len(value) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{spot} scope {key} exceeds its {QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
+            missing = sorted(_QUALITY_SCOPE_KEYS - set(scope))
+            if missing:
+                errors.append(
+                    f"{spot} scope requires field(s) {missing} — period is null only "
+                    "when non-time-bounded evidence is EXPLICITLY declared; "
+                    "omission is not a declaration"
+                )
+            errors.extend(_quality_period_errors(scope.get("period"), f"{spot} scope period"))
+        reported_at, reported_errors = _quality_aware_instant(
+            report.get("reported_at"), f"{spot} reported_at"
+        )
+        errors.extend(reported_errors)
+        if "observed_at" in report:
+            _, observed_errors = _quality_aware_instant(
+                report.get("observed_at"), f"{spot} observed_at"
+            )
+            errors.extend(observed_errors)
+        if "valid_until" in report:
+            valid_until, valid_errors = _quality_aware_instant(
+                report.get("valid_until"), f"{spot} valid_until"
+            )
+            errors.extend(valid_errors)
+            if (
+                not valid_errors
+                and reported_at is not None
+                and valid_until is not None
+                and valid_until < reported_at
+            ):
+                errors.append(f"{spot} valid_until must not precede reported_at")
+        if "source_version" in report:
+            source_version = report.get("source_version")
+            if not isinstance(source_version, dict):
+                errors.append(f"{spot} source_version must be {{kind, value}}")
+            else:
+                unknown = sorted(set(source_version) - _QUALITY_SOURCE_VERSION_KEYS, key=repr)
+                if unknown:
+                    errors.append(f"{spot} source_version carries unsupported field(s) {unknown}")
+                if source_version.get("kind") not in _QUALITY_SOURCE_VERSION_KINDS:
+                    errors.append(
+                        f"{spot} source_version kind must be one of "
+                        f"{list(_QUALITY_SOURCE_VERSION_KINDS)}, got {source_version.get('kind')!r}"
+                    )
+                value = source_version.get("value")
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} source_version value must be a non-empty string")
+                elif len(value) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{spot} source_version value exceeds its "
+                        f"{QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+        for key, cap in (
+            ("provenance", QUALITY_MAX_TEXT_CHARS),
+            ("reported_by", QUALITY_MAX_ID_CHARS),
+            ("cadence", QUALITY_MAX_CADENCE_CHARS),
+        ):
+            if key in report:
+                value = report.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"{spot} {key} must be a non-empty string")
+                elif len(value) > cap:
+                    errors.append(f"{spot} {key} exceeds its {cap}-character bound")
+        checks = report.get("checks")
+        if not isinstance(checks, list) or not checks:
+            errors.append(f"{spot} requires a nonempty checks list")
+        elif len(checks) > QUALITY_MAX_CHECKS:
+            errors.append(
+                f"{spot} carries {len(checks)} checks — at most {QUALITY_MAX_CHECKS} "
+                "are declared per report"
+            )
+        else:
+            check_ids: set[str] = set()
+            for index, check in enumerate(checks):
+                check_spot = f"{spot} checks[{index}]"
+                if not isinstance(check, dict):
+                    errors.append(f"{check_spot} must be a mapping")
+                    continue
+                unknown = sorted(set(check) - _QUALITY_CHECK_KEYS, key=repr)
+                if unknown:
+                    errors.append(f"{check_spot} carries unsupported field(s) {unknown}")
+                missing = sorted(_QUALITY_CHECK_KEYS - set(check))
+                if missing:
+                    errors.append(f"{check_spot} requires field(s) {missing}")
+                identifier = check.get("id")
+                if not isinstance(identifier, str) or not identifier.strip():
+                    errors.append(f"{check_spot} id must be a non-empty string")
+                elif len(identifier) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{check_spot} id exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+                elif identifier in check_ids:
+                    errors.append(
+                        f"{check_spot} duplicates check id {identifier!r} within the report"
+                    )
+                else:
+                    check_ids.add(identifier)
+                check_kind = check.get("kind")
+                if not isinstance(check_kind, str) or not check_kind.strip():
+                    errors.append(f"{check_spot} kind must be a non-empty string")
+                elif len(check_kind) > QUALITY_MAX_ID_CHARS:
+                    errors.append(
+                        f"{check_spot} kind exceeds its {QUALITY_MAX_ID_CHARS}-character bound"
+                    )
+                if check.get("outcome") not in _QUALITY_CHECK_OUTCOMES:
+                    errors.append(
+                        f"{check_spot} outcome must be one of "
+                        f"{list(_QUALITY_CHECK_OUTCOMES)}, got {check.get('outcome')!r}"
+                    )
+                criterion = check.get("criterion")
+                if not isinstance(criterion, str) or not criterion.strip():
+                    errors.append(f"{check_spot} criterion must be a non-empty string")
+                elif len(criterion) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{check_spot} criterion exceeds its "
+                        f"{QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
+                tested_population = check.get("tested_population")
+                if not isinstance(tested_population, str) or not tested_population.strip():
+                    errors.append(
+                        f"{check_spot} tested_population must be supplied non-empty text"
+                    )
+                elif len(tested_population) > QUALITY_MAX_TEXT_CHARS:
+                    errors.append(
+                        f"{check_spot} tested_population exceeds its "
+                        f"{QUALITY_MAX_TEXT_CHARS}-character bound"
+                    )
+                errors.extend(
+                    _quality_period_errors(
+                        check.get("tested_period"), f"{check_spot} tested_period"
+                    )
+                )
+        if "watermark" in report:
+            watermark = report.get("watermark")
+            if not isinstance(watermark, dict):
+                errors.append(f"{spot} watermark must be a mapping")
+            else:
+                unknown = sorted(set(watermark) - _QUALITY_WATERMARK_KEYS, key=repr)
+                if unknown:
+                    errors.append(f"{spot} watermark carries unsupported field(s) {unknown}")
+                if watermark.get("kind") not in _QUALITY_WATERMARK_KINDS:
+                    errors.append(
+                        f"{spot} watermark kind must be one of "
+                        f"{list(_QUALITY_WATERMARK_KINDS)}, got {watermark.get('kind')!r}"
+                    )
+                watermark_value = watermark.get("value")
+                if watermark.get("kind") in ("event_time", "ingestion_time", "snapshot_as_of"):
+                    _, value_errors = _quality_aware_instant(
+                        watermark_value, f"{spot} watermark value"
+                    )
+                    errors.extend(value_errors)
+                elif (
+                    isinstance(watermark_value, bool)
+                    or not isinstance(watermark_value, (int, float, str))
+                    or (isinstance(watermark_value, float) and not math.isfinite(watermark_value))
+                ):
+                    errors.append(
+                        f"{spot} watermark value must be a finite scalar with its stated meaning"
+                    )
+                for key, cap in (
+                    ("field", QUALITY_MAX_ID_CHARS),
+                    ("meaning", QUALITY_MAX_TEXT_CHARS),
+                    ("units", QUALITY_MAX_UNITS_CHARS),
+                    ("timezone", QUALITY_MAX_UNITS_CHARS),
+                ):
+                    wm_value = watermark.get(key)
+                    if not isinstance(wm_value, str) or not wm_value.strip():
+                        errors.append(
+                            f"{spot} watermark {key} must be supplied non-empty text"
+                        )
+                    elif len(wm_value) > cap:
+                        errors.append(
+                            f"{spot} watermark {key} exceeds its {cap}-character bound"
+                        )
+                _, wm_errors = _quality_aware_instant(
+                    watermark.get("observed_at"), f"{spot} watermark observed_at"
+                )
+                errors.extend(wm_errors)
+    if not errors:
+        normalized_bytes = _quality_normalized_bytes(profile)
+        if normalized_bytes > QUALITY_MAX_BYTES:
+            errors.append(
+                f"{where} exceeds its {QUALITY_MAX_BYTES}-UTF-8-byte normalized bound "
+                f"(the normalized profile is {normalized_bytes} bytes)"
+            )
     return errors
 
 
@@ -2337,6 +2976,7 @@ def search_published_context_pages(
     *,
     limit: int = 10,
     metadata_store: Any = None,
+    kinds: Sequence[str] | None = None,
 ) -> tuple[PublishedContextSearchHit, ...]:
     """Search exactly the visible pages of one verified immutable version.
 
@@ -2345,10 +2985,13 @@ def search_published_context_pages(
     :func:`list_published_context_pages`. Normalization, ranking,
     deterministic ties, query limits and completeness accounting are the
     native page search over the scope-filtered page set — no second ranking
-    engine. Each kept hit adds a separately labeled verbatim canonical
-    excerpt with inclusive 1-based line numbers and the actual fence-aware
-    section when available; metadata-only matches cite the real canonical
-    metadata passage.
+    engine. ``kinds`` optionally restricts the ranked set to the named
+    producer profile kinds (``unprofiled`` included) BEFORE matching,
+    ranking and limiting — a producer view filter over the same typed scoped
+    view, never a separate index. Each kept hit adds a separately labeled
+    verbatim canonical excerpt with inclusive 1-based line numbers and the
+    actual fence-aware section when available; metadata-only matches cite
+    the real canonical metadata passage.
     """
     from lumio_wiki.page_search import search_pages
 
@@ -2356,6 +2999,16 @@ def search_published_context_pages(
         location, expected, metadata_store=metadata_store
     )
     visible = _scoped_visible_pages(snapshot, expected.scope)
+    if kinds is not None:
+        requested = frozenset(kinds)
+        if not requested or not all(isinstance(kind, str) and kind for kind in requested):
+            raise ValueError("kinds must be a non-empty sequence of producer kind strings")
+        visible = [
+            page
+            for page in visible
+            if (page.ariadne_profile.kind if page.ariadne_profile else "unprofiled")
+            in requested
+        ]
     canonical_content = snapshot.knowledge_base.canonical_pages
     hits: list[PublishedContextSearchHit] = []
     for result in search_pages(visible, query, limit=limit):

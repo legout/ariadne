@@ -26,6 +26,21 @@ export LUMIO_WORKSPACE_PUBLISHED_VERSION='OPTIONAL_EXACT_VERSION'
 export LUMIO_WORKSPACE_STATE_PATH='/private/workspace/state.sqlite3'
 ```
 
+Ordinary reads, searches, and Evidence see exactly the shared audience: explicitly `public` and `internal` admitted pages of the configured publication. `restricted` and unknown-visibility pages are unavailable before any lookup, match, rank, count, or snippet — a hidden title, alias, or ID is indistinguishable from a missing one. `retrieve_knowledge` returns bounded citation-ready Evidence (at most 16,000 Evidence-text characters per call with truthful omission disclosure and exact spans) and refuses an integrated workspace. `read_knowledge` additionally accepts `published_version` to reread cited content from an exact admitted version at the configured destination; the results of reads, searches, and Evidence carry the stable Entity ID and the exact Published Version from native metadata, so supported follow-ups need no private-file lookup. Reads and searches stay on the configured current publication.
+
+The optional BM25 retrieval cache is owner/server configuration, never caller-selected. Set `LUMIO_WORKSPACE_RETRIEVAL_BACKEND=bm25` and run the operator-only command before serving:
+
+```sh
+export LUMIO_WORKSPACE_RETRIEVAL_BACKEND='bm25'
+lumio-workspace prepare-retrieval
+```
+
+The command builds the derived index over the authorized shared view of the configured admitted publication into `LUMIO_WORKSPACE_PRIVATE_ROOT` (or the state directory's `private/`), never into an immutable published tree, using the existing LanceDB adapter (`lumio-workspace[retrieval]` extra; no semantic/Hybrid selection, no embedding or network call). Readers never build indexes: a missing, stale, or unhealthy cache falls back truthfully to lexical retrieval over the same authorized view, disclosed in the retrieval result.
+
+### Original references and exact downloads
+
+`read_knowledge` and `retrieve_knowledge` results carry every authored source attribution (`id`, authored title, external URL) with a version-qualified reference action: a plain URL shaped `/original/PUBLISHED_VERSION/ENTITY_ID/SOURCE_ID`. The action carries no bearer token or signed URL, names only the exact Published Version, Entity, and Source ID, and discloses no availability, filename, size, or digest. Opening it in a browser re-checks the browser session, current workspace membership, and the separate `inspect_source` capability before any private store probe. An authorized inspector then receives the exact verified bytes as a download-only safe attachment (`application/octet-stream`, sanitized `Content-Disposition` filename, `nosniff`), resolved through the native sealed binding of that exact admitted publication — never registry-latest, an object key, a filesystem path, or a caller-supplied hash. Denial, absence, corruption, and missing historical bindings are distinct truthful outcomes and never substitute extracted text or a newer version; hidden and unknown references are indistinguishable from missing ones. Supported binary originals (`.pdf`, `.docx`) are likewise delivered as exact-byte safe attachments by the pending-review source route under its review boundary and current inspection permission, while text originals keep the UTF-8 inspection view. There is no MCP original-fetch tool, and pending candidates stay invisible to ordinary reads, searches, and Evidence.
+
 These settings alone do not enable setup, upload, contribution, or review. For that authoring-enabled path, also configure the service with the native authoring KB and private resources:
 
 ```sh
@@ -48,7 +63,42 @@ For this synthetic local configuration, the server-only private profile at the s
 }
 ```
 
-Keep the profile, Source Registry, artifact store, operational directory, originals, and credentials outside the content repository and inaccessible to Pi. An existing adopted target must have a valid committed native Authoring Revision, `lumio.yaml`, `.lumio-authoring.yaml`, a matching namespace, and resolvable private registry/artifact resources. Its published destination must come from native admission of that actual history; setup does not invent ancestry or publish a baseline. New-empty setup requires the explicit namespace. A nonempty unadopted target is refused as `adoption_required` without mutation; this guide does not provide native adoption for it.
+Central original storage uses the same private profile with the existing
+private S3-compatible artifact store instead of a local directory. The
+connection declaration stays server-side and names credential environment
+variables, never values:
+
+```json
+{
+  "artifact_store": {
+    "kind": "s3",
+    "bucket": "WORKSPACE_ORIGINALS_BUCKET",
+    "prefix": "workspace-originals",
+    "endpoint": "https://S3_ENDPOINT",
+    "region": "us-east-1",
+    "url_style": "path",
+    "credentials": {
+      "access_key_id_env": "WORKSPACE_S3_ACCESS_KEY_ID",
+      "secret_access_key_env": "WORKSPACE_S3_SECRET_ACCESS_KEY"
+    }
+  }
+}
+```
+
+The S3 store serves contribution, publication, exact original opening, and
+status through the existing private adapter — the registry remains the
+server-managed private state, and S3 never replaces it. No bucket/IAM
+provisioning is implied, and S3-compatible providers are not claimed
+equivalent. Backups of an S3-backed workspace enumerate exactly the
+registered versions and bound private records (howto-workspace-operations.md
+§4), and restore materializes them into a new local store without copying
+the remote connection (§5).
+
+Keep the profile, Source Registry, artifact store, operational directory, originals, and credentials outside the content repository and inaccessible to Pi. An existing adopted target must have a valid committed native Authoring Revision, `lumio.yaml`, `.lumio-authoring.yaml`, a matching namespace, and resolvable private registry/artifact resources. Its published destination must come from native admission of that actual history; setup does not invent ancestry or publish a baseline. New-empty setup requires the explicit namespace and refuses any non-required retention. A nonempty unadopted target is refused as `adoption_required` without mutation; this guide does not provide native adoption for it.
+
+### Standalone retention exception (owner-confirmed, document-only)
+
+Default retention stays `required`: a failed or unavailable artifact store is an error and never an implicit permission to omit originals. Only an owner who writes `"retention": "disabled"` into the private profile of an **adopted standalone** workspace and confirms setup for that exact binding selects the explicit document-only exception (the owner setup page discloses it before confirmation). Under this exception the managed document path registers the exact Source ID, content hash, filename and manifest bindings — pages stay source-backed — but retains no durable original bytes and neither constructs nor probes the artifact-store backend; the review and admission receipt bind `retention: disabled`. There is no retained-original claim, no secure deletion: transient upload copies and backups may remain. Changing the profile or its retention invalidates the owner setup attachment and stale review consents; previously retained originals, bindings and history stay untouched. The exception is unavailable everywhere else: analytics-enabled and integrated flows, the independent CLI/bundle journey, and new-empty setup keep required retention, and the workspace offers no contributor-selected retention flag. Enrichment corrections that bind new source versions still require the exact retained original.
 
 After the users and capabilities below are provisioned, the designated owner opens `https://WORKSPACE_HOST/setup` with their separate browser session. The GET displays the exact setup preview and readiness facts; the owner checks them and submits the same-origin protected form POST to apply that preview. Neither Pi nor an API token can perform this owner confirmation.
 
@@ -175,7 +225,7 @@ export LUMIO_WORKSPACE_ALLOWED_MODELS='APPROVED_PROVIDER/APPROVED_MODEL'
 export LUMIO_WORKSPACE_CALLBACK_PORT='8765'
 ```
 
-Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The read tools are `workspace_status`, `read_knowledge`, and `search_knowledge`; contribution uses `read_source_material`, `prepare_contribution`, and actor-scoped `get_task`. No MCP tool grants browser approval.
+Reload Pi and run `/workspace` to inspect configuration and model disclosure status, then `/mcp` to inspect `lumio-workspace`. Entra mode also uses `/mcp` for OAuth sign-in. The read tools are `workspace_status`, `read_knowledge`, `search_knowledge`, and `retrieve_knowledge`; contribution uses `read_source_material`, `prepare_contribution`, and actor-scoped `get_task`. No MCP tool grants browser approval.
 
 The extension checks the exact provider/model before every workspace MCP call and rechecks after model changes; an empty or nonmatching allowlist blocks reads before content can be returned. After a successful workspace result, it also aborts any provider request that would carry retained workspace history to a nonallowed model, including after a model switch or session resume. Clean conversations without workspace results remain usable. This is trusted-client disclosure policy, not remote attestation.
 

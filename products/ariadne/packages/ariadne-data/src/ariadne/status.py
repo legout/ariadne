@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import admission, answer_examples, authoring_sources, proposals, skill, sources
+from ariadne import admission, authoring_sources, proposals, skill, sources
 
 _LABEL = 18
 
@@ -220,20 +220,31 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
     return pending
 
 
-def _example_counts(snapshot: Path | None) -> dict:
-    if snapshot is None:
+def _example_counts(snapshot: Path | None, record: dict | None) -> dict:
+    """The admitted release's native Answer-Example count from the pinned
+    scoped SDK view (C6, spec0035 C4): producer-kind pages of the admitted KB
+    under the release's authorized visibility scope — never a filename or
+    directory guess, never a hidden-page disclosure, never a raw KB parse.
+    The pinned release is admitted, so every counted page is admitted
+    knowledge; the retired separate-store ``stable`` status is gone."""
+    if snapshot is None or record is None:
         return {"total": 0, "by_status": {}}
-    directory = snapshot / answer_examples.EXAMPLES_DIR
+    try:
+        from ariadne import lumio_context
+
+        release = lumio_context.verify_release(record, snapshot)
+    except (ValueError, OSError):
+        return {"total": 0, "by_status": {}}
+    if release is None:
+        return {"total": 0, "by_status": {}}
     total = 0
-    if directory.is_dir():
-        for page in directory.glob("*.md"):
-            try:
-                meta = answer_examples._frontmatter(page)
-            except OSError:
-                continue
-            if meta and meta.get("type") == "answer_example":
-                total += 1
-    return {"total": total, "by_status": ({"stable": total} if total else {})}
+    for page in release.pages:
+        # ContextPageView.native is a deep-immutable producer view (never a
+        # plain dict) and the producer kind lives on ``page.kind`` — count the
+        # scoped pinned answer_example pages directly (R2, C6 fix).
+        if page.kind == "answer_example":
+            total += 1
+    return {"total": total, "by_status": ({"admitted": total} if total else {})}
 
 
 def _skill_targets(selection: set[tuple[str, str | None]] | None = None) -> list[dict]:
@@ -454,7 +465,7 @@ def build_report(args: argparse.Namespace, *, skill_targets=None) -> dict:
         "sources": sources_section,
         "work_pending": {
             "proposals": pending,
-            "answer_examples": _example_counts(snapshot),
+            "answer_examples": _example_counts(snapshot, admitted.get("record")),
         },
         "skill": {"targets": targets},
         "next_steps": _next_steps(root, git, repo_ok, identity_ok, admitted, pending, targets),

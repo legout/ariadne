@@ -16,7 +16,7 @@ ariadne get-metric gross_margin --project .
 
 There is no plain-root serving route. The former `--served`, `--sources` and `--db` query selectors, staged bundle workflow, Promotion and legacy import/enrichment commands are not supported.
 
-`ariadne setup --project DIR` is read-only with respect to authority and Git configuration: it may scaffold, inspect filenames and print operator handoffs, but it never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
+`ariadne setup --project DIR [--namespace NAMESPACE --private-profile PROFILE]` is read-only with respect to authority and Git configuration: it inspects filenames and prints operator handoffs. A fresh project is initialized only through the explicit `--namespace`/`--private-profile` selections (delegated once to the public initializer; the machine-local profile stays outside the repository), and an existing native Knowledge Base resumes by metadata validation, never reinitialization; conflicting selections refuse. It never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
 
 For the complete runnable local pair, use [the joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
 The command table below includes standalone capabilities. With
@@ -56,9 +56,9 @@ The following decisions remain local and human-only; they are not MCP tools:
 
 A Git commit, validation result, proposed source, authored status field or successful query is not source approval or admission. See [Git-backed authoring](../how-to/git-authoring.md) and the [Git-only route reference](git-authoring-migration.md) for the complete sequence.
 
-## Document ingestion and static validation
+## Document onboarding and static validation
 
-`ariadne-ingest DOC... --project DIR --proposal ID --expected-revision REV` reads operator-authorized external document references and writes authored pages into that proposal revision. `--verbatim` preserves converted text without a model call; `--reconcile` compares against the immutable admitted base and is mutually exclusive with `--verbatim`. Original documents remain external; Core has no upload/archive store.
+Document onboarding uses Lumio's native intake (spec0035/ADR-0029): operator-authorized documents ride the SDK's `extract_source`/`CandidateRequest` contract through the authoring harness, with applicable original retention and the selected verbatim/distilled intent. There is no separate `ariadne-ingest` command and no Core document store; the optional `ariadne-data[documents]` extra adds supported converters for the bounded Seed-Notes document parts only.
 
 `ariadne-validate ARTIFACT_DIR` performs source-free compile checks on an explicit artifact directory. Its result is partial structural evidence only: it does not open sources, perform live validation, approve sources, or admit content. Live validation is revision-bound through `ariadne-authoring validate` after human source approval.
 
@@ -70,11 +70,13 @@ Install Core 0.8.0 on Python >=3.14. Choose optional packages for the task:
 - `ariadne-data[mcp]==0.8.0` adds the pinned MCP 2.2.0 transport.
 - `ariadne-data[documents]==0.8.0` adds the supported document converters;
   it does not approve an input or supply model credentials.
-- `lumio-wiki==0.6.0` supplies the optional integrated knowledge binding.
+- `lumio-wiki>=0.7,<0.8` is the required Lumio SDK foundation every Core
+  install brings (mandatory pairing, ADR-0029/spec0035).
   `lumio-lancedb==0.6.0` is optional retrieval, not a Core requirement.
 
-The separately distributed Ariadne Agent/Tau stack has its own dependencies;
-it was not qualified by this Core/Lumio release. DuckDB source-format extensions
+The separately distributed Ariadne Agent/Tau stack was retired 2026-11-12
+(host agents only, ADR-0027); host agents use the packaged skill and these
+CLI/MCP surfaces. DuckDB source-format extensions
 and storage credentials remain host prerequisites; package extras do not create
 or approve them.
 

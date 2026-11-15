@@ -19,9 +19,9 @@ Public query and discovery entry points are project-bound:
 
 `ariadne-authoring start` creates an isolated proposal. Typed artifact edits and source declarations require the proposal's current revision; stale edits refuse. Source declarations are inert until a human approves the exact resolved source identity. Approved inputs may then be measured, and candidate artifacts are validated and reviewed against exact revisions. `ariadne-admit --confirm` is the human-only gate for the reviewed, validated revision. A commit, validation result, metadata field or Git source declaration is not admission or source permission.
 
-Examples and ingested pages are artifacts in the same candidate and admitted snapshot as Policies, models and other authored content. Example saving is explicit and creates an unreviewed candidate draft; there is no separate Example review store. Document originals remain operator-controlled and external to the artifact snapshot; Core retains the authored page and exact source identity/digest, not an upload or archive copy.
+Examples and onboarded document pages are native knowledge pages in the same candidate and admitted snapshot as Policies, models and other authored content. Example saving is explicit and creates an unreviewed candidate draft; there is no separate Example review store. Document originals remain operator-controlled and external to the artifact snapshot; Core retains the authored page and exact source identity/digest, not an upload or archive copy.
 
-Ad-hoc `define-metric` results are ephemeral (`governed: false`, `persistence: {status: not_saved}`). To retain a definition, use an explicit revision-checked model/page edit in a Git proposal. `ariadne-ingest` likewise targets a selected proposal revision; it does not write a staging tree or admit the result.
+Ad-hoc `define-metric` results are ephemeral (`governed: false`, `persistence: {status: not_saved}`). To retain a definition, use an explicit revision-checked model/page edit in a Git proposal. Document onboarding likewise lands native knowledge pages in a selected proposal revision through the Lumio intake (spec0035); it never writes a staging tree or admits the result.
 
 ## Data Contracts and local bindings
 

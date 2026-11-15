@@ -1,5 +1,7 @@
 # Specification 0032: Integrated queries and technical Context profiles
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). The native technical profiles become the sole Ariadne Context route, with no parallel classic finalization/validation. Old-support-revision compatibility and the Answer Example non-goal are superseded; guides use ordinary Lumio pages. Existing calculation, Policy, source and evidence checks remain. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Status:** revision 2 — owner-approved exact contracts, 2026-10-22.
 Revision 1 (same day) captured the owner-approved design for review;
 revision 2 adds §10's exact interface representation, grounded by source

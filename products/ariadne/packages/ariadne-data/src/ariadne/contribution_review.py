@@ -196,7 +196,6 @@ def _static_validation(project: Path, record: dict, tree: Path, resolved_sources
         resolved_sources,
         authoring_sources.resolved_digest(resolved_sources) if resolved_sources else None,
     )
-    errors.extend(authoring._bundle_errors(tree))
     errors.extend(authoring._graph_citation_errors(tree))
     errors.extend(
         authoring._stale_schema_binding_errors(tree, approval.get("approval_digest"))

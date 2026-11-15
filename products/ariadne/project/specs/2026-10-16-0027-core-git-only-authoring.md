@@ -1,5 +1,7 @@
 # Specification: Core Git-only durable authoring
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Git remains the authored revision model, but Context and Answer Examples use Lumio rather than independent Core stores. The SDK is mandatory, required Context failures block queries, and compatibility/migration remain excluded. Source access and human admission stay separate. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 | | |
 | :--- | :--- |
 | **Status** | **Approved, revision 2 — validation-only amendment; product behavior remains revision 1** |

@@ -1,5 +1,7 @@
 # Specification 0029: Lumio-bound governed releases
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Replace optional integration, standalone Context fallback and compatibility-only old admission support with the sole Lumio-backed route. Preserve exact binding and activation guarantees; Answer Examples are supported through Lumio rather than indefinitely refused by the old capability table. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Approved managed-source follow-up — 2026-10-23:**
 [specification 0033 revision 1](2026-10-23-0033-managed-knowledge-authoring.md)
 adds explicit private profile selection, configuration-bound composite review

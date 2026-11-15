@@ -1322,6 +1322,35 @@ def reconcile(project: str | Path, proposal: str, expected_revision: str, revisi
 # ------------------------------------------------ pinned-snapshot resolution
 
 
+def refuse_unsupported_admission_snapshot(project: str | Path, record: dict) -> None:
+    """Require native identity in the exact selected snapshot without mutating it."""
+    from lumio_wiki import load_control_file, load_source_reference_manifest
+    from lumio_wiki.knowledge_base import ControlFileError
+    from lumio_wiki.source_references import SourceReferenceError
+
+    from ariadne import lumio_context
+
+    knowledge = Path(project) / _expected_snapshot(record["commit"]) / "knowledge"
+    native = False
+    if knowledge.is_dir():
+        try:
+            native = (
+                isinstance(record.get("bound_release"), dict)
+                and "digest" in record["bound_release"]
+                and lumio_context.selector(knowledge.parent) is not None
+                and load_source_reference_manifest(knowledge) is not None
+                and load_control_file(knowledge) is not None
+            )
+        except (ControlFileError, SourceReferenceError, ValueError):
+            pass
+    if not native:
+        raise ValueError(
+            f"{project}: the pinned admission {record['commit'][:12]} uses the "
+            "retired standalone Context layout or lacks a supported native Knowledge Base; "
+            + proposals._UNSUPPORTED_PROJECT_GUIDANCE
+        )
+
+
 def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, Path]:
     """Verify the supplied pinned record without consulting the current admission.
 
@@ -1347,6 +1376,7 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             "the served bytes changed after admission; this needs human resolution and "
             "re-admission of a reviewed/validated revision, never a fallback"
         )
+    refuse_unsupported_admission_snapshot(project, record)
     if not approval_present(project, record["source_digest"]):
         raise ValueError(
             "the admitted source identity no longer carries the operator's approval — "
@@ -1362,11 +1392,20 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
     # opens the unapproved endpoint under this admission — the environment
     # check reads endpoint/region values only, never key/token values.
     bindings = record.get("storage_bindings") or {}
-    referenced = {
-        entry["storage"]["name"]
-        for entry in record.get("sources") or []
-        if isinstance(entry.get("storage"), dict) and isinstance(entry["storage"].get("name"), str)
-    }
+    # The referenced set spans BOTH binding namespaces (spec 0025 §4,
+    # spec0035 §8 disposition): S3 profile names AND postgres destinations
+    # under their ``postgres:<source-name>`` keys — a record carrying a
+    # postgres source without its destination binding is a destination-
+    # unbound historical record and refuses for fresh human approval, while
+    # a complete mixed S3+PG identity still verifies (never silently
+    # skipped, never rewritten).
+    referenced: set[str] = set()
+    for entry in record.get("sources") or []:
+        storage = entry.get("storage")
+        if isinstance(storage, dict) and isinstance(storage.get("name"), str):
+            referenced.add(storage["name"])
+        elif entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+            referenced.add(f"postgres:{entry['name']}")
     if referenced:
         if set(bindings) != referenced:
             raise ValueError(

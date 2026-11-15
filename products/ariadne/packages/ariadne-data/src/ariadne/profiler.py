@@ -94,6 +94,7 @@ import argparse
 import json
 import sys
 from collections import Counter
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 
@@ -111,6 +112,103 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
 
 TOP_VALUES_MAX_CARDINALITY = 20
 TOP_VALUES_LIMIT = 10
+
+
+class ProfilingPayloadExceeded(ValueError):
+    """The measured profile exceeds the operator's profiling payload ceiling
+    (spec0035 §8): nothing was returned as complete, no value was clipped and
+    no required field omitted — narrow the selector, reduce cardinality or
+    request an explicit smaller sample."""
+
+
+class PayloadBound:
+    """One operator payload ceiling over the COMPLETE serialized profile
+    value (spec0035 §8): variable-size statistics are guarded BEFORE any
+    unrestricted transfer into Python, measured fragments are accounted
+    incrementally so oversize refuses early, and one exact final measurement
+    covers the complete value in its actual JSON/UTF-8 representation and
+    escaping. Refusal is explicit — never clipping, omission, or a prefix
+    called complete."""
+
+    def __init__(self, limit: int) -> None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(
+                f"the profiling payload bound must be a positive integer, got {limit!r}"
+            )
+        self.limit = limit
+        self.used = 0
+
+    @staticmethod
+    def _size(value) -> int:
+        # The ACTUAL existing serialization escaping (spec0035 §8): the
+        # authoring CLI prints the inputs result with json.dumps DEFAULTS
+        # (ensure_ascii=True, authoring_cli.py) — accounting must match that
+        # representation, never a smaller encoding.
+        return len(json.dumps(value).encode("utf-8"))
+
+    def guard_stat(self, size: int | None, what: str) -> None:
+        """Pre-transfer guard: one variable-size statistic serialized longer
+        than the WHOLE ceiling can never fit — refuse before it transfers.
+        A VARCHAR character length undercounts escaped UTF-8 bytes, so this
+        is a conservative pre-check against gross transfers; the exact final
+        measurement below still governs."""
+        if size is not None and size > self.limit:
+            raise ProfilingPayloadExceeded(
+                f"a {what} statistic serializes to {size} characters, over the whole "
+                f"{self.limit}-byte profiling payload ceiling (spec0035 §8) — narrow "
+                "the selector, reduce column cardinality, or request an explicit "
+                "sample; nothing was returned as complete"
+            )
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.used
+
+    def guard_remaining(self, lower_bound_bytes: int) -> None:
+        """Pre-fetch bound against the REMAINING shared budget: the table's
+        min/max character lengths are a guaranteed LOWER bound of their
+        escaped serialized size (escaping never shrinks a string), so
+        exceeding the remaining budget here means the complete value can
+        never fit — refuse before any variable-size statistic transfers.
+        A lower bound can never reject a fitting profile; the exact final
+        measurement still governs."""
+        if self.used + lower_bound_bytes > self.limit:
+            raise ProfilingPayloadExceeded(
+                f"the table's variable-size statistics need at least {lower_bound_bytes} "
+                f"serialized bytes but only {self.remaining} remain of the "
+                f"{self.limit}-byte profiling payload ceiling (spec0035 §8) — narrow "
+                "the selector or request an explicit sample; nothing was transferred"
+            )
+
+    def add(self, fragment) -> None:
+        """Account one measured fragment incrementally (early refusal): the
+        fragment sum undercounts container overhead, so a fragment-based
+        refusal implies the complete value is over the ceiling too."""
+        self.used += self._size(fragment)
+        if self.used > self.limit:
+            raise ProfilingPayloadExceeded(
+                f"the measured profile exceeded the {self.limit}-byte profiling payload "
+                "ceiling (spec0035 §8) while collecting statistics — narrow the "
+                "selector or request an explicit sample; nothing was returned as "
+                "complete"
+            )
+
+    def check_complete(self, value) -> None:
+        """The authoritative exact measurement of the COMPLETE profile value."""
+        size = self._size(value)
+        if size > self.limit:
+            raise ProfilingPayloadExceeded(
+                f"the complete profile payload is {size} bytes, over the "
+                f"{self.limit}-byte profiling ceiling (spec0035 §8) — narrow the "
+                "selector or request an explicit sample; nothing was returned as "
+                "complete"
+            )
+
+
+def _guard(budget, con):
+    """The budget's per-statement interrupt guard, or a no-op context when no
+    budget is set (the trusted operator CLI route keeps its exact contract)."""
+    return budget.guard(con) if budget is not None else nullcontext()
 
 # SQLite storage classes surface as these types through the scanner; keys may
 # reference across the numeric family (INTEGER <-> BIGINT etc.).
@@ -233,20 +331,34 @@ def _profile_table(
     cols: list[tuple[str, str]],
     allowed: set[str],
     sampled: bool = False,
+    budget=None,
+    payload: PayloadBound | None = None,
 ) -> tuple[int, list[str], dict]:
     """Return (row_count, pk_candidates, column profiles); ``cols`` comes from
-    the builder's catalog (name, type) pairs in ordinal order."""
+    the builder's catalog (name, type) pairs in ordinal order. With a K3
+    ``budget`` every statement runs under the shared interrupt watchdog
+    (spec0035 §8); with a ``payload`` bound, variable-size statistics are
+    guarded server-side BEFORE transfer and the measured table fragment is
+    accounted incrementally — oversize refuses, never clips."""
     names = [c[0] for c in cols]
     rel = _table_rel(con, ref, table, allowed)
+    # surviving-F1 bounded completion (spec0035 §8): bytes of top-values
+    # already fetched for THIS table, consumed against the shared budget as
+    # collected — every later column's pre-fetch check sees them. The
+    # accumulator never touches `used`: the table fragment debit below
+    # remains the single accounting mutation, so nothing double counts.
+    pending_top_values = 0
 
-    row_count = rel.aggregate("COUNT(*) AS n").fetchall()[0][0]
+    with _guard(budget, con):
+        row_count = rel.aggregate("COUNT(*) AS n").fetchall()[0][0]
     counts: dict[str, tuple[int, int]] = {}
     for name in names:
-        row = (
-            _column_rel(rel, name, allowed)
-            .aggregate("COUNT(__profile_value) AS nn, COUNT(DISTINCT __profile_value) AS d")
-            .fetchall()
-        )
+        with _guard(budget, con):
+            row = (
+                _column_rel(rel, name, allowed)
+                .aggregate("COUNT(__profile_value) AS nn, COUNT(DISTINCT __profile_value) AS d")
+                .fetchall()
+            )
         counts[name] = (row[0][0], row[0][1])  # (non_null, distinct)
 
     pk_candidates = (
@@ -259,9 +371,33 @@ def _profile_table(
         ]
     )
 
-    cur = con.sql(f"SUMMARIZE {_sql_ref(ref)}.{_q(table)}")
-    fields = [d[0] for d in cur.description]
-    summarize = {row[0]: dict(zip(fields, row, strict=True)) for row in cur.fetchall()}
+    # SUMMARIZE re-executes per fetch: with a payload bound, the guard's
+    # length aggregate runs server-side FIRST on the SAME summarize relation
+    # (two integers transfer, never the values themselves) so oversized
+    # min/max statistics refuse before any unrestricted transfer (spec0035
+    # §8) — the relation is then fetched as before; both executions stay
+    # under the shared time budget.
+    summarize_rel = con.sql(f"SUMMARIZE {_sql_ref(ref)}.{_q(table)}")
+    with _guard(budget, con):
+        if payload is not None:
+            # Per-stat maxima bound single huge stats; the table-wide SUM is
+            # a guaranteed LOWER bound of the whole min/max materialization
+            # and is checked against the REMAINING shared budget BEFORE the
+            # fetch — an entire wide table's statistics refuse before any of
+            # them transfer (spec0035 §8), never only after collecting.
+            lengths = summarize_rel.aggregate(
+                "max(length(CAST(min AS VARCHAR))) AS __profile_min_len, "
+                "max(length(CAST(max AS VARCHAR))) AS __profile_max_len, "
+                "sum(length(CAST(min AS VARCHAR))) AS __profile_min_sum, "
+                "sum(length(CAST(max AS VARCHAR))) AS __profile_max_sum"
+            ).fetchall()[0]
+            payload.guard_stat(lengths[0], "min")
+            payload.guard_stat(lengths[1], "max")
+            payload.guard_remaining(int(lengths[2] or 0) + int(lengths[3] or 0))
+        fields = [d[0] for d in summarize_rel.description]
+        summarize = {
+            row[0]: dict(zip(fields, row, strict=True)) for row in summarize_rel.fetchall()
+        }
 
     columns: dict[str, dict] = {}
     for name, type_name in cols:
@@ -288,17 +424,31 @@ def _profile_table(
             "pk_candidate": name in pk_candidates,
         }
         if 1 < distinct <= TOP_VALUES_MAX_CARDINALITY and row_count > 0:
-            top = (
-                _column_rel(rel, name, allowed)
-                .aggregate("__profile_value, COUNT(*) AS __profile_c")
-                .order("__profile_c DESC")
-                .limit(TOP_VALUES_LIMIT)
-                .fetchall()
-            )
+            with _guard(budget, con):
+                if payload is not None:  # pre-transfer value-size guard (spec0035 §8)
+                    biggest = _column_rel(rel, name, allowed).aggregate(
+                        "max(length(CAST(__profile_value AS VARCHAR))) AS __profile_vlen"
+                    ).fetchall()[0][0]
+                    payload.guard_stat(biggest, f"top value of {name!r}")
+                    # remaining must cover what earlier columns already
+                    # transferred (pending) PLUS this column's lower bound
+                    payload.guard_remaining(int(biggest or 0) + pending_top_values)
+                top = (
+                    _column_rel(rel, name, allowed)
+                    .aggregate("__profile_value, COUNT(*) AS __profile_c")
+                    .order("__profile_c DESC")
+                    .limit(TOP_VALUES_LIMIT)
+                    .fetchall()
+                )
             entry["top_values"] = [
                 {"value": _jsonable(value), "count": count} for value, count in top
             ]
             entry["top_value_share"] = top[0][1] / row_count
+            if payload is not None:
+                # consume AS COLLECTED: this column's actual serialized
+                # top-values (actual CLI escaping) count against the shared
+                # budget for every later column in this table
+                pending_top_values += len(json.dumps(entry["top_values"]).encode("utf-8"))
         columns[name] = entry
     return row_count, pk_candidates, columns
 
@@ -312,6 +462,7 @@ def _fk_candidates(
     pk_candidates: list[str],
     targets_by_name: dict[str, list[dict]],
     allowed: set[str],
+    budget=None,
 ) -> list[dict]:
     """``*_id`` columns whose name resolves to another table's PK, type-checked
     and verified by containment (``match_ratio``). A candidate target name
@@ -347,14 +498,15 @@ def _fk_candidates(
             src = _column_rel(table_rel, name, allowed).set_alias("s")
             tgt_rel = _table_rel(con, target["ref"], target_table, allowed)
             tgt = _column_rel(tgt_rel, target_col, allowed).set_alias("t")
-            orphans = (
-                src.join(tgt, "s.__profile_value = t.__profile_value", "left")
-                .aggregate(
-                    "COUNT(*) FILTER (WHERE t.__profile_value IS NULL"
-                    " AND s.__profile_value IS NOT NULL)"
+            with _guard(budget, con):
+                orphans = (
+                    src.join(tgt, "s.__profile_value = t.__profile_value", "left")
+                    .aggregate(
+                        "COUNT(*) FILTER (WHERE t.__profile_value IS NULL"
+                        " AND s.__profile_value IS NOT NULL)"
+                    )
+                    .fetchall()[0][0]
                 )
-                .fetchall()[0][0]
-            )
             n = non_null[name]
             if n == 0:
                 continue
@@ -374,7 +526,8 @@ def _fk_candidates(
 
 
 def _profile_source(
-    con: duckdb.DuckDBPyConnection, entry: dict, *, sample_rows: int | None = None
+    con: duckdb.DuckDBPyConnection, entry: dict, *, sample_rows: int | None = None,
+    budget=None, payload: PayloadBound | None = None,
 ) -> dict:
     """Profile every table of one builder-catalog source: attaches address
     tables as ``<catalog>.<schema>.<table>``, file views as
@@ -404,14 +557,35 @@ def _profile_source(
     }  # real table names too: a same-name collision keys the profile by resource
     tables: dict[str, dict] = {}
     pk_by_table: dict[str, list[str]] = {}
-    profiles: dict[str, tuple] = {}
     for key in cols_by_table:  # builder catalog order == information_schema order
         cols = cols_by_table[key]
         row_count, pk_candidates, columns = _profile_table(
-            con, refs[key], identity[key]["table"], cols, allowed, sampled=sample_rows is not None
+            con,
+            refs[key],
+            identity[key]["table"],
+            cols,
+            allowed,
+            sampled=sample_rows is not None,
+            budget=budget,
+            payload=payload,
         )
-        profiles[key] = (cols, row_count, pk_candidates, columns)
         pk_by_table[key] = pk_candidates
+        # DEBIT each table's measured statistics AS COLLECTED (spec0035 §8):
+        # first-pass statistics never accumulate across the source outside
+        # the shared payload budget — the debit happens before the NEXT
+        # table is measured. PK metadata stays available for the FK phase
+        # below; FK fragments are debited separately so nothing double
+        # counts and a fitting profile is never rejected.
+        tables[key] = {
+            "row_count": row_count,
+            "primary_key_candidates": pk_candidates,
+            "columns": columns,
+            **identity[key],
+        }
+        if sample_rows is not None:
+            tables[key].update(sampled=True, sample_limit=sample_rows)
+        if payload is not None:
+            payload.add(tables[key])
     # FK candidate targets resolve BY NAME through the entry's explicit
     # identities — each resolution carries the target's OWN qualified ref
     # (issue #41): a name held by no table or several tables (same name in
@@ -421,12 +595,16 @@ def _profile_source(
         targets_by_name.setdefault(identity[key]["table"], []).append(
             {"ref": refs[key], "pks": pk_by_table[key] or [], "cols": cols_by_table[key]}
         )
-    for key, (cols, row_count, pk_candidates, columns) in profiles.items():
+    for key in cols_by_table:
+        cols = cols_by_table[key]
+        columns = tables[key]["columns"]
+        row_count = tables[key]["row_count"]
         non_null = {n: row_count - col["null_count"] for n, col in columns.items()}
-        tables[key] = {
-            "row_count": row_count,
-            "primary_key_candidates": pk_candidates,
-            "foreign_key_candidates": []
+        # the FK fragment is the only later addition: debited separately, so
+        # stats + FK fragments sum to the complete value without double
+        # counting (spec0035 §8 incremental accounting)
+        tables[key]["foreign_key_candidates"] = (
+            []
             if sample_rows is not None
             else _fk_candidates(
                 con,
@@ -434,15 +612,14 @@ def _profile_source(
                 identity[key]["table"],
                 cols,
                 non_null,
-                pk_candidates,
+                pk_by_table[key],
                 targets_by_name,
                 allowed,
-            ),
-            "columns": columns,
-            **identity[key],
-        }
-        if sample_rows is not None:
-            tables[key].update(sampled=True, sample_limit=sample_rows)
+                budget=budget,
+            )
+        )
+        if payload is not None:
+            payload.add(tables[key]["foreign_key_candidates"])
     return {"name": entry["name"], "type": entry["type"], "tables": tables}
 
 
@@ -453,6 +630,8 @@ def profile(
     registry: Registry | None = None,
     sample_rows: int | None = None,
     selector: tuple[str, str] | None = None,
+    budget=None,
+    payload_bytes: int | None = None,
 ) -> dict:
     """Profile every table of every source, or one exact ``(source, table)``
     selector (shapes documented in the module docstring): the legacy
@@ -460,9 +639,23 @@ def profile(
     (ADR-0010, shared connection builder), or an already-validated
     :class:`ariadne.sources.Registry` via ``registry`` (the Git authoring
     route's APPROVED resolved identity, issue #35/G3 — no registry file exists
-    for a candidate commit). Exactly one of the three."""
+    for a candidate commit). Exactly one of the three.
+
+    With a K3 :class:`ariadne.execution.DeadlineBudget` as ``budget``, the
+    approved connection/catalog setup, sample materialization, statistics and
+    FK statements all draw down ONE shared interruptible time budget
+    (spec0035 §8); expiry is an explicit :class:`DeadlineExhausted` refusal —
+    never a partial profile claimed complete. With ``payload_bytes``, the
+    complete serialized profile value must fit the operator ceiling:
+    variable-size statistics are guarded before transfer, fragments accounted
+    incrementally, and oversize raises :class:`ProfilingPayloadExceeded`
+    without clipping. Both default to None — the trusted operator CLI keeps
+    its exact historical unbounded contract."""
     if sample_rows is not None and (not isinstance(sample_rows, int) or sample_rows < 1):
         raise ValueError("sample_rows must be a positive integer")
+    if budget is not None and not (hasattr(budget, "guard") and hasattr(budget, "remaining")):
+        raise ValueError("budget must be an ariadne.execution.DeadlineBudget")
+    payload = PayloadBound(payload_bytes) if payload_bytes is not None else None
     if selector is not None and (
         not isinstance(selector, tuple)
         or len(selector) != 2
@@ -483,7 +676,7 @@ def profile(
         raise ValueError("profile requires db_path, sources_path or registry")
     if selector is not None and selector[0] not in {source.name for source in reg.sources}:
         raise ValueError("selector source is not present in the approved registry")
-    execution = DuckDBExecution(reg)
+    execution = DuckDBExecution(reg, budget=budget)
     con, catalog = execution.con, execution.catalog
     try:
         if selector is not None:
@@ -506,22 +699,30 @@ def profile(
                     # distinct schemas would collide inside one schema
                     schema = f"__ariadne_sample_{entry['name']}_{sample_index}"
                     sample_index += 1
-                    con.execute(f"CREATE SCHEMA {schema}")
                     name = _q(table["name"])
-                    con.execute(
-                        f"CREATE TABLE {schema}.{name} AS SELECT * FROM "
-                        f"{_sql_ref(table['ref'])}.{name} LIMIT {sample_rows}"
-                    )
+                    with _guard(budget, con):
+                        con.execute(f"CREATE SCHEMA {schema}")
+                        con.execute(
+                            f"CREATE TABLE {schema}.{name} AS SELECT * FROM "
+                            f"{_sql_ref(table['ref'])}.{name} LIMIT {sample_rows}"
+                        )
                     table["ref"] = schema
-        sources = [_profile_source(con, entry, sample_rows=sample_rows) for entry in catalog]
+        sources = [
+            _profile_source(con, entry, sample_rows=sample_rows, budget=budget, payload=payload)
+            for entry in catalog
+        ]
     finally:
         execution.close()
     if registry is not None:
-        return {"sources": sources}  # the approved identity has no registry file
-    if sources_path is not None:
-        return {"sources_path": str(sources_path), "sources": sources}
-    (only,) = sources  # the legacy shape: one sqlite source, historical keys
-    return {"db_path": str(db_path), "dialect": "sqlite", "tables": only["tables"]}
+        result: dict = {"sources": sources}  # the approved identity has no registry file
+    elif sources_path is not None:
+        result = {"sources_path": str(sources_path), "sources": sources}
+    else:
+        (only,) = sources  # the legacy shape: one sqlite source, historical keys
+        result = {"db_path": str(db_path), "dialect": "sqlite", "tables": only["tables"]}
+    if payload is not None:  # the COMPLETE profile value must fit (spec0035 §8)
+        payload.check_complete(result)
+    return result
 
 
 def main(argv: list[str] | None = None) -> None:

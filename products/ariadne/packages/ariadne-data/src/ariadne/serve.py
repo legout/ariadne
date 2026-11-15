@@ -828,7 +828,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 proposal: an existing candidate ID; omit to start a new proposal.
                 expected_revision: the exact current candidate revision; required with proposal.
             """
-            return await _runtime().save_example(
+            discovery = DiscoveryRuntime.open_project(project)
+            # F1 (spec0035 C4): source-free authoring — the source builder is
+            # never constructed for an Example save.
+            return discovery.save_example(
                 submission, proposal=proposal, expected_revision=expected_revision
             )
 

@@ -6,7 +6,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
-    "lumio-wiki[documents,mcp]>=0.6.0,<0.7.0",
+    "lumio-wiki[documents,mcp,s3]>=0.7,<0.8",
     "mcp>=2.2,<3",
     "authlib>=1.6,<2",
     "httpx>=0.28,<1",
@@ -17,6 +17,10 @@ dependencies = [
 
 [project.optional-dependencies]
 analytics = ["ariadne-data[spreadsheets]>=0.8.0,<0.9.0"]
+# Optional authorized BM25 retrieval for retrieve_knowledge (spec0034 §12.2):
+# reuses the existing LanceDB adapter as a private derived cache. Declared but
+# NOT installed by default; the default backend stays the zero-index adapter.
+retrieval = ["lumio-lancedb>=0.6.0,<0.7.0"]
 
 [project.scripts]
 lumio-workspace = "lumio_workspace.__main__:main"

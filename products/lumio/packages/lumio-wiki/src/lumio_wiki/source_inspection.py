@@ -277,13 +277,27 @@ def resolve_manifest_binding(
     )
 
 
-def read_local_published_bindings(destination: str | Path, version: str):
-    """Read one fully verified local Git admission's private source bindings."""
+def read_local_published_bindings(
+    destination: str | Path, version: str, *, restored_destination: bool = True
+):
+    """Read one fully verified local Git admission's private source bindings.
+
+    This is the STANDALONE source-inspection read seam (workspace pinned
+    reads/exact originals, CLI inspection): it is the deliberate consumer of
+    the bounded restore disposition's moved-destination tolerance
+    (spec0034 §12.5), and that tolerance only ever applies to an
+    already-activated imported admission bound by a valid restore record at
+    THIS destination. Integrated Context admission must not route through
+    this wrapper — it calls the shared verifier directly, which defaults to
+    strict.
+    """
     from lumio_wiki.git_authoring import GitAuthoringError, _verify_version_complete
 
     version = validate_published_version(version)
     try:
-        _manifest, receipt, sealed = _verify_version_complete(Path(destination), version)
+        _manifest, receipt, sealed = _verify_version_complete(
+            Path(destination), version, restored_destination=restored_destination
+        )
     except GitAuthoringError as exc:
         outcome = (
             OUTCOME_HISTORICAL_VERSION_MISMATCH

@@ -25,7 +25,6 @@ This documentation targets Ariadne 0.8.0 and is organized by reader goal, follow
 - [Lumio bound releases](../../../integration/docs/reference/lumio-bound-releases.md) — supported local profiles, exact package pairing, scope and overall admission.
 - [Context knowledge](reference/context-knowledge.md) — page types, structured metadata, limits, and role capabilities.
 - [Git migration mapping](reference/git-authoring-migration.md) — exact legacy-to-Git behavior and unchanged routes.
-- [Ariadne Agent API](../packages/ariadne-agent/README.md) — Python API and conversation contract.
 
 ## Lumio foundation docs
 

@@ -52,7 +52,7 @@ from mcp.client.streamable_http import (  # noqa: E402  # pyright: ignore[report
 
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures; no second oracle here
-    POLICY_PAGE,
+    SEED_NOTES,
     approved,
     complete_bundle_project,
 )
@@ -192,11 +192,9 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
                             "proposal": proposal,
                             "expected_revision": revision,
                             "edit": {
-                                "kind": "page",
-                                "section": "policies",
-                                "name": "all-events-count",
-                                "content": POLICY_PAGE.replace(
-                                    "The rule body.", "The rule body, over stdio."
+                                "kind": "seed_notes",
+                                "content": SEED_NOTES.replace(
+                                    "All events count.", "All events count, over stdio."
                                 ),
                             },
                         },
@@ -719,11 +717,9 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
                         "proposal": proposal,
                         "expected_revision": revision,
                         "edit": {
-                            "kind": "page",
-                            "section": "policies",
-                            "name": "all-events-count",
-                            "content": POLICY_PAGE.replace(
-                                "The rule body.", "The rule body, over HTTP."
+                            "kind": "seed_notes",
+                            "content": SEED_NOTES.replace(
+                                "All events count.", "All events count, over HTTP."
                             ),
                         },
                     },

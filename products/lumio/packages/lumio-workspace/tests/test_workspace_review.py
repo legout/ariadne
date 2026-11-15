@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -35,6 +37,108 @@ EXPECTED_BODY = "# Restart Worker\n\nStop the old worker.\n\n<unsafe>&review\n\n
 EXPECTED_PATH = "procedures/restart_worker.md"
 ANCESTOR_BODY = "Ancestor page content must remain visible in the final review."
 CONTINUATION_BODY = "Continuation page content must also be visible in the final review."
+
+# Independently authored v1/v2 originals. The source markers exist ONLY in the
+# retained originals, never in the wiki page body, so ordinary wiki reads,
+# searches, and Evidence can never surface them (#104, spec0034 §12.3).
+ORIGINAL_V1 = (
+    b"# Restart worker runbook v1\r\n\r\nStop the old worker.\r\n"
+    b"ORIGINAL-ONLY-SOURCE-MARKER-a1f7\r\nThen start the worker.\r\n"
+)
+ORIGINAL_V2 = (
+    b"# Restart worker runbook v2\r\n\r\nRestart the worker gently.\r\n"
+    b"SECOND-ORIGINAL-SOURCE-MARKER-b2e8\r\nThen verify the restart.\r\n"
+)
+TEXT_MARKER = "ORIGINAL-ONLY-SOURCE-MARKER-a1f7"
+SECOND_MARKER = "SECOND-ORIGINAL-SOURCE-MARKER-b2e8"
+PDF_MARKER = "ORIGINAL-PDF-ONLY-MARKER-c3d9"
+DOCX_MARKER = "ORIGINAL-DOCX-ONLY-MARKER-d4a0"
+ENTITY_ID = "entity:restart-worker-runbook"
+# Reference actions percent-encode path components like the existing
+# review-source links; requests may use either form.
+ENCODED_ENTITY = "entity%3Arestart-worker-runbook"
+SOURCE_IDS = (
+    "restart-runbook-source",
+    "restart-pdf-source",
+    "restart-docx-source",
+    "restart-long-docx-source",
+)
+# Truncation can leave a misleading text suffix on a valid binary filename.
+LONG_DOCX_UPLOAD_NAME = "a" * 124 + ".txt.docx"
+LONG_DOCX_BOUND_NAME = "a" * 124 + ".txt"
+
+
+def _hand_authored_pdf(text: str) -> bytes:
+    """Build a minimal but valid one-page PDF with a real text layer."""
+    stream = f"BT /F1 24 Tf 100 700 Td ({text}) Tj ET".encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R"
+        b" /Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for index, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{index} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode() + b"0000000000 65535 f \r\n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \r\n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
+
+
+def _hand_authored_docx(text: str) -> bytes:
+    """Build a minimal but valid Office Open XML (DOCX) archive."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "word/document.xml",
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>",
+        )
+        archive.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="xml" ContentType="text/xml"/></Types>',
+        )
+    return buf.getvalue()
+
+
+def _attributed_page(title: str, source_ids: list[str]) -> str:
+    entity = "entity:" + title.lower().replace(" ", "-") + "-runbook"
+    sources = "\n".join(
+        f'  - id: "{source_id}"\n    title: "Restart worker original"' for source_id in source_ids
+    )
+    return (
+        "---\n"
+        f'id: "{entity}"\n'
+        f'title: "{title}"\n'
+        'entity_types: ["knowledge-artifact"]\n'
+        "category: procedures\n"
+        'type: "runbook"\n'
+        'durability_rationale: "The retained originals permanently support this procedure."\n'
+        'tags: ["operations"]\n'
+        'summary: "Restart the worker safely."\n'
+        'lifecycle: "draft"\n'
+        'visibility: "internal"\n'
+        "sources:\n"
+        f"{sources}\n"
+        "claims: []\n"
+        "synthetic: false\n"
+        "---\n\n"
+        f"# {title}\n\n"
+        "Stop the old worker.\n\n"
+        "Then start it.\n"
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -240,18 +344,26 @@ class Fixture:
     contributor_browser: str
     reviewer_api: str
     reviewer_browser: str
-    published_revision: str
+    published_revision: str | None
     artifact_path: Path
 
 
-def _fixture(tmp_path: Path, monkeypatch, *, single_person: bool = False) -> Fixture:
+def _fixture(
+    tmp_path: Path, monkeypatch, *, single_person: bool = False, empty_workspace: bool = False
+) -> Fixture:
     monkeypatch.setenv("LUMIO_WORKSPACE_ID", "workspace-fixture")
     monkeypatch.setenv("LUMIO_WORKSPACE_STATE_PATH", str(tmp_path / "state.sqlite3"))
     authoring_repo = tmp_path / "authoring-repo"
     authoring_kb = authoring_repo / "kb"
     authoring_repo.mkdir()
     published_path = tmp_path / "published"
-    published_revision = _published_sentinel(authoring_repo, published_path)
+    if empty_workspace:
+        # Genuinely empty setup: no seeded page and no seeded publication.
+        authoring_kb.mkdir()
+        _git(authoring_repo, "init", "-q", "-b", "main")
+        published_revision = None
+    else:
+        published_revision = _published_sentinel(authoring_repo, published_path)
     private = tmp_path / "profile-private"
     private.mkdir()
     profile_path = private / "profile.json"
@@ -447,10 +559,17 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert "<unsafe>&review" not in review.text
         assert config.published_path.as_posix() in review.text
         assert candidate in review.text
+        # Plain review (current capability lacks inspect_source): one static
+        # authorization-required state — no presence-conditioned link or
+        # availability label, regardless of the retained original (spec0035
+        # §3, spec0034 §12.3/AC13).
         assert (
             f'href="/review/{task_id}/source/runbook-source/'
-            'entity%3Arestart-worker-runbook"' in review.text
+            'entity%3Arestart-worker-runbook"' not in review.text
         )
+        assert "verified retained original" not in review.text
+        assert "original unavailable" not in review.text
+        assert "source inspection requires separate authorization" in review.text
         stale_digest = _digest(review.text)
 
         api_only.headers["Authorization"] = f"Bearer {fixture.reviewer_api}"
@@ -477,6 +596,26 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         original = reviewer.get(source_url)
         assert original.status_code == 200, original.text
         assert "&lt;unsafe&gt;&amp;review" in original.text
+
+        # With current inspect_source the same review page discloses the exact
+        # availability and the inspection link (inspector behavior unchanged);
+        # revocation returns the plain static state on the next request.
+        inspector_review = reviewer.get(f"/review/{task_id}")
+        assert inspector_review.status_code == 200, inspector_review.text
+        assert (
+            f'href="/review/{task_id}/source/runbook-source/'
+            'entity%3Arestart-worker-runbook"' in inspector_review.text
+        )
+        assert "verified retained original" in inspector_review.text
+        fixture.state.revoke(config.workspace_id, fixture.reviewer, "inspect_source")
+        revoked_review = reviewer.get(f"/review/{task_id}")
+        assert revoked_review.status_code == 200, revoked_review.text
+        assert "verified retained original" not in revoked_review.text
+        assert (
+            f'href="/review/{task_id}/source/runbook-source/'
+            'entity%3Arestart-worker-runbook"' not in revoked_review.text
+        )
+        assert "source inspection requires separate authorization" in revoked_review.text
 
         # A real native concurrent activation makes the first browser action stale.
         profile = load_private_profile(
@@ -1092,3 +1231,455 @@ def test_recovery_cannot_overwrite_newer_review_decision(tmp_path: Path, monkeyp
             PublishedFilesystemLocation(config.published_path).read_pointer()
             == task["native_candidate"]
         )
+
+
+def test_first_document_requires_review_without_initial_publication(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixture = _fixture(tmp_path, monkeypatch, empty_workspace=True)
+    config = fixture.config
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        TestClient(create_app(config), base_url="https://workspace.test") as reviewer,
+    ):
+        _login(owner, fixture.owner_browser)
+        setup = owner.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(owner.get("/setup").text)},
+        )
+        assert setup.status_code == 200, setup.text
+        assert setup.json()["kind"] == "empty"
+        base_revision = setup.json()["base_revision"]
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        task = _contribute(
+            contributor,
+            fixture,
+            retry_key="first-document",
+            title="First Runbook",
+            addition="Then start it.",
+            source_id="first-runbook-source",
+            filename="first-runbook.md",
+            request_id=1,
+        )
+        assert task["status"] == "pending_review"
+        assert task["published"] is False
+        assert task["native_base"] == base_revision
+        # Independent oracle: nothing publishes without the human browser decision.
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        _login(reviewer, fixture.reviewer_browser)
+        direct_review = reviewer.get(f"/review/{task['task_id']}")
+        assert direct_review.status_code == 200, direct_review.text
+        assert "&lt;unsafe&gt;&amp;review" in direct_review.text
+
+        continuation = _contribute(
+            contributor,
+            fixture,
+            retry_key="first-publication-continuation",
+            title="Second Runbook",
+            addition="Second runbook content.",
+            source_id="second-runbook-source",
+            filename="second-runbook.md",
+            continuation_task_id=task["task_id"],
+            request_id=2,
+        )
+        assert continuation["native_base"] == task["native_candidate"]
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        # Before the first approval the review must disclose BOTH complete page
+        # bodies: approval activates the whole candidate, never only the last
+        # continuation diff. "Then start it." exists only in ancestor A's body
+        # and "First Runbook — added" only in A's page section.
+        review = reviewer.get(f"/review/{continuation['task_id']}")
+        assert review.status_code == 200, review.text
+        assert "First Runbook — added" in review.text
+        assert "Then start it." in review.text
+        assert "Second Runbook — added" in review.text
+        assert "Second runbook content." in review.text
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() is None
+
+        digest = _digest(review.text)
+        approved = _decision(reviewer, continuation["task_id"], digest, "approve")
+        assert approved.status_code == 200, approved.text
+        publication = approved.json()
+        candidate = continuation["native_candidate"]
+        assert publication["status"] == "published"
+        assert publication["publication"]["activated"] is True
+        assert publication["publication"]["version"] == candidate
+        assert publication["publication"]["expected_current"] == "none"
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
+
+        for title, body, path, request_id in (
+            (
+                "First Runbook",
+                "# First Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\nThen start it.",
+                "procedures/first_runbook.md",
+                3,
+            ),
+            (
+                "Second Runbook",
+                "# Second Runbook\n\nStop the old worker.\n\n<unsafe>&review\n\n"
+                "Second runbook content.",
+                "procedures/second_runbook.md",
+                4,
+            ),
+        ):
+            admitted = _call_tool(
+                contributor, fixture.contributor_api, "read_knowledge", {"title": title}, request_id
+            ).json()["result"]["structuredContent"]
+            assert admitted["markdown"].strip() == body
+            assert admitted["citation"] == {
+                "title": title,
+                "path": path,
+                "published_version": candidate,
+            }
+
+        second = _contribute(
+            contributor,
+            fixture,
+            retry_key="second-document",
+            title="Third Runbook",
+            addition="Third runbook content.",
+            source_id="third-runbook-source",
+            filename="third-runbook.md",
+            request_id=5,
+        )
+        assert second["native_base"] == candidate
+        second_review = reviewer.get(f"/review/{second['task_id']}")
+        assert second_review.status_code == 200, second_review.text
+        assert "Third Runbook — added" in second_review.text
+        assert "First Runbook — removed" not in second_review.text
+        assert "Second Runbook — removed" not in second_review.text
+        # Reviewing alone must not publish.
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
+
+
+def _upload_named(
+    client: TestClient, token: str, raw: bytes, retry_key: str, source_id: str, filename: str
+):
+    return client.post(
+        "/uploads",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream",
+            "X-Lumio-Source-ID": source_id,
+            "X-Lumio-Filename": filename,
+            "X-Lumio-Retry-Key": retry_key,
+        },
+        content=raw,
+    )
+
+
+def _prepare_attributed(
+    client: TestClient,
+    token: str,
+    *,
+    retry_key: str,
+    uploads: list[tuple[str, str]],
+    title: str,
+    source_ids: list[str],
+    continuation_task_id: str | None,
+    request_id: int,
+) -> dict:
+    arguments: dict = {
+        "retry_key": retry_key,
+        "sources": [{"upload_id": upload_id, "intent": intent} for upload_id, intent in uploads],
+        "pages": [
+            {
+                "filename": "restart-worker.md",
+                "markdown": _attributed_page(title, source_ids),
+            }
+        ],
+    }
+    if continuation_task_id is not None:
+        arguments["continuation_task_id"] = continuation_task_id
+    prepared = _call_tool(client, token, "prepare_contribution", arguments, request_id)
+    result = prepared.json()["result"]
+    assert result["isError"] is False, result
+    return result["structuredContent"]
+
+
+def test_published_original_reference_is_exact_and_permissioned(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """#104 / AC24: exact permissioned originals through both inspection routes.
+
+    Independently authored v1/v2 bytes plus hand-authored binary PDF/DOCX
+    originals open as exact verified bytes — as safe attachments during
+    pending review (exact candidate binding) and after native publication
+    (exact admitted version binding) — while plain readers/reviewers without
+    the separate inspection grant cannot probe either route, older admitted
+    bytes never substitute registry-latest, and original-only markers never
+    enter ordinary wiki retrieval. A valid long binary basename that loses
+    its extension at the registry's safe-filename cap still opens as exact
+    attachment bytes (F1).
+    """
+    fixture = _fixture(tmp_path, monkeypatch)
+    config = fixture.config
+    pdf_bytes = _hand_authored_pdf(f"{PDF_MARKER} quarterly restart procedure")
+    docx_bytes = _hand_authored_docx(f"{DOCX_MARKER} restart annex")
+    with (
+        TestClient(create_app(config), base_url="https://workspace.test") as owner,
+        TestClient(create_app(config), base_url="https://workspace.test") as contributor,
+        # The reviewer browses the pointer-following deployment: the pinned app
+        # serves exactly its pinned version, so references it emits are pinned
+        # too and other versions are refused (same rule as version-aware reads).
+        TestClient(
+            create_app(replace(config, published_version=None)), base_url="https://workspace.test"
+        ) as reviewer_browser,
+        TestClient(create_app(config), base_url="https://workspace.test") as reader_browser,
+        TestClient(
+            create_app(replace(config, published_version=None)), base_url="https://workspace.test"
+        ) as reader,
+    ):
+        _confirm_setup(owner, fixture)
+        uploads = []
+        for retry_key, raw, source_id, filename in (
+            ("attributed-v1-text", ORIGINAL_V1, SOURCE_IDS[0], "runbook-v1.md"),
+            ("attributed-v1-pdf", pdf_bytes, SOURCE_IDS[1], "restart-procedure.pdf"),
+            ("attributed-v1-docx", docx_bytes, SOURCE_IDS[2], "restart-annex.docx"),
+            ("attributed-v1-long", docx_bytes, SOURCE_IDS[3], LONG_DOCX_UPLOAD_NAME),
+        ):
+            uploaded = _upload_named(
+                contributor, fixture.contributor_api, raw, retry_key, source_id, filename
+            )
+            assert uploaded.status_code == 200, uploaded.text
+            uploads.append((uploaded.json()["upload_id"], "new"))
+        task = _prepare_attributed(
+            contributor,
+            fixture.contributor_api,
+            retry_key="attributed-v1",
+            uploads=uploads,
+            title="Restart Worker",
+            source_ids=list(SOURCE_IDS),
+            continuation_task_id=None,
+            request_id=1,
+        )
+        task_id = task["task_id"]
+        candidate_v1 = task["native_candidate"]
+        assert task["status"] == "pending_review"
+
+        # Pending review: without the separate grant, the reviewer cannot probe
+        # presence, filename, size, digest, or bytes on the review-source route.
+        _login(reviewer_browser, fixture.reviewer_browser)
+        for source_id, filename in (
+            (SOURCE_IDS[1], "restart-procedure.pdf"),
+            (SOURCE_IDS[2], "restart-annex.docx"),
+        ):
+            denied = reviewer_browser.get(f"/review/{task_id}/source/{source_id}/{ENTITY_ID}")
+            assert denied.status_code == 403
+            assert PDF_MARKER not in denied.text and DOCX_MARKER not in denied.text
+            assert filename not in denied.text
+
+        fixture.state.grant(config.workspace_id, fixture.reviewer, "inspect_source")
+        # Binary originals open as exact verified bytes: no UTF-8 decoding,
+        # no extracted-text substitution, download-only safe attachment.
+        pending_pdf = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[1]}/{ENTITY_ID}")
+        assert pending_pdf.status_code == 200, pending_pdf.text
+        assert pending_pdf.content == pdf_bytes
+        assert pending_pdf.headers["content-type"].split(";")[0] == "application/octet-stream"
+        assert pending_pdf.headers["x-content-type-options"] == "nosniff"
+        disposition = pending_pdf.headers["content-disposition"]
+        assert disposition.startswith("attachment;")
+        assert "restart-procedure.pdf" in disposition
+        pending_docx = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[2]}/{ENTITY_ID}")
+        assert pending_docx.status_code == 200, pending_docx.text
+        assert pending_docx.content == docx_bytes
+        assert pending_docx.headers["x-content-type-options"] == "nosniff"
+        assert pending_docx.headers["content-disposition"].startswith("attachment;")
+        # Text originals keep the existing exact UTF-8 inspection view.
+        pending_text = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[0]}/{ENTITY_ID}")
+        assert pending_text.status_code == 200
+        assert TEXT_MARKER in pending_text.text
+        # F1: the long binary basename truncates at the registry's 128-char
+        # cap, so the bound metadata can no longer positively establish text;
+        # the route must still deliver the exact verified bytes as a safe
+        # attachment — never a UTF-8 decode of binary content.
+        pending_long = reviewer_browser.get(f"/review/{task_id}/source/{SOURCE_IDS[3]}/{ENTITY_ID}")
+        assert pending_long.status_code == 200, pending_long.text
+        assert pending_long.content == docx_bytes
+        assert pending_long.headers["content-type"].split(";")[0] == "application/octet-stream"
+        assert pending_long.headers["x-content-type-options"] == "nosniff"
+        long_disposition = pending_long.headers["content-disposition"]
+        assert long_disposition.startswith("attachment;")
+        assert LONG_DOCX_BOUND_NAME in long_disposition
+        assert ".docx" not in long_disposition
+
+        v1_digest = _digest(reviewer_browser.get(f"/review/{task_id}").text)
+        approved = _decision(reviewer_browser, task_id, v1_digest, "approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["publication"]["activated"] is True
+
+        # Published page projection: all three authored attributions, each
+        # with a version-qualified reference action that carries no bearer
+        # token and no private availability, filename, size, or digest.
+        page = _call_tool(
+            reader, fixture.contributor_api, "read_knowledge", {"title": "Restart Worker"}, 2
+        ).json()["result"]["structuredContent"]
+        assert page["found"] is True
+        attributions = page["sources"]
+        assert [item["id"] for item in attributions] == list(SOURCE_IDS)
+        for item in attributions:
+            assert item["reference"] == f"/original/{candidate_v1}/{ENCODED_ENTITY}/{item['id']}"
+            assert set(item) == {"id", "title", "url", "reference"}
+
+        # Evidence projection: every result of the page carries the same
+        # complete attribution set with the same non-bearer actions.
+        evidence = _call_tool(
+            reader,
+            fixture.contributor_api,
+            "retrieve_knowledge",
+            {"query": "restart worker", "limit": 5},
+            3,
+        ).json()["result"]["structuredContent"]
+        page_hits = [
+            result
+            for result in evidence["results"]
+            if result["evidence"]["page_path"] == "procedures/restart_worker.md"
+        ]
+        assert page_hits
+        assert all(result["sources"] == attributions for result in page_hits)
+
+        # Original-only markers never enter ordinary wiki results.
+        for marker in (TEXT_MARKER, PDF_MARKER, DOCX_MARKER):
+            search = _call_tool(
+                reader, fixture.contributor_api, "search_knowledge", {"query": marker}, 4
+            ).json()["result"]["structuredContent"]
+            assert search["results"] == []
+            assert marker not in page["markdown"]
+        retrieval = _call_tool(
+            reader,
+            fixture.contributor_api,
+            "retrieve_knowledge",
+            {"query": TEXT_MARKER, "limit": 5},
+            5,
+        ).json()["result"]["structuredContent"]
+        assert retrieval["results"] == []
+
+        # Published route: the authorized inspector opens each publication's
+        # exact bytes through its reference, as safe attachments.
+        for source_id, raw, filename in (
+            (SOURCE_IDS[0], ORIGINAL_V1, "runbook-v1.md"),
+            (SOURCE_IDS[1], pdf_bytes, "restart-procedure.pdf"),
+            (SOURCE_IDS[2], docx_bytes, "restart-annex.docx"),
+            (SOURCE_IDS[3], docx_bytes, LONG_DOCX_BOUND_NAME),
+        ):
+            opened = reviewer_browser.get(f"/original/{candidate_v1}/{ENTITY_ID}/{source_id}")
+            assert opened.status_code == 200, opened.text
+            assert opened.content == raw
+            assert opened.headers["x-content-type-options"] == "nosniff"
+            opened_disposition = opened.headers["content-disposition"]
+            assert opened_disposition.startswith("attachment;")
+            assert filename in opened_disposition
+
+        # A plain reader with membership but no inspection grant cannot probe
+        # the published route either.
+        _login(reader_browser, fixture.contributor_browser)
+        for source_id in (SOURCE_IDS[0], SOURCE_IDS[1]):
+            probe = reader_browser.get(f"/original/{candidate_v1}/{ENTITY_ID}/{source_id}")
+            assert probe.status_code == 403
+            assert TEXT_MARKER not in probe.text and PDF_MARKER not in probe.text
+            assert "runbook-v1.md" not in probe.text and "restart-procedure.pdf" not in probe.text
+
+        # A hidden or unknown reference is indistinguishable from a missing
+        # one: identical generic unavailable responses, no binding detail.
+        missing_page = reviewer_browser.get(
+            f"/original/{candidate_v1}/entity:missing-page/{SOURCE_IDS[1]}"
+        )
+        missing_source = reviewer_browser.get(
+            f"/original/{candidate_v1}/{ENTITY_ID}/no-such-source"
+        )
+        assert missing_page.status_code == missing_source.status_code == 404
+        assert missing_page.json() == missing_source.json()
+
+        # The unretained sentinel source resolves to the truthful absent
+        # outcome — never a substitution with some other retained original.
+        not_retained = reviewer_browser.get(
+            f"/original/{fixture.published_revision}/entity:published-runbook/public-fixture"
+        )
+        assert not_retained.status_code == 404
+        assert not_retained.json()["code"] == "absent_binding"
+        assert PDF_MARKER.encode() not in not_retained.content
+
+        # v2: a new reviewed version of the text source. While the candidate
+        # is pending, its content stays absent from ordinary retrieval.
+        v2_upload = _upload_named(
+            contributor,
+            fixture.contributor_api,
+            ORIGINAL_V2,
+            "attributed-v2-text",
+            SOURCE_IDS[0],
+            "runbook-v2.md",
+        )
+        assert v2_upload.status_code == 200, v2_upload.text
+        task_v2 = _prepare_attributed(
+            contributor,
+            fixture.contributor_api,
+            retry_key="attributed-v2",
+            uploads=[(v2_upload.json()["upload_id"], "update")],
+            title="Restart Worker",
+            source_ids=list(SOURCE_IDS),
+            # The v1 candidate is already admitted; the managed base derives
+            # from the admitted publication pointer (no pending continuation).
+            continuation_task_id=None,
+            request_id=6,
+        )
+        candidate_v2 = task_v2["native_candidate"]
+        pending_wiki = _call_tool(
+            reader,
+            fixture.contributor_api,
+            "search_knowledge",
+            {"query": SECOND_MARKER},
+            7,
+        ).json()["result"]["structuredContent"]
+        assert pending_wiki["results"] == []
+        approved_v2 = _decision(
+            reviewer_browser,
+            task_v2["task_id"],
+            _digest(reviewer_browser.get(f"/review/{task_v2['task_id']}").text),
+            "approve",
+        )
+        assert approved_v2.status_code == 200, approved_v2.text
+
+        # The current read binds v2 and its reference opens exactly v2 bytes.
+        page_v2 = _call_tool(
+            reader, fixture.contributor_api, "read_knowledge", {"title": "Restart Worker"}, 8
+        ).json()["result"]["structuredContent"]
+        assert page_v2["citation"]["published_version"] == candidate_v2
+        assert page_v2["sources"][0]["reference"] == (
+            f"/original/{candidate_v2}/{ENCODED_ENTITY}/{SOURCE_IDS[0]}"
+        )
+        current = reviewer_browser.get(f"/original/{candidate_v2}/{ENTITY_ID}/{SOURCE_IDS[0]}")
+        assert current.status_code == 200
+        assert current.content == ORIGINAL_V2
+
+        # Older admitted bytes stay exact: the v1 reference still opens the
+        # v1 original even though registry-latest for this source is now v2 —
+        # never a latest substitution.
+        older = reviewer_browser.get(f"/original/{candidate_v1}/{ENTITY_ID}/{SOURCE_IDS[0]}")
+        assert older.status_code == 200
+        assert older.content == ORIGINAL_V1
+
+        # A cited-version reread at v1 carries the v1-qualified reference.
+        page_v1 = _call_tool(
+            reader,
+            fixture.contributor_api,
+            "read_knowledge",
+            {"title": "Restart Worker", "published_version": candidate_v1},
+            9,
+        ).json()["result"]["structuredContent"]
+        assert page_v1["citation"]["published_version"] == candidate_v1
+        assert page_v1["sources"][0]["reference"] == (
+            f"/original/{candidate_v1}/{ENCODED_ENTITY}/{SOURCE_IDS[0]}"
+        )
+
+        # Current revocation: the same reference refuses the now-unauthorized
+        # inspector immediately, with no content or metadata disclosure.
+        fixture.state.revoke(config.workspace_id, fixture.reviewer, "inspect_source")
+        revoked = reviewer_browser.get(f"/original/{candidate_v1}/{ENTITY_ID}/{SOURCE_IDS[1]}")
+        assert revoked.status_code == 403
+        assert PDF_MARKER.encode() not in revoked.content
+        assert b"restart-procedure.pdf" not in revoked.content

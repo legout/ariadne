@@ -37,8 +37,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne import (  # noqa: E402
+    admission,
+    proposals,
+)
 from ariadne import context as context_module  # noqa: E402
-from ariadne import proposals  # noqa: E402
 from ariadne.admission import main as admit_cli  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
@@ -50,8 +53,7 @@ from ariadne.planner import PlannerError  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    METRIC_PAGE,
-    POLICY_PAGE,
+    NATIVE_METRIC_PAGE,
     UNSAFE_GRAIN_MODEL_YML,
     approved,
     branch_of,
@@ -81,7 +83,10 @@ SEED_NOTES = (
 # The SPECIFIC missing-catalog error a metric request keeps on an admitted
 # context-only snapshot (spec 0010 §6: discovery/resolution work, metric
 # operations refuse, no absent model ever triggers a raw-SQL fallback).
-MISSING_CATALOG_MARK = "no governed metric catalog"
+# the specific missing-catalog refusal: list/get surfaces say "no admitted
+# metric catalog…", planner/CLI surfaces "no governed metric catalog: …" — both
+# name the missing CATALOG (never a raw-SQL fallback or a generic failure)
+MISSING_CATALOG_MARK = "metric catalog"
 
 
 @pytest.fixture(autouse=True)
@@ -123,24 +128,135 @@ def context_only_project(tmp_path: Path) -> Path:
     )
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    # C6 (spec0035 §6): the native authoring surface — a real knowledge/ KB
+    # with the integrated selector (a CONTEXT-ONLY candidate still selects the
+    # native Context: it simply authors no semantic layer yet) and the
+    # generated-style schema page seeded by the human base commit exactly like
+    # the accepted fixture pattern (table core_ref/resource facts are
+    # core-owned; later edits inherit them verbatim).
+    kb = project / "knowledge"
+    (kb / "tables").mkdir(parents=True, exist_ok=True)
+    (kb / "references").mkdir(parents=True, exist_ok=True)
+    (kb / "tables" / "orders.md").write_text(table_page(), encoding="utf-8")
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "  - name: tables\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "    table: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:context-admission-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:context-admission-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings: []\n",
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "knowledge/tables/orders.md",
+        "context_integration.yaml",
+    )
     run_git(project, "commit", "-q", "-m", "human: context-only base")
     return project
 
 
 def table_page() -> str:
-    """One authored physical-table page citing the catalog asset."""
+    """One generated-style native physical-table page (the accepted fixture
+    pattern): the core-owned ``resource`` binding, ``core_ref`` identity and
+    ``ariadne`` schema/observations facts live under ``ariadne_profile.native``
+    and are seeded by the human base commit — ordinary candidate edits inherit
+    them verbatim and may change only authored fields like the description."""
+    resource = orders_resource()
+    catalog = {
+        "id": "orders-catalog",
+        "resource": resource,
+        "title": "orders catalog",
+    }
     meta = {
-        "type": "table",
+        "id": "entity:orders",
         "title": "orders",
-        "description": "One row per store-scoped order.",
+        "entity_types": ["table"],
         "tags": ["table"],
-        "sources": [
-            {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
-        ],
+        "summary": "One row per store-scoped order.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "sources": [catalog],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "table",
+            "core_ref": {"kind": "resource", "id": resource},
+            "native": {
+                "type": "table",
+                "title": "orders",
+                "description": "One row per store-scoped order.",
+                "tags": ["table"],
+                "sources": [catalog],
+                "resource": resource,
+                "ariadne": {
+                    "schema": [
+                        {
+                            "column": "store_id",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                        {
+                            "column": "local_order_number",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                        {
+                            "column": "global_order_number",
+                            "type": "VARCHAR",
+                            "nullable": "unknown",
+                            "default": "unknown",
+                            "comment": "unknown",
+                        },
+                    ],
+                    "observations": {
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                        "scope": "full",
+                        "row_count": len(ORDER_ROWS),
+                        "candidate_keys": ["global_order_number"],
+                        "columns": {
+                            "store_id": {"null_count": 0, "distinct_count": 2},
+                            "local_order_number": {"null_count": 0, "distinct_count": 6},
+                            "global_order_number": {"null_count": 0, "distinct_count": 6},
+                        },
+                        "citation": resource,
+                    },
+                },
+            },
+        },
     }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{front}\n---\n\n# orders\n\nOne row per store-scoped order.\n"
@@ -176,12 +292,12 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
                 "receipt_ids": [],
             }
         )
-    meta = {
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The shared order-number concept of the orders store.",
         "tags": ["reference", "term"],
-        "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md", "title": "Seed notes"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "aliases": ["order number concept"],
         "ariadne": {
             "version": 1,
@@ -206,6 +322,22 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
             "mappings": mappings,
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference", "term"],
+        "summary": "The shared order-number concept of the orders store.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "aliases": ["order number concept"],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Order number\n\n"
@@ -217,8 +349,32 @@ def order_reference_page(orders: str | None = None, *, asserted: bool = True) ->
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-TABLE_EDIT = {"kind": "page", "section": "tables", "name": "orders"}
-REFERENCE_EDIT = {"kind": "page", "section": "references", "name": "order-number"}
+def reference_view(page_text: str) -> dict:
+    """The Reference VIEW the shared digest/review seam operates on
+    (spec0029 §1.5): the producer's flat-native adaptation of the authored
+    page — the same in-memory view shape the candidate parse builds, never
+    the raw outer page envelope."""
+    meta = yaml.safe_load(page_text.split("---", 2)[1])
+    return {"type": "reference", **meta["ariadne_profile"]["native"]}
+
+
+TABLE_PAGE_REL = "knowledge/tables/orders.md"
+REFERENCE_PAGE_REL = "knowledge/references/order-number.md"
+
+
+def table_edit(content: str) -> list[dict]:
+    """The table page as one native page-batch object."""
+    return [{"path": TABLE_PAGE_REL, "content": content}]
+
+
+def reference_edit(content: str) -> list[dict]:
+    """The Reference page as one native page-batch object."""
+    return [{"path": REFERENCE_PAGE_REL, "content": content}]
+
+
+def read_reference(api, proposal: str) -> dict:
+    """The candidate's Reference page through the live artifact reader."""
+    return proposals.read_artifact(api.project, proposal, REFERENCE_PAGE_REL)
 
 
 def context_only_candidate(
@@ -230,22 +386,42 @@ def context_only_candidate(
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": order_reference_page(asserted=asserted)},
-    )
-    edited = api.edit_proposal(
-        started["proposal"],
-        edited["revision"],
-        {**TABLE_EDIT, "content": table_page()},
+        [
+            {"path": REFERENCE_PAGE_REL, "content": order_reference_page(asserted=asserted)},
+            {"path": TABLE_PAGE_REL, "content": table_page()},
+        ],
     )
     return project, api, {"proposal": started["proposal"], "revision": edited["revision"]}
 
 
+def _policy_page_edit(text: str) -> list[dict]:
+    """The governed fixture policy page as one native page-batch object."""
+    from tests.test_git_authoring import NATIVE_POLICY_PAGE, NATIVE_POLICY_REL
+
+    return [
+        {
+            "path": NATIVE_POLICY_REL,
+            "content": NATIVE_POLICY_PAGE.replace("The rule body.", text),
+        }
+    ]
+
+
 def admit(
-    project: Path, review: dict, *, confirm: bool = True, confirm_mapping: Sequence[str] = ()
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    confirm_mapping: Sequence[str] = (),
+    destination: Path | None = None,
+    expected: str = "none",
 ) -> int:
+    """The human admission journey. An INTEGRATED candidate activates through
+    the composite preview the operator confirms (spec0032 §10): pass
+    ``destination`` to run that preview→confirm flow; without it the call is
+    the plain display/admission path."""
     argv = [
         "--project",
         str(project),
@@ -257,6 +433,24 @@ def admit(
         review["review_digest"],
         *(f"--confirm-mapping={selection}" for selection in confirm_mapping),
     ]
+    if destination is not None:
+        composite = admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=str(destination),
+            expected_current=expected,
+            scope=["public"],
+            confirm_mappings=list(confirm_mapping),
+        )
+        argv += [
+            "--context-destination",
+            str(destination),
+            "--context-expected-current",
+            expected,
+            f"--overall-digest={composite['digest']}",
+        ]
     if confirm:
         argv.append("--confirm")
     return admit_cli(argv)
@@ -310,7 +504,8 @@ def test_context_only_admission_resolves_hypotheses_without_confirming_them_or_c
     review = api.review_proposal(candidate["proposal"])
     assert review["revision"] == validated["revision"]
     assert review["report"]["ok"] is True
-    assert admit(project, review) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, destination=published) == 0
     current = read_current(project)
     assert current["commit"] == review["revision"]
     assert current["confirmed_mappings"] == []  # no selection = no confirmation
@@ -345,7 +540,10 @@ def test_context_only_admission_resolves_hypotheses_without_confirming_them_or_c
         asyncio.run(runtime.get_metric("order_number_count"))
     with pytest.raises(PlannerError, match=MISSING_CATALOG_MARK):
         asyncio.run(runtime.query_metrics({"metrics": ["order_number_count"]}))
-    with pytest.raises(PlannerError, match=MISSING_CATALOG_MARK):
+    # query_detail is EXPLICITLY unsupported on the integrated MVP support
+    # contract (the admitted bound release lists it under `unsupported`) — a
+    # specific named refusal, still never a raw-SQL fallback
+    with pytest.raises(ValueError, match="unsupported integrated MVP operation: query_detail"):
         asyncio.run(runtime.query_detail({"dataset": "orders", "fields": ["store_id"]}))
 
 
@@ -379,19 +577,16 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
             "--",
             "semantic_layer/models/events.yml",
         )
-        edit = {
-            "kind": "page",
-            "section": "policies",
-            "name": "all-events-count",
-            "content": POLICY_PAGE.replace("The rule body.", "The rule body, revised."),
-        }
+        edit = _policy_page_edit("The rule body, revised.")
         failing = "grain"
-    else:  # broken governing Policy: the metric page cites an unresolvable page
-        (project / "context_layer" / "metrics" / "event_count.md").write_text(
-            METRIC_PAGE.replace("policies/all-events-count.md", "policies/missing.md"),
+    else:  # broken governing Policy: the native metric page cites an unresolvable page
+        (project / "knowledge" / "metrics" / "event-count.md").write_text(
+            NATIVE_METRIC_PAGE.replace(
+                "policies/all-events-count.md", "policies/missing.md"
+            ),
             encoding="utf-8",
         )
-        run_git(project, "add", "--", "context_layer/metrics/event_count.md")
+        run_git(project, "add", "--", "knowledge/metrics/event-count.md")
         run_git(
             project,
             "commit",
@@ -399,22 +594,18 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
             "-m",
             "human: broken policy citation",
             "--",
-            "context_layer/metrics/event_count.md",
+            "knowledge/metrics/event-count.md",
         )
-        edit = {
-            "kind": "page",
-            "section": "skills",
-            "name": "run-the-demo",
-            "content": (project / "context_layer" / "skills" / "run-the-demo.md")
-            .read_text(encoding="utf-8")
-            .replace("One skill page.", "One skill page, revised."),
-        }
+        edit = {"kind": "seed_notes", "content": SEED_NOTES + "Revised seed note.\n"}
         failing = "citations"
 
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
+    if isinstance(edit, list):  # native page batch
+        edited = api.edit_pages_batch(started["proposal"], started["candidate_revision"], edit)
+    else:
+        edited = api.edit_proposal(started["proposal"], started["candidate_revision"], edit)
     result = api.validate_proposal(started["proposal"], edited["revision"])
     assert result["ok"] is False
     checks = {check["name"]: check for check in result["report"]["checks"]}
@@ -465,10 +656,12 @@ def test_review_exposes_assertion_identity_and_confirmation_eligibility(tmp_path
     page = yaml.safe_load(order_reference_page().split("---", 2)[1])
     [declared] = [
         mapping
-        for mapping in page["ariadne"]["mappings"]
+        for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
-    assert assertion["assertion_digest"] == confirmation_binding_digest(page, declared)
+    assert assertion["assertion_digest"] == confirmation_binding_digest(
+        reference_view(order_reference_page()), declared
+    )
     assert assertion["source_ids"] == ["seed-notes"]  # the actual dependencies
     assert assertion["receipts"] == []  # no receipts cited
     # reading the review confirmed nothing: no admission exists
@@ -492,14 +685,17 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     assert shown["selection"] == selection
     assert shown["assertion"]["declaration"]["claim"] == "asserted"
     assert shown["assertion"]["assertion_digest"] == confirmation_binding_digest(
-        yaml.safe_load(order_reference_page().split("---", 2)[1]),
+        reference_view(order_reference_page()),
         shown["assertion"]["declaration"],
     )
     assert "never sign-off" in displayed["confirmation_required"]
     assert not (project / CURRENT).exists()  # displaying confirms nothing
 
     # the assertion variant with NO selection: admitted, still unconfirmed
-    assert admit(project, review) == 0
+    # (an integrated candidate activates through the composite preview the
+    # operator confirms — the production admission flow, spec0032 §10)
+    published = tmp_path / "published"
+    assert admit(project, review, destination=published) == 0
     admitted = json.loads(capsys.readouterr().out)
     assert admitted["confirmed_mappings"] == []
     assert read_current(project)["confirmed_mappings"] == []
@@ -510,23 +706,29 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
 
     # a new revision of the same proposal: select the assertion and confirm
     api = AuthoringProject(project)
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            "kind": "page",
-            "section": "tables",
-            "name": "orders",
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; revised."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(review["proposal"], moved["revision"])
     assert validated["ok"] is True
     second = api.review_proposal(review["proposal"])
     pre_blobs = blobs_of(project, second["revision"])
-    assert admit(project, second, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            second,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=review["revision"],
+        )
+        == 0
+    )
     confirmed = json.loads(capsys.readouterr().out)
     [recorded] = confirmed["confirmed_mappings"]
     assert recorded["selection"] == selection
@@ -538,10 +740,12 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     page = yaml.safe_load(order_reference_page().split("---", 2)[1])
     [declared] = [
         mapping
-        for mapping in page["ariadne"]["mappings"]
+        for mapping in page["ariadne_profile"]["native"]["ariadne"]["mappings"]
         if mapping["id"] == "global-order-concatenation"
     ]
-    assert entry["assertion_digest"] == confirmation_binding_digest(page, declared)
+    assert entry["assertion_digest"] == confirmation_binding_digest(
+        reference_view(order_reference_page()), declared
+    )
     assert entry["by"] and entry["at"]  # the operational human evidence
 
     # admission changed no candidate byte
@@ -587,15 +791,12 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     # refuses the unsupported field before validation could pass
     api = AuthoringProject(project)
     forged = yaml.safe_load(order_reference_page().split("---")[1])
-    forged["ariadne"]["mappings"][1]["confirmed"] = True
+    forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["confirmed"] = True
     front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            **REFERENCE_EDIT,
-            "content": f"---\n{front}\n---\n\n# Order number\n",
-        },
+        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
     result = api.validate_proposal(review["proposal"], edited["revision"])
     assert result["ok"] is False
@@ -632,12 +833,12 @@ def receipt_reference_page(
     candidate and cites measured receipts under the given claim — the
     endpoint representations mirror the candidate's measured sides (the K3
     correspondence evidence verification enforces)."""
-    meta = {
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The store-scoped and global order-number identities.",
         "tags": ["reference", "identifier"],
-        "sources": [{"id": "seed-notes", "resource": "data/seed_notes.md", "title": "Seed notes"}],
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
         "ariadne": {
             "version": 1,
             "reference_role": "identifier",
@@ -669,6 +870,21 @@ def receipt_reference_page(
             ],
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference", "identifier"],
+        "summary": "The store-scoped and global order-number identities.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "tables/orders.md"}],
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     return f"---\n{front}\n---\n\n# Order number\n\nThe measured mapping.\n"
 
@@ -684,15 +900,14 @@ def measured_context_only_candidate(
     approved(api, project, started)
     candidate = prefix_candidate(separator=separator)
     measured = api.inspect_mapping(started["proposal"], started["candidate_revision"], candidate)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            **REFERENCE_EDIT,
-            "content": receipt_reference_page(
+        reference_edit(
+            receipt_reference_page(
                 candidate, [measured["receipt_id"]], claim=claim, mapping_id=mapping_id
-            ),
-        },
+            )
+        ),
     )
     return (
         project,
@@ -721,7 +936,7 @@ def test_admitted_hypothesis_keeps_honest_counterevidence_and_stays_unconfirmed(
     assert assertion["claim"] == "hypothesis" and assertion["confirmable"] is False
     assert assertion["receipts"][0]["outcome"] == "complete"  # completed, mismatching
 
-    assert admit(project, review) == 0
+    assert admit(project, review, destination=tmp_path / "published") == 0
     runtime = QueryRuntime.open_project(project)
     served = asyncio.run(runtime.resolve_term("local order number"))
     view = mapping_view(served, "local-order-number", "measured-mapping")
@@ -743,23 +958,28 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
     evidence) or stale (aged past the operator budget) refuse validation —
     the admission gate never sees them."""
     if variant == "unsupported":
+        # the asserted mapping without cited evidence now refuses at the
+        # NATIVE BATCH boundary — the producer page gate rejects it before
+        # any byte is written (the earlier honest boundary; the same named
+        # gate validation kept for pages arriving by other means)
+        from lumio_wiki.git_authoring import GitAuthoringError
+
         project = context_only_project(tmp_path)
         api = AuthoringProject(project)
         started = api.start_proposal()
         approved(api, project, started)
         page = order_reference_page()
         forged = yaml.safe_load(page.split("---")[1])
-        forged["ariadne"]["mappings"][1]["source_ids"] = []
+        forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = []
         front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-        edited = api.edit_proposal(
-            started["proposal"],
-            started["candidate_revision"],
-            {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
-        )
-        result = api.validate_proposal(started["proposal"], edited["revision"])
-        assert any("asserted mapping without evidence" in error for error in result["errors"])
-        outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-        assert outcomes["page_contract"] == "failed"
+        with pytest.raises(GitAuthoringError, match="asserted mapping without evidence"):
+            api.edit_pages_batch(
+                started["proposal"],
+                started["candidate_revision"],
+                reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
+            )
+        # the refusal wrote nothing: no candidate revision ever moved
+        assert branch_of(project, started["proposal"]) == started["candidate_revision"]
         return
 
     if variant == "conflicting":
@@ -771,7 +991,7 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         )
         rival = json.loads(json.dumps(declared))  # a DIFFERENT declaration of the
         rival["separator"] = "-"  # same relationship: conflicting asserted claims
-        page["ariadne"]["mappings"].append(
+        page["ariadne_profile"]["native"]["ariadne"]["mappings"].append(
             {
                 "id": "rival-assertion",
                 "family": "prefix",
@@ -784,10 +1004,10 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
             }
         )
         front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             candidate["proposal"],
             branch_of(project, candidate["proposal"]),
-            {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+            reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
         )
         result = api.validate_proposal(candidate["proposal"], edited["revision"])
         assert any("conflicting asserted claims" in error for error in result["errors"])
@@ -801,15 +1021,12 @@ def test_unsupported_conflicting_or_fabricated_asserted_claims_refuse(tmp_path, 
         started = api.start_proposal()
         approved(api, project, started)
         declared = prefix_candidate()
-        edited = api.edit_proposal(
+        edited = api.edit_pages_batch(
             started["proposal"],
             started["candidate_revision"],
-            {
-                **REFERENCE_EDIT,
-                "content": receipt_reference_page(
-                    declared, ["mr-0000000000000000"], claim="asserted"
-                ),
-            },
+            reference_edit(
+                receipt_reference_page(declared, ["mr-0000000000000000"], claim="asserted")
+            ),
         )
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert any("receipt" in error for error in result["errors"])
@@ -856,8 +1073,10 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     proposal = review["proposal"]
     selection = "order-number:global-order-concatenation"
 
-    # admit with the selection: the assertion is confirmed
-    assert admit(project, review, confirm_mapping=[selection]) == 0
+    # admit with the selection: the assertion is confirmed (composite
+    # preview→confirm through the operator-owned destination, spec0032 §10)
+    published = tmp_path / "published"
+    assert admit(project, review, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
     runtime = QueryRuntime.open_project(project)
     served = asyncio.run(runtime.resolve_term("order number"))
@@ -869,20 +1088,22 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # an unrelated page-only change: the assertion is byte-identical, so the
     # prior human evidence RETAINS without a new selection
     api = AuthoringProject(project)
-    unrelated = api.edit_proposal(
+    unrelated = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; unrelated edit."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(proposal, unrelated["revision"])
     assert validated["ok"] is True
     second = api.review_proposal(proposal)
-    assert admit(project, second) == 0  # NO selection
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection
     outcome = json.loads(capsys.readouterr().out)
     [retained] = outcome["retained_confirmations"]
     assert retained["selection"] == selection
@@ -898,20 +1119,28 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # a CHANGED assertion (different cited evidence → different digest): the
     # prior confirmation cannot inherit and lapses without a new selection
     changed_page = yaml.safe_load(order_reference_page().split("---")[1])
-    changed_page["sources"].append(
-        {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
-    )
-    changed_page["ariadne"]["mappings"][1]["source_ids"] = ["orders-catalog"]
+    citation = {"id": "orders-catalog", "resource": orders_resource(), "title": "orders catalog"}
+    changed_page["sources"].append(citation)
+    # the native mapping's source_ids resolve against the page's NATIVE
+    # footnotes — the citation rides both the page citations and the native
+    # footnote list (the classic single-list append no longer suffices)
+    changed_page["ariadne_profile"]["native"]["sources"].append(dict(citation))
+    changed_page["ariadne_profile"]["native"]["ariadne"]["mappings"][1][
+        "source_ids"
+    ] = ["orders-catalog"]
     front = yaml.safe_dump(changed_page, default_flow_style=False, sort_keys=False).strip()
-    changed = api.edit_proposal(
+    changed = api.edit_pages_batch(
         proposal,
         branch_of(project, proposal),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---\n\n# Order number\n"},
+        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
     validated = api.validate_proposal(proposal, changed["revision"])
     assert validated["ok"] is True
     third = api.review_proposal(proposal)
-    assert admit(project, third) == 0  # still no selection
+    assert (
+        admit(project, third, destination=published, expected=second["revision"])
+        == 0
+    )  # still no selection
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]
@@ -926,7 +1155,16 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
 
     # a fresh selection of the CHANGED assertion confirms the new declaration
     fourth = api.review_proposal(proposal)
-    assert admit(project, fourth, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            fourth,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=third["revision"],
+        )
+        == 0
+    )
     confirmed = json.loads(capsys.readouterr().out)
     [recorded] = confirmed["confirmed_mappings"]
     assert recorded["selection"] == selection
@@ -950,7 +1188,8 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     assert validated["ok"] is True
     first = api.review_proposal(candidate["proposal"])
     selection = "order-number:measured-assertion"
-    assert admit(project, first, confirm_mapping=[selection]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, first, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
 
     # re-measure the same declaration: a fresh receipt (different observed_at
@@ -961,20 +1200,25 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     )
     assert fresh["receipt_id"] != measured["receipt_id"]
     page = yaml.safe_load(
-        api.read_artifact(candidate["proposal"], REFERENCE_EDIT)["content"].split("---", 2)[1]
+        read_reference(api, candidate["proposal"])["content"].split("---", 2)[1]
     )
-    page["ariadne"]["mappings"][0]["receipt_ids"] = [fresh["receipt_id"]]
+    page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["receipt_ids"] = [
+        fresh["receipt_id"]
+    ]
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
-    body = api.read_artifact(candidate["proposal"], REFERENCE_EDIT)["content"].split("---", 2)[2]
-    edited = api.edit_proposal(
+    body = read_reference(api, candidate["proposal"])["content"].split("---", 2)[2]
+    edited = api.edit_pages_batch(
         candidate["proposal"],
         branch_of(project, candidate["proposal"]),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     validated = api.validate_proposal(candidate["proposal"], edited["revision"])
     assert validated["ok"] is True
     second = api.review_proposal(candidate["proposal"])
-    assert admit(project, second) == 0  # no selection: the dependency changed
+    assert (
+        admit(project, second, destination=published, expected=first["revision"])
+        == 0
+    )  # no selection: the dependency changed
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     runtime = QueryRuntime.open_project(project)
@@ -985,7 +1229,16 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
 
     # the fresh selection re-binds the re-measured evidence
     third = api.review_proposal(candidate["proposal"])
-    assert admit(project, third, confirm_mapping=[selection]) == 0
+    assert (
+        admit(
+            project,
+            third,
+            confirm_mapping=[selection],
+            destination=published,
+            expected=second["revision"],
+        )
+        == 0
+    )
     rebound = QueryRuntime.open_project(project)
     served = asyncio.run(rebound.resolve_term("local order number"))
     assert (
@@ -1003,7 +1256,8 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     admission while every metric request writes the SPECIFIC missing-catalog
     error object (one JSON value/error, exit codes intact)."""
     project, _api, review = admitted_candidate(tmp_path)
-    assert admit(project, review) == 0  # the human admission of the exact revision
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, destination=published) == 0
     capsys.readouterr()  # the journey prints; clear before the CLI calls
 
     code = cli(["resolve-term", "order number", "--project", str(project)])
@@ -1080,7 +1334,7 @@ def test_asserted_claim_contradicted_by_its_own_cited_receipt_refuses(tmp_path, 
     hreview = hapi.review_proposal(hcandidate["proposal"])
     [hassertion] = hreview["mapping_assertions"]
     assert hassertion["claim"] == "hypothesis" and hassertion["confirmable"] is False
-    assert admit(hproject, hreview) == 0
+    assert admit(hproject, hreview, destination=tmp_path / "published-hypothesis") == 0
 
 
 def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, capsys):
@@ -1094,7 +1348,8 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     confirmation."""
     project, _api, review = admitted_candidate(tmp_path / "proj")
     selection = "order-number:global-order-concatenation"
-    assert admit(project, review, confirm_mapping=[selection]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(project, review, confirm_mapping=[selection], destination=published) == 0
     capsys.readouterr()
     [recorded] = read_current(project)["confirmed_mappings"]
     prior_digest = recorded["assertion_digest"]
@@ -1107,17 +1362,17 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     # read-modify-write: retarget the global representation's field binding
     # (store_id joins the global identity) — the MAPPING bytes stay identical
     api = AuthoringProject(project)
-    content = api.read_artifact(review["proposal"], REFERENCE_EDIT)["content"]
+    content = read_reference(api, review["proposal"])["content"]
     page = yaml.safe_load(content.split("---", 2)[1])
-    page["ariadne"]["representations"][1]["fields"].insert(
+    page["ariadne_profile"]["native"]["ariadne"]["representations"][1]["fields"].insert(
         0, {"resource": orders_resource(), "column": "store_id"}
     )
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = content.split("---", 2)[2]
-    retargeted = api.edit_proposal(
+    retargeted = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     validated = api.validate_proposal(review["proposal"], retargeted["revision"])
     assert validated["ok"] is True  # no receipts cited: nothing re-verifies
@@ -1131,7 +1386,10 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     assert assertion["declaration"] == prior_assertion["declaration"]
     assert assertion["assertion_digest"] != prior_digest  # effective identity moved
 
-    assert admit(project, second) == 0  # NO selection: it must not inherit
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection: it must not inherit
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]
@@ -1187,7 +1445,13 @@ def test_expired_evidence_never_serves_as_current_confirmed_guidance(tmp_path, c
     validated = api.validate_proposal(candidate["proposal"], candidate["revision"])
     assert validated["ok"] is True
     review = api.review_proposal(candidate["proposal"])
-    assert admit(project, review, confirm_mapping=["order-number:measured-assertion"]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(
+        project,
+        review,
+        confirm_mapping=["order-number:measured-assertion"],
+        destination=published,
+    ) == 0
     capsys.readouterr()
     commit = read_current(project)["commit"]
 
@@ -1232,28 +1496,36 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     first = api.validate_proposal(candidate["proposal"], candidate["revision"])
     assert first["ok"] is True
     review = api.review_proposal(candidate["proposal"])
-    assert admit(project, review, confirm_mapping=["order-number:measured-assertion"]) == 0
+    published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
+    assert admit(
+        project,
+        review,
+        confirm_mapping=["order-number:measured-assertion"],
+        destination=published,
+    ) == 0
     capsys.readouterr()
 
     # a later candidate of the same proposal, validated while fresh: the
     # stored evidence returns idempotently, so the expiry can only be caught
     # at the retention decision of the new admission
-    moved = api.edit_proposal(
+    moved = api.edit_pages_batch(
         review["proposal"],
         branch_of(project, review["proposal"]),
-        {
-            **TABLE_EDIT,
-            "content": table_page().replace(
+        table_edit(
+            table_page().replace(
                 "One row per store-scoped order.", "One row per store order; later."
-            ),
-        },
+            )
+        ),
     )
     validated = api.validate_proposal(review["proposal"], moved["revision"])
     assert validated["ok"] is True
 
     aged_context_clock(monkeypatch, 26)  # past the budget BEFORE admitting
     second = api.review_proposal(review["proposal"])
-    assert admit(project, second) == 0  # NO selection: nothing may retain
+    assert (
+        admit(project, second, destination=published, expected=review["revision"])
+        == 0
+    )  # NO selection: nothing may retain
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
     [lapsed] = outcome["lapsed_confirmations"]

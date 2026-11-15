@@ -8,11 +8,24 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
-from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+from lumio_wiki.artifact_store import ArtifactStoreError, LocalDirectoryArtifactStore
+from lumio_wiki.authoring_journey import (
+    AuthoringJourneyError,
+    CandidateRequest,
+    CandidateSourceRecord,
+    ingest_candidate,
+)
 from lumio_wiki.git_authoring import preview_publication, publish_revision
-from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
+from lumio_wiki.knowledge_base import (
+    document_first_control_file,
+    load_control_file,
+    seeded_control_file,
+    write_control_file,
+)
+from lumio_wiki.location import PublishedFilesystemLocation
 from lumio_wiki.source_references import (
     SourceReferenceManifest,
     serialize_source_reference_manifest,
@@ -1051,3 +1064,463 @@ def test_moved_profile_requires_matching_owner_confirmation(
     assert (old_config.authoring_path / "lumio.yaml").read_bytes() == control_before
     versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
     assert [version.content_hash for version in versions] == [EXPECTED_SHA256]
+
+
+@dataclass
+class RetentionFixture:
+    config: WorkspaceConfig
+    solo_api: str
+    solo_browser: str
+    registry_path: Path
+    artifact_path: Path
+    profile_path: Path
+    base: str
+    published_revision: str
+
+
+def _retention_fixture(tmp_path: Path, monkeypatch, *, policy: str) -> RetentionFixture:
+    """Standalone workspace adopted at an admitted synthetic baseline.
+
+    The owner profile declares `policy` retention. Adoption is the owner
+    route for a disabled profile: the managed empty setup refuses
+    non-required retention (spec0010 §2.1/§2.2). The admitted baseline is
+    native admission of this actual history, so the destination pointer
+    resolves inside the authoring repository for complete reviews.
+    """
+    monkeypatch.setenv("LUMIO_WORKSPACE_ID", "workspace-fixture")
+    monkeypatch.setenv("LUMIO_WORKSPACE_STATE_PATH", str(tmp_path / "state.sqlite3"))
+    authoring_repo = tmp_path / "authoring-repo"
+    authoring_kb = authoring_repo / "kb"
+    authoring_kb.mkdir(parents=True)
+    published_path = tmp_path / "published"
+    write_control_file(authoring_kb, document_first_control_file(seeded_control_file()))
+    (authoring_kb / "published.md").write_text(
+        "---\n"
+        'id: "entity:published-runbook"\n'
+        'title: "Published Runbook"\n'
+        'entity_types: ["knowledge-artifact"]\n'
+        "category: procedures\n"
+        'type: "runbook"\n'
+        'durability_rationale: "The synthetic fixture is permanent."\n'
+        'tags: ["operations"]\n'
+        'summary: "Synthetic fixture."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "internal"\n'
+        'sources:\n  - id: "public-fixture"\n    title: "Synthetic fixture"\n'
+        "claims: []\n"
+        "synthetic: true\n"
+        "---\n\n"
+        f"{SENTINEL}\n",
+        encoding="utf-8",
+    )
+    (authoring_kb / ".lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(version=1, namespace=NAMESPACE)
+        )
+    )
+    _git(authoring_repo, "init", "-q")
+    _git(authoring_repo, "config", "user.name", "Fixture")
+    _git(authoring_repo, "config", "user.email", "fixture@example.invalid")
+    _git(authoring_repo, "add", "kb")
+    _git(authoring_repo, "commit", "-qm", "adopted synthetic base")
+    base = _git(authoring_repo, "rev-parse", "HEAD")
+    admission_review = preview_publication(authoring_kb, base, published_path, "none")
+    assert admission_review.blocking_diagnostics == []
+    assert publish_revision(
+        authoring_kb, base, published_path, "none", admission_review.review_digest
+    ).activated
+    private = tmp_path / "profile-private"
+    private.mkdir()
+    profile_path = private / "profile.json"
+    registry_path = private / "registry"
+    artifact_path = private / "artifacts"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": NAMESPACE,
+                "source_registry": str(registry_path),
+                "retention": policy,
+                "artifact_store": {"kind": "local", "root": str(artifact_path)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = WorkspaceConfig(
+        workspace_id="workspace-fixture",
+        external_url="https://workspace.test",
+        published_path=published_path,
+        published_version=base,
+        state_path=tmp_path / "state.sqlite3",
+        identity=None,
+        auth_mode="local-token",
+        authoring_path=authoring_kb,
+        private_profile_path=profile_path,
+        private_root=tmp_path / "operations",
+        namespace=NAMESPACE,
+    )
+    state = WorkspaceState(config.state_path)
+    state.create_local_user("solo")
+    solo = Actor(tenant_id="local", object_id="solo")
+    for capability in ("read", "setup", "contribute", "review"):
+        state.grant(config.workspace_id, solo, capability)
+    expires = int(time.time()) + 3600
+    _, solo_api = state.issue_local_credential("solo", "api", expires_at=expires)
+    _, solo_browser = state.issue_local_credential("solo", "browser", expires_at=expires)
+    return RetentionFixture(
+        config,
+        solo_api,
+        solo_browser,
+        registry_path,
+        artifact_path,
+        profile_path,
+        base,
+        base,
+    )
+
+
+@pytest.mark.parametrize("policy", ["required", "disabled"])
+def test_retention_exception_requires_owner_and_preserves_default_gates(
+    tmp_path: Path, monkeypatch, policy: str
+) -> None:
+    """AC25 oracle: default refusal, owner-confirmed standalone exception.
+
+    Expected values come from spec0034 §12.4/AC25 and the fixture identities
+    (ORIGINAL/EXPECTED_SHA256), never from implementation output.
+    """
+    fixture = _retention_fixture(tmp_path, monkeypatch, policy=policy)
+    config = fixture.config
+    authoring_kb = config.authoring_path
+    assert authoring_kb is not None
+
+    # Gate 1 (both policies): the existing default-native call — exactly what
+    # the independent CLI passes with no store selected, and the shape every
+    # unmodified caller keeps — refuses omission BEFORE registration/writes.
+    original_path = tmp_path / "original.md"
+    original_path.write_bytes(ORIGINAL)
+    page_path = tmp_path / "working" / "restart-worker.md"
+    page_path.parent.mkdir()
+    page_path.write_text(_page("runbook-source"), encoding="utf-8")
+    # The same complete request the managed caller assembles: the adopted
+    # KB's document-first Control File, working files outside the repository.
+    control_path = write_control_file(
+        page_path.parent,
+        document_first_control_file(load_control_file(authoring_kb)),
+    )
+    with pytest.raises(AuthoringJourneyError) as default_refusal:
+        ingest_candidate(
+            authoring_kb,
+            CandidateRequest(
+                schema_version=1,
+                base_revision=fixture.base,
+                sources=[
+                    CandidateSourceRecord(
+                        source_id="runbook-source",
+                        original_path=str(original_path),
+                        expected_digest=EXPECTED_SHA256,
+                        intent="new",
+                    )
+                ],
+                pages=[str(page_path)],
+                control=str(control_path),
+            ),
+            source_registry=SourceRegistry(fixture.registry_path),
+        )
+    assert default_refusal.value.code == "retention_required"
+    assert SourceRegistry(fixture.registry_path).list() == []
+    assert (authoring_kb / ".lumio-authoring.yaml").read_bytes() == (
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(version=1, namespace=NAMESPACE)
+        )
+    )
+
+    with TestClient(create_app(config), base_url="https://workspace.test") as client:
+        _login(client, fixture.solo_browser)
+        preview = client.get("/setup")
+        assert preview.status_code == 200, preview.text
+        assert f"<dd>{policy}</dd>" in preview.text
+        if policy == "disabled":
+            assert "does not promise a durable original copy" in preview.text
+        confirmed = client.post(
+            "/setup",
+            headers={"Origin": "https://workspace.test"},
+            data={"digest": _digest(preview.text)},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["kind"] == "adopted"
+
+        uploaded = _upload(client, fixture.solo_api, ORIGINAL, retry_key="retention-upload")
+        assert uploaded.status_code == 200, uploaded.text
+        upload_id = uploaded.json()["upload_id"]
+
+        pointer = PublishedFilesystemLocation(config.published_path).read_pointer()
+        assert pointer == fixture.published_revision
+
+        if policy == "required":
+            # Gate 2a: default retention treats a failed store as an error,
+            # never as permission to omit originals: no activation, no bytes.
+            def failing_put(self, **_kwargs):
+                raise ArtifactStoreError("simulated store outage")
+
+            real_put = LocalDirectoryArtifactStore.put_artifact
+            monkeypatch.setattr(LocalDirectoryArtifactStore, "put_artifact", failing_put)
+            failed = _prepare(
+                client,
+                fixture.solo_api,
+                retry_key="retention-prepare",
+                upload_id=upload_id,
+                intent="new",
+                request_id=10,
+            )
+            failed_result = failed.json()["result"]
+            assert failed_result["isError"] is True
+            assert "Source Artifact retention failed" in failed_result["content"][0]["text"]
+            assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+            assert not (fixture.artifact_path / "artifacts").exists()
+
+            # Same-input retry preserves the recorded task identity.
+            replay = _prepare(
+                client,
+                fixture.solo_api,
+                retry_key="retention-prepare",
+                upload_id=upload_id,
+                intent="new",
+                request_id=11,
+            )
+            replay_task = replay.json()["result"]["structuredContent"]
+            assert replay_task["status"] == "failed"
+            assert replay_task["code"] == "retention_failed"
+            assert replay_task["task_id"]
+
+            # The retained route itself still works once the store recovers.
+            monkeypatch.setattr(LocalDirectoryArtifactStore, "put_artifact", real_put)
+            recovered = _prepare(
+                client,
+                fixture.solo_api,
+                retry_key="retention-prepare-recovered",
+                upload_id=upload_id,
+                intent="new",
+                request_id=12,
+            )
+            recovered_result = recovered.json()["result"]
+            assert recovered_result["isError"] is False, recovered_result
+            assert recovered_result["structuredContent"]["status"] == "pending_review"
+            assert LocalDirectoryArtifactStore(fixture.artifact_path).get_artifact(
+                source_id="runbook-source", content_hash=EXPECTED_SHA256
+            ) == ORIGINAL
+            candidate = recovered_result["structuredContent"]["native_candidate"]
+        else:
+            # Gate 2b: the owner-confirmed standalone exception admits the
+            # document WITHOUT durable bytes and without any store probe,
+            # while identity/hash/binding stay exact and source-backed.
+            prepared = _prepare(
+                client,
+                fixture.solo_api,
+                retry_key="retention-prepare",
+                upload_id=upload_id,
+                intent="new",
+                request_id=10,
+            )
+            prepared_result = prepared.json()["result"]
+            assert prepared_result["isError"] is False, prepared_result
+            task = prepared_result["structuredContent"]
+            assert task["status"] == "pending_review"
+            binding = task["candidate"]["bindings"][0]
+            assert binding["content_hash"] == EXPECTED_SHA256
+            assert binding["registered"] is True
+            assert binding["retained"] is False
+            versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
+            assert [version.content_hash for version in versions] == [EXPECTED_SHA256]
+            assert not fixture.artifact_path.exists()
+
+            replay = _prepare(
+                client,
+                fixture.solo_api,
+                retry_key="retention-prepare",
+                upload_id=upload_id,
+                intent="new",
+                request_id=11,
+            )
+            replay_task = replay.json()["result"]["structuredContent"]
+            assert replay_task["task_id"] == task["task_id"]
+            assert replay_task["native_candidate"] == task["native_candidate"]
+            assert len(SourceRegistry(fixture.registry_path).get("runbook-source").versions) == 1
+
+            # Gate 3: reviewable publication — disclosed policy, source-backed
+            # page, real binding records, and no retained-original claim. The
+            # pre-flip review first proves the pending standalone task is
+            # reviewable in its own context before the mode transition below.
+            candidate = task["native_candidate"]
+            standalone_review = client.get(f"/review/{task['task_id']}")
+            assert standalone_review.status_code == 200, standalone_review.text
+            assert "<dd>disabled</dd>" in standalone_review.text
+            assert "no retained original" in standalone_review.text
+            pre_flip_digest = _digest(standalone_review.text)
+
+            # F1 mode transition (named integrated negative): the operator
+            # enables the complete analytics configuration on the SAME
+            # workspace/KB/state while the legitimate standalone no-original
+            # document is still pending. The retention exception cannot follow
+            # the workspace into integrated context (spec0035 §3/AC12, AC25).
+            # The artifact store is AVAILABLE: the refusals below are policy,
+            # not a missing backend.
+            analytics_project = tmp_path / "analytics-project"
+            analytics_project.mkdir()
+            (analytics_project / "ariadne.yaml").write_text("sources: []\n", encoding="utf-8")
+            bindings_path = tmp_path / "analytics-bindings.json"
+            bindings_path.write_text("{}", encoding="utf-8")
+            integrated_config = replace(
+                config,
+                analytics_project_id="retail",
+                analytics_project_path=analytics_project,
+                analytics_source_bindings_path=bindings_path,
+            )
+            fixture.artifact_path.mkdir()
+            sentinel_receipt = (
+                config.published_path
+                / ".lumio-publication"
+                / "receipts"
+                / f"{fixture.published_revision}.json"
+            )
+            assert sentinel_receipt.exists()
+            with TestClient(
+                create_app(integrated_config), base_url="https://workspace.test"
+            ) as integrated:
+                _login(integrated, fixture.solo_browser)
+                integrated_setup = integrated.get("/setup")
+                assert integrated_setup.status_code == 409, integrated_setup.text
+                assert integrated_setup.json()["code"] == "retention_context_incompatible"
+
+                blocked_review = integrated.get(f"/review/{task['task_id']}")
+                assert blocked_review.status_code == 409, blocked_review.text
+                assert blocked_review.json()["code"] == "retention_context_incompatible"
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+                assert (
+                    len(SourceRegistry(fixture.registry_path).get("runbook-source").versions) == 1
+                )
+
+                stale_action = integrated.post(
+                    f"/review/{task['task_id']}",
+                    headers={"Origin": "https://workspace.test"},
+                    data={"digest": pre_flip_digest, "decision": "approve"},
+                )
+                assert stale_action.status_code == 409, stale_action.text
+                assert stale_action.json()["code"] == "retention_context_incompatible"
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+
+                from ariadne import proposals as native_proposals
+
+                head_before = _git(authoring_kb.parent, "rev-parse", "HEAD")
+                blocked_prepare = _call_tool(
+                    integrated,
+                    fixture.solo_api,
+                    "prepare_contribution",
+                    {
+                        "retry_key": "integrated-negative",
+                        "source_task_id": "missing-grant",
+                        "sources": [{"upload_id": upload_id, "intent": "new"}],
+                        "pages": [
+                            {
+                                "filename": "integrated.md",
+                                "markdown": _page("runbook-source"),
+                            }
+                        ],
+                    },
+                    20,
+                )
+                blocked_result = blocked_prepare.json()["result"]
+                assert blocked_result["isError"] is True
+                assert (
+                    "requires required original retention"
+                    in blocked_result["content"][0]["text"]
+                )
+                assert _git(authoring_kb.parent, "rev-parse", "HEAD") == head_before
+                versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
+                assert len(versions) == 1
+                assert PublishedFilesystemLocation(config.published_path).read_pointer() == pointer
+                assert not (analytics_project / native_proposals.WORKTREES_REL).exists()
+
+            # Genuinely standalone again (analytics removed from the config):
+            # the owner-confirmed exception remains allowed and the pending
+            # document still reviewably publishes without originals.
+            with TestClient(create_app(config), base_url="https://workspace.test") as standalone:
+                _login(standalone, fixture.solo_browser)
+                review = standalone.get(f"/review/{task['task_id']}")
+                assert review.status_code == 200, review.text
+                assert "<dd>disabled</dd>" in review.text
+                assert "no retained original" in review.text
+                decided = standalone.post(
+                    f"/review/{task['task_id']}",
+                    headers={"Origin": "https://workspace.test"},
+                    data={"digest": _digest(review.text), "decision": "approve"},
+                )
+            assert decided.status_code == 200, decided.text
+            publication = decided.json()
+            assert publication["status"] == "published"
+            assert publication["published"] is True
+            receipt = publication["publication"]
+            assert receipt["activated"] is True
+            assert receipt["retention"] == "disabled"
+            assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
+
+            sealed = json.loads(
+                (config.published_path / ".lumio-publication" / "bindings" / f"{candidate}.json")
+                .read_bytes()
+            )
+            assert sealed["sources"] == {"runbook-source": "active"}
+            assert sealed["bindings"][binding["entity_id"]]["runbook-source"] == EXPECTED_SHA256
+            # The store stayed available-but-unused by the exception: no
+            # original bytes were ever retained into it.
+            assert not (fixture.artifact_path / "artifacts").exists()
+
+            # A reader without the fixture's version pin follows the live
+            # pointer; the qualified follow-up serves exactly the new version.
+            with TestClient(
+                create_app(replace(config, published_version=None)),
+                base_url="https://workspace.test",
+            ) as reader_client:
+                reader = _call_tool(
+                    reader_client,
+                    fixture.solo_api,
+                    "read_knowledge",
+                    {"title": "Restart Worker", "published_version": candidate},
+                    12,
+                )
+            page_view = reader.json()["result"]["structuredContent"]
+            assert page_view["found"] is True
+            assert "Stop the old worker." in page_view["markdown"]
+            assert page_view["citation"]["published_version"] == candidate
+            assert page_view["entity_id"] == binding["entity_id"]
+            assert [source["id"] for source in page_view["sources"]] == ["runbook-source"]
+            assert page_view["sources"][0]["reference"] == (
+                f"/original/{candidate}/{quote(binding['entity_id'])}/runbook-source"
+            )
+
+        # Gate 4 (both policies): changing the effective retention policy
+        # invalidates the recorded owner consent — including a change toward
+        # the exception — and nothing new registers or activates.
+        profile = json.loads(fixture.profile_path.read_text(encoding="utf-8"))
+        profile["retention"] = "required" if policy == "disabled" else "disabled"
+        fixture.profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        changed_upload = _upload(
+            client,
+            fixture.solo_api,
+            EDITED,
+            source_id="changed-source",
+            retry_key="retention-changed-upload",
+        )
+        assert changed_upload.status_code == 200
+        stale = _prepare(
+            client,
+            fixture.solo_api,
+            retry_key="retention-changed",
+            upload_id=changed_upload.json()["upload_id"],
+            intent="new",
+            source_id="changed-source",
+            request_id=13,
+        )
+        stale_result = stale.json()["result"]
+        assert stale_result["isError"] is True
+        assert "owner must confirm setup" in stale_result["content"][0]["text"]
+        expected_pointer = candidate if policy == "disabled" else fixture.published_revision
+        assert PublishedFilesystemLocation(config.published_path).read_pointer() == expected_pointer

@@ -40,7 +40,7 @@ from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne import authoring_inputs, profiler, proposals, sources
+from ariadne import authoring_inputs, execution, profiler, proposals, sources
 from ariadne.sources import Registry, Source
 
 # Operator-owned approval state, ignored via the repo-LOCAL exclude file G2
@@ -80,10 +80,24 @@ def approval_digest(source_digest: str, storage_bindings: dict | None) -> str:
 def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
     """Resolve the CURRENT effective non-secret bindings of a resolved
     identity from the environment (spec 0025 §4): endpoint/region variable
-    values only — no key/token reads, no network. Used profiles only;
-    profile-free identities resolve to ``{}`` (no lookup at all)."""
+    values for used profiles, and the effective destination for postgres
+    sources (the narrow repair, spec0035 §8 disposition) — no key/token
+    reads, no network. S3 profile bindings keep their profile-name keys and
+    record shape byte-for-byte; postgres bindings live under the collision-
+    free ``postgres:<source-name>`` keys (colons cannot occur in either
+    namespace: both are ``[a-z][a-z0-9_]*`` slugs). An unset connection_env
+    is a visible prerequisite, never a corrupt declaration."""
     bindings: dict[str, dict] = {}
     for entry in resolved or []:
+        if entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+            name = entry["name"]
+            dsn = sources._resolve_dsn(
+                Source(name=name, type="postgres", connection_env=entry["connection_env"])
+            )
+            bindings[f"postgres:{name}"] = sources.postgres_binding(
+                name, dsn, entry["connection_env"]
+            )
+            continue
         storage = entry.get("storage")
         if not isinstance(storage, dict) or isinstance(storage.get("name"), str) is False:
             continue
@@ -209,11 +223,23 @@ def identity_registry(resolved: list[dict], bindings: dict | None = None) -> Reg
         for name, record in (bindings or {}).items()
         if name in storages
     }
+    # Frozen postgres destinations route by their namespaced key (spec 0025
+    # §4 disposition in spec0035 §8): the approval/admission record's
+    # ``postgres:<source-name>`` entries pin each source's effective target
+    # so plan() verifies-and-attaches exactly the checked destination. S3
+    # profile keys and records pass through untouched.
+    pg_frozen: dict[str, dict] = {}
+    for entry in resolved:
+        if entry.get("type") == "postgres" and entry.get("connection_env"):
+            record = (bindings or {}).get(f"postgres:{entry['name']}")
+            if record is not None:
+                pg_frozen[entry["name"]] = record
     return Registry(
         sources=objects,
         path=None,
         storages=storages or None,
         bindings=frozen or None,
+        connection_bindings=pg_frozen or None,
     )
 
 
@@ -529,8 +555,11 @@ def inputs(
     operator's HOST-root document boundary; a candidate's committed
     ``documents:`` section is never consulted) and the candidate's Seed Notes
     evidence from the recorded candidate revision. Bounded by the shared
-    input-evidence limits; digests are stable across calls (same bytes, same
-    digest)."""
+    input-evidence limits; the profiling run itself is bounded by the
+    HOST-owned profiling ceilings (spec0035 §8): one total finite time budget
+    across setup/sampling/statistics/FK and a complete-profile payload
+    ceiling, with a request sample_rows never above the host ceiling.
+    Digests are stable across calls (same bytes, same digest)."""
     project = Path(project).resolve()
     record = proposals._load_record(project, proposal)
     revision = record["candidate_revision"]
@@ -551,10 +580,23 @@ def inputs(
     if resolved is not None:
         assert digest is not None
         approval = _effective_grant(project, resolved, digest, proposal, revision)
+        # spec0035 §8: the HOST-owned profiling ceilings govern every
+        # agent-facing profiling run. Approval still precedes everything; the
+        # request-ceiling check refuses BEFORE any source access, and the run
+        # draws one total finite time budget under the complete-payload bound.
+        limits = authoring_inputs.project_profiling_limits(project)
+        if sample_rows is not None and sample_rows > limits["sample_rows"]:
+            raise ValueError(
+                f"sample_rows={sample_rows} exceeds the operator profiling ceiling "
+                f"{limits['sample_rows']} — a request cannot exceed the host profiling "
+                "ceilings (spec0035 §8); nothing was opened"
+            )
         profile = profiler.profile(
             registry=identity_registry(approval["sources"], approval.get("storage_bindings")),
             sample_rows=sample_rows,
             selector=selector,
+            budget=execution.DeadlineBudget(limits["execution_seconds"]),
+            payload_bytes=limits["response_bytes"],
         )
     seed_notes = None
     notes_blob = proposals._read_blob(project, revision, authoring_inputs.SEED_NOTES_REL.as_posix())

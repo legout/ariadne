@@ -238,6 +238,19 @@ def build_parser() -> _Parser:
     setup_cmd.add_argument("--project", default=".", help="directory to scaffold or resume")
     setup_cmd.add_argument("--no-input", action="store_true", help="scaffold/detect/report only")
     setup_cmd.add_argument(
+        "--namespace",
+        default=None,
+        help="explicit native Knowledge Base namespace; with --private-profile, "
+        "initializes a fresh project once through the public initializer",
+    )
+    setup_cmd.add_argument(
+        "--private-profile",
+        type=Path,
+        default=None,
+        help="machine-local private profile file outside the repository; "
+        "required together with --namespace to initialize a fresh project",
+    )
+    setup_cmd.add_argument(
         "--agents", action="store_true", help="install the selected packaged skill"
     )
     setup_cmd.add_argument("--agent", choices=("universal", "pi", "claude", "hermes"))
@@ -326,6 +339,29 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         # The standalone route keeps its exact native runtime path below.
         assert resolve_request is not None
         result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
+        print(json.dumps(result, default=_json_default))
+        return 0
+    if args.command in ("save-example", "search-examples"):
+        # F1 (spec0035 C4): source-free Example authoring/discovery — the
+        # query runtime (the only public path that opens a source connection)
+        # is never constructed for Example save/search; the explicit candidate
+        # preview already returned above without any runtime.
+        if args.command == "save-example":
+            assert definition is not None
+            result = discovery.save_example(
+                definition,
+                proposal=args.proposal,
+                expected_revision=args.expected_revision,
+            )
+        else:
+            result = asyncio.run(
+                discovery.search_examples(
+                    args.query,
+                    limit=args.limit,
+                    include_history=args.include_history,
+                    include_sql=args.include_sql,
+                )
+            )
         print(json.dumps(result, default=_json_default))
         return 0
     discovery._refuse_unsupported(args.command.replace("-", "_"))

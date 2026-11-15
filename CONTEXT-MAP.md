@@ -9,6 +9,8 @@ nothing.
 | Ariadne (governed metrics) | [products/ariadne/CONTEXT.md](products/ariadne/CONTEXT.md) | Ariadne Core (`products/ariadne/packages/ariadne-data`) |
 | Lumio (Knowledge Base foundation) | [products/lumio/CONTEXT.md](products/lumio/CONTEXT.md) | Lumio SDK (`products/lumio/packages/lumio-wiki`, `products/lumio/packages/lumio-lancedb`) |
 
+The accepted dependency direction is **Ariadne → Lumio Knowledge Base foundation**, not the reverse: [shared ADR-0029](project/adr/0029-lumio-owned-context-layer.md) and [spec0035](project/specs/2026-11-09-0035-lumio-owned-context-layer.md) own the mandatory Context foundation target (implementation pending). Product vocabulary ownership remains separate.
+
 Records keep their original numbering, meaning and provenance in their own
 namespaces: Ariadne decisions in
 [products/ariadne/project/adr/](products/ariadne/project/adr/), Lumio

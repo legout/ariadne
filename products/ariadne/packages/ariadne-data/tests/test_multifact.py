@@ -2817,17 +2817,148 @@ def _t5_page(page_type: str, title: str, *, status: str | None = None, sources: 
     return f"---\n{front}---\n\n# {title}\n" + sources
 
 
-def _t5_metric_page(name: str, policy: str = "policies/region-rollup.md") -> str:
-    """A metric page whose ``sources`` cite one governing Policy page."""
-    front = (
-        f"type: metric\nstatus: draft\ntitle: {name}\n"
-        f"description: The {name} metric.\ntags: [metric]\n"
+def _t5_native_policy_page() -> str:
+    """The governed Region-rollup Policy as a producer-native knowledge page
+    (the accepted baseline conventions: typed Entity identity, producer
+    envelope, KB-relative citations)."""
+    return (
+        "---\n"
+        'id: "entity:region-rollup"\n'
+        'title: "Region rollup"\n'
+        "entity_types:\n  - policy\n"
+        "tags:\n  - policy\n"
+        'summary: "One policy page."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        "  - id: seed-notes\n"
+        "    title: Seed notes\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: policy\n"
+        "  required_policies: []\n"
+        "  native:\n"
+        "    type: policy\n"
+        "    title: Region rollup\n"
+        "    description: One policy page.\n"
+        "    tags:\n      - policy\n"
+        "    status: draft\n"
+        "    sources:\n"
+        "      - id: seed-notes\n"
+        "        title: Seed notes\n"
+        "        resource: data/seed_notes.md\n"
+        "---\n\n"
+        "# Region rollup\n"
+    )
+
+
+def _t5_native_metric_page(
+    name: str,
+    model: str,
+    policy: str = "policies/region-rollup.md",
+    grain_key: str = "order_id",
+) -> str:
+    """A native metric page whose native.sources cite one governing Policy
+    page by its KB-relative visible path."""
+    return (
+        "---\n"
+        f'id: "entity:{name.replace("_", "-")}"\n'
+        f'title: "{name}"\n'
+        "entity_types:\n  - metric\n"
+        "tags:\n  - metric\n"
+        f'summary: "The {name} metric."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
         "sources:\n"
         "  - id: region-rollup\n"
-        f"    resource: {policy}\n"
         "    title: Region rollup policy\n"
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: metric\n"
+        "  metric_ref:\n"
+        f"    model: {model}\n"
+        f"    metric: {name}\n"
+        "  required_policies:\n"
+        '    - namespace: "urn:uuid:t5-fixture"\n'
+        '      entity_id: "entity:region-rollup"\n'
+        "  native:\n"
+        "    type: metric\n"
+        "    status: draft\n"
+        f"    title: {name}\n"
+        f"    description: The {name} metric.\n"
+        "    tags:\n      - metric\n"
+        "    sources:\n"
+        "      - id: region-rollup\n"
+        "        title: Region rollup policy\n"
+        f"        resource: {policy}\n"
+        f"    governed_by: {policy}\n"
+        "    dimensions:\n      - region\n"
+        "    grain:\n"
+        f"      primary_key: [{grain_key}]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        "---\n\n"
+        f"# {name}\n"
     )
-    return f"---\n{front}---\n\n# {name}\n"
+
+
+# The T5 fixture's KB configuration and the revision-2 integrated selector
+# with the authored §10.1 binding inventory: both single-fact metrics and
+# their generated computations bind the narrative Region-rollup Policy
+# (enforcement null — explanatory narrative policies, no graph policy audit);
+# derived computations would carry empty closures and take no bindings.
+T5_KB_LUMIO_YAML = (
+    "version: 2\n"
+    'mode: "categorized"\n'
+    "categories:\n"
+    "  - name: policies\n"
+    "  - name: metrics\n"
+    "  - name: computations\n"
+    "ontology:\n"
+    "  entity_types:\n"
+    "    policy: {}\n"
+    "    metric: {}\n"
+    "    computation: {}\n"
+    "  predicates: {}\n"
+    "  redirects: {}\n"
+)
+T5_KB_AUTHORING_YAML = (
+    'version: 1\nnamespace: "urn:uuid:t5-fixture"\nsources: {}\nbindings: {}\n'
+)
+T5_SELECTOR = (
+    "version: 1\n"
+    "mode: integrated\n"
+    "subtree: knowledge\n"
+    "namespace: urn:uuid:t5-fixture\n"
+    "profile: ariadne-context/1\n"
+    "support_revision: 2\n"
+    "policy_bindings:\n"
+    "  version: 1\n"
+    "  bindings:\n"
+    "    - subject: {kind: metric, identity: orders::orders_total}\n"
+    "      policy: {namespace: urn:uuid:t5-fixture, entity_id: entity:region-rollup}\n"
+    "      operations: [get_metric, query_metrics]\n"
+    "      enforcement: null\n"
+    "    - subject: {kind: metric, identity: order_lines::lines_total}\n"
+    "      policy: {namespace: urn:uuid:t5-fixture, entity_id: entity:region-rollup}\n"
+    "      operations: [get_metric, query_metrics]\n"
+    "      enforcement: null\n"
+)
+
+# The constant classic payload pages ride the human base revision unchanged
+# (inert fixture scaffolding, exactly like the converted central fixtures);
+# the bundle's authored surface is the native knowledge pages below.
+_T5_CLASSIC_PAYLOAD = {
+    "context_layer/tables/orders.md": (
+        "---\ntype: table\ntitle: Orders\ndescription: One row per order.\n"
+        "tags: [table]\nsources:\n  - id: orders\n    resource: demo.main.orders\n"
+        "    title: orders\ngrain:\n  primary_key: [order_id]\n"
+        "  cardinality_enforcement: STRICT_1_TO_1\n---\n\n# Orders\n"
+    ),
+    "context_layer/references/joins/orders--order-lines.md": _t5_page(
+        "reference", "orders to order lines"
+    ),
+    "context_layer/skills/query-multi-fact.md": _t5_page("skill", "query multi fact"),
+}
 
 
 def _t5_bundle(
@@ -2849,34 +2980,21 @@ def _t5_bundle(
         {"path": "semantic_layer/models/order_lines.yml", "content": T5_LINES_YML},
         {"path": "semantic_layer/graph.yml", "content": GRAPH_YML},
         {
-            "path": "context_layer/tables/orders.md",
-            "content": (
-                "---\ntype: table\ntitle: Orders\ndescription: One row per order.\n"
-                "tags: [table]\nsources:\n  - id: orders\n    resource: demo.main.orders\n"
-                "    title: orders\ngrain:\n  primary_key: [order_id]\n"
-                "  cardinality_enforcement: STRICT_1_TO_1\n---\n\n# Orders\n"
-            ),
+            "path": "knowledge/policies/region-rollup.md",
+            "content": _t5_native_policy_page(),
         },
         {
-            "path": "context_layer/references/joins/orders--order-lines.md",
-            "content": _t5_page("reference", "orders to order lines"),
-        },
-        {
-            "path": "context_layer/policies/region-rollup.md",
-            "content": _t5_page("policy", "Region rollup", status="draft"),
-        },
-        {
-            "path": "context_layer/metrics/orders_total.md",
-            "content": _t5_metric_page("orders_total", orders_policy),
-        },
-        {
-            "path": "context_layer/skills/query-multi-fact.md",
-            "content": _t5_page("skill", "query multi fact"),
+            "path": "knowledge/metrics/orders_total.md",
+            "content": _t5_native_metric_page("orders_total", "orders", orders_policy),
         },
     ]
     if lines_page is not None:
-        content = _t5_metric_page("lines_total") if lines_page == "default" else lines_page
-        files.append({"path": "context_layer/metrics/lines_total.md", "content": content})
+        content = (
+            _t5_native_metric_page("lines_total", "order_lines", grain_key="line_id")
+            if lines_page == "default"
+            else lines_page
+        )
+        files.append({"path": "knowledge/metrics/lines_total.md", "content": content})
     return {"files": files}
 
 
@@ -2893,8 +3011,26 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None, initial: tuple[str
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
+    # the KB configuration and the constant classic payload pages are human
+    # base scaffolding (config files are not authored artifacts; the retired
+    # context_layer pages stay inert fixture payload, never served)
+    kb = project / "knowledge"
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "lumio.yaml").write_text(T5_KB_LUMIO_YAML, encoding="utf-8")
+    (kb / ".lumio-authoring.yaml").write_text(T5_KB_AUTHORING_YAML, encoding="utf-8")
+    (project / "context_integration.yaml").write_text(T5_SELECTOR, encoding="utf-8")
+    for rel, content in _T5_CLASSIC_PAYLOAD.items():
+        path = project / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     run_git(project, "add", "--", "ariadne.yaml")
-    human_paths = ["ariadne.yaml"]
+    human_paths = [
+        "ariadne.yaml",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        *_T5_CLASSIC_PAYLOAD,
+    ]
     for artifact in (bundle if bundle is not None else _t5_bundle())["files"]:
         if artifact["path"] not in initial:
             continue
@@ -2902,8 +3038,12 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None, initial: tuple[str
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(artifact["content"], encoding="utf-8")
         human_paths.append(artifact["path"])
-    if len(human_paths) > 1:
-        run_git(project, "add", "--", *human_paths)
+    run_git(
+        project,
+        "add",
+        "--",
+        *human_paths,
+    )
     run_git(
         project,
         "commit",
@@ -2919,6 +3059,7 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None, initial: tuple[str
     started = api.start_proposal()
     approved(api, project, started)
     revision = started["candidate_revision"]
+    pages: list[dict] = []
     for artifact in (bundle if bundle is not None else _t5_bundle())["files"]:
         if artifact["path"] in initial:
             continue  # already in the human base revision
@@ -2933,17 +3074,16 @@ def _t5_candidate(tmp_path: Path, bundle: dict | None = None, initial: tuple[str
             }
         elif parts == ("semantic_layer", "graph.yml"):
             edit = {"kind": "graph", "content": artifact["content"]}
-        elif parts[:1] == ("context_layer",):
-            section = "joins" if parts[1:3] == ("references", "joins") else parts[1]
-            edit = {
-                "kind": "page",
-                "section": section,
-                "name": Path(parts[-1]).stem,
-                "content": artifact["content"],
-            }
+        elif parts[:1] == ("knowledge",):
+            # native knowledge pages ride the ONE public page batch (AC4)
+            pages.append({"path": artifact["path"], "content": artifact["content"]})
+            continue
         else:
             raise AssertionError(f"unsupported synthetic artifact path: {artifact['path']}")
         edited = api.edit_proposal(started["proposal"], revision, edit)
+        revision = edited["revision"]
+    if pages:
+        edited = api.edit_pages_batch(started["proposal"], revision, pages)
         revision = edited["revision"]
 
     return project, api, started, revision
@@ -3010,7 +3150,10 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         assert context["policies"] and "Region rollup" in context["policies"][0]
         assert context["attestation"] == "pending"
         signals = context["context_signals"]
-        assert [page["path"] for page in signals["pages"]] == [
+        # each signals page carries its CITED identity; the path is its final component
+        assert [
+            page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]
+        ] == [
             f"metrics/{name}.md",
             "policies/region-rollup.md",
             f"computations/{name}.md",
@@ -3082,23 +3225,23 @@ def test_t5_query_metrics_captures_one_assessment_instant_across_metrics(tmp_pat
     policy = next(
         artifact
         for artifact in bundle["files"]
-        if artifact["path"] == "context_layer/policies/region-rollup.md"
+        if artifact["path"] == "knowledge/policies/region-rollup.md"
     )
     policy["content"] = policy["content"].replace(
-        "sources:\n", f"stale_after: {stamped.isoformat()}\nsources:\n", 1
+        "    sources:\n", f"    stale_after: {stamped.isoformat()}\n    sources:\n", 1
     )
     # the expiry stamp is a system-owned trust claim (spec 0027 §4): typed
     # edits may only inherit it, so the operator authors the page in the
     # human base revision and the typed edits build the rest on top
     project, _view = _t5_admitted(
-        tmp_path, bundle, initial=("context_layer/policies/region-rollup.md",)
+        tmp_path, bundle, initial=("knowledge/policies/region-rollup.md",)
     )
     _, snapshot = admission.resolve_admission(project)
-    served_policy = snapshot / "context_layer" / "policies" / "region-rollup.md"
+    served_policy = snapshot / "knowledge" / "policies" / "region-rollup.md"
     frontmatter = yaml.safe_load(served_policy.read_text(encoding="utf-8").split("---")[1])
     # YAML parses the bare date stamp into a date object (spec 0011 §3); the
     # DISCLOSED freshness view below serializes it back to the ISO string
-    assert frontmatter["stale_after"] == stamped
+    assert frontmatter["ariadne_profile"]["native"]["stale_after"] == stamped
     midnight = datetime(stamped.year, stamped.month, stamped.day, tzinfo=UTC)
     runtime = _t5_runtime(project)
     ticks = iter([midnight + timedelta(hours=10), midnight + timedelta(days=1)])
@@ -3147,23 +3290,29 @@ def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tm
 
     api = AuthoringProject(project)
     later = api.start_proposal()
-    edits = (
+    revision = later["candidate_revision"]
+    revision = api.edit_proposal(
+        later["proposal"],
+        revision,
         {
             "kind": "model",
             "name": "orders",
             "content": T5_ORDERS_YML.replace("SUM(amount)", "SUM(amount) + 0"),
         },
-        {"kind": "graph", "content": GRAPH_YML + "# touched\n"},
-        {
-            "kind": "page",
-            "section": "policies",
-            "name": "region-rollup",
-            "content": _t5_page("policy", "Region rollup", status="draft") + "changed\n",
-        },
-    )
-    revision = later["candidate_revision"]
-    for edit in edits:
-        revision = api.edit_proposal(later["proposal"], revision, edit)["revision"]
+    )["revision"]
+    revision = api.edit_proposal(
+        later["proposal"], revision, {"kind": "graph", "content": GRAPH_YML + "# touched\n"}
+    )["revision"]
+    revision = api.edit_pages_batch(
+        later["proposal"],
+        revision,
+        [
+            {
+                "path": "knowledge/policies/region-rollup.md",
+                "content": _t5_native_policy_page() + "changed\n",
+            }
+        ],
+    )["revision"]
 
     after = asyncio.run(_t5_runtime(project).query_metrics(request))
     # same rows, same values — row order is not pinned (no ORDER BY)
@@ -3215,14 +3364,17 @@ def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
 
 
 def test_t5_citation_escape_outside_the_policy_directory_refuses_admission(tmp_path):
-    # A path that escapes context_layer/policies/ cannot satisfy a metric's
-    # citation, even when the target exists elsewhere in the same candidate.
+    # A path that escapes knowledge/policies/ cannot satisfy a metric's
+    # citation: native citations resolve inside the candidate's knowledge
+    # subtree only — the same-named classic context_layer page is never a
+    # fallback, even when it exists in the same candidate.
     bundle = _t5_bundle(orders_policy="policies/../skills/query-multi-fact.md")
     project, api, started, revision = _t5_candidate(tmp_path, bundle)
     validation = api.validate_proposal(started["proposal"], revision)
     assert validation["ok"] is False, validation
     assert any(
-        "does not resolve inside context_layer/policies/" in error for error in validation["errors"]
+        "does not resolve inside" in error and "query-multi-fact" in error
+        for error in validation["errors"]
     ), validation["errors"]
 
 

@@ -1,10 +1,14 @@
 # Plan 0034: Agent-first shared workspaces
 
+**Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 2 approved on 2026-11-10). Future Ariadne-dependent work must reconcile the mandatory Lumio Context contract. Lumio-only operation and the separately approved retrieval/source-retention amendment remain intact. No task body, tracker state or execution authority is changed by this notice. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
+
 **Owner approval — 2026-11-04:** “Approved. lets ticketize” approves this revision, the linked plans and scoped technical refinements, and GitHub ticket publication. It grants no new implementation, tenant/source access, deployment, integration, push or release authority. Tracker: [#85](https://github.com/legout/ariadne/issues/85).
 
 Canonical task bodies now live in the linked GitHub issues; this file owns the interface/dependency/coverage overview, not duplicate task instructions.
 
 Status: **owner-approved implementation plan, revision 4; scoped W2 synthetic-development grant**. Original date: 2026-11-04; local-auth planning: 2026-11-05.
+
+**2026-11-09 amendment — approved:** “Freigegeben. Ticketize” in Hermes approves spec0034 revision 5 and the complete [curated-wiki retrieval/source plan amendment revision 1](#curated-wiki-retrieval-and-source-storage-amendment-proposed), including the reconciled constraints and GitHub ticket publication. No product implementation, deployment, fixture access, integration, commit/push or release is authorized. Original W/A/L/D history remains scoped to its own approvals.
 
 **Scoped design approval — 2026-11-05:** Owner approved spec0034 revision 4's local-token design in BB thread `thr_26ccqihn5b` and requested this bounded plan before implementation. The owner subsequently approved plan revision 3 and authorized supervised isolated A1/A2 implementation with the specified focused checks and reviews in the same BB thread. This execution grant permits isolated candidate preparation only; no main integration, push, deployment, release, issue mutation or live Entra work. Existing ticket snapshots remain historical revision-3 sources; do not execute their superseded Entra-first prerequisites or silently rewrite them. This local amendment defines only new authentication work, not duplicate bodies for W2–W6.
 
@@ -134,3 +138,59 @@ Focused development checks are the named node/file commands above, serial. For V
 Every high-risk boundary names its real inputs: authenticated contributors upload untrusted bytes/candidate paths; authenticated but unauthorized people may attempt reviewer/source actions; normal clients retry or race. Protect published truth, originals, credentials, and permitted data. No speculative malicious-admin or stolen-secret story is needed. Normal-risk enrichment gets one candidate review; low-risk docs get parent inspection. At most one authorized fix pass and one delta-only recheck; unresolved findings return to the owner.
 
 Residual prerequisites: a new execution grant, Python 3.14, installed Pi with verified secret/transport configuration, two local human identities with separately delivered credentials, private HTTPS, and applicable synthetic database/S3 fixtures. Entra fixture registrations/accounts apply only to the explicitly deferred Entra leg. The local-auth execution amendment is approved for supervised isolated implementation; existing checked candidate evidence does not prove that new behavior. Google/GitHub, other clients, mixed per-document audiences, spreadsheet recalculation, scheduled enrichment, and production migration/publication are outside this plan.
+
+## Curated-wiki retrieval and source-storage amendment (proposed)
+
+**Approved 2026-11-09:** “Freigegeben. Ticketize” accepts amendment revision 1 and spec0034 revision 5, and authorizes GitHub ticketization. The heading stays stable for existing fragment links; “proposed” is historical. No implementation has been authorized for this new track.
+
+Date: 2026-11-09; targeted amendment: 2026-11-10. Amendment revision: 2, **approved and ticketized**. Owner approval: “Passt! erstelle die Tickets bzw. passe die bestehenden an”, following approval of spec0035 r2 and review of plan0035 r1. This accepts only the R1/R2/R4/R5 clarifications below; R0/R3 stay substantively unchanged. Product implementation remains unauthorized. Inspected baseline: `d2f8b75c0970267b42b0d04f5359ae603b7998a9`; clean before this documentation change. Canonical R0–R5 task bodies now live in GitHub #102–107 under existing epic [#85](https://github.com/legout/ariadne/issues/85). This overview owns sequencing/coverage only. The approval does not authorize implementation, commit/push, deployment or live fixture access. [Current frozen approved spec0034 r6](https://github.com/legout/ariadne/issues/85#issuecomment-6768381020); [approved amendment r2 snapshot](https://github.com/legout/ariadne/issues/85#issuecomment-6768381402); [earlier frozen spec0034 r5](https://github.com/legout/ariadne/issues/85#issuecomment-6747795772); [ADR and source-journey constraints](https://github.com/legout/ariadne/issues/85#issuecomment-6747796289). Local source edits are not yet committed/pushed; snapshots make the exact approved requirements available on GitHub.
+
+### Sources, capture and readiness
+
+- [Spec0034 approved revision 6 §12 / AC22–28](../specs/2026-11-04-0034-agent-first-shared-workspaces.md#12-curated-wiki-retrieval-and-original-references-proposed-revision-5) owns new behavior. “Freigegeben. Ticketize” approved the complete technical amendment and this task breakdown on 2026-11-09, beyond the earlier scope-only “Ja passt.” Implementation still requires a separate grant.
+- [ADR-0028 scoped revision](../adr/0028-agent-first-shared-workspaces.md) owns shared operating/retention rationale; [research](../research/2026-11-09-kuratiertes-wiki-retrieval-ariadne-lumio.md) is evidence only. [Lumio spec0010 clarification](../../products/lumio/project/specs/2026-10-23-0010-external-agent-authoring-journey.md) preserves required independent-host retention. Existing vocabulary suffices; no new glossary or ADR. Planning-contract v1, installed skill provenance unknown.
+- Scope is standalone managed Lumio, plus preserved Ariadne pin/scope checks. Mandatory Lumio on the Ariadne side is owned by spec0035, not a new reverse dependency or mandatory workspace service. No new integrated Hybrid route, personal ACLs, source search, SharePoint, production migration, scheduler, model runtime or unrelated audit cleanup. One optional retrieval extra and reuse of the existing S3 extra may be needed; no new service/store family.
+- GitHub ticket publication is authorized. Product execution, commits, integration, endpoint access and deployment remain unauthorized. Live verification additionally needs separately approved private HTTPS, installed Pi, synthetic human identities/credentials and a named synthetic S3 endpoint. The documented Pi token-exposure limitation still prevents claims of production secret isolation. No recipe creation is authorized or required; reuse documented journeys and existing drivers, without a new verification framework.
+- One sequential writer owns shared service/client files. R-track dependencies stay **R0 → R1 → R2 → R3 → R4 → R5**. For the approved joint refactor schedule, complete R0–R4, then plan0035 C1–C6; run R5's final installed journey with C7 on that same assembled candidate. R5 additionally waits for [C6 / #114](https://github.com/legout/ariadne/issues/114), not [C7 / #115](https://github.com/legout/ariadne/issues/115) completion; C7 consumes its final evidence, avoiding a dependency cycle or duplicate live run. R0 is a prerequisite bug check/repair, not a new unreviewed baseline publication. Independent code/fixture evidence may be reused only if its touched code, inputs, permissions and environment still match. Follow `orchestrate-implementation` for supervised Pi host/model preflight and candidate handling; this plan does not replace that router.
+
+Path abbreviations: **S** = `products/lumio/packages/lumio-workspace`; **K** = `products/lumio/packages/lumio-wiki`; **L** = `products/lumio/packages/lumio-lancedb`; **C** = `products/lumio/clients/pi-workspace`; **D** = `products/lumio/docs`. All paths below are repository-relative through these abbreviations. Python >=3.14; preserve standalone base-package import/wheel boundaries.
+
+### R0 — First reviewed publication from an empty workspace
+
+Canonical task: [#102](https://github.com/legout/ariadne/issues/102). Source: AC27, existing AC1/3/15. No R-track dependency; implementation authority is still required. Produces the reviewed initial publication and actual admitted baseline consumed by R1 and the already-required next contribution. Repair only if the bootstrap defect reproduces.
+
+### R1 — Shared-scope Evidence retrieval through MCP
+
+Canonical task: [#103](https://github.com/legout/ariadne/issues/103). Depends on R0 / #102. Source: §12.1–2, AC22/23/28. Consumes admitted pages and native adapters; produces shared-scope, version-qualified Evidence and authorized page resolution consumed by R2, with stable Entity ID/revision on existing read/search for supported follow-ups. Zero-Index default, optional BM25; no Hybrid rollout.
+
+### R2 — Open exact originals from published-page references
+
+Canonical task: [#104](https://github.com/legout/ariadne/issues/104). Depends on R1 / #103. Source: §12.3, AC24. Consumes scoped page/version resolution and private bindings; produces exact-version source-reference opening under current `inspect_source`, without a pending-review dependency or original indexing. The existing pending-review route also returns exact binary originals under its own candidate binding/inspection permission; no previewer or pending-page disclosure.
+
+### R3 — Explicit standalone retention exception
+
+Canonical task: [#105](https://github.com/legout/ariadne/issues/105). Depends on R2 / #104. Source: §12.4, AC25. Consumes owner-bound profile/setup and native admission; produces explicit standalone omission with honest availability. Independent-host and integrated required retention remain unchanged; no cleanup/erasure promise.
+
+### R4 — S3 originals with self-contained recovery
+
+Canonical task: [#106](https://github.com/legout/ariadne/issues/106). Depends on R3 / #105. Source: §12.5, AC26. Consumes existing S3 store, registry and retention policy; produces self-contained backup/fresh-root recovery preserving exact original bindings and the next standalone reviewed publication after owner reconfirmation/native revalidation. Integrated shared-repository/query recovery is owned by spec0035 C5. No bucket-wide discovery or remote migration framework.
+
+### R5 — One final installed journey and evaluation handoff
+
+Canonical task: [#107](https://github.com/legout/ariadne/issues/107). Depends on R4 / #106 and accepted R0–R3, required batch CI and separate live-fixture authority. Source: AC22–28, preserved AC1/3/8/12/19. Produces one real installed Pi/service/local-and-named-S3 journey plus a bounded Zero-Index/BM25 evaluation. The same journey includes pending binary inspection and fresh post-restore publication; coordinate with spec0035 C7 after C6 rather than add a second live suite. `no-new-test`; no live pass inferred from synthetic checks. Existing #98 / #100 qualification scope is not closed or silently replaced by R5.
+
+### Coverage, evidence budget and approval request
+
+| Requirement | Owner |
+| --- | --- |
+| AC22 exact scoped Evidence, optional BM25/fallback | R1; real surface R5 |
+| AC23 common audience, all read/search/reference paths | R1 selection, R2 original gate; R5 denial |
+| AC24 exact historical source, no original indexing | R2; R5 byte check |
+| AC25 intentional retention exception, preserved defaults | R3; R5 one example |
+| AC26 central S3 storage and complete recovery | R4; R5 named live endpoint |
+| AC27 first publication | R0; R5 fresh-workspace journey |
+| AC28 integrated pin/scope compatibility | R1 refusal, R3 retention refusal; reuse native integration checks/R5 |
+
+Each new task runs at most its one named focused regression check, plus an existing check only where it changes that seam. Synthetic checks at high-risk boundaries run immediately; the comprehensive installed/Pi/S3 journey runs once in R5. Project-mandated independent candidate reviews apply to the named authority/integrity changes, not to low-risk documentation; one parent-authorized fix pass and one delta recheck, then return unresolved findings. Required repository CI stays at integration/delivery batches, never copied into every task. Do not infer fresh passing results from prior research's 28 tests.
+
+Before dispatch: approved plan amendment revision 2 and spec0034 revision 6 own the targeted updates; canonical #103/#104/#106/#107 now carry the approved source snapshot; R0/#102 and R3/#105 remain unchanged; reconcile any later material changes, obtain implementation authority separately, and resolve actual Pi host/model preflight. GitHub ticketization was authorized on 2026-11-09; historical W1–W6/A/L/D tickets do not own R0–R5. No model/host selection from an old run is silently reused.

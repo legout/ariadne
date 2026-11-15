@@ -16,8 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lumio_wiki
 import pytest
-from lumio_wiki import cli
+from lumio_wiki import cli, journey_setup
 from lumio_wiki.env_loader import (
     GIT_REMOTE_ENV_VAR,
     GIT_TARGET_BRANCH_ENV_VAR,
@@ -1325,3 +1326,24 @@ def test_empty_setup_binds_regular_file_skill_destination(tmp_path, monkeypatch,
         (target / SOURCE_REFERENCE_MANIFEST_BASENAME).read_bytes()
     )
     assert manifest.namespace == NAMESPACE and manifest.sources == {}
+
+
+def test_public_empty_setup_exports_resolve():
+    """The confirmed empty-setup operation is a PUBLIC SDK entry point (plan
+    0035 C1 setup gap): package-root exports resolve to the same objects as
+    the module, so consumers import the contract without reaching into an
+    internal module."""
+    for name in (
+        "EMPTY_SETUP_SCHEMA_VERSION",
+        "AuthoringFacts",
+        "EmptySetupError",
+        "EmptySetupPlan",
+        "SetupAction",
+        "apply_plan",
+        "build_envelope",
+        "discover_authoring_location",
+        "plan_empty_setup",
+        "recheck_plan",
+    ):
+        assert getattr(lumio_wiki, name) is getattr(journey_setup, name), name
+        assert name in lumio_wiki.__all__, name

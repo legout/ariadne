@@ -81,19 +81,28 @@ jobs:
             "$GITHUB_WORKSPACE/integration/tests/lumio_local_context.py" \
             tests
         working-directory: products/ariadne/packages/ariadne-data
-      # The standalone boundary: a separate Core-only base wheel environment
-      # with the SDK and the MCP extra absent, exercising the installed CLI
-      # and the human-admission journey outside the checkout with the
-      # existing native walkthrough (tests/setup_wheel_walkthrough.py).
-      - name: Standalone Core base wheel (SDK and MCP absent)
+      # spec0035/AC1: the Core base wheel now DEPENDS on lumio-wiki, so a
+      # base install in isolation brings the compatible SDK (resolved from the
+      # wheel's own metadata — never a second explicit install); --find-links
+      # resolves that dependency to the SAME-COMMIT SDK wheel built above, not
+      # a published one. The MCP extra stays opt-in: the base environment must
+      # not import mcp.
+      - name: Core base wheel (mandatory SDK via metadata; MCP absent)
         run: |
           uv venv --python 3.14 /tmp/core-standalone
-          uv pip install --python /tmp/core-standalone/bin/python \
+          uv pip install --find-links dist/sdk \
+            --python /tmp/core-standalone/bin/python \
             dist/core/ariadne_data-*.whl
-          ! /tmp/core-standalone/bin/python -c 'import lumio_wiki' \
-            || { echo 'SDK leaked into the standalone Core env'; exit 1; }
+          # AC1: the base wheel installs in isolation and brings the SDK via its
+          # own dependency metadata — never a second explicit install.
+          /tmp/core-standalone/bin/python -c 'import lumio_wiki'
+          /tmp/core-standalone/bin/python - <<'PY'
+          import importlib.metadata as m
+          reqs = m.requires("ariadne-data") or []
+          assert any(r.startswith("lumio-wiki") for r in reqs)
+          PY
           ! /tmp/core-standalone/bin/python -c 'import mcp' \
-            || { echo 'MCP leaked into the standalone Core env'; exit 1; }
+            || { echo 'MCP leaked into the base Core env'; exit 1; }
       - name: Installed-wheel walkthrough outside the checkout
         run: |
           cd /tmp

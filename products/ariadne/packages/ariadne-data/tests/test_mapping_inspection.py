@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import execution  # noqa: E402
+from ariadne import execution, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import approved  # noqa: E402 — the operator's G3 step
@@ -158,10 +158,56 @@ def mapping_project(tmp_path: Path, *, sample_permission: bool = False) -> Path:
     )
     (project / "data").mkdir(exist_ok=True)
     (project / "data" / "seed_notes.md").write_text(SEED_NOTES, encoding="utf-8")
+    # C6 (spec0035 §6): the native authoring surface — a real knowledge/ KB
+    # WITH the integrated selector (context-only work still selects the native
+    # Context; it authors no semantic layer) so knowledge pages materialize
+    # and admit through the candidate scope.
+    kb = project / "knowledge"
+    (kb / "references").mkdir(parents=True, exist_ok=True)
+    (kb / "policies").mkdir(parents=True, exist_ok=True)
+    (kb / "lumio.yaml").write_text(
+        "version: 2\n"
+        'mode: "categorized"\n'
+        "categories:\n"
+        "  - name: references\n"
+        "  - name: policies\n"
+        "ontology:\n"
+        "  entity_types:\n"
+        "    reference: {}\n"
+        "    policy: {}\n"
+        "  predicates: {}\n"
+        "  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        'version: 1\nnamespace: "urn:uuid:mapping-fixture"\nsources: {}\nbindings: {}\n',
+        encoding="utf-8",
+    )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\n"
+        "mode: integrated\n"
+        "subtree: knowledge\n"
+        "namespace: urn:uuid:mapping-fixture\n"
+        "profile: ariadne-context/1\n"
+        "support_revision: 2\n"
+        "policy_bindings:\n"
+        "  version: 1\n"
+        "  bindings: []\n",
+        encoding="utf-8",
+    )
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+        "context_integration.yaml",
+    )
     run_git(project, "commit", "-q", "-m human: initial artifacts")
     return project
 
@@ -711,8 +757,10 @@ def reference_page(
     The endpoint representations declare the candidate's own measured columns
     and required scope (the correspondence evidence verification enforces)."""
     orders = resource("orders", "orders")
-    page_sources = sources or [{"id": "seed-notes", "resource": "data/seed_notes.md"}]
-    meta = {
+    page_sources = sources or [
+        {"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}
+    ]
+    native = {
         "type": "reference",
         "title": "Order number",
         "description": "The store-scoped and global order-number identities.",
@@ -752,6 +800,21 @@ def reference_page(
             ],
         },
     }
+    meta = {
+        "id": "entity:order-number",
+        "title": "Order number",
+        "entity_types": ["reference"],
+        "tags": ["reference"],
+        "summary": "The store-scoped and global order-number identities.",
+        "lifecycle": "approved",
+        "visibility": "public",
+        "sources": page_sources,
+        "ariadne_profile": {
+            "version": 1,
+            "kind": "reference",
+            "native": native,
+        },
+    }
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Order number\n\n"
@@ -762,7 +825,17 @@ def reference_page(
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-REFERENCE_EDIT = {"kind": "page", "section": "references", "name": "order-number"}
+REFERENCE_PAGE_REL = "knowledge/references/order-number.md"
+
+
+def reference_edit(content: str) -> list[dict]:
+    """The Reference page as one native page-batch object."""
+    return [{"path": REFERENCE_PAGE_REL, "content": content}]
+
+
+def read_reference(api, started) -> dict:
+    """The candidate's Reference page through the live artifact reader."""
+    return proposals.read_artifact(api.project, started["proposal"], REFERENCE_PAGE_REL)
 
 
 def measured_hypothesis(tmp_path: Path):
@@ -771,19 +844,18 @@ def measured_hypothesis(tmp_path: Path):
     project, api, started = approved_project(tmp_path)
     candidate = prefix_candidate()
     measured = api.inspect_mapping(started["proposal"], started["candidate_revision"], candidate)
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {
-            **REFERENCE_EDIT,
-            "content": reference_page(candidate, [measured["receipt_id"]]),
-        },
+        reference_edit(reference_page(candidate, [measured["receipt_id"]])),
     )
     return project, api, started, candidate, measured, edited
 
 
 def _evidence_block(page_text: str) -> dict | None:
-    return _frontmatter(page_text).get("ariadne_evidence")
+    return (_frontmatter(page_text).get("ariadne_profile") or {}).get("native", {}).get(
+        "ariadne_evidence"
+    )
 
 
 def _frontmatter(text: str) -> dict:
@@ -809,7 +881,7 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
     assert validated["ok"] is True and validated["errors"] == []
     assert outcomes["structural"] == "not_applicable"
 
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    page = read_reference(api, started)
     block = _evidence_block(page["content"])
     assert block is not None
     assert set(block) == {"local-to-global-prefix"}
@@ -837,7 +909,7 @@ def test_validation_attaches_verified_summaries_and_receipts_survive_saves(tmp_p
     again = api.validate_proposal(started["proposal"], saved["revision"])
     outcomes = {check["name"]: check["outcome"] for check in again["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "passed"
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    page = read_reference(api, started)
     assert _evidence_block(page["content"]) == block  # unchanged, still verified
 
 
@@ -851,21 +923,21 @@ def test_changed_declaration_invalidates_the_receipt_and_drops_the_summary(tmp_p
     assert validated["revision"] != edited["revision"]  # the evidence attached
 
     changed = {**candidate, "separator": "-"}  # a different normalized candidate
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["mappings"][0]["candidate"] = changed
+    meta["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["candidate"] = changed
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
-    revised = api.edit_proposal(
+    revised = api.edit_pages_batch(
         started["proposal"],
         validated["revision"],
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     failed = api.validate_proposal(started["proposal"], revised["revision"])
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("measures a different declaration" in error for error in failed["errors"])
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    page = read_reference(api, started)
     assert _evidence_block(page["content"]) is None  # the stale summary is gone
 
 
@@ -923,10 +995,10 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
     project, api, started = approved_project(tmp_path)
     candidate = prefix_candidate()
     forged = "mr-" + "0" * 16
-    edited = api.edit_proposal(
+    edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        {**REFERENCE_EDIT, "content": reference_page(candidate, [forged])},
+        reference_edit(reference_page(candidate, [forged])),
     )
     failed = api.validate_proposal(started["proposal"], edited["revision"])
     assert any(
@@ -949,16 +1021,17 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
         tmp_path / "authored"
     )
     api3.validate_proposal(started3["proposal"], edited3["revision"])
-    page = api3.read_artifact(started3["proposal"], REFERENCE_EDIT)
+    page = read_reference(api3, started3)
     meta = _frontmatter(page["content"])
-    meta["ariadne_evidence"]["local-to-global-prefix"][0]["tested_left"] = 999
+    evidence = meta["ariadne_profile"]["native"]["ariadne_evidence"]
+    evidence["local-to-global-prefix"][0]["tested_left"] = 999
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
-    with pytest.raises(ValueError, match="system-owned trust claim"):
-        api3.edit_proposal(
+    with pytest.raises(ValueError, match="trust/generated claim"):
+        api3.edit_pages_batch(
             started3["proposal"],
             started3["proposal"] and api3.review_proposal(started3["proposal"])["revision"],
-            {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+            reference_edit(f"---\n{front}\n---{body}"),
         )
 
 
@@ -1276,18 +1349,19 @@ def test_retargeted_representation_invalidates_the_receipt_summary(tmp_path):
     attached summary."""
     project, api, started, candidate, measured, edited = measured_hypothesis(tmp_path)
     validated = api.validate_proposal(started["proposal"], edited["revision"])
-    assert _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    assert _evidence_block(read_reference(api, started)["content"])
+    page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["representations"][1]["fields"] = [  # retargeted 'to' endpoint
+    representations = meta["ariadne_profile"]["native"]["ariadne"]["representations"]
+    representations[1]["fields"] = [  # retargeted 'to' endpoint
         {"resource": resource("orders", "orders"), "column": "local_order_number"}
     ]
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
-    revised = api.edit_proposal(
+    revised = api.edit_pages_batch(
         started["proposal"],
         validated["revision"],
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     failed = api.validate_proposal(started["proposal"], revised["revision"])
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
@@ -1297,7 +1371,7 @@ def test_retargeted_representation_invalidates_the_receipt_summary(tmp_path):
         for error in failed["errors"]
     )
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
+        _evidence_block(read_reference(api, started)["content"]) is None
     )
 
 
@@ -1307,24 +1381,25 @@ def test_unmeasured_required_scope_invalidates_the_receipt_summary(tmp_path):
     column the receipt did not measure under never keeps its summary."""
     project, api, started, candidate, measured, edited = measured_hypothesis(tmp_path)
     validated = api.validate_proposal(started["proposal"], edited["revision"])
-    page = api.read_artifact(started["proposal"], REFERENCE_EDIT)
+    page = read_reference(api, started)
     meta = _frontmatter(page["content"])
-    meta["ariadne"]["representations"][0]["scope"] = [  # required scope widened
+    representations = meta["ariadne_profile"]["native"]["ariadne"]["representations"]
+    representations[0]["scope"] = [  # required scope widened
         {"resource": resource("orders", "orders"), "column": "store_id"}
     ]
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = page["content"].split("---", 2)[2]
-    revised = api.edit_proposal(
+    revised = api.edit_pages_batch(
         started["proposal"],
         validated["revision"],
-        {**REFERENCE_EDIT, "content": f"---\n{front}\n---{body}"},
+        reference_edit(f"---\n{front}\n---{body}"),
     )
     failed = api.validate_proposal(started["proposal"], revised["revision"])
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("required scope" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
+        _evidence_block(read_reference(api, started)["content"]) is None
     )
 
 
@@ -1337,7 +1412,7 @@ def test_aged_receipt_beyond_the_operator_budget_loses_its_summary(tmp_path):
 
     project, api, started, candidate, measured, edited = measured_hypothesis(tmp_path)
     validated = api.validate_proposal(started["proposal"], edited["revision"])
-    assert _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
+    assert _evidence_block(read_reference(api, started)["content"])
     # age the STORED receipt past the default 24h budget, re-sealing its
     # integrity digest: the aging is the only change
     path = Path(measured["evidence"])
@@ -1359,79 +1434,96 @@ def test_aged_receipt_beyond_the_operator_budget_loses_its_summary(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("age budget" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
+        _evidence_block(read_reference(api, started)["content"]) is None
     )
 
 
-POLICY_PAGE = (
+NATIVE_POLICY_PAGE = (
     "---\n"
-    "type: policy\n"
-    "status: draft\n"
-    "title: Order numbering\n"
-    "description: How local and global order numbers relate.\n"
-    "tags:\n"
-    "- policy\n"
+    'id: "entity:order-numbering"\n'
+    'title: "Order numbering"\n'
+    "entity_types:\n  - policy\n"
+    "tags:\n  - policy\n"
+    'summary: "How local and global order numbers relate."\n'
+    'lifecycle: "approved"\n'
+    'visibility: "public"\n'
     "sources:\n"
-    "- data/seed_notes.md\n"
+    "  - id: seed-notes\n"
+    "    title: Seed notes\n"
+    "ariadne_profile:\n"
+    "  version: 1\n"
+    "  kind: policy\n"
+    "  required_policies: []\n"
+    "  native:\n"
+    "    type: policy\n"
+    "    title: Order numbering\n"
+    "    description: How local and global order numbers relate.\n"
+    "    tags:\n      - policy\n"
+    "    status: draft\n"
+    "    sources:\n"
+    "      - id: seed-notes\n"
+    "        title: Seed notes\n"
+    "        resource: data/seed_notes.md\n"
     "---\n\n"
     "# Order numbering\n\n"
     "Local order numbers are store-scoped; the global identity carries the\n"
     "store prefix.\n"
 )
-
-
+NATIVE_POLICY_REL = "knowledge/policies/order-numbering.md"
 def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     """Finding 6: the receipt binds the cited Policy/OSI pages of the
     Reference that declares its candidate — a changed cited Policy page
     invalidates the dependent receipt immediately (the summary drops)."""
     project, api, started = approved_project(tmp_path)
     candidate = prefix_candidate()
-    policy_edit = {"kind": "page", "section": "policies", "name": "order-numbering"}
+    policy_edit = [{"path": NATIVE_POLICY_REL, "content": NATIVE_POLICY_PAGE}]
     citing = [
-        {"id": "policy-order-numbering", "resource": "context_layer/policies/order-numbering.md"}
+        {"id": "policy-order-numbering", "title": "Order numbering",
+         "resource": "policies/order-numbering.md"}
     ]
-    revision = api.edit_proposal(
-        started["proposal"], started["candidate_revision"], {**policy_edit, "content": POLICY_PAGE}
+    revision = api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], policy_edit
     )["revision"]
-    revision = api.edit_proposal(
+    revision = api.edit_pages_batch(
         started["proposal"],
         revision,
-        {**REFERENCE_EDIT, "content": reference_page(candidate, [], sources=citing)},
+        reference_edit(reference_page(candidate, [], sources=citing)),
     )["revision"]
     measured = api.inspect_mapping(started["proposal"], revision, candidate)
     policy_deps = measured["receipt"]["dependencies"]["policy_osi"]
     assert [entry["resource"] for entry in policy_deps] == [
-        "context_layer/policies/order-numbering.md"
+        "policies/order-numbering.md"
     ]
     assert all(entry["digest"] for entry in policy_deps)
-    revision = api.edit_proposal(
+    revision = api.edit_pages_batch(
         started["proposal"],
         revision,
-        {
-            **REFERENCE_EDIT,
-            "content": reference_page(candidate, [measured["receipt_id"]], sources=citing),
-        },
+        reference_edit(reference_page(candidate, [measured["receipt_id"]], sources=citing)),
     )["revision"]
     validated = api.validate_proposal(started["proposal"], revision)
     outcomes = {check["name"]: check["outcome"] for check in validated["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "passed"
-    assert _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"])
+    assert _evidence_block(read_reference(api, started)["content"])
     # change the CITED POLICY page: the measured dependency digest no longer
     # matches — referenced Policy content changes invalidate immediately
-    revision = api.edit_proposal(
+    revision = api.edit_pages_batch(
         started["proposal"],
         validated["revision"],
-        {
-            **policy_edit,
-            "content": POLICY_PAGE.replace("store-scoped", "globally unique"),
-        },
+        [
+            {
+                "path": NATIVE_POLICY_REL,
+                "content": NATIVE_POLICY_PAGE.replace(
+                    "store-scoped", "globally unique"
+                ),
+            }
+        ],
     )["revision"]
     failed = api.validate_proposal(started["proposal"], revision)
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("cited Policy/OSI" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
+        _evidence_block(read_reference(api, started)["content"]) is None
     )
 
 
@@ -1458,7 +1550,7 @@ def test_changed_lookup_asset_schema_invalidates_the_receipt(tmp_path):
     assert outcomes["mapping_evidence"] == "failed"
     assert any("lookup asset" in error for error in failed["errors"])
     assert (
-        _evidence_block(api.read_artifact(started["proposal"], REFERENCE_EDIT)["content"]) is None
+        _evidence_block(read_reference(api, started)["content"]) is None
     )
 
 

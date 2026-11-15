@@ -15,6 +15,7 @@ from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from ariadne.contribution_review import check_contribution_commit, review_contribution
 from ariadne.query import QueryRuntime
+from lumio_wiki.ariadne_context import SnapshotUnavailableError
 from lumio_wiki.authoring_journey import (
     CandidateRequest,
     CandidateSourceRecord,
@@ -33,10 +34,14 @@ from lumio_wiki.knowledge_base import (
 )
 from lumio_wiki.location import PublishedFilesystemLocation, open_knowledge_base
 from lumio_wiki.mutation import atomic_write_bytes
-from lumio_wiki.private_profile import load_private_profile, resolve_private_profile
+from lumio_wiki.private_profile import (
+    PrivateProfileError,
+    load_private_profile,
+    resolve_private_profile,
+)
 
 from .contributions import _digest, _git
-from .intake import IntakeService
+from .intake import IntakeService, UploadError
 from .publication import PublicationService
 from .review import AnalyticsReviewContext
 from .setup import current_attachment_digest
@@ -45,6 +50,10 @@ from .state import Actor, Operation, RetryConflict, WorkspaceState
 
 class AnalyticsError(ValueError):
     """An actionable analytics configuration, authorization, or native-state error."""
+
+    def __init__(self, message: str, *, code: str = "analytics_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _candidate_page(filename: str, markdown: str) -> tuple[str, dict]:
@@ -143,8 +152,33 @@ class AnalyticsService:
             and all(existing_profiles.get(name) == profile for name, profile in profiles.items())
         )
 
+    def _require_required_retention_profile(self) -> None:
+        """Integrated analytics requires original retention (F1; spec0035 §3/AC12).
+
+        The CURRENT workspace context decides eligibility, never persisted task
+        shape: a deliberately disabled profile is a standalone-only exception
+        and is refused explicitly BEFORE any proposal, control, page, registry
+        write or backend probe. The profile is never relabelled and no bytes or
+        metadata are invented.
+        """
+        try:
+            profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
+        except PrivateProfileError as exc:
+            raise AnalyticsError(
+                f"the private profile is unavailable: {exc}", code="invalid_profile"
+            ) from exc
+        if profile.retention != "required":
+            raise AnalyticsError(
+                "integrated analytics requires required original retention; the "
+                "selected private profile declares retention 'disabled', which is "
+                "a standalone-only exception — restore retention 'required' before "
+                "preparing analytics contributions",
+                code="retention_context_incompatible",
+            )
+
     def _resources(self):
         profile = load_private_profile(self.profile_path, kb_root=self.authoring_path)
+        self._require_required_retention_profile()
         return resolve_private_profile(
             profile,
             kb_root=self.authoring_path,
@@ -155,11 +189,85 @@ class AnalyticsService:
         attachment = current_attachment_digest(
             target=self.authoring_path,
             profile_path=self.profile_path,
+            analytics_enabled=True,
         )
         if not self.state.has_setup_attachment(self.workspace_id, attachment):
             raise AnalyticsError(
                 "the current analytics target and private binding need owner setup"
             )
+
+    def _restored_target(self) -> bool:
+        """True when the CURRENT destination is a restored root.
+
+        Presence of the private restore record the R4 recovery boundary
+        stamps after a completed restore (spec0034 §12.5) selects the
+        restoration-specific readiness case. The record authorizes nothing
+        by itself — it only selects the owner-prerequisite gate below; a
+        workspace without it keeps its existing native query contract
+        unchanged (F1).
+        """
+        return (
+            Path(self.config.published_path) / PRIVATE_OPERATIONS_DIR / "restore.json"
+        ).is_file()
+
+    def _offline_original_recovery_permitted(self) -> bool:
+        """True only for the offline ORIGINAL-publication recovery case.
+
+        SnapshotUnavailableError also wraps real corruption (canonical
+        size/digest/fingerprint mismatches and location.resolve failures),
+        so recovery selection in prepare_data_source requires BOTH the
+        current-destination restore marker (R4 recovery boundary) AND a
+        structural current descriptor recording a LOCAL publication
+        destination different from THIS configured restored destination —
+        i.e. an imported association whose original publication can be
+        offline. An ordinary workspace and a restored workspace already
+        readmitted to its current target keep the strict failure; the
+        persistent marker alone never selects recovery. A missing or
+        malformed structural descriptor is not permission: its
+        human-resolution error propagates. The descriptor only selects
+        fresh-authoring recovery and never validates query authorization.
+        """
+        if not self._restored_target():
+            return False
+        current = admission.load_current(self.project)
+        manifest = current.get("bound_release") if isinstance(current, dict) else None
+        destination = manifest.get("destination") if isinstance(manifest, dict) else None
+        if not isinstance(destination, str) or destination.startswith("s3://"):
+            return False
+        configured = Path(self.config.published_path).resolve()
+        return Path(destination).resolve() != configured
+
+    def _verify_restored_query_ready(self, record: dict | None) -> None:
+        """Restoration-specific query readiness (spec0035 §5 recovery; AC15).
+
+        Only a restored root requires the fresh owner setup confirmation AND
+        a current association bound to THIS destination before dependent
+        SQL; the prerequisites are decided from the structural current
+        descriptor BEFORE any full verification or old-publication IO, so
+        the refusal stays actionable even when the original publication is
+        offline. The descriptor is never treated as a validated query-ready
+        association: full verification stays in resolve_admission, and a
+        malformed operator record keeps raising its human-resolution error.
+        """
+        if record is None or not self._restored_target():
+            return
+        self._require_attachment()
+        manifest = record.get("bound_release")
+        if not isinstance(manifest, dict):
+            return
+        destination = manifest.get("destination")
+        if not isinstance(destination, str) or destination.startswith("s3://"):
+            return
+        configured = Path(self.config.published_path).resolve()
+        if Path(destination).resolve() == configured:
+            return
+        raise AnalyticsError(
+            "the current admission binds knowledge published at "
+            f"{destination}, not this workspace's destination {configured}; "
+            "owner setup confirmation alone does not move the association — "
+            "prepare a fresh reviewed contribution and admit it on the "
+            "restored destination before querying"
+        )
 
     def _operation(self, actor: Actor, action: str, task_id: str) -> Operation:
         operation = self.state.get_operation(self.workspace_id, actor, action, task_id)
@@ -205,25 +313,29 @@ class AnalyticsService:
         identity: str,
     ) -> tuple[list[dict], list[dict]]:
         native_source = f"upload_{identity[:24]}"
-        managed = self.project / ".ariadne" / "managed-sources" / identity
         source_type = facts["source_type"]
         if source_type == "xlsx":
-            from ariadne.spreadsheet_import import import_workbook
-
-            imported = import_workbook(path, sheets=sheets or [], output=managed / "workbook")
-            if imported["source_sha256"] != facts["sha256"]:
-                raise AnalyticsError("the retained XLSX bytes changed after upload")
-            if table not in imported["derived_source"]["tables"]:
-                raise AnalyticsError(
-                    "table must name one normalized table from the explicitly imported sheets"
-                )
-            artifact = Path(imported["artifact_path"]).resolve()
-            try:
-                relative = artifact.relative_to(self.project)
-            except ValueError as exc:
-                raise AnalyticsError(
-                    "derived workbook artifact escaped its private destination"
-                ) from exc
+            # Planning only: the retained upload digest and the explicit sheet
+            # selection determine the declared derived artifact identity without
+            # reading the workbook. The workbook is first interpreted in
+            # _convert_authorized_upload, after both exact grants exist.
+            if not sheets:
+                raise AnalyticsError("XLSX requires an explicit nonempty sheet selection")
+            selection = hashlib.sha256(
+                json.dumps(
+                    {"source_sha256": facts["sha256"], "sheets": sorted(sheets)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            relative = (
+                Path(".ariadne")
+                / "managed-sources"
+                / identity
+                / "workbook"
+                / selection
+                / "data.duckdb"
+            )
             entry = {
                 "name": native_source,
                 "type": "duckdb",
@@ -231,20 +343,22 @@ class AnalyticsService:
             }
             conversion = {
                 **facts,
-                "conversion_status": "converted_pending_approval",
-                "selection_identity": imported["selection_identity"],
+                "conversion_status": "staged_pending_approval",
+                "selection_identity": selection,
                 "derived_source": {
-                    "identity": imported["derived_source"]["identity"],
+                    "identity": selection,
                     "type": "duckdb",
-                    "tables": imported["derived_source"]["tables"],
                     "registry_path": relative.as_posix(),
                 },
-                "artifact_sha256": imported["artifact_sha256"],
-                "sheets": imported["sheets"],
-                "limitations": imported["limitations"],
+                "selected_sheets": sorted(sheets),
                 "cache_freshness": "unknown",
                 "formula_evaluation": False,
                 "recalculation": False,
+                "limitations": [
+                    "The workbook is not read or converted before exact native Source Approval "
+                    "and the requester's separate data grant; authorized profiling performs "
+                    "the conversion.",
+                ],
             }
             return [entry], [conversion]
 
@@ -393,6 +507,18 @@ class AnalyticsService:
                     record, _snapshot = admission.resolve_admission(self.project)
                 except ValueError:
                     record = None
+                except SnapshotUnavailableError:
+                    # SnapshotUnavailableError also wraps corruption, so the
+                    # fresh-authoring selection is permitted ONLY for the
+                    # offline ORIGINAL-publication case: a restored root whose
+                    # structural descriptor binds a LOCAL destination different
+                    # from this configured restored destination. Corruption of
+                    # an ordinary workspace's publication or of a restored
+                    # workspace's CURRENT publication still raises.
+                    if self._offline_original_recovery_permitted():
+                        record = None
+                    else:
+                        raise
                 reused = record is not None and self._declarations_present(
                     record["commit"], entries, storages
                 )
@@ -467,6 +593,72 @@ class AnalyticsService:
             )
             return response
 
+    def _convert_authorized_upload(self, actor: Actor, operation: Operation) -> dict:
+        """Convert a staged XLSX upload only after both exact grants passed.
+
+        The declared derived artifact identity is deterministic from the
+        retained upload digest and the explicit sheet selection, so this is the
+        task's first workbook access; the materialized artifact must match the
+        pre-approved declaration exactly."""
+        response = operation.response
+        conversion = response.get("conversion") or []
+        if response.get("upload_id") is None or not conversion:
+            return response
+        staged = conversion[0]
+        if staged.get("source_type") != "xlsx":
+            return response
+        if staged.get("conversion_status") != "staged_pending_approval":
+            return response
+        expected = staged["derived_source"]["registry_path"]
+        try:
+            _upload, upload_path, upload_facts = self.intake.structured(
+                self.workspace_id, actor, response["upload_id"]
+            )
+        except UploadError as exc:
+            raise AnalyticsError(f"the retained upload is unavailable: {exc}") from exc
+        from ariadne.spreadsheet_import import import_workbook
+
+        output = (self.project / expected).parent.parent
+        try:
+            imported = import_workbook(
+                upload_path, sheets=staged["selected_sheets"], output=output
+            )
+        except ValueError as exc:
+            raise AnalyticsError(str(exc)) from exc
+        if imported["source_sha256"] != upload_facts["sha256"]:
+            raise AnalyticsError("the retained XLSX bytes changed after upload")
+        artifact = Path(imported["artifact_path"]).resolve()
+        try:
+            relative = artifact.relative_to(self.project)
+        except ValueError as exc:
+            raise AnalyticsError(
+                "derived workbook artifact escaped its private destination"
+            ) from exc
+        if relative.as_posix() != expected:
+            raise AnalyticsError(
+                "converted artifact does not match its declared source identity"
+            )
+        if response["table"] not in imported["derived_source"]["tables"]:
+            raise AnalyticsError(
+                "table must name one normalized table from the explicitly imported sheets"
+            )
+        converted = {
+            **staged,
+            "conversion_status": "converted_authorized",
+            "artifact_sha256": imported["artifact_sha256"],
+            "derived_source": {
+                **staged["derived_source"],
+                "tables": imported["derived_source"]["tables"],
+            },
+            "sheets": imported["sheets"],
+            "limitations": imported["limitations"],
+        }
+        updated = {**response, "conversion": [converted]}
+        self.state.finish_operation(
+            self.workspace_id, actor, operation, operation.status, updated
+        )
+        return updated
+
     def profile_data_source(self, actor: Actor, task_id: str) -> dict:
         operation = self._operation(actor, "prepare_data_source", task_id)
         response = operation.response
@@ -477,6 +669,7 @@ class AnalyticsService:
         approval = authoring_sources.approval_state(self.project, resolved, digest)
         if approval.get("approval_digest") != response["approval_digest"]:
             raise AnalyticsError("the profile effective identity no longer matches its grant")
+        response = self._convert_authorized_upload(actor, operation)
         try:
             measured = self.api.inputs(
                 response["native_proposal"],
@@ -517,6 +710,15 @@ class AnalyticsService:
         request: dict,
     ) -> dict:
         self._project(project)
+        # The current descriptor is read STRUCTURALLY for the restoration-
+        # specific readiness decision only — never as query authorization.
+        # Ordinary workspaces (no restore record at the current destination)
+        # keep their existing native query contract unchanged (F1), and a
+        # restored old association refuses with actionable prerequisites
+        # before SQL (spec0035 §5; AC15) even when the old publication is
+        # offline.
+        current_record = admission.load_current(self.project)
+        self._verify_restored_query_ready(current_record)
         record, _snapshot = admission.resolve_admission(self.project)
         self._grant(
             actor,
@@ -884,6 +1086,9 @@ class AnalyticsService:
         core_edits: list[dict],
     ) -> dict:
         self._retry(retry_key)
+        # Integrated context eligibility BEFORE attachment digest, grant
+        # lookup, proposal writes, or any registration (F1).
+        self._require_required_retention_profile()
         self._require_attachment()
         grant = self._operation(actor, "prepare_data_source", source_task_id)
         if grant.status != "data_granted":

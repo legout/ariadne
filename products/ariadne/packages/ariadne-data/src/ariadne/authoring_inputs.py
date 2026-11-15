@@ -58,6 +58,20 @@ _INSPECTION_LIMIT_KEYS = frozenset(
 )
 _REQUEST_LIMIT_KEYS = frozenset({"sample_rows", "execution_seconds", "response_bytes", "examples"})
 
+# spec0035 §8 "Source-boundary disposition: authoring profiling limits
+# (2026-11-11)": the operator-owned HOST profiling ceilings for the
+# agent-facing ``inputs`` and schema-refresh profiling runs — a SEPARATE
+# section from ``inspection:`` (whose tighten-only rules are untouched).
+# Unlike inspection, the operator may raise or lower each finite positive
+# ceiling; a candidate's committed ``profiling:`` section is inert data and
+# a request can never exceed the current host value.
+DEFAULT_PROFILING_LIMITS = {
+    "execution_seconds": 20.0,  # one total budget: setup + sampling + statistics + FK
+    "sample_rows": 1000,  # ceiling for an EXPLICIT requested per-table sample only
+    "response_bytes": 64 * 1024,  # the complete serialized profile payload
+}
+_PROFILING_LIMIT_KEYS = frozenset({"execution_seconds", "sample_rows", "response_bytes"})
+
 
 def _finite_positive(value: object, where: str) -> None:
     """One numeric limit must be a FINITE positive number (K3 fix pass,
@@ -187,6 +201,65 @@ def effective_inspection_limits(ceilings: dict, request_limits: object) -> dict:
             )
         effective["examples"] = wanted
     return effective
+
+
+def _finite_positive_int(value: object, where: str) -> None:
+    """One row/byte ceiling must be a strict positive INTEGER (spec0035 §8):
+    a bool, float, or non-positive/non-finite value is an explicit refusal."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{where} must be a positive integer, got {value!r}")
+
+
+def project_profiling_limits(project: str | Path) -> dict:
+    """The effective operator-owned profiling ceilings of one project
+    (spec0035 §8 "Source-boundary disposition: authoring profiling limits,
+    2026-11-11"): the built-in defaults tightened or RAISED by the
+    HUMAN-MANAGED host config's optional ``profiling:`` section — unlike the
+    tighten-only ``inspection:`` rules above, the operator may raise or lower
+    each finite positive ceiling (rows/bytes strict positive integers,
+    booleans invalid; seconds a finite positive number). Read from the HOST
+    project root's working tree exactly like the documents boundary: a
+    candidate's committed ``profiling:`` section is inert data and can never
+    widen host policy, and agent requests cannot exceed the current host
+    ceilings. The trusted standalone profiler CLI is not governed by these
+    ceilings. An invalid or unknown-key section is an explicit error naming
+    the field, raised before any source access."""
+    root = Path(project)
+    registry_path = root / "ariadne.yaml"
+    limits = dict(DEFAULT_PROFILING_LIMITS)
+    if not registry_path.is_file():
+        return limits
+    try:
+        doc = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{registry_path}: not valid YAML: {exc}") from None
+    if not isinstance(doc, dict):
+        raise ValueError(f"{registry_path}: top level is not a mapping")
+    section = doc.get("profiling")
+    if section is None:
+        return limits
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"{registry_path}: 'profiling' must be a mapping with the optional keys "
+            f"{sorted(_PROFILING_LIMIT_KEYS)}"
+        )
+    unknown = sorted(set(section) - _PROFILING_LIMIT_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{registry_path}: 'profiling' carries unsupported key(s) {unknown}; "
+            f"allowed: {sorted(_PROFILING_LIMIT_KEYS)}"
+        )
+    if "execution_seconds" in section:
+        _finite_positive(
+            section["execution_seconds"], f"{registry_path}: profiling.execution_seconds"
+        )
+        limits["execution_seconds"] = section["execution_seconds"]
+    for key in ("sample_rows", "response_bytes"):
+        if key not in section:
+            continue
+        _finite_positive_int(section[key], f"{registry_path}: profiling.{key}")
+        limits[key] = section[key]
+    return limits
 
 
 def _input_root(project: str | Path) -> Path:

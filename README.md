@@ -2,9 +2,10 @@
 
 One repository, two independent products: **Ariadne Core** (`ariadne-data`)
 for governed metrics, and the **Lumio Knowledge Base foundation**
-(`lumio-wiki`, plus the optional `lumio-lancedb` adapter). Colocation serves
-shared development and review only — no product requires the other, and
-installing both never activates their integration.
+(`lumio-wiki`, plus the optional `lumio-lancedb` adapter). Ariadne always
+builds on the Lumio SDK (`lumio-wiki` is a required dependency of
+`ariadne-data`); Lumio stays fully usable without Ariadne, and installing
+both never activates their integration on its own.
 
 > **Repository naming:** the canonical location is approved to be renamed
 > from `legout/ariadne` to `legout/ariadne-lumio` at an explicitly authorized
@@ -31,10 +32,11 @@ capture adapters and a real-world Knowledge Base live under
 [`products/lumio/examples/`](products/lumio/examples/). Package details:
 [`products/lumio/packages/lumio-wiki/README.md`](products/lumio/packages/lumio-wiki/README.md).
 
-### 2. Ariadne alone — governed metrics
+### 2. Ariadne Core — governed metrics
 
 Define and calculate governed metrics over approved data with an explicit
-human review gate. Standalone mode works without Lumio.
+human review gate. Ariadne runs entirely locally (CLI + query engine; no
+service, app or cloud) and always pairs with its required Lumio SDK.
 
 ```bash
 pip install ariadne-data   # local CLI + query engine; optional extras: [mcp], [documents]
@@ -71,9 +73,10 @@ stays inactive until reviewed confirmation.
 
 - **Using the products:** install the published wheels into your own
   environment (`pip install lumio-wiki` / `pip install ariadne-data`); all
-  packages require Python ≥ 3.14. You do not need this checkout, and
-  standalone use never requires the other product — only the explicit
-  integrated route (entry 3) installs both.
+  packages require Python ≥ 3.14. You do not need this checkout. Installing
+  `ariadne-data` always brings its required compatible `lumio-wiki`
+  dependency (SDK 0.7 line with Core 0.8); installing or using `lumio-wiki`
+  alone never installs or requires Ariadne.
 - **Developing this repository:** one uv workspace with a single development
   lockfile; the root distributes nothing. Component commands and scope notes:
   [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -87,5 +90,6 @@ stay attached to their artifacts. No repository-wide license is implied by
 colocation.
 
 The private Lumio web application is a separate product, clearly distinct
-from this public foundation; the separately distributed Ariadne Agent is not
-part of the workspace either. Neither is required by any entry above.
+from this public foundation and not required by any entry above. The former
+separately distributed Ariadne Agent is retired: external host agents consume
+the skill/MCP surfaces instead ([ADR-0027](products/ariadne/project/adr/0027-host-agents-only.md)).
