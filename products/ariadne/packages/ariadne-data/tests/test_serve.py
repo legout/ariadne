@@ -221,7 +221,7 @@ def seed_demo_db(db_path: Path) -> Path:
 
 
 # Passage coordinates below are hand-counted from this native Reference (spec0002).
-PASSAGE_PAGE = '''---
+PASSAGE_PAGE = """---
 id: "entity:passage-demo"
 title: "Passage demo"
 entity_types:
@@ -284,7 +284,7 @@ pangolin note inside the four-tilde fence
 ~~~~
 
 Okapi paragraph after the four-tilde fence.
-'''
+"""
 
 
 @pytest.fixture(scope="module")
@@ -511,8 +511,8 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
 
 def test_list_datasets_returns_demo_tables_with_columns(facade):
     datasets = {d["name"]: d for d in asyncio.run(facade.list_datasets())}
-    assert set(datasets) == {"orders", "customers", "currency_conversion_rate"}
-    order_columns = {c["name"]: c["type"] for c in datasets["orders"]["columns"]}
+    assert set(datasets) == {"demo.orders", "demo.customers", "demo.currency_conversion_rate"}
+    order_columns = {c["name"]: c["type"] for c in datasets["demo.orders"]["columns"]}
     assert {"order_id", "customer_id", "status", "amount"} <= set(order_columns)
     assert all(
         isinstance(c["type"], str) and c["type"] for d in datasets.values() for c in d["columns"]

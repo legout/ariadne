@@ -1445,8 +1445,7 @@ def verify_release(record, snapshot):
             and record["native_publication"]["destination"] == manifest["destination"]
             and (
                 source_admission is None
-                or record["native_publication"]["retention"]
-                == source_admission["retention"]
+                or record["native_publication"]["retention"] == source_admission["retention"]
             )
             and manifest["knowledge"]["namespace"] == selected["namespace"]
             and manifest["knowledge"]["subtree"] == selected["subtree"]
@@ -1501,7 +1500,7 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
     page = next(p for p in snapshot.pages if p.entity_id == binding.metric_entity_id)
     consumed = [page, *binding.required_policies]
     now = _now if _now is not None else context._assessment_now()
-    signals = [context._page_view(p.citation, disclose_native(p.native), now) for p in consumed]
+    signals = [context._page_view(p.path, disclose_native(p.native), now) for p in consumed]
     computation = None
     if int((manifest.get("selector") or {}).get("support_revision", 1) or 1) >= 2:
         # C2 (spec0035 §5): the supported revision-2 route resolves the
@@ -1608,9 +1607,7 @@ def _input_context_page_view(page, manifest, now):
     }
 
 
-def input_context(
-    manifest, snapshot, operation, resources, *, check_targets=None, _now=None
-):
+def input_context(manifest, snapshot, operation, resources, *, check_targets=None, _now=None):
     """Assemble the complete §10.4 ``input_context`` of one revision-3 query
     operation from the pinned, verified Bound Release (spec0032 §§3–4,
     §10.4–§10.5 stage 4): every consumed physical table resource in canonical
@@ -1999,12 +1996,10 @@ def search_examples(manifest, query, limit=10, include_history=False, include_sq
         for entry in citations:
             try:
                 cited = _read(str(entry.get("path")))
-            except (ValueError, KeyError, OSError, TypeError):
+            except ValueError, KeyError, OSError, TypeError:
                 stale = True  # a missing/hidden/unreadable citation is stale
                 break
-            if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get(
-                "sha256"
-            ):
+            if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get("sha256"):
                 stale = True
                 break
         if stale and not include_history:

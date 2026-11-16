@@ -843,18 +843,35 @@ def measured_hypothesis(tmp_path: Path):
     its retained receipt, and the Reference page citing that receipt."""
     project, api, started = approved_project(tmp_path)
     candidate = prefix_candidate()
-    measured = api.inspect_mapping(started["proposal"], started["candidate_revision"], candidate)
-    edited = api.edit_pages_batch(
+    citing = [
+        {
+            "id": "policy-order-numbering",
+            "title": "Order numbering",
+            "resource": "policies/order-numbering.md",
+        }
+    ]
+    revision = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        reference_edit(reference_page(candidate, [measured["receipt_id"]])),
+        [
+            {"path": NATIVE_POLICY_REL, "content": NATIVE_POLICY_PAGE},
+            *reference_edit(reference_page(candidate, [], sources=citing)),
+        ],
+    )["revision"]
+    measured = api.inspect_mapping(started["proposal"], revision, candidate)
+    edited = api.edit_pages_batch(
+        started["proposal"],
+        revision,
+        reference_edit(reference_page(candidate, [measured["receipt_id"]], sources=citing)),
     )
     return project, api, started, candidate, measured, edited
 
 
 def _evidence_block(page_text: str) -> dict | None:
-    return (_frontmatter(page_text).get("ariadne_profile") or {}).get("native", {}).get(
-        "ariadne_evidence"
+    return (
+        (_frontmatter(page_text).get("ariadne_profile") or {})
+        .get("native", {})
+        .get("ariadne_evidence")
     )
 
 
@@ -1370,9 +1387,7 @@ def test_retargeted_representation_invalidates_the_receipt_summary(tmp_path):
         "measured right bindings" in error or "measured left bindings" in error
         for error in failed["errors"]
     )
-    assert (
-        _evidence_block(read_reference(api, started)["content"]) is None
-    )
+    assert _evidence_block(read_reference(api, started)["content"]) is None
 
 
 def test_unmeasured_required_scope_invalidates_the_receipt_summary(tmp_path):
@@ -1398,9 +1413,7 @@ def test_unmeasured_required_scope_invalidates_the_receipt_summary(tmp_path):
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("required scope" in error for error in failed["errors"])
-    assert (
-        _evidence_block(read_reference(api, started)["content"]) is None
-    )
+    assert _evidence_block(read_reference(api, started)["content"]) is None
 
 
 def test_aged_receipt_beyond_the_operator_budget_loses_its_summary(tmp_path):
@@ -1433,9 +1446,7 @@ def test_aged_receipt_beyond_the_operator_budget_loses_its_summary(tmp_path):
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("age budget" in error for error in failed["errors"])
-    assert (
-        _evidence_block(read_reference(api, started)["content"]) is None
-    )
+    assert _evidence_block(read_reference(api, started)["content"]) is None
 
 
 NATIVE_POLICY_PAGE = (
@@ -1470,6 +1481,8 @@ NATIVE_POLICY_PAGE = (
     "store prefix.\n"
 )
 NATIVE_POLICY_REL = "knowledge/policies/order-numbering.md"
+
+
 def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     """Finding 6: the receipt binds the cited Policy/OSI pages of the
     Reference that declares its candidate — a changed cited Policy page
@@ -1478,8 +1491,11 @@ def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     candidate = prefix_candidate()
     policy_edit = [{"path": NATIVE_POLICY_REL, "content": NATIVE_POLICY_PAGE}]
     citing = [
-        {"id": "policy-order-numbering", "title": "Order numbering",
-         "resource": "policies/order-numbering.md"}
+        {
+            "id": "policy-order-numbering",
+            "title": "Order numbering",
+            "resource": "policies/order-numbering.md",
+        }
     ]
     revision = api.edit_pages_batch(
         started["proposal"], started["candidate_revision"], policy_edit
@@ -1491,9 +1507,7 @@ def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     )["revision"]
     measured = api.inspect_mapping(started["proposal"], revision, candidate)
     policy_deps = measured["receipt"]["dependencies"]["policy_osi"]
-    assert [entry["resource"] for entry in policy_deps] == [
-        "policies/order-numbering.md"
-    ]
+    assert [entry["resource"] for entry in policy_deps] == ["knowledge/policies/order-numbering.md"]
     assert all(entry["digest"] for entry in policy_deps)
     revision = api.edit_pages_batch(
         started["proposal"],
@@ -1512,9 +1526,7 @@ def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
         [
             {
                 "path": NATIVE_POLICY_REL,
-                "content": NATIVE_POLICY_PAGE.replace(
-                    "store-scoped", "globally unique"
-                ),
+                "content": NATIVE_POLICY_PAGE.replace("store-scoped", "globally unique"),
             }
         ],
     )["revision"]
@@ -1522,9 +1534,7 @@ def test_changed_cited_policy_page_invalidates_the_receipt(tmp_path):
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("cited Policy/OSI" in error for error in failed["errors"])
-    assert (
-        _evidence_block(read_reference(api, started)["content"]) is None
-    )
+    assert _evidence_block(read_reference(api, started)["content"]) is None
 
 
 def test_changed_lookup_asset_schema_invalidates_the_receipt(tmp_path):
@@ -1549,9 +1559,7 @@ def test_changed_lookup_asset_schema_invalidates_the_receipt(tmp_path):
     outcomes = {check["name"]: check["outcome"] for check in failed["report"]["checks"]}
     assert outcomes["mapping_evidence"] == "failed"
     assert any("lookup asset" in error for error in failed["errors"])
-    assert (
-        _evidence_block(read_reference(api, started)["content"]) is None
-    )
+    assert _evidence_block(read_reference(api, started)["content"]) is None
 
 
 def test_requested_bindings_receive_bounded_shape_summaries(tmp_path):

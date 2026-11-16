@@ -27,9 +27,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 from ariadne import skill as skill_module  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from tests.test_context_admission import (  # noqa: E402
-    admit as context_admit,
-)
-from tests.test_context_admission import (  # noqa: E402
     admitted_candidate as context_only_reviewed,
 )
 from tests.test_git_admission import (  # noqa: E402
@@ -215,8 +212,10 @@ def test_absent_admission_and_corrupt_or_changed_state_block_never_fall_back(
 
 
 def test_context_only_admission_is_distinguished_from_a_metric_catalog(tmp_path, capsys):
+    from tests.test_git_admission import admit as composite_admit
+
     project, _api, review = context_only_reviewed(tmp_path)
-    assert context_admit(project, review) == 0
+    assert composite_admit(project, review) == 0
     report = status_json(capsys, "--project", str(project))
     admission = report["project"]["admission"]
     assert admission["state"] == "valid"  # admission is valid…
@@ -552,9 +551,7 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     example_review = api.review_proposal(saved["proposal"])
     from integration.tests.lumio_metric_mvp import activate, preview
 
-    activate(
-        project, example_review, preview(project, example_review, tmp_path / "published")
-    )
+    activate(project, example_review, preview(project, example_review, tmp_path / "published"))
 
     report = status_json(capsys, "--project", str(project))
     assert report["work_pending"]["answer_examples"] == {

@@ -12,7 +12,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
@@ -37,8 +36,13 @@ from lumio_wiki.source_references import (  # pyright: ignore[reportMissingImpor
     serialize_source_reference_manifest,
 )
 from tests.test_contracts import (
+    METRIC_PAGE,
     ORDERS_BINDINGS,
     ORDERS_CONTRACT,
+    POLICY_PAGE,
+    REFERENCE_PAGE,
+    SKILLS_PAGE,
+    TABLES_PAGE,
     contract_project,
     contracted,
     write_native_db,
@@ -99,6 +103,19 @@ def isolated_environment(tmp_path, monkeypatch):
 def content_project(root):
     """One native DuckDB source: completed100+50, cancelled25 => 150."""
     project = contract_project(root)
+    # Historical inert canaries prove native reads and refresh never maintain a classic mirror.
+    for rel, payload in {
+        "tables/orders.md": TABLES_PAGE,
+        "references/joins/orders--orders.md": REFERENCE_PAGE,
+        "policies/all-orders-count.md": POLICY_PAGE,
+        "metrics/order_count.md": METRIC_PAGE,
+        "skills/run-the-demo.md": SKILLS_PAGE,
+    }.items():
+        path = project / "context_layer" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload)
+    for rel in ("metrics/order-count.md", "policies/all-orders-count.md"):
+        (project / "knowledge" / rel).unlink()
     write_native_db(
         project / "data" / "orders.duckdb",
         "orders",
@@ -763,17 +780,20 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                 },
             ),
         ),
-        ("save_example", (
-            {
-                "question": "Revenue?",
-                "interpretation": "Exclude cancelled orders.",
-                "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
-                "result": observed_result,
-                "submitter": "human:synthetic-operator",
-                "attestation": "Synthetic fixture meaning checked against the stated rule.",
-                "sources": ["context_layer/metrics/revenue.md"],
-            },
-        )),
+        (
+            "save_example",
+            (
+                {
+                    "question": "Revenue?",
+                    "interpretation": "Exclude cancelled orders.",
+                    "method": {"operation": "get_metric", "arguments": {"name": "revenue"}},
+                    "result": observed_result,
+                    "submitter": "human:synthetic-operator",
+                    "attestation": "Synthetic fixture meaning checked against the stated rule.",
+                    "sources": ["context_layer/metrics/revenue.md"],
+                },
+            ),
+        ),
         ("search_examples", ("revenue",)),
     ]
     # Q2 (spec0029 §1.2): query_metrics and list_datasets left the unsupported

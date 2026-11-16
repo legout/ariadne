@@ -16,6 +16,7 @@ from tests.test_git_authoring import (
     branch_of,
     complete_bundle_project,
     run_git,
+    select_revision4_fixture,
     worktree_of,
 )
 
@@ -23,6 +24,7 @@ from tests.test_git_authoring import (
 def test_ad_hoc_is_ephemeral_and_explicit_authoring_retains_definition(tmp_path, capsys):
     """Ad-hoc success/refusal write nothing; explicit Authoring retains a definition."""
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     authoring = AuthoringProject(project)
     review = _validated_ready(
         authoring,
@@ -127,6 +129,7 @@ def test_ad_hoc_is_ephemeral_and_explicit_authoring_retains_definition(tmp_path,
 
 def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsys):
     """Explicit candidate discovery is source-free; admission controls Example status."""
+    from lumio_wiki.ariadne_context import UnadmittedInputError
 
     def expect_value_error(message, operation):
         try:
@@ -138,6 +141,7 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
 
     # Metadata-only candidate discovery works before any admission exists.
     fresh_project = complete_bundle_project(tmp_path / "fresh")
+    select_revision4_fixture(fresh_project)
     fresh = AuthoringProject(fresh_project).start_proposal()
     assert admission.load_current(fresh_project) is None
     assert (
@@ -158,12 +162,22 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     assert json.loads(capsys.readouterr().out) == []
 
     project = complete_bundle_project(tmp_path / "admitted")
+    select_revision4_fixture(project)
     authoring = AuthoringProject(project)
     review = _validated_ready(authoring, project, _policy_edit("The G2 fixture rule."))
     assert admit(project, review) == 0
     capsys.readouterr()
     runtime = QueryRuntime.open_project(project)
     metrics_before = asyncio.run(runtime.list_metrics())
+    before_admission = admission.load_current(project)
+    assert before_admission is not None
+    before_release = before_admission["bound_release"]["digest"]
+    assert [entry["name"] for entry in metrics_before if isinstance(entry, dict)] == ["event_count"]
+    assert all(
+        entry["bound_release"] == before_release
+        for entry in metrics_before
+        if isinstance(entry, dict)
+    )
     assert asyncio.run(runtime.search_examples("event count")) == []
 
     def submission(question):
@@ -180,10 +194,7 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
             },
             "submitter": "Ariadne Tests",
             "attestation": "I confirmed this against the observed event_count result.",
-            "sources": [
-                "context_layer/metrics/event_count.md",
-                "context_layer/policies/all-events-count.md",
-            ],
+            "sources": ["metrics/event-count.md", "policies/all-events-count.md"],
         }
 
     example = submission("How many events are present?")
@@ -203,7 +214,7 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     saved = asyncio.run(runtime.save_example(example))
     assert saved["base_revision"] == review["revision"]
     assert saved["candidate_revision"] != saved["base_revision"]
-    assert saved["status"] == "draft" and saved["path"].startswith("answer_examples/")
+    assert saved["status"] == "draft" and saved["path"].startswith("knowledge/answer-examples/")
     from ariadne.serve import build_app
     from tests.test_authoring_mcp import _payload
 
@@ -237,12 +248,8 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
         page["path"] == "policies/unadmitted-g2-boundary.md"
         for page in asyncio.run(runtime.list_context_pages())
     )
-    try:
+    with pytest.raises(UnadmittedInputError, match="no visible context page"):
         asyncio.run(runtime.read_context_page("policies/unadmitted-g2-boundary.md"))
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("an unadmitted project-root page must not be readable")
     assert asyncio.run(runtime.search_examples("event count")) == []
 
     # An explicit write to an existing candidate must use its current revision.
@@ -305,8 +312,9 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     capsys.readouterr()
     _, admitted_snapshot = admission.resolve_admission(project)
     saved_bytes = (admitted_snapshot / saved["path"]).read_bytes()
-    assert b"status: draft" in saved_bytes and b"review:" not in saved_bytes
-    assert example["question"] in (admitted_snapshot / "answer_examples" / "index.md").read_text()
+    assert b"lifecycle: draft" in saved_bytes and b"review:" not in saved_bytes
+    assert example["question"] in (admitted_snapshot / saved["path"]).read_text()
+    assert not (admitted_snapshot / "answer_examples").exists()
 
     runtime.con.close()
     current = QueryRuntime.open_project(project)
@@ -316,7 +324,27 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
         "What is the total number of event rows?",
     }
     assert all(hit["status"] == "stable" and hit["stale"] is False for hit in admitted_hits)
-    assert asyncio.run(current.list_metrics()) == metrics_before
+    metrics_after = asyncio.run(current.list_metrics())
+    after_admission = admission.load_current(project)
+    assert after_admission is not None
+    after_release = after_admission["bound_release"]["digest"]
+    assert after_release != before_release
+    assert all(
+        entry["bound_release"] == after_release
+        for entry in metrics_after
+        if isinstance(entry, dict)
+    )
+    assert [
+        {key: value for key, value in entry.items() if key != "bound_release"}
+        if isinstance(entry, dict)
+        else entry
+        for entry in metrics_after
+    ] == [
+        {key: value for key, value in entry.items() if key != "bound_release"}
+        if isinstance(entry, dict)
+        else entry
+        for entry in metrics_before
+    ]
 
     changed = authoring.start_proposal()
     edited = authoring.edit_pages_batch(
@@ -390,6 +418,7 @@ def test_example_commit_failure_reports_unadmitted_worktree_state(tmp_path, caps
     from ariadne import answer_examples, proposals
 
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     authoring = AuthoringProject(project)
     review = _validated_ready(authoring, project, _policy_edit("The G2 failure fixture."))
     assert admit(project, review) == 0
@@ -400,7 +429,7 @@ def test_example_commit_failure_reports_unadmitted_worktree_state(tmp_path, caps
     original_git = proposals._git
 
     def fail_example_commit(args, cwd, **kwargs):
-        if args[:1] == ["commit"] and "ariadne: add answer example partial-example" in args:
+        if args[:1] == ["commit"] and cwd == worktree_of(project, started["proposal"]):
             raise OSError("simulated commit failure")
         return original_git(args, cwd, **kwargs)
 
@@ -434,7 +463,7 @@ def test_example_commit_failure_reports_unadmitted_worktree_state(tmp_path, caps
         raise AssertionError("failed Git commit must report the unadmitted candidate residue")
     assert f"Recorded candidate {started['candidate_revision']}" in message
     assert f"branch HEAD {started['candidate_revision']}" in message
-    assert "A  answer_examples/partial-example.md" in message
+    assert "A  knowledge/answer-examples/partial-example.md" in message
     assert "simulated commit failure" in message
     runtime.con.close()
 
@@ -532,9 +561,10 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
     monkeypatch.setattr(proposals, "_git", observe_git)
     assert cli_main(["setup", "--project", str(fresh), "--no-input"]) == 0
     output = capsys.readouterr().out
-    assert "setup never runs git init/config" in output
-    assert "source permission and Admission remain separate human decisions" in output
-    assert commands
+    assert "--namespace" in output and "--private-profile" in output
+    assert "source approval" in output and "Git Review Admission" in output
+    assert commands == []
+    assert not fresh.exists()
     assert not (fresh / ".git").exists()
     assert not (fresh / ".ariadne" / "source-approvals.json").exists()
     assert not (fresh / ".ariadne" / "current.json").exists()
@@ -604,6 +634,7 @@ def test_admitted_example_search_refuses_snapshot_drift(tmp_path, capsys):
     from ariadne.discovery import DiscoveryRuntime
 
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     authoring = AuthoringProject(project)
     initial = _validated_ready(authoring, project, _policy_edit("The G2 example rule."))
     assert admit(project, initial) == 0
@@ -623,10 +654,7 @@ def test_admitted_example_search_refuses_snapshot_drift(tmp_path, capsys):
         },
         "submitter": "Ariadne Tests",
         "attestation": "I confirmed this against the observed event_count result.",
-        "sources": [
-            "context_layer/metrics/event_count.md",
-            "context_layer/policies/all-events-count.md",
-        ],
+        "sources": ["metrics/event-count.md", "policies/all-events-count.md"],
     }
     saved = asyncio.run(runtime.save_example(submission))
     runtime.con.close()

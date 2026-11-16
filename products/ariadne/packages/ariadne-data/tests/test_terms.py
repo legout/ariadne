@@ -337,18 +337,19 @@ def orders_resource() -> str:
     return table_resource("orders", None, "orders", "orders")
 
 
-def order_reference_page(orders: str | None = None) -> str:
+def order_reference_page(orders: str | None = None, *, source: dict | None = None) -> str:
     """One structured Term Reference: the umbrella concept carries a local
     (store-scoped composite) and a global (concatenated) representation plus
     one unconfirmed prefix-mapping hypothesis citing the actual Seed Notes
     footnote."""
     orders = orders or orders_resource()
+    source = source or {"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}
     native = {
         "type": "reference",
         "title": "Order number",
         "description": "The shared order-number concept of the orders store.",
         "tags": ["reference", "term"],
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [source],
         "aliases": ["order number concept"],
         "ariadne": {
             "version": 1,
@@ -377,7 +378,7 @@ def order_reference_page(orders: str | None = None) -> str:
                     "from": "local-order-number",
                     "to": "global-order-number",
                     "claim": "hypothesis",
-                    "source_ids": ["seed-notes"],
+                    "source_ids": [source["id"]],
                     "receipt_ids": [],
                 }
             ],
@@ -392,7 +393,7 @@ def order_reference_page(orders: str | None = None) -> str:
         "lifecycle": "approved",
         "visibility": "public",
         "aliases": ["order number concept"],
-        "sources": [{"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}],
+        "sources": [source],
         "ariadne_profile": {
             "version": 1,
             "kind": "reference",
@@ -443,7 +444,15 @@ def admitted_with_reference(tmp_path: Path) -> tuple[Path, dict]:
     edited = api.edit_pages_batch(
         started["proposal"],
         started["candidate_revision"],
-        reference_edit(order_reference_page()),
+        reference_edit(
+            order_reference_page(
+                source={
+                    "id": "order-number-format",
+                    "title": "Order number format",
+                    "resource": "policies/order-number-format.md",
+                }
+            )
+        ),
     )
     validated = api.validate_proposal(started["proposal"], edited["revision"])
     assert validated["ok"] is True and validated["errors"] == []
@@ -488,7 +497,9 @@ def test_order_number_resolves_alternatives_with_exact_bindings_and_unconfirmed_
     ]
     assert local["scope"] == [{"resource": orders, "column": "store_id"}]
     assert local["reference_role"] == "term"
-    assert local["sources"] == [{"id": "seed-notes", "resource": "data/seed_notes.md"}]
+    assert local["sources"] == [
+        {"id": "seed-notes", "title": "Seed notes", "resource": "data/seed_notes.md"}
+    ]
     # the resolver never applies a transform, rewrites SQL or authorizes a join
     assert not ({"sql", "transform", "join"} & set(local))
     [mapping] = local["mappings"]
@@ -626,9 +637,7 @@ def _term_page(index: int, *, description: str | None = None) -> str:
     )
 
 
-def _candidate_with_pages(
-    tmp_path: Path, pages: dict[str, str]
-) -> tuple[AuthoringProject, str]:
+def _candidate_with_pages(tmp_path: Path, pages: dict[str, str]) -> tuple[AuthoringProject, str]:
     """A REAL candidate whose knowledge/ carries the authored reference pages
     in ONE public page batch — the candidate resolver seam reads the
     producer's public candidate parse of exactly this revision (spec0035 §2;

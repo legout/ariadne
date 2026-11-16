@@ -477,8 +477,7 @@ class _DiscoverySession:
                     )
                 )
             hint = (
-                "Local integrated MVP: get_metric, query_metrics and "
-                "list_datasets; other serving operations refuse."
+                f"Integrated supported operations: {', '.join(manifest['support']['operations'])}."
             )
         return [*entries, hint]
 
@@ -648,6 +647,7 @@ class _DiscoverySession:
             "no admitted native Context snapshot is available for this "
             "project; author and admit a reviewed candidate revision first"
         )
+
     async def list_context_pages(self) -> list[dict]:
         """List admitted Context metadata without opening a source.
 

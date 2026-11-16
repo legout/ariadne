@@ -559,7 +559,7 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
     """Issue #44 [2]: a page-only change never bypasses the inherited semantic
     gates — an unsafe inherited Grain (the labels join fans out the events
     grain) or a broken governing Policy citation refuses validation with the
-    semantic/citation check FAILED, never not_applicable, even though the
+    semantic/native Context check FAILED, never not_applicable, even though the
     edit itself touched not one semantic byte (spec 0010 §9: existing
     inherited semantic artifacts still undergo their applicable checks)."""
     project = complete_bundle_project(tmp_path / "proj")
@@ -581,9 +581,7 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
         failing = "grain"
     else:  # broken governing Policy: the native metric page cites an unresolvable page
         (project / "knowledge" / "metrics" / "event-count.md").write_text(
-            NATIVE_METRIC_PAGE.replace(
-                "policies/all-events-count.md", "policies/missing.md"
-            ),
+            NATIVE_METRIC_PAGE.replace("policies/all-events-count.md", "policies/missing.md"),
             encoding="utf-8",
         )
         run_git(project, "add", "--", "knowledge/metrics/event-count.md")
@@ -597,7 +595,7 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
             "knowledge/metrics/event-count.md",
         )
         edit = {"kind": "seed_notes", "content": SEED_NOTES + "Revised seed note.\n"}
-        failing = "citations"
+        failing = "context_integration"
 
     api = AuthoringProject(project)
     started = api.start_proposal()
@@ -610,6 +608,10 @@ def test_semantic_checks_stay_full_for_inherited_declarations(tmp_path, variant)
     assert result["ok"] is False
     checks = {check["name"]: check for check in result["report"]["checks"]}
     assert checks[failing]["outcome"] == "failed", failing
+    if variant == "broken-policy":
+        assert "policies/missing.md" in checks[failing]["detail"]
+        assert result["revision"] == edited["revision"]
+        assert result["attempts"] == 1
     # the semantic checks ran — they are never not_applicable while the
     # inherited OSI/metric/Policy declarations are effective
     for name in ("structural", "compile", "bind", "grain"):
@@ -769,6 +771,10 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     an author-fabricated ``confirmed`` page flag fails the page contract long
     before any admission; and a --confirm-mapping typo never activates
     anything."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
+    from tests.test_git_admission import admit as composite_admit
+
     project, _api, review = admitted_candidate(tmp_path / "proj")
 
     for bad in (
@@ -777,13 +783,18 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
         "order-number:nope",
         "not-a-selection",
     ):
-        assert admit(project, review, confirm_mapping=[bad]) == 1, bad
+        assert composite_admit(project, review, extra=("--confirm-mapping", bad)) == 1, bad
         error = json.loads(capsys.readouterr().err)
         assert "error" in error, bad
         assert not (project / CURRENT).exists()
 
     # the hypothesis refusal names the classification rule
-    assert admit(project, review, confirm_mapping=["order-number:local-to-global-prefix"]) == 1
+    assert (
+        composite_admit(
+            project, review, extra=("--confirm-mapping", "order-number:local-to-global-prefix")
+        )
+        == 1
+    )
     message = json.loads(capsys.readouterr().err)["error"]["message"]
     assert "hypothesis" in message and "asserted" in message
 
@@ -793,16 +804,15 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     forged = yaml.safe_load(order_reference_page().split("---")[1])
     forged["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["confirmed"] = True
     front = yaml.safe_dump(forged, default_flow_style=False, sort_keys=False).strip()
-    edited = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
-        reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
-    )
-    result = api.validate_proposal(review["proposal"], edited["revision"])
-    assert result["ok"] is False
-    assert any("unsupported field" in error for error in result["errors"])
-    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    assert outcomes["page_contract"] == "failed"
+    revision = branch_of(project, review["proposal"])
+    with pytest.raises(GitAuthoringError, match="unsupported field.*confirmed"):
+        api.edit_pages_batch(
+            review["proposal"],
+            revision,
+            reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
+        )
+    assert branch_of(project, review["proposal"]) == revision
+    assert not (project / CURRENT).exists()
 
 
 # --------------- [4] honest counterevidence and unsupported/conflicting claims
@@ -1101,8 +1111,7 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     assert validated["ok"] is True
     second = api.review_proposal(proposal)
     assert (
-        admit(project, second, destination=published, expected=review["revision"])
-        == 0
+        admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection
     outcome = json.loads(capsys.readouterr().out)
     [retained] = outcome["retained_confirmations"]
@@ -1125,9 +1134,9 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # footnotes — the citation rides both the page citations and the native
     # footnote list (the classic single-list append no longer suffices)
     changed_page["ariadne_profile"]["native"]["sources"].append(dict(citation))
-    changed_page["ariadne_profile"]["native"]["ariadne"]["mappings"][1][
-        "source_ids"
-    ] = ["orders-catalog"]
+    changed_page["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = [
+        "orders-catalog"
+    ]
     front = yaml.safe_dump(changed_page, default_flow_style=False, sort_keys=False).strip()
     changed = api.edit_pages_batch(
         proposal,
@@ -1138,8 +1147,7 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     assert validated["ok"] is True
     third = api.review_proposal(proposal)
     assert (
-        admit(project, third, destination=published, expected=second["revision"])
-        == 0
+        admit(project, third, destination=published, expected=second["revision"]) == 0
     )  # still no selection
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
@@ -1199,9 +1207,7 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
         candidate["proposal"], branch_of(project, candidate["proposal"]), declared
     )
     assert fresh["receipt_id"] != measured["receipt_id"]
-    page = yaml.safe_load(
-        read_reference(api, candidate["proposal"])["content"].split("---", 2)[1]
-    )
+    page = yaml.safe_load(read_reference(api, candidate["proposal"])["content"].split("---", 2)[1])
     page["ariadne_profile"]["native"]["ariadne"]["mappings"][0]["receipt_ids"] = [
         fresh["receipt_id"]
     ]
@@ -1216,8 +1222,7 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     assert validated["ok"] is True
     second = api.review_proposal(candidate["proposal"])
     assert (
-        admit(project, second, destination=published, expected=first["revision"])
-        == 0
+        admit(project, second, destination=published, expected=first["revision"]) == 0
     )  # no selection: the dependency changed
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
@@ -1387,8 +1392,7 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     assert assertion["assertion_digest"] != prior_digest  # effective identity moved
 
     assert (
-        admit(project, second, destination=published, expected=review["revision"])
-        == 0
+        admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection: it must not inherit
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []
@@ -1446,12 +1450,15 @@ def test_expired_evidence_never_serves_as_current_confirmed_guidance(tmp_path, c
     assert validated["ok"] is True
     review = api.review_proposal(candidate["proposal"])
     published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
-    assert admit(
-        project,
-        review,
-        confirm_mapping=["order-number:measured-assertion"],
-        destination=published,
-    ) == 0
+    assert (
+        admit(
+            project,
+            review,
+            confirm_mapping=["order-number:measured-assertion"],
+            destination=published,
+        )
+        == 0
+    )
     capsys.readouterr()
     commit = read_current(project)["commit"]
 
@@ -1497,12 +1504,15 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     assert first["ok"] is True
     review = api.review_proposal(candidate["proposal"])
     published = tmp_path / "published"  # composite preview→confirm (spec0032 §10)
-    assert admit(
-        project,
-        review,
-        confirm_mapping=["order-number:measured-assertion"],
-        destination=published,
-    ) == 0
+    assert (
+        admit(
+            project,
+            review,
+            confirm_mapping=["order-number:measured-assertion"],
+            destination=published,
+        )
+        == 0
+    )
     capsys.readouterr()
 
     # a later candidate of the same proposal, validated while fresh: the
@@ -1523,8 +1533,7 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     aged_context_clock(monkeypatch, 26)  # past the budget BEFORE admitting
     second = api.review_proposal(review["proposal"])
     assert (
-        admit(project, second, destination=published, expected=review["revision"])
-        == 0
+        admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection: nothing may retain
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["retained_confirmations"] == []

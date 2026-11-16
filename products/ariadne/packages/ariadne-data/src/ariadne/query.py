@@ -397,11 +397,13 @@ class _QueryRuntimeSession(_DiscoverySession):
             raise ValueError(MISSING_CATALOG)
         if name not in self._metrics:  # spec §7/rev 4: discovery before failure
             available = ", ".join(sorted(self._metrics))
-            hint = (
-                ROUTING_HINT
-                if self._context_snapshot is None
-                else ("Local integrated MVP: get_metric and query_metrics; no Ad-hoc fallback.")
-            )
+            hint = ROUTING_HINT
+            if self._context_snapshot is not None:
+                assert self._managed is not None
+                hint = (
+                    "Integrated supported operations: "
+                    f"{', '.join(self._managed['bound_release']['support']['operations'])}."
+                )
             raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
         if self._managed is not None and self._context_snapshot is None:
             # Issue #37/G5: a governed answer on the managed route re-checks the

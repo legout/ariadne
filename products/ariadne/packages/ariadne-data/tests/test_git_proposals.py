@@ -445,6 +445,7 @@ _NATIVE_POLICY_VERIFIED = (
     "    title: Rule\n"
     "    description: A rule page\n"
     "    tags:\n      - policy\n"
+    "    status: draft\n"
     "    verified:\n"
     "      - by: operator\n"
     "        at: 2026-01-01T00:00:00+00:00\n"
@@ -533,7 +534,7 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
     changed = _NATIVE_POLICY_VERIFIED.replace("by: operator", "by: the-agent-itself").replace(
         "The rule body.", "Rewritten."
     )
-    with pytest.raises(ValueError, match="system-owned"):
+    with pytest.raises(ValueError, match="native trust/generated claim"):
         api.edit_pages_batch(
             started["proposal"],
             kept["revision"],
@@ -546,23 +547,25 @@ def test_system_owned_trust_claims_inside_content_are_refused(tmp_path):
 
     # INTRODUCING a verified/attester claim where the base has none is refused
     # before any write — the new page never even reaches the worktree
+    new_page = (
+        _NATIVE_POLICY_VERIFIED.replace('id: "entity:rule"', 'id: "entity:new-rule"')
+        .replace('title: "Rule"', 'title: "New rule"')
+        .replace("    title: Rule\n", "    title: New rule\n")
+    )
     for forged in (
-        _NATIVE_POLICY_VERIFIED.replace(
-            "kind: policy", "kind: metric"
-        ).replace("      - by: operator\n", "      - by: human\n"),
-        _NATIVE_POLICY_VERIFIED.replace(
-            "kind: policy", "kind: metric"
-        ).replace(
-            "    verified:\n      - by: operator\n", "    attester: the-agent-itself\n"
+        new_page.replace("      - by: operator\n", "      - by: human\n"),
+        new_page.replace(
+            "    verified:\n      - by: operator\n        at: 2026-01-01T00:00:00+00:00\n",
+            "    attester: the-agent-itself\n",
         ),
     ):
-        with pytest.raises(ValueError, match="system-owned"):
+        with pytest.raises(ValueError, match="native trust/generated claim"):
             api.edit_pages_batch(
                 started["proposal"],
                 kept["revision"],
-                [{"path": "knowledge/metrics/new.md", "content": forged}],
+                [{"path": "knowledge/policies/new-rule.md", "content": forged}],
             )
-    assert not (worktree / "knowledge" / "metrics").exists()
+    assert not (worktree / "knowledge" / "policies" / "new-rule.md").exists()
     assert branch_of(project, started["proposal"]) == kept["revision"]
 
     # model YAML top-level trust claims are refused the same way
@@ -670,7 +673,7 @@ def test_system_owned_native_pages_are_refused(tmp_path, pages):
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="system-generated"):
         api.edit_pages_batch(started["proposal"], started["candidate_revision"], pages)
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
     assert dirty(project, started["proposal"]) == ""
@@ -1002,9 +1005,7 @@ def _generated_table_page(resource: str) -> str:
         "summary": "One row per order.",
         "lifecycle": "approved",
         "visibility": "public",
-        "sources": [
-            {"id": "src-orders-catalog", "title": "Catalog and profile, 2026-01-01"}
-        ],
+        "sources": [{"id": "src-orders-catalog", "title": "Catalog and profile, 2026-01-01"}],
         "ariadne_profile": {
             "version": 1,
             "kind": "table",
@@ -1166,9 +1167,7 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
 
     def with_quality(reported_at: str) -> str:
         meta = _load_frontmatter_meta(original)
-        meta["ariadne_profile"]["native"]["ariadne_quality"] = _quality_block(
-            resource, reported_at
-        )
+        meta["ariadne_profile"]["native"]["ariadne_quality"] = _quality_block(resource, reported_at)
         front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
         return f"---\n{front}\n---\n\n# Orders\n"
 
@@ -1285,9 +1284,7 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     refuse(with_quality_block(null_bound), "period start must be an aware instant")
 
     duplicate_check = _quality_block(resource, "2026-01-15T00:00:00+00:00")
-    duplicate_check["reports"][0]["checks"].append(
-        dict(duplicate_check["reports"][0]["checks"][0])
-    )
+    duplicate_check["reports"][0]["checks"].append(dict(duplicate_check["reports"][0]["checks"][0]))
     refuse(with_quality_block(duplicate_check), "duplicates check id")
 
     null_population = _quality_block(resource, "2026-01-15T00:00:00+00:00")
@@ -1474,8 +1471,7 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     assert second["changed"] is True
     after_refresh = _load_frontmatter_meta(table_file.read_text(encoding="utf-8"))
     schema_columns = [
-        row["column"]
-        for row in after_refresh["ariadne_profile"]["native"]["ariadne"]["schema"]
+        row["column"] for row in after_refresh["ariadne_profile"]["native"]["ariadne"]["schema"]
     ]
     assert "note" in schema_columns  # the core-owned facts DID regenerate
     assert (

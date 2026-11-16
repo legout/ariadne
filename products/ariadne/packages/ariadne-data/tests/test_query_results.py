@@ -180,26 +180,24 @@ _PROBE_NOTES = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: reference\n"
     "  native:\n"
     "    type: reference\n"
     '    title: "Probe notes"\n'
-    '    description: The probe fixtures governing notes.\n'
+    "    description: The probe fixtures governing notes.\n"
     "    tags:\n      - probe\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "---\n\n# Probe notes\n\nThe probe tables.\n"
 )
 
 
 def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str) -> str:
     """One policy-less native Metric page (spec0035 §5: no invented Policy)."""
-    dimensions = (
-        f"    dimensions:\n      - {dimension}\n" if dimension else "    dimensions: []\n"
-    )
+    dimensions = f"    dimensions:\n      - {dimension}\n" if dimension else "    dimensions: []\n"
     return (
         "---\n"
         f'id: "entity:{metric.replace("_", "-")}"\n'
@@ -210,7 +208,7 @@ def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str)
         "lifecycle: approved\n"
         "visibility: public\n"
         "sources:\n"
-        '  - id: seed-notes\n    title: Seed notes\n'
+        "  - id: seed-notes\n    title: Seed notes\n"
         "ariadne_profile:\n"
         "  version: 1\n"
         "  kind: metric\n"
@@ -224,7 +222,7 @@ def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str)
         f'    description: "{metric} over the probe fixture."\n'
         "    tags: [metric]\n"
         "    sources:\n"
-        '      - id: seed-notes\n        title: Seed notes\n'
+        "      - id: seed-notes\n        title: Seed notes\n"
         f"{dimensions}"
         "    governed_by: references/probe-notes.md\n"
         "    grain:\n"
@@ -283,7 +281,7 @@ def served(tmp_path_factory):
     (kb / "metrics").mkdir(parents=True)
     (kb / "lumio.yaml").write_text(_PROBE_CONTROL, encoding="utf-8")
     (kb / ".lumio-authoring.yaml").write_text(
-        f"version: 1\nnamespace: \"{_PROBE_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
+        f'version: 1\nnamespace: "{_PROBE_NAMESPACE}"\nsources: {{}}\nbindings: {{}}\n',
         encoding="utf-8",
     )
     (kb / "references" / "probe-notes.md").write_text(_PROBE_NOTES, encoding="utf-8")
@@ -478,7 +476,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         rt = make_runtime(served, cell_bytes=16)
         budget = DeadlineBudget(20)
         bounded = rt._execution.fetch_bounded(
-            "SELECT txt FROM cells ORDER BY id", rt._limits, budget
+            "SELECT txt FROM demo.main.cells ORDER BY id", rt._limits, budget
         )
         assert bounded.cell_overflow == ["txt"]
         assert bounded.rows[1]["txt"] is None  # the 1000-char value: marker, not value
@@ -575,7 +573,10 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         rt = make_runtime(served, cell_bytes=16)
         budget = DeadlineBudget(20)
         long_label = "l" * 40
-        sql = f"SELECT CAST(label AS ENUM('ok', '{long_label}')) AS label FROM enums ORDER BY id"
+        sql = (
+            f"SELECT CAST(label AS ENUM('ok', '{long_label}')) AS label "
+            "FROM demo.main.enums ORDER BY id"
+        )
         bounded = rt._execution.fetch_bounded(sql, rt._limits, budget)
         assert bounded.cell_overflow == ["label"]
         assert bounded.rows[1]["label"] is None  # marker, not the oversized label
@@ -587,7 +588,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         rt = make_runtime(served)
         budget = DeadlineBudget(20)
         bounded = rt._execution.fetch_bounded(
-            'SELECT id, "__ariadne_cell_overflow_0" FROM tricky ORDER BY id',
+            'SELECT id, "__ariadne_cell_overflow_0" FROM demo.main.tricky ORDER BY id',
             rt._limits,
             budget,
         )
@@ -1139,7 +1140,9 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
             with budget.guard(spy):
                 monkeypatch.setattr(rt._execution, "con", spy)
                 try:
-                    rt._execution.fetch_bounded("SELECT grp FROM groups3", rt._limits, budget)
+                    rt._execution.fetch_bounded(
+                        "SELECT grp FROM demo.main.groups3", rt._limits, budget
+                    )
                 finally:
                     rt._execution.con = con
         assert spy.interrupted

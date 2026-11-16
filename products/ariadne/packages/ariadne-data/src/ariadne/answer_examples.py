@@ -278,6 +278,7 @@ def save_candidate_example(
     if (proposal is None) != (expected_revision is None):
         raise ValueError("--proposal and --expected-revision are required together")
     project = Path(project).resolve()
+    pinned_revision = base_revision
     record = _normalize_submission(submission)
     if proposal is not None:
         proposal_record = proposals._load_record(project, proposal)
@@ -291,11 +292,18 @@ def save_candidate_example(
         base_revision = proposal_record["base_revision"]
     else:
         selected_revision = proposals._validate_revision(project, base_revision)
-    # Citations bind the EXACT selected revision bytes (spec rev 1): every
-    # cited path must resolve to a metric or Policy page of that revision.
-    record["citations"] = [
-        _verify_citation(project, selected_revision, ref) for ref in record.pop("sources")
-    ]
+    # Preserve captured provenance; a candidate cannot relabel the reader's pin.
+    record["citations"] = []
+    for ref in record.pop("sources"):
+        citation = _verify_citation(project, pinned_revision, ref)
+        if selected_revision != pinned_revision and citation != _verify_citation(
+            project, selected_revision, ref
+        ):
+            raise ValueError(
+                f"citation {ref!r} differs from the pinned answer revision; "
+                "capture a fresh answer against the intended Context before saving"
+            )
+        record["citations"].append(citation)
 
     now = datetime.now(UTC)
     captured = now.isoformat(timespec="seconds")

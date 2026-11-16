@@ -22,6 +22,7 @@ import shutil
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
+import yaml
 from ariadne import admission, lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 from ariadne.admission import main as admission_main
 from ariadne.authoring import AuthoringProject
@@ -147,6 +148,8 @@ JOURNEY_B_APPENDIX = (
 
 # Visible pages of this release, SDK-sorted by exact relative path.
 VISIBLE_PATHS = [
+    "computations/completed_orders.md",
+    "computations/revenue.md",
     "metrics/completed-orders.md",
     "metrics/retail-revenue.md",
     "policies/cancelled-orders.md",
@@ -279,6 +282,18 @@ def _bound_release(root: Path):
             {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"}
         )
         write_page(page, meta, body)
+    selector_path = tree / "context_integration.yaml"
+    selector = yaml.safe_load(selector_path.read_text())
+    selector["policy_bindings"]["bindings"].extend(
+        {
+            "subject": {"kind": "metric", "identity": f"retail_sales::{metric}"},
+            "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
+            "operations": ["get_metric", "query_metrics"],
+            "enforcement": None,
+        }
+        for metric in ("revenue", "completed_orders")
+    )
+    selector_path.write_text(yaml.safe_dump(selector, sort_keys=False))
     revision = reconcile_knowledge(project, started["proposal"], revision)
     return project, api, started, revision
 

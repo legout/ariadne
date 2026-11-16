@@ -1140,19 +1140,25 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 "candidate; nothing was written."
             )
         if native_specs:
+            from lumio_wiki.git_authoring import GitAuthoringError
+
             # the caller HOLDS the proposal lock: submit through the
             # lock-held batch body (re-acquiring would deadlock) after
             # the same public batch guards ran on the generated specs
             proposals.check_page_batch(native_specs)
-            final = proposals._edit_page_batch_locked(
-                project,
-                proposal,
-                record,
-                current,
-                worktree_root,
-                [(spec["path"], spec["content"]) for spec in native_specs],
-                core_generated=True,
-            )["revision"]
+            try:
+                final = proposals._edit_page_batch_locked(
+                    project,
+                    proposal,
+                    record,
+                    current,
+                    worktree_root,
+                    [(spec["path"], spec["content"]) for spec in native_specs],
+                    core_generated=True,
+                )["revision"]
+            except GitAuthoringError as exc:
+                native_finalize_errors.append(f"native computation finalization: {exc}")
+                final = current
         else:
             final = current
         with tempfile.TemporaryDirectory(prefix="ariadne-candidate-") as tmp:

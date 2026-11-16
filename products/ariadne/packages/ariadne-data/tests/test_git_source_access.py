@@ -703,9 +703,7 @@ _PG_DSN_CASES = [
 ]
 
 
-@pytest.mark.parametrize(
-    "dsn_a,dsn_rotated,dsn_b,plan_rotation_dsn,implicit_dsn", _PG_DSN_CASES
-)
+@pytest.mark.parametrize("dsn_a,dsn_rotated,dsn_b,plan_rotation_dsn,implicit_dsn", _PG_DSN_CASES)
 def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     tmp_path, monkeypatch, dsn_a, dsn_rotated, dsn_b, plan_rotation_dsn, implicit_dsn
 ):
@@ -765,9 +763,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # (S3 profile keys stay plain slugs; colons occur in neither namespace).
     assert approved_a["approval_digest"] != approved_a["source_digest"]
     assert set(approved_a["storage_bindings"]) == {"postgres:pg"}
-    record_text = (project / ".ariadne" / "source-approvals.json").read_text(
-        encoding="utf-8"
-    )
+    record_text = (project / ".ariadne" / "source-approvals.json").read_text(encoding="utf-8")
     assert "pgsecret" not in record_text  # no plaintext DSN/credential in the grant
     assert "db-a.internal" in record_text  # the destination itself is recorded
 
@@ -815,9 +811,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     monkeypatch.delenv("PGHOST", raising=False)
     monkeypatch.setenv(_PG_ENV, "service=prod dbname=app")
     with pytest.raises(ValueError, match="service") as service_error:
-        api.approve_sources(
-            started["proposal"], proposed["revision"], proposed["source_digest"]
-        )
+        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
     assert _PG_ENV in str(service_error.value)
     assert "prod" not in str(service_error.value)  # never the service VALUE
     assert opened == []  # nothing was opened for the refused form either
@@ -828,9 +822,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     monkeypatch.setenv("PGSERVICE", "prod")
     monkeypatch.setenv(_PG_ENV, "dbname=app user=owner")
     with pytest.raises(ValueError, match="PGSERVICE") as env_service_error:
-        api.approve_sources(
-            started["proposal"], proposed["revision"], proposed["source_digest"]
-        )
+        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
     assert "prod" not in str(env_service_error.value)
     assert opened == []
     monkeypatch.delenv("PGSERVICE")
@@ -860,9 +852,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # the password.
     monkeypatch.setenv(_PG_ENV, "postgresql://owner:pgsecret@db／a/app")
     with pytest.raises(ValueError, match="not a valid connection URI") as nfkc_error:
-        api.approve_sources(
-            started["proposal"], proposed["revision"], proposed["source_digest"]
-        )
+        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
     assert "pgsecret" not in str(nfkc_error.value)
     assert opened == []
 
@@ -902,9 +892,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     assert opened == []
 
 
-def test_authoring_profiling_limits_are_host_owned_and_complete(
-    tmp_path, connection_spy
-):
+def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connection_spy):
     """spec0035 §8 "Source-boundary disposition: authoring profiling limits
     (2026-11-11)": the HOST-owned ``profiling:`` section governs every
     agent-facing profiling run — ``inputs`` AND schema refresh — with one
@@ -939,7 +927,34 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md")
+    kb = project / "knowledge"
+    kb.mkdir()
+    (kb / "lumio.yaml").write_text(
+        "version: 2\nmode: categorized\n"
+        "categories:\n  - name: tables\n  - name: datasets\n"
+        "ontology:\n  entity_types:\n    table: {}\n    dataset: {}\n"
+        "  predicates: {}\n  redirects: {}\n",
+        encoding="utf-8",
+    )
+    (kb / ".lumio-authoring.yaml").write_text(
+        "version: 1\nnamespace: urn:uuid:profiling-fixture\nsources: {}\nbindings: {}\n",
+        encoding="utf-8",
+    )
+    (project / "context_integration.yaml").write_text(
+        "version: 1\nmode: integrated\nsubtree: knowledge\n"
+        "namespace: urn:uuid:profiling-fixture\nprofile: ariadne-context/1\n"
+        "support_revision: 2\npolicy_bindings:\n  version: 1\n  bindings: []\n",
+        encoding="utf-8",
+    )
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge",
+        "context_integration.yaml",
+    )
     run_git(project, "commit", "-q", "-m", "human: widened profiling section")
     parquet = write_parquet(project / "data" / "events.parquet", rows=3)
 
@@ -998,18 +1013,14 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     assert len(connection_spy) == opens  # the shared builder was never called
 
     # --- operator RAISE takes effect (and still bounds: candidate 1000000 is inert)
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  sample_rows: 5000\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  sample_rows: 5000\n", encoding="utf-8")
     raised = api.inputs(started["proposal"], sample_rows=5000)
     assert raised["profile"]["sources"][0]["tables"]["events"]["sample_limit"] == 5000
     with pytest.raises(ValueError, match="profiling ceiling"):
         api.inputs(started["proposal"], sample_rows=5001)
 
     # --- operator LOWER binds just the same
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  sample_rows: 2\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  sample_rows: 2\n", encoding="utf-8")
     with pytest.raises(ValueError, match="profiling ceiling"):
         api.inputs(started["proposal"], sample_rows=3)
     lowered = api.inputs(started["proposal"], sample_rows=2)
@@ -1017,14 +1028,10 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
 
     # --- invalid host settings refuse actionably BEFORE source access
     opens = len(connection_spy)
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  sample_rows: true\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  sample_rows: true\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a positive integer"):
         api.inputs(started["proposal"])
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  execution_seconds: 0\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  execution_seconds: 0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a finite positive number"):
         api.inputs(started["proposal"])
     assert len(connection_spy) == opens
@@ -1040,9 +1047,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     settled_revision = refreshed["revision"]
 
     # --- refresh oversize refuses the payload BEFORE any page is written
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  response_bytes: 64\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  response_bytes: 64\n", encoding="utf-8")
     with pytest.raises(profiler.ProfilingPayloadExceeded, match="payload"):
         api.refresh_schema(started["proposal"], settled_revision, [asset])
     assert branch_of(project, started["proposal"]) == settled_revision
@@ -1056,9 +1061,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     # refuses before its value crosses into Python at all — the hand-known
     # label min/max are 4-char strings ('row1'..), so a 2-byte ceiling
     # cannot fit them and the guard fires before the SUMMARIZE fetch
-    (project / "ariadne.yaml").write_text(
-        "profiling:\n  response_bytes: 2\n", encoding="utf-8"
-    )
+    (project / "ariadne.yaml").write_text("profiling:\n  response_bytes: 2\n", encoding="utf-8")
     with pytest.raises(profiler.ProfilingPayloadExceeded, match="statistic serializes"):
         api.inputs(started["proposal"])
 
@@ -1131,9 +1134,10 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
         "schema": native_row["schema"],
         "table": native_row["table"],
     }
-    assert str(native_db) == native_measured["profile"]["sources"][0]["tables"]["orders"][
-        "resource"
-    ] or native_row["source"] == "warehouse"
+    assert (
+        str(native_db) == native_measured["profile"]["sources"][0]["tables"]["orders"]["resource"]
+        or native_row["source"] == "warehouse"
+    )
 
     # --- expired budget on inputs: explicit deadline refusal, no partial
     real_clock = execution._deadline_clock
@@ -1195,9 +1199,11 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
     big = "m" + "x" * 30_000
     flat_con.executemany(
         "INSERT INTO flat_t VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [("a", "a", "a", "a", "a", "a", "a", "a"),
-         (big, big, big, big, big, big, big, big),
-         ("z", "z", "z", "z", "z", "z", "z", "z")],
+        [
+            ("a", "a", "a", "a", "a", "a", "a", "a"),
+            (big, big, big, big, big, big, big, big),
+            ("z", "z", "z", "z", "z", "z", "z", "z"),
+        ],
     )
     flat_con.execute(f"COPY flat_t TO '{project / 'data' / 'flat.parquet'}' (FORMAT PARQUET)")
     flat_con.close()
@@ -1211,8 +1217,8 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(
 
     class _TransferObserver:
         """Counts LARGE string values that REALLY crossed the fetch boundary
-        into Python (read-only wrapper around the real DuckDBPyRelation
-       .fetchall; the database does all the work)."""
+         into Python (read-only wrapper around the real DuckDBPyRelation
+        .fetchall; the database does all the work)."""
 
         def __init__(self) -> None:
             self.large_transferred = 0

@@ -3267,7 +3267,30 @@ def test_t5_query_detail_projects_through_the_admitted_graph(tmp_path):
     # Spec rev 1 acceptance 5 (safe detail): the root keeps its grain and a
     # parent field arrives through the proven many-to-one path — hand-derived
     # line -> order amounts from the fixture rows.
-    project, _view = _t5_admitted(tmp_path)
+    control = yaml.safe_load(T5_KB_LUMIO_YAML)
+    control["categories"].extend([{"name": "tables"}, {"name": "datasets"}])
+    control["ontology"]["entity_types"].update({"table": {}, "dataset": {}})
+    bundle = _t5_bundle()
+    initial = ("context_integration.yaml", "knowledge/lumio.yaml")
+    bundle["files"].extend(
+        [
+            {
+                "path": initial[0],
+                "content": T5_SELECTOR.replace("support_revision: 2", "support_revision: 3"),
+            },
+            {"path": initial[1], "content": yaml.safe_dump(control, sort_keys=False)},
+        ]
+    )
+    project, api, started, revision = _t5_candidate(tmp_path, bundle, initial)
+    assets = [
+        {"source": "demo", "catalog": "demo", "schema": "main", "table": table}
+        for table in ("orders", "order_lines")
+    ]
+    refreshed = api.refresh_schema(started["proposal"], revision, assets)
+    validated = api.validate_proposal(started["proposal"], refreshed["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    review = api.review_proposal(started["proposal"])
+    assert admit(project, review) == 0
     runtime = _t5_runtime(project)
     result = asyncio.run(
         runtime.query_detail({"dataset": "order_lines", "fields": ["line_id", "amount"]})
@@ -3349,6 +3372,8 @@ def test_t5_later_candidate_and_changed_registry_cannot_change_admitted_query(tm
 
 
 def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     # A newly reviewed multi-fact candidate requires the cited metric and Policy
     # pages to resolve inside the candidate; missing evidence is not admitted.
     for index, (bundle, fragment) in enumerate(
@@ -3357,6 +3382,11 @@ def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
             (_t5_bundle(orders_policy="policies/no-such-policy.md"), "no-such-policy"),
         )
     ):
+        if fragment == "no-such-policy":
+            with pytest.raises(GitAuthoringError, match=fragment):
+                _t5_candidate(tmp_path / f"case{index}", bundle)
+            assert not (tmp_path / f"case{index}" / "proj" / ".ariadne" / "current.json").exists()
+            continue
         project, api, started, revision = _t5_candidate(tmp_path / f"case{index}", bundle)
         validation = api.validate_proposal(started["proposal"], revision)
         assert validation["ok"] is False, validation
@@ -3364,18 +3394,16 @@ def test_t5_missing_cited_context_refuses_new_multifact_admission(tmp_path):
 
 
 def test_t5_citation_escape_outside_the_policy_directory_refuses_admission(tmp_path):
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     # A path that escapes knowledge/policies/ cannot satisfy a metric's
     # citation: native citations resolve inside the candidate's knowledge
     # subtree only — the same-named classic context_layer page is never a
     # fallback, even when it exists in the same candidate.
     bundle = _t5_bundle(orders_policy="policies/../skills/query-multi-fact.md")
-    project, api, started, revision = _t5_candidate(tmp_path, bundle)
-    validation = api.validate_proposal(started["proposal"], revision)
-    assert validation["ok"] is False, validation
-    assert any(
-        "does not resolve inside" in error and "query-multi-fact" in error
-        for error in validation["errors"]
-    ), validation["errors"]
+    with pytest.raises(GitAuthoringError, match="query-multi-fact"):
+        _t5_candidate(tmp_path, bundle)
+    assert not (tmp_path / "proj" / ".ariadne" / "current.json").exists()
 
 
 def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_path, capsys):

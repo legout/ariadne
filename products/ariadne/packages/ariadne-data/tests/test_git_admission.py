@@ -47,16 +47,16 @@ from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.validate import candidate_scope_digest  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
-    NATIVE_METRIC_PAGE,
     NATIVE_METRIC_REL,
     NATIVE_POLICY_PAGE,
     NATIVE_POLICY_REL,
-    NATIVE_SELECTOR,
+    UNSAFE_GRAIN_MODEL_YML,
     approved,
     branch_of,
     complete_bundle_project,
     record_of,
     run_git,
+    select_revision4_fixture,
     worktree_of,
 )
 
@@ -142,8 +142,8 @@ def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tupl
     )
 
 
-def test_standalone_initial_proposal_ignores_unrelated_knowledge_symlink(tmp_path):
-    """AC7: absent integration, unrelated user knowledge is outside initial capture."""
+def test_initial_proposal_refuses_unselected_knowledge_symlink_without_mutation(tmp_path):
+    """AC10: missing native KB state refuses without capturing unrelated user files."""
     project = tmp_path / "standalone"
     project.mkdir()
     documents = tmp_path / "unrelated-documents"
@@ -158,17 +158,10 @@ def test_standalone_initial_proposal_ignores_unrelated_knowledge_symlink(tmp_pat
     assert not (project / "context_integration.yaml").exists()
 
     api = AuthoringProject(project)
-    started = api.start_proposal()  # Public initial creation, with no existing commit.
-    review = api.review_proposal(started["proposal"])
-    assert review["revision"] == started["candidate_revision"]
-    committed = run_git(
-        project, "ls-tree", "-r", "--name-only", started["candidate_revision"]
-    ).splitlines()
-    assert not any(path == "knowledge" or path.startswith("knowledge/") for path in committed)
-    assert not any(
-        item["resource"] == "knowledge" or item["resource"].startswith("knowledge/")
-        for item in review["files"]
-    )
+    with pytest.raises(ValueError, match="native Knowledge Base state"):
+        api.start_proposal()
+    assert run_git(project, "for-each-ref", "--format=%(refname)") == ""
+    assert not (project / ".ariadne").exists()
     assert knowledge.is_symlink()
     assert note.read_text() == "# Unrelated user documentation\n"
     assert not (project / "context_integration.yaml").exists()
@@ -188,70 +181,8 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     review, journey = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-    # revision-4 table + answer-examples category + events Table page — inputs required below
-    import base64
-
-    events_payload = json.dumps(["events", None, "events", "events"], separators=(",", ":"))
-    events_uri = "ariadne://table/" + base64.urlsafe_b64encode(
-        events_payload.encode("utf-8")
-    ).decode("ascii").rstrip("=")
-    table_page = (
-        "---\n"
-        'id: "entity:events-table"\n'
-        'title: "Events Table"\n'
-        "entity_types:\n  - table\n"
-        "tags:\n  - events\n"
-        'summary: "The events fact table."\n'
-        'lifecycle: "approved"\n'
-        'visibility: "public"\n'
-        "sources:\n"
-        '  - id: "owner-notes"\n'
-        '    title: "Owner notes"\n'
-        "ariadne_profile:\n"
-        "  version: 1\n"
-        "  kind: table\n"
-        "  core_ref:\n"
-        "    kind: resource\n"
-        f'    id: "{events_uri}"\n'
-        "  native:\n"
-        "    type: table\n"
-        '    title: "Events Table"\n'
-        '    description: "The events fact table."\n'
-        "    tags:\n      - events\n"
-        f'    resource: "{events_uri}"\n'
-        "    grain:\n"
-        "      primary_key: [id]\n"
-        '      cardinality_enforcement: "strict_1_to_1"\n'
-        "    sources:\n"
-        '      - id: "owner-notes"\n'
-        '        title: "Owner notes"\n'
-        "---\n\n"
-        "# Events Table\n\nThe event rows the fixture registers.\n"
-    )
     tree = worktree_of(project, review["proposal"])
-    (tree / "context_integration.yaml").write_text(
-        NATIVE_SELECTOR.replace("support_revision: 2", "support_revision: 4"),
-        encoding="utf-8",
-    )
-    control = tree / "knowledge" / "lumio.yaml"
-    control.write_text(
-        control.read_text(encoding="utf-8")
-        .replace("  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n")
-        .replace("    metric: {}\n", "    metric: {}\n    answer-example: {}\n"),
-        encoding="utf-8",
-    )
-    (tree / "knowledge" / "tables").mkdir(parents=True, exist_ok=True)
-    (tree / "knowledge" / "tables" / "events-table.md").write_text(table_page, encoding="utf-8")
-    run_git(
-        tree,
-        "add",
-        "--",
-        "context_integration.yaml",
-        "knowledge/lumio.yaml",
-        "knowledge/tables/events-table.md",
-    )
-    run_git(tree, "commit", "-q", "-m", "human: select revision-4 capabilities")
-    revision = run_git(tree, "rev-parse", "HEAD").strip()
+    revision = select_revision4_fixture(tree)
     reconcile(project, review["proposal"], review["revision"], revision)
     revalidated = api.validate_proposal(review["proposal"], revision)
     assert revalidated["ok"] is True, revalidated["errors"]
@@ -556,6 +487,8 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     the previous descriptor and answers intact, and a retry after the failure
     activates cleanly (a new snapshot is referenced only once the descriptor
     publishes)."""
+    from lumio_wiki.location import PublishedFilesystemLocation
+
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
@@ -592,14 +525,18 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     assert admit(project, second_review) == 1
     assert "simulated activation failure" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert read_current(project) == first
+    native_current = PublishedFilesystemLocation(project.parent / "published").read_pointer()
+    assert native_current is not None and native_current == second_review["revision"]
     runtime = QueryRuntime.open_project(project)
     answer = asyncio.run(runtime.get_metric("event_count"))
     assert answer["admission"]["revision"] == first["commit"]
     assert "First admitted body." in "".join(answer["context"]["policies"])
     monkeypatch.undo()
 
-    # after the failure clears, the same reviewed revision activates cleanly
-    assert admit(project, second_review) == 0
+    # The human re-reviews the actually active native version before retrying.
+    assert admit(
+        project, second_review, extra=["--context-expected-current", native_current]
+    ) == 0
     capsys.readouterr()
     assert read_current(project)["commit"] == second_review["revision"]
 
@@ -614,6 +551,7 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     from ariadne.planner import PlannerError
 
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
@@ -632,7 +570,7 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     assert admit(project, review) == 0
     record = read_current(project)
     snapshot = project / record["snapshot"]
-    page = snapshot / "context_layer" / "metrics" / "event_count.md"
+    page = snapshot / NATIVE_METRIC_REL
     original_page = page.read_text(encoding="utf-8")
     approvals = project / STATE / "source-approvals.json"
     original_approvals = approvals.read_text(encoding="utf-8")
@@ -751,7 +689,7 @@ def test_an_advanced_admitted_baseline_requires_explicit_reconciliation(tmp_path
     # B cannot replace served state: explicit reconciliation is required
     assert admit(project, b_review) == 1
     error = json.loads(capsys.readouterr().err)["error"]
-    assert "does not carry it in its ancestry" in error["message"]
+    assert "not a descendant" in error["message"] and "reconcile" in error["message"]
     assert read_current(project)["commit"] == admitted_commit  # prior state preserved
 
     worktree = worktree_of(project, b_started["proposal"])
@@ -831,20 +769,19 @@ def test_reconcile_never_clears_exhausted_repair_state_or_inconsistent_transitio
 
     # exhaust the three bounded validation rounds with changed broken candidates
     revision = started["candidate_revision"]
-    for removed in ("one", "two", "three"):
-        edited = api.edit_pages_batch(
+    for marker in ("one", "two", "three"):
+        edited = api.edit_proposal(
             started["proposal"],
             revision,
-            [
-                {
-                    "path": NATIVE_METRIC_REL,
-                    "content": NATIVE_METRIC_PAGE.replace(
-                        "resource: policies/all-events-count.md",
-                        f"resource: policies/removed-{removed}.md",
-                    ),
-                }
-            ],
+            {
+                "kind": "model",
+                "name": "events",
+                "content": UNSAFE_GRAIN_MODEL_YML.replace(
+                    "Events model (unsafe join)", f"Events model (unsafe join {marker})"
+                ),
+            },
         )
+        assert edited["changed"] is True
         result = api.validate_proposal(started["proposal"], edited["revision"])
         assert result["ok"] is False
         revision = result["revision"]
@@ -1006,6 +943,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     from ariadne.cli import main as cli
 
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     api = AuthoringProject(project)
     review, _journey = admitted_ready(api, project, _policy_edit("Revised admitted body."))
     assert admit(project, review) == 0
@@ -1028,7 +966,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         },
         "submitter": "analyst",
         "attestation": "self-declared",
-        "sources": ["context_layer/metrics/event_count.md"],
+        "sources": ["metrics/event-count.md"],
     }
     assert (
         cli(
@@ -1040,7 +978,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     assert saved["base_revision"] == review["revision"]
-    assert saved["path"].startswith("answer_examples/")
+    assert saved["path"].startswith("knowledge/answer-examples/")
     assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
     assert not (project / "staging").exists()
     assert not (operator_desk / "staging").exists()  # nothing escaped to the CWD
@@ -1062,7 +1000,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         == 0
     )
     preview = json.loads(capsys.readouterr().out)
-    assert preview[0]["id"] == saved["id"] and preview[0]["status"] == "draft"
+    assert preview[0]["id"] == f"entity:{saved['id']}" and preview[0]["status"] == "draft"
 
     assert (
         cli(
@@ -1221,10 +1159,11 @@ def test_new_proposals_default_base_to_the_admitted_revision(tmp_path):
 
 
 def test_managed_search_examples_ignores_unadmitted_project_root_examples(tmp_path):
-    """Managed search ignores project-root records outside the admitted Git snapshot."""
+    """Pinned native search never falls back to unadmitted legacy Example records."""
     import hashlib
 
     project = complete_bundle_project(tmp_path)
+    select_revision4_fixture(project)
     api = AuthoringProject(project)
     review, _journey = admitted_ready(api, project, _policy_edit("Admitted body."))
     assert admit(project, review) == 0
@@ -1410,6 +1349,8 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     post-rename publication boundary never leaves a silent new descriptor —
     the previous admission keeps serving (restored bytes), a first-ever
     admission leaves no descriptor at all, and a clean retry activates."""
+    from lumio_wiki.location import PublishedFilesystemLocation
+
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
@@ -1441,7 +1382,7 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
 
     descriptor_dir = (project / admission_module.CURRENT_REL).parent
 
-    # failure BEFORE the rename: nothing is published; the first admission serves
+    # Core fails before rename; its old association serves, Native may be active.
     monkeypatch.setattr(proposals, "_fsync_path", flaky_fsync(descriptor_dir, 1))
     assert admit(project, second_review) == 1
     assert (
@@ -1449,11 +1390,15 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
         in json.loads(capsys.readouterr().err)["error"]["message"]
     )
     assert read_current(project) == first
+    native_current = PublishedFilesystemLocation(project.parent / "published").read_pointer()
+    assert native_current is not None and native_current == second_review["revision"]
 
     # failure AFTER the atomic rename (the real post-rename boundary): the
     # previous descriptor is restored and still serves — never a silent new one
     monkeypatch.setattr(proposals, "_fsync_path", flaky_fsync(descriptor_dir, 2))
-    assert admit(project, second_review) == 1
+    assert admit(
+        project, second_review, extra=["--context-expected-current", native_current]
+    ) == 1
     assert "restored" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert read_current(project) == first
     runtime = QueryRuntime.open_project(project)
@@ -1462,8 +1407,10 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     assert "First admitted body." in "".join(answer["context"]["policies"])
     monkeypatch.undo()
 
-    # the failure cleared: the same reviewed revision activates cleanly
-    assert admit(project, second_review) == 0
+    # The human confirms a fresh overall preview against the actual native pin.
+    assert admit(
+        project, second_review, extra=["--context-expected-current", native_current]
+    ) == 0
     capsys.readouterr()
     assert read_current(project)["commit"] == second_review["revision"]
 
