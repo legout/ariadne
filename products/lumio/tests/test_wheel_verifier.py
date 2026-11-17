@@ -74,7 +74,7 @@ def test_workspace_dependency_boundary_tracks_approved_metadata(monkeypatch):
         "starlette<2,>=1.7",
         "uvicorn<1,>=0.54",
         'ariadne-data[spreadsheets]<0.9.0,>=0.8.0; extra == "analytics"',
-        'lumio-lancedb<0.7.0,>=0.6.0; extra == "retrieval"',
+        'lumio-lancedb<0.8.0,>=0.7.0; extra == "retrieval"',
     ]
     installed = [SimpleNamespace(metadata={"Name": "lumio-workspace"})]
     metadata = verifier["importlib"].metadata

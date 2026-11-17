@@ -50,7 +50,7 @@ EXPECTED_BASE_REQUIREMENTS = sorted(
     ]
 )
 EXPECTED_ANALYTICS_REQUIREMENTS = ["ariadne-data[spreadsheets]<0.9.0,>=0.8.0"]
-EXPECTED_RETRIEVAL_REQUIREMENTS = ["lumio-lancedb<0.7.0,>=0.6.0"]
+EXPECTED_RETRIEVAL_REQUIREMENTS = ["lumio-lancedb<0.8.0,>=0.7.0"]
 
 # The hatch force-include assets: losing either template breaks the owner
 # setup and browser review surfaces even though imports still succeed.
