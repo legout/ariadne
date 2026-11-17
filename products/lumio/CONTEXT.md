@@ -83,11 +83,11 @@ _Avoid_: inferred claim, automatic claim, link edge.
 ### Retrieval
 
 **Evidence**:
-A retrievable unit derived from a Compiled Page. Rebuildable from Markdown; never source-of-truth itself.
+A retrievable unit derived from one or more Compiled Pages. The approved target Community Report extension requires an Evidence Bundle and keeps generated synthesis unverified; neither is source-of-truth itself.
 _Avoid_: chunk, fragment.
 
 **Citation**:
-Metadata that lets an answer point back to its source content: page identity, relative path, optional source reference, and optional line range.
+Metadata that lets an answer point back to supporting content: page identity, relative path, optional source reference and line range, or exact community/report/section artifact identity plus required member Evidence.
 _Avoid_: footnote, reference.
 
 **Retrieval Result**:
@@ -105,6 +105,38 @@ _Avoid_: knowledge graph (ambiguous), assertion graph, link graph.
 **Index Freshness**:
 Whether the derived index still reflects the current source Markdown. Lumio detects staleness after a sync or source change and rebuilds from source.
 _Avoid_: cache validity, sync state.
+
+_Target terms below accompany owner-approved specification 0012 revision 2
+and ADR-0033 revision 2 (2026-11-12); approval does not claim implemented or
+qualified capabilities._
+
+**Query Plan**:
+A request-budgeted, version- and visibility-scoped retrieval strategy selecting basic, local, path, or global behavior and recording exact Entity/community/report identities and its outcome. It grants no source, execution, or publication authority.
+_Avoid_: agent loop, answer plan, query execution.
+
+**Graph Context**:
+A bounded derived view of Entities, accepted Claims, Extracted References, and paths used to guide retrieval and reasoning. It is not Evidence; every domain claim still needs Compiled Page Evidence.
+_Avoid_: graph Evidence, claim summary.
+
+**Community**:
+A derived hierarchical grouping of Compiled Pages and Entities for one graph scope, exact Published Version, and visible-set identity. Membership guides retrieval and is neither a Content Category nor a canonical Claim.
+_Avoid_: Content Category, canonical cluster.
+
+**Community Report**:
+A derived, generated-unverified summary of one Community whose exact citable sections require Evidence Bundles. It is not a Synthetic Page or self-supporting proof; answer assertions still require inspection of member passages.
+_Avoid_: Synthetic Page, canonical summary, source document.
+
+**Evidence Bundle**:
+An exact Community Report Citation together with the member Compiled Page Evidence offered to support that section. Both are required for report-assisted answers; valid bindings alone prove neither semantic support nor raw-source Claim lineage.
+_Avoid_: report-only citation, raw-source Claim Lineage.
+
+**Global Search**:
+A retrieval mode using Community Reports and member Evidence for explicitly coverage-limited thematic synthesis over a Knowledge Base. Ranked samples do not justify exhaustive counts, absence, or completeness claims; it never silently falls back to entity-local retrieval.
+_Avoid_: full-text search, local fallback.
+
+**Semantic Entity Resolution**:
+Resolution of query text to stable Entity IDs through exact lookup and lexical or optional semantic candidates, with disclosed ambiguity. Query encoding is distinct from corpus-index preparation; resolution neither merges Entities nor accepts or publishes Claims.
+_Avoid_: Entity Merge, title match, automatic identity assignment.
 
 ### Ingest and publish
 

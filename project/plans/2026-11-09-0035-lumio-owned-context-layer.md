@@ -1,9 +1,9 @@
 # Implementation plan 0035: Lumio-owned Context Layer
 
-**Status:** approved and ticketized overview, revision 2 (editorial transfer; approved decomposition unchanged). Written 2026-11-10 after “Erstelle den plan”; revision 1 approved with “Passt! erstelle die Tickets bzw. passe die bestehenden an”.
+**Status:** approved and ticketized overview, revision 2 (editorial transfer; approved decomposition unchanged). **Revision-3 C6 completion amendment below is owner-approved, 2026-11-13 (“ok. freigegeben”), including its bounded supervised execution.** Written 2026-11-10 after “Erstelle den plan”; revision 1 approved with “Passt! erstelle die Tickets bzw. passe die bestehenden an”.
 **Behavioral source:** [spec0035, approved written revision 2](../specs/2026-11-09-0035-lumio-owned-context-layer.md), approved with “Spec is freigegeben.” on 2026-11-10; AC1–AC15 and §§1–8. [ADR-0029](../adr/0029-lumio-owned-context-layer.md) remains unchanged. [Research and live R-track inspection](../research/2026-11-09-lumio-only-context-layer.md) are evidence, not additional authority.
 
-The owner now authorizes plan approval, the named R-track source/ticket reconciliation and GitHub ticketization. Implementation, source/credential access, worktree execution, integration, commit/push, deployment and release remain unauthorized. Canonical C-task bodies now live in [#109–115 under epic #108](https://github.com/legout/ariadne/issues/108); this file owns sequencing, interfaces and coverage only. The [frozen approved revision-1 plan](https://github.com/legout/ariadne/issues/108#issuecomment-6768382155), [spec0035 r2](https://github.com/legout/ariadne/issues/108#issuecomment-6768381795) and [unchanged ADR-0029](https://github.com/legout/ariadne/issues/108#issuecomment-6768382491) publish exact sources without implying a Git commit/push. Existing R-task bodies remain in #102–107.
+The original ticketization approval authorized plan approval, the named R-track source/ticket reconciliation and GitHub ticketization, not implementation or publication. Subsequent execution grants and accepted results are recorded in the existing `open-issues-20261110` run context. The preparation request, “ok. lass und die gemeinsame C6-Abschlusswell vorbereiten”, initially authorized preparation only. The subsequent “ok. freigegeben” approves revision 3 below and its named Herdr/Pi execution, bounded edits/checks/review, local commits/frozen results and isolated completion-candidate handoff. It grants no target integration, push, tracker mutation, release, live access, C7 execution or plan0036 cleanup. Canonical C-task bodies now live in [#109–115 under epic #108](https://github.com/legout/ariadne/issues/108); this file owns sequencing, interfaces and coverage only. The [frozen approved revision-1 plan](https://github.com/legout/ariadne/issues/108#issuecomment-6768382155), [spec0035 r2](https://github.com/legout/ariadne/issues/108#issuecomment-6768381795) and [unchanged ADR-0029](https://github.com/legout/ariadne/issues/108#issuecomment-6768382491) publish exact sources without implying a Git commit/push. Existing R-task bodies remain in #102–107.
 
 ## Goal, constraints and current correspondence
 
@@ -174,6 +174,320 @@ rebuild or installed-artifact claim. ONE new independent production review
 human/identity/no-overwrite gates — not a third C6 D1–D4 review; one fix pass
 plus one delta recheck maximum. Checkpoint after review; no merge/push or
 follow-on batch; S2 does not promise the remaining setup/whole-CI migration.
+### Approved revision-3 amendment — one C6 completion wave
+
+**Authority and ownership.** This is an owner-approved execution amendment under
+[#114](https://github.com/legout/ariadne/issues/114), not a replacement task,
+new feature spec or transfer into proposed plan0036. The canonical issue still
+owns C6's behavior/surface/removal obligations. This subsection owns only the
+remaining grouping and validation. All four groups below belong to ONE wave;
+normal in-scope fixture corrections need parent disposition, not a new owner
+approval per line. Owner approved this exact amendment and execution with
+“ok. freigegeben” on 2026-11-13; its gates and exclusions remain binding.
+
+**Baseline and evidence.** Start from the accepted frozen S6 result
+`6394001e062953543cb3833cec79d814ff158823`, tree
+`45fa1f16dd93c042419e354d8e9f9b8bd1fb20db`, which already contains S2–S6.
+The diagnostic candidate remains `023fbfd`; main is `d2f8b75` with protected
+documentation WIP. Neither is the new writer's base. Existing run reports
+`c7/c7-report.md` §§12–18 and S2–S6 reports/logs carry evidence and exceptions.
+The old 144 failures/29 errors are historical. Twenty of those outcomes have
+later named PASS evidence through S6; the other 153 have not been requalified,
+NOT demonstrated still failing. Parameter IDs containing spaces must not be
+reconstructed with whitespace splitting or copied from truncated log output.
+
+**Capture checkpoint.** No new vocabulary or architecture. Spec0035 §§2–6,
+AC1–10 and the preserved spec0007 consent/identity/provenance contract remain
+the sources. In particular, spec0007 §“Location, format and identity” already
+says repeated intentional saves create separately identified drafts, without
+overwriting history. This resolves the earlier F6 *requirement* uncertainty;
+the cross-peer implementation defect still needs a bounded repair. F3's
+retention lifecycle classification remains open. No new retention exemption,
+identity service or global cross-checkout coordination contract is implied.
+Planning-contract v1; installed provenance unknown. Coverage: CW0 dispositions
+remaining #114 obligations; CW1 preserves AC8's identity/consent contract;
+CW2 preserves AC2–9 across native callers; CW3 closes AC1/10 removal/shipped
+correspondence. C7 retains the existing AC1–AC15 final verification ownership.
+
+**Approved execution envelope.** One sequential Pi writer in a fresh isolated
+registered worktree under the preserved shared root, using Herdr tabs and
+explicit `zai/glm-5.3:max`; parent owns audits, fixes and candidate designation.
+A fresh Pi reviewer `openai-codex/gpt-6.1-sol:high` is proposed ONLY for the new
+F6 production delta before dependent use, not a third review of settled C6
+findings. One parent-authorized fix and one delta recheck; survivors go to the
+owner. Mechanical fixture/docs work uses parent audit under an explicit
+wave-wide exception. Verify actual host/model/tools/worktree and separate-tab
+visibility as required by `orchestrate-implementation`; preserve existing tabs.
+The checkpoint is **after a verified local result/isolated candidate handoff,
+before target integration**. No main writes, push, PR, issue mutation, release,
+external data/provider access, live R5, G1 work or plan0036 cleanup.
+
+**Owner-approved recovery control:** after the incomplete CW2/CW3 pass and
+STOP/retry breaches, the owner selected “Audit + Neustart (Empfohlen)”.
+The preserved `6351bb3bcf3020242798ac4067e581eb2c1e0a15` partial is an
+**unaccepted recovery base**, not C6 acceptance. Parent audits it first; a
+fresh same-host/model Herdr Pi writer then edits only the remaining migration
+and parent-accepted audit repairs. The writer may perform static reads/diffs,
+but MUST NOT execute tests, collection, imports/probes, Ruff/lint/format/build
+or self-repair failed checks. It releases source for parent audit/checks.
+Parent alone runs the named budget on a stable released source revision,
+reuses still-applicable greens and dispositions failures; no automatic replay
+or reset of prior spent checks/review budgets. Existing authority for a
+parent-dispositioned focused check remains limited to a named uncovered
+reachable scenario after a relevant delta, not a coverage campaign. Old
+execution deviations remain recorded, not retroactively approved. CW1 review
+is settled; no third round. Full C7/target integration still needs its own grant.
+
+**Subsequent bounded parent takeover:** after t50 released the unverified
+recovery WIP, parent audit found RC1–RC5 (recurring suppression/comment-rule
+violations, a misplaced probe-DB registry input, advisory citation/oracle
+migration and a missed current standalone how-to introduction) and renewed
+STOP/edit-guard deviations. The owner explicitly selected “Parent übernimmt
+(Empfohlen)”. This authorizes the current parent Pi (`openai-codex/gpt-6.1-sol`,
+`high`) to repair ONLY RC1–RC5 in the released isolated `c6-recovery-a1`
+checkout, then run justified parent checks in the existing budget. No further
+GLM writer or automatic additional fix round. Original criteria and prior
+technical evidence remain; the deviations are not waived. Source-readiness,
+exact freeze/candidate audit, protected main and separate C7 authority still bind.
+After the advisory case's initial failure and one fixture delta, the owner
+explicitly approved ONE further Computation-signal expectation correction
+(page-relative locator, not a new full-citation requirement) and ONE same-case
+delta run. This named exception preserves both red logs, all numerical/
+provenance assertions and the remaining original budget; it is not an
+automatic third round or authority to change production output.
+After that delta exposed the unchanged admitted-base selection, the owner
+separately approved ONE explicit human-fixture base-selection correction,
+assertion of the chosen base and ONE same-case delta. Historical failures
+remain; no warning/numerical relaxation, product change or implicit next retry.
+After that delta reached the correct publication-ancestry refusal, the owner
+explicitly approved ONE fast-forward of ONLY the temporary pytest fixture's
+human branch to its first admitted commit before metadata authoring, plus ONE
+same-case delta. Real main/C6-Source integration remains forbidden; no guard
+waiver or automatic further attempt follows.
+
+**Remaining parent source role:** after the Advisory and original query units
+passed, the owner selected “Restliche Fixture-Fixes freigeben (Empfohlen)”.
+The same parent may finish necessary fixture/caller/shipped-doc corrections
+within the ALREADY approved C6 CW2/CW3 surfaces, including independent Source
+fixture publication destinations and a genuinely missing typed Policy Entity
+in the converted negative case. No product behavior/dependency/storage/
+permission change, new writer, broader budget or C7 authority. Existing
+one-fix/delta/STOP and exact acceptance/freeze obligations remain unchanged.
+
+**Final documentation-only surface extension:** after the final CW3 scan
+found stale public API/standalone-fallback descriptions in `a/query.py`, the
+owner selected “Doc-Delta erlauben (Empfohlen)”. The same parent may correct
+ONLY that module's docstrings/comments, prove executable AST identity and
+run Ruff once for that path, then resume the existing C6 freeze/candidate
+audit. No executable mutation, extra pytest, new writer, main integration or
+C7 execution is authorized; all prior controls and evidence remain binding.
+After source freeze, a parent-added over-strict group-write predicate stopped
+candidate allocation before any mutation. Actual existing allocator directory
+is owned by `volker:volker`, mode `0775`, with only Volker in that private
+group and no POSIX ACL/world write. Owner selected “Einmal fortsetzen
+(Empfohlen)”: authorize ONE corrected trusted-private-owner-group preflight
+and the same local candidate allocation. No chmod, relocation, allocator
+configuration change, new writer, target integration or C7 execution. Any
+further failure stops; this is not a general handoff retry exception.
+That corrected preflight passed, then Git refused the proposed nested branch
+because the protected `orchestrator/open-issues-20261110/candidate` ref already
+exists at `023fbfd`. No path/ref was created. Owner separately selected
+“Geschwister-Ref freigeben (Empfohlen)”: ONE same-path allocation at sibling
+`orchestrator/open-issues-20261110/candidate-c6-completion-a1`, after checking
+all ancestor/descendant ref collisions. Preserve the old candidate, source
+result and every existing restriction; no automatic further attempt.
+
+#### CW0 — Reconcile the complete residual surface and classify retention
+
+- [ ] Read the current definitions/callers on the frozen result and record
+  dispositions in the EXISTING C7 run report, not a new ledger. Match remaining
+  historical failure families and stale references to current native contracts;
+  preserve later failures as evidence even where older greens exist. No
+  blanket claim that an entire family passes after one helper correction.
+- [ ] Review the A-test surface explicitly: `test_setup`, `test_init`,
+  `test_cli`, `test_serve`, `test_evals`, `test_sources`, `test_query_results`,
+  `test_multifact`, `test_contracts`, `test_git_authoring`, `test_git_admission`,
+  `test_git_only`, `test_git_proposals`, `test_context_admission`, `test_review`,
+  `test_git_source_access`, `test_mapping_inspection`, `test_data_signals`,
+  `test_authoring`, `test_context_browsing`, `test_discovery`, `test_terms`,
+  `test_status`, `test_answer_examples`, `test_mcp_toolsets`,
+  `test_mcp2_compatibility`, `test_skill` (all `A/tests/<name>.py`), plus
+  `I/lumio_local_context.py` and `I/lumio_managed_sources.py`. Trace shared
+  helpers to additional callers before changing them; a required mutation
+  outside this named surface is reported to the parent before extending scope.
+- [ ] For F3 trace `supported_candidate`/`reconcile_knowledge` in
+  `I/lumio_metric_mvp.py`, the actual managed test's manifest/registry/retained
+  bytes, Core-generated Computation provenance in `a/context.py`, and native
+  `required_coverage_missing` in `k/artifact_store.py`. The fixture marks
+  existing pages synthetic before validation; finalization can generate a
+  page referring to `model-retail_sales`, while only the baseline original is
+  registered/retained. Establish which binding/bytes are actually required.
+  A missing toy-fixture registration may be repaired with genuine exact
+  source bytes and native registration/retention/bindings. Do NOT mark new
+  pages synthetic, remove attribution or waive required retention to pass.
+- [ ] If F3 is instead a production lifecycle defect, return that exact path,
+  violated existing requirement and smallest repair proposal to the owner.
+  Product/storage/retention changes are NOT silently included. Unaffected
+  fixture work may proceed; C6 cannot finish while a required F3 outcome is
+  unresolved. Re-shape only if the required behavior itself is ambiguous.
+
+`no-new-test`: static correspondence and existing-evidence review only. Output:
+owned residual groups and a precise fixture-versus-product F3 disposition.
+No test collection, probes, broad baseline, new tracker or deletion quota.
+
+#### CW1 — Restore distinct native Example identities across peer proposals
+
+- [ ] Owned production mutation: `a/answer_examples.py` ID generation and its
+  direct save usage only; owned regression surface:
+  `A/tests/test_answer_examples.py`. No generic identity service/dependency,
+  format migration or rewriting already persisted IDs/titles/records.
+- [ ] Use the existing CLI+MCP save/search case with a controlled identical
+  capture instant to reproduce two explicit same-question saves into peer
+  unadmitted proposals. Preserve source-free sentinels, exact question bytes,
+  distinct returned ID/path/Entity identity and no overwrite of either draft.
+  Save/query consent, selected revision checks and historical provenance stay
+  unchanged; do not hide the defect by supplying a common proposal selector.
+- [ ] Repair once at the shared save seam; verify the peer case and existing
+  same-proposal/after-admission repeat-save case. Expected behavior comes from
+  spec0007's separately identified draft rule, not generated output. Scope the
+  fresh independent review to this new unreviewed delta and these invariants.
+
+`existing-check`, with a deterministic failing-first extension of
+`test_native_example_save_search_never_opens_sources`; also run
+`test_native_example_repeated_question_creates_distinct_drafts` once after the
+ID change because that delta invalidates its earlier evidence. Run from A.
+These are two distinct reachable scopes, not two new test layers. No broader
+Example campaign or third review of C4/C6. Accepted new IDs are consumed by CW2.
+
+#### CW2 — Complete native caller/fixture migration as one coherent batch
+
+- [ ] Owned mutations: the CW0-listed A tests and the two I modules, with
+  `I/lumio_metric_mvp.py` shared fixture edits only if caller tracing requires
+  them. Reuse supported native fixtures and real public lifecycle operations;
+  no legacy-shape translator, mock-success facade, second index/store or
+  production change to accommodate stale tests. Preserve synthetic raw rows,
+  independently authored SQL/oracles, exact permissions/provenance and scopes.
+- [ ] Reconcile composite admission display/confirmation, native page paths,
+  canonical source identities, producer metadata and API/entrypoint shapes.
+  Example/ad-hoc/record-query cases explicitly author their required fresh
+  selector/Table coverage before admission; do not silently raise the shared
+  revision-2 default or rewrite frozen historical capability records.
+- [ ] Convert old required-Context “collapse and continue” expectations to the
+  approved pre-SQL refusal scenario on the native path; retain independent
+  planner/grain/numerical checks and the distinction between optional metadata
+  and mandatory Policy closure. A mere path replacement is not proof of this.
+- [ ] Dispose each proposed retirement against the removed behavior and name
+  the surviving invariant check. Do not delete live numerical/authorization/
+  revision/retention checks, weaken malformed-input oracles, add skips/xfails
+  or suppressions, or treat absent coverage as proof of obsolete behavior.
+  Settled D1–D4 findings are not reopened; later reds still require explanation.
+- [ ] Apply the fixture-only F3 repair only after CW0 establishes its branch;
+  otherwise preserve the blocker. All other newly exposed production defects
+  return to the parent/owner; this is not an unrestricted refactoring grant.
+
+`existing-check`: use the shared validation units below, selected by actual
+changed boundary. No automatic whole-module run per edit or renewed S2–S6
+certification. Fixture/body changes invalidate only their affected evidence.
+Output: every listed residual is migrated, evidenced already resolved, or
+explicitly retired against a removed contract; an unexplained/unverified
+migration obligation prevents the final source-ready claim.
+
+#### CW3 — Shipped-surface reconciliation and C6 handoff to C7
+
+- [ ] Inspect/fix only current surfaces named by #114: root `README.md`, A
+  `README.md`, DA `tutorials/getting-started.md`, `how-to/{context-knowledge,
+  git-authoring,pi-agent-workflow,shared-workspace-data}.md`,
+  `reference/{context-knowledge,cli,git-authoring-migration}.md`,
+  `a/skill_assets/SKILL.md` and affected packaged references,
+  `products/ariadne/examples/retail-demo/` config/docs, and tracked
+  `examples/trace-data/` authored content only if present. Missing historical
+  paths are recorded as absent, not manufactured. No private inputs, globally
+  installed skills, historical research, dependencies, lockfiles or versions.
+  Load installed skill-editing guidance before modifying packaged skill text.
+- [ ] Repeat #114's bounded stale-reference inspection over executable Core,
+  shipped docs/assets/examples and live fixtures. Classify retained occurrences
+  as current technical purpose, explicit old-format refusal, or historical/
+  non-executable material. Permit mechanical removal of proven dead retired
+  code, after caller proof and parent disposition, ONLY in #114's named
+  `a/{context,ingest,author,authoring_context,answer_examples,discovery,
+  lumio_context,proposals,validate,init,cli,serve}.py` paths that still exist.
+  No working replacement backend or compatibility adapter may remain merely
+  to satisfy old fixtures. This is not blanket refactoring or a zero-match
+  deletion target. A reachable path requiring new behavior, a new source
+  surface, or a retention/permission/storage change stops for scoped owner
+  authority before mutation; CW1 is the only pre-scoped behavioral repair.
+- [ ] Parent verifies the final diff, frozen descendant result, clean checkout,
+  reused/invalidated evidence and all CW0 dispositions. Preserve all previous
+  refs/worktrees and the diagnostic candidate; designate a separate isolated
+  completion candidate only after acceptance, without touching target main.
+  Record C6 **source-ready for required CI**, not installed/CI/live success.
+- [ ] Hand that exact result to existing C7/#115 for its one assembled required
+  CI/wheel/installed-journey qualification. C7 is not rerun per internal group,
+  and this preparation does not authorize C7 execution. Migration failures
+  found there remain C6 obligations, not permission to weaken CI.
+
+`no-new-test` for docs/proven-dead deletion: stale-reference dispositions,
+changed-file diff/lint and actual shipped command correspondence; reuse
+AC10/packaging evidence only where its inputs match. Deleting a referenced
+path is not mechanically dead: that branch needs a named existing boundary
+check and separate parent/owner disposition before removal. A changed packaging input invalidates its affected C7 artifact.
+No optional test slimming from plan0036 and no new verification framework.
+
+#### Validation units and stopping rules for the approved wave
+
+The units below are the approved execution budget; none ran during preparation. Use the
+existing immutable Python3.14 pair environment, own Core/SDK roots, synthetic
+HOME and Git-file/optional-locks0/no-bytecode guards. Existing environment
+inadequate for a required check means stop, not an install/runtime switch.
+Focused pytest is serial with `-x -vv`, faulthandler30 and timeout180s/INT/kill5.
+Use actual cwd A, except I selectors use repository root with explicit paths.
+Log complete commands/output and immediately captured real exits in existing
+run context. Ruff once over changed Python paths after the applicable unit;
+no implicit autoformat/autofix/tests or new suppressions. Under the approved
+recovery control above, these execution steps belong ONLY to the parent after
+writer ownership release; the migration writer has no runtime/check authority.
+
+| Unit / consumed by | Named reachable failure and independent oracle | Smallest existing selection / reuse | Invalidation |
+| --- | --- | --- | --- |
+| V-ID / CW1 → CW2 | Same-second peer saves alias one identity; separately identified drafts required by spec0007, existing question/bytes and no-source sentinels | The two exact Example cases named in CW1; controlled peer case fails before repair, then once after; repeat-save case once after | Shared ID/save logic or selected proposal/revision |
+| V-Lifecycle / CW2 | Old preview/page fields bypass the intended native lifecycle; source/Git prerequisites and bounded reader identity must remain truthful | `tests/test_git_admission.py::test_only_reviewed_validated_revision_activates_without_changing_candidate_bytes`; `tests/test_git_authoring.py::test_repair_state_persists_across_failures_retries_restarts_and_rebases`; `tests/test_setup.py::test_missing_git_prerequisites_pause_declarations`; `tests/test_context_browsing.py::test_invalid_paths_refuse_naming_the_rejected_path` | Relevant shared fixture, caller shape, canonical identity or lifecycle seam; reuse unaffected S2–S6 evidence instead of replay |
+| V-Analytics / CW2 | Native Context migration loses grain/numerical rules, Policy-before-SQL or bounded results; golden fixture and independent SQL are the oracle | `tests/test_evals.py::test_golden_entry` (existing six variants); `tests/test_evals.py::test_get_metric_rejects_served_model_with_fanned_source`; `tests/test_multifact.py::test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mcp`; `tests/test_query_results.py::test_query_result_limits[rows_fit_but_metadata_overflows]`; `tests/test_query_results.py::test_query_deadline_contract[expiry_between_phases_never_returns_success]`; `I/lumio_local_context.py::test_multi_metric_context_precedes_execution` only if its inputs changed | Serving fixture, actual graph/Policy inputs, envelope/deadline or source identity; no raw expected-number changes |
+| V-Retention / fixture branch of CW0 → CW2 | Required retained original/binding absent or substituted; exact authored digests and native verified bytes, unchanged negative gates | `I/lumio_managed_sources.py::test_managed_admission_binds_profile_and_retention` after genuine fixture registration repair; otherwise blocked, no compensating mock or synthetic flag | Manifest/source/version/raw-byte/store/profile inputs |
+| V-Shipped / CW3 | Installed guidance or command inventory advertises retired behavior | `tests/test_skill.py::test_skill_teaches_context_knowledge_and_typed_page_edits`; `tests/test_init.py::test_console_scripts_registered` only for their changed inputs; #114 stale-reference inspection; AC10 and existing dependency evidence otherwise reused | Packaged assets, entrypoint metadata, format-open order or dependency metadata |
+
+This is a boundary-coherence budget, not proof that all historical failures are
+gone. Broader required CI and built/installed identity verification stay with
+C7. Additional focused checks require a named uncovered reachable scenario and
+parent disposition before execution, not an automatic expansion on failure.
+
+An expected failing-first bug repro is labeled in advance; every OTHER nonzero,
+timeout or failed handoff prerequisite means STOP/preserve/report. Parent may
+authorize one small in-scope correction and one delta check, reusing unaffected
+greens; a repeated or material failure goes to the owner. Shell variable/setup
+failures also stop: S6's handoff exception is historical, not future authority.
+No unbounded repeat-until-green loop, review reset or deletion to meet counts.
+
+**Exit:** all canonical #114 removal/caller/shipped obligations have concrete
+current dispositions; no unresolved required F3/product defect, weakened oracle
+or migration-only skip; accepted CW1 delta and bounded checks/reuse; verified
+clean frozen C6 result ready for C7. Otherwise report the exact unmet condition,
+not “C6 complete”. Only then pause for C7/target-integration authority.
+
+**Current execution checkpoint — C6 source-ready for required CI.** Parent
+accepted CW0–CW3 against the concrete requirement/evidence map in the existing
+run report `c7/c7-report.md` §30. Frozen result
+`8690e2e393744ade559ffe488995592c4bb69eed`, tree
+`96eeee624fe2b9a41d9d7b5b5bc23b8468fdf7c1`, is protected by
+`refs/heads/orchestrator/open-issues-20261110/result/c6-completion-wave/a1`.
+The separate registered `c6-completion-candidate-a1` checkout uses branch
+`orchestrator/open-issues-20261110/candidate-c6-completion-a1` at that EXACT
+commit/tree; full porcelain is empty. Original S6 wave base and all earlier
+refs/worktrees remain; main `d2f8b75` and diagnostic `023fbfd` are untouched.
+Historical failures/STOP breaches and spent exceptions remain recorded,
+not waived. This closes the source migration milestone, not all historical
+test outcomes or clean type-analysis. Changed source bytes/packaged skill
+require C7's own exact-build/wheel/installed qualification. No C7 execution,
+main integration, push, tracker/PR changes, cleanup or publication follows.
 
 ## C7 — Verify the assembled candidate once and hand it back
 
