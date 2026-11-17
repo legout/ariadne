@@ -9,7 +9,7 @@ work; pre-convert other documents or separately prepare a `[documents]` image.
 ## Prepare the project and environment
 
 Use an initialized **data project**, not this software checkout. For Git-backed
-authoring, use its standalone Git repository root, with a valid initial commit
+authoring, use its own native project Git root, with a valid initial commit
 and local `user.name`/`user.email`. See [Git authoring](git-authoring.md).
 
 The Compose mount is read-write and uses the **same absolute path on host and
@@ -18,7 +18,7 @@ approved resolved source identities must remain usable by both the server and
 the human operator. Do not remap an already managed project to `/project`.
 A linked checkout with a `.git` file needs its common Git directory mounted at
 the same path too; other worktrees the operator uses also need their actual
-paths. This minimal template assumes the standalone root.
+paths. This template mounts that project root, including its native `knowledge/` KB.
 
 Set the Docker entries from `products/ariadne/deploy/.env.example` in an
 existing `.env` (do not overwrite existing credentials), or export them in

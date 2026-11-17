@@ -1,5 +1,11 @@
 # Lumio + Ariadne locally: knowledge, a governed answer, and an update
 
+> **Historical tutorial — Core 0.6.0 / SDK 0.4.0 only.** The commands,
+> classic catalog and numerical evidence below retain that older contract;
+> they are not the current native Core setup. Use the
+> [current getting-started tutorial](../../../products/ariadne/docs/tutorials/getting-started.md)
+> for a new project. No automatic migration of this historical project is implied.
+
 Use this tutorial to see both tools working together with three supplied,
 synthetic retail orders. You will get **150 EUR recognized revenue and two
 completed orders**, with the complete governing Policy and citations. Then you

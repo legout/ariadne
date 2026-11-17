@@ -522,6 +522,70 @@ def select_revision4_fixture(tree: Path) -> str:
     return run_git(tree, "rev-parse", "HEAD").strip()
 
 
+def commit_native_document(
+    tree: Path, private: Path, text: str, *, intent: str
+) -> tuple[str, Path]:
+    """Retain a real original and human-commit its exact native binding; no Core ingest store."""
+    import hashlib
+
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+    from lumio_wiki.authoring_journey import (
+        CandidateRequest,
+        CandidateSourceRecord,
+        ingest_candidate,
+    )
+    from lumio_wiki.source_registry import SourceRegistry
+
+    private.mkdir(parents=True, exist_ok=True)
+    original = private / "original.md"
+    original.write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    authored = private / "source-notes.md"
+    authored.write_text(
+        "---\nid: entity:native-source-notes\ntitle: Source Notes\n"
+        "entity_types: [reference]\ncategory: references\ntype: document\n"
+        "durability_rationale: The retained source supports these notes.\n"
+        "tags: [reference]\nsummary: Source-backed notes.\nlifecycle: draft\n"
+        "visibility: public\nsources:\n  - id: native-notes\n    title: Notes\n"
+        "claims: []\nsynthetic: false\n---\n\n" + text,
+        encoding="utf-8",
+    )
+    result = ingest_candidate(
+        tree / "knowledge",
+        CandidateRequest(
+            schema_version=1,
+            base_revision=run_git(tree, "rev-parse", "HEAD").strip(),
+            sources=[CandidateSourceRecord("native-notes", str(original), digest, intent)],
+            pages=[str(authored)],
+        ),
+        source_registry=SourceRegistry(private / "registry"),
+        artifact_store=LocalDirectoryArtifactStore(private / "store"),
+    )
+    [binding] = [
+        item
+        for item in result.bindings
+        if item.entity_id == "entity:native-source-notes" and item.source_id == "native-notes"
+    ]
+    assert binding.content_hash == digest and binding.retained is True
+    assert all(item.retained for item in result.bindings)
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": "urn:uuid:authoring-fixture",
+                "source_registry": str(private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(private / "store")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_git(tree, "add", "--", "knowledge")
+    run_git(tree, "commit", "-q", "-m", "human: native source evidence")
+    return run_git(tree, "rev-parse", "HEAD").strip(), profile
+
+
 def worktree_of(project: Path, proposal: str) -> Path:
     return project / ".ariadne" / "worktrees" / proposal
 
@@ -549,6 +613,46 @@ def commit_paths(project: Path, revision: str) -> set[str]:
 
 
 # ---------------------------------------------------------- [1] the red seam
+
+
+@pytest.mark.parametrize(
+    ("legacy_rel", "legacy_text"),
+    [
+        ("context_layer/references/poison.md", "---\ntitle: [\n---\n"),
+        (
+            "context_layer/tables/poison.md",
+            "---\nariadne:\n  observations:\n    source_binding: " + "f" * 64 + "\n---\n",
+        ),
+        (
+            "context_layer/references/poison.md",
+            "---\nsources:\n  - resource: retired-missing-document.md\n---\n",
+        ),
+    ],
+    ids=["malformed", "stale-binding", "document-citation"],
+)
+def test_native_validation_ignores_retired_context_pages(tmp_path, legacy_rel, legacy_text):
+    """C6: classic canaries remain captured bytes, never native validation authority."""
+    project = complete_bundle_project(tmp_path)
+    legacy = project / legacy_rel
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(legacy_text, encoding="utf-8")
+    run_git(project, "add", "--", legacy_rel)
+    run_git(project, "commit", "-q", "-m", "human: inert classic canary")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], policy_pages("Native rule, revised.")
+    )
+
+    result = api.validate_proposal(started["proposal"], edited["revision"])
+    assert result["ok"] is True, result["errors"]
+    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
+    assert outcomes["bind"] == outcomes["grain"] == "passed"
+    assert run_git(project, "show", f"{result['revision']}:{legacy_rel}") == legacy_text
+    review = api.review_proposal(started["proposal"])
+    assert legacy_rel in {entry["resource"] for entry in review["files"]}
+    assert all(citation["kind"] != "document" for citation in review["citations"])
 
 
 def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(tmp_path):
@@ -955,9 +1059,13 @@ def test_review_returns_revisions_inventory_bodies_citations_and_is_read_only(tm
     # source identity, verified citations and the stored report with full scope
     assert review["sources_digest"] and review["source_approved"] is True
     citations = {(c["kind"], c["resource"]) for c in review["citations"]}
-    assert ("document", "notes.md") in citations
     assert ("bundle", "policies/all-events-count.md") in citations
-    assert ("source", "events.events") in citations
+    assert ("document", "notes.md") not in citations
+    assert ("source", "events.events") not in citations
+    assert {
+        "context_layer/references/joins/events--events.md",
+        "context_layer/tables/events.md",
+    } <= paths  # retired citation inputs remain exact review artifacts, not authority
     assert review["report"]["revision"] == validated["revision"]
     assert review["report"]["ok"] is True
     assert set(review["report"]["performed_checks"]) >= {"bind", "grain", "page_contract"}
@@ -971,11 +1079,12 @@ def test_review_returns_revisions_inventory_bodies_citations_and_is_read_only(tm
 
 
 def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validated(tmp_path):
-    """Issue #36 [4]: a candidate that moved past its validated revision has NO
-    report for the new commit, and changed document evidence marks the stored
-    validation stale — neither can be represented as an unchanged validated
-    candidate (spec §4: repair invalidates earlier review/validation evidence)."""
+    """Changed native evidence cannot reuse old validation or reset repair history."""
+    from ariadne.admission import reconcile
+
     project = complete_bundle_project(tmp_path)
+    private = tmp_path / "native-evidence"
+    commit_native_document(project, private, "# Source Notes\n\nOriginal rule.\n", intent="new")
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
@@ -990,22 +1099,31 @@ def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validate
     assert after_move["revision"] == moved["revision"]
     assert after_move["report"] is None
 
-    # validate the moved candidate, then change the cited document's bytes: the
-    # stored validation is reported stale, never silently reused
+    # Native originals are immutable captured versions: a new source binding
+    # requires a new authored revision, not a mutable Classic document reread.
     revalidated = api.validate_proposal(started["proposal"], moved["revision"])
     assert revalidated["ok"] is True
-    (project / "data" / "docs" / "notes.md").write_text("# Rule notes, changed\n", encoding="utf-8")
+    prior_review = api.review_proposal(started["proposal"])
+    evidence = (
+        project / ".ariadne/validation" / started["proposal"] / f"{revalidated['revision']}.json"
+    )
+    original_evidence = evidence.read_bytes()
+    updated, _profile = commit_native_document(
+        worktree_of(project, started["proposal"]),
+        private,
+        "# Source Notes\n\nChanged rule.\n",
+        intent="update",
+    )
+    reconciled = reconcile(project, started["proposal"], revalidated["revision"], updated)
+    assert reconciled["validation_invalidated"] is True
     stale = api.review_proposal(started["proposal"])
-    assert stale["validation_stale"] is True
-    assert any("document evidence" in reason for reason in stale["stale_reasons"])
-    # the report itself is still readable (the exact validated revision), but
-    # the review says the evidence no longer matches the current bytes
-    assert stale["report"]["ok"] is True and stale["report"]["revision"] == moved["revision"]
-    # ...and an unchanged-retry validation cannot return the stale evidence: the
-    # changed binding context re-validates (consuming a round: the moved
-    # candidate's validation was round 2, the changed-document re-run round 3)
-    refreshed = api.validate_proposal(started["proposal"], moved["revision"])
-    assert refreshed.get("idempotent") is None  # a real re-run, not the stored copy
+    assert stale["revision"] == updated
+    assert stale["review_digest"] != prior_review["review_digest"]
+    assert stale["report"] is None  # never present the old source version as validated
+    assert evidence.read_bytes() == original_evidence  # historical proof is not rewritten
+    refreshed = api.validate_proposal(started["proposal"], updated)
+    assert refreshed["ok"] is True
+    assert refreshed.get("idempotent") is None
     assert refreshed["attempts"] == 3
 
 

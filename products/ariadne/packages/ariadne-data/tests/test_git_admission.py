@@ -53,6 +53,7 @@ from tests.test_git_authoring import (  # noqa: E402
     UNSAFE_GRAIN_MODEL_YML,
     approved,
     branch_of,
+    commit_native_document,
     complete_bundle_project,
     record_of,
     run_git,
@@ -410,23 +411,88 @@ def _tamper_validation(project: Path, proposal: str, revision: str, mutate) -> N
 def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, capsys):
     """Issue #37 [2]/[5]: partial checks, a mismatched validator
     identity/configuration, a changed source identity, a withdrawn operator
-    approval and changed cited documents each refuse admission — a
+    approval and changed native source evidence each refuse admission — a
     compile-only, hand-edited or source-invalidated report is never admission
     evidence."""
+    import hashlib
+
+    from lumio_wiki import load_knowledge_base
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
+    from lumio_wiki.source_references import (
+        load_source_reference_manifest,
+        serialize_source_reference_manifest,
+        upsert_binding,
+    )
+    from lumio_wiki.source_registry import SourceRegistry
+
     project = complete_bundle_project(tmp_path)
+    private = tmp_path / "native-evidence"
+    _base, profile = commit_native_document(
+        project, private, "# Source Notes\n\nOriginal rule.\n", intent="new"
+    )
     api = AuthoringProject(project)
     review = _validated_ready(api, project, _policy_edit("A revised body."))
     proposal = review["proposal"]
+    tree = worktree_of(project, proposal)
+    kb, loaded = load_knowledge_base(tree / "knowledge")
+    assert loaded.is_valid, str(loaded)
+    manifest = load_source_reference_manifest(tree / "knowledge")
+    assert manifest is not None
+    registry = SourceRegistry(private / "registry")
+    store = LocalDirectoryArtifactStore(private / "store")
+    # Required retention covers every source, including real technical inputs
+    # of the fixture's Policy, Metric and generated Computation.
+    originals = {
+        "seed-notes": "data/seed_notes.md",
+        "all-events-count": NATIVE_POLICY_REL,
+        "model-events": "semantic_layer/models/events.yml",
+    }
+    hashes = {}
+    for source_id, rel in originals.items():
+        raw = (tree / rel).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        version = registry.register_source(source_id, raw, filename=Path(rel).name)
+        assert version.content_hash == digest
+        assert (
+            retain_artifact(
+                store,
+                registry,
+                source_id=source_id,
+                raw_bytes=raw,
+                content_type=None,
+                filename=Path(rel).name,
+            )
+            == digest
+        )
+        assert store.get_artifact(source_id=source_id, content_hash=digest) == raw
+        hashes[source_id] = digest
+    bound = set()
+    for page in kb.pages:
+        for source in page.sources:
+            if source.id in hashes:
+                assert page.id is not None
+                manifest = upsert_binding(manifest, page.id, source.id, hashes[source.id])
+                bound.add(source.id)
+    assert bound == set(originals)
+    (tree / "knowledge/.lumio-authoring.yaml").write_bytes(
+        serialize_source_reference_manifest(manifest)
+    )
+    run_git(tree, "add", "--", "knowledge/.lumio-authoring.yaml")
+    run_git(tree, "commit", "-q", "-m", "human: retain exact fixture source evidence")
+    retained_revision = run_git(tree, "rev-parse", "HEAD").strip()
+    reconciled = reconcile(project, proposal, review["revision"], retained_revision)
+    assert reconciled["validation_invalidated"] is True
+    assert api.validate_proposal(proposal, retained_revision)["ok"] is True
+    review = api.review_proposal(proposal)
     revision = review["revision"]
     evidence_path = project / STATE / "validation" / proposal / f"{revision}.json"
     original = evidence_path.read_text(encoding="utf-8")
     approvals_path = project / STATE / "source-approvals.json"
     approvals_original = approvals_path.read_text(encoding="utf-8")
-    notes_path = project / "data" / "docs" / "notes.md"
-    notes_original = notes_path.read_text(encoding="utf-8")
+    native_profile = ["--context-private-profile", str(profile)]
 
     def refuse(match: str) -> None:
-        assert admit(project, review) == 1
+        assert admit(project, review, extra=native_profile) == 1
         assert match in json.loads(capsys.readouterr().err)["error"]["message"]
         assert not (project / CURRENT).exists()
 
@@ -464,17 +530,26 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
     refuse("NO operator approval")
     approvals_path.write_text(approvals_original, encoding="utf-8")
 
-    # changed cited document evidence since validation: the review digest
-    # itself binds the VERIFIED citations, so the changed bytes make the current
-    # review a different identity — the exact-digest admission refuses
-    notes_path.write_text("# Rule notes, changed\n", encoding="utf-8")
+    # A real retained-source update changes the native manifest and candidate.
+    # Even after validation, the old human review digest cannot authorize it.
+    updated, _profile = commit_native_document(
+        worktree_of(project, proposal),
+        private,
+        "# Source Notes\n\nChanged rule.\n",
+        intent="update",
+    )
+    assert reconcile(project, proposal, revision, updated)["validation_invalidated"] is True
+    assert api.validate_proposal(proposal, updated)["ok"] is True
+    updated_review = api.review_proposal(proposal)
+    assert updated_review["review_digest"] != review["review_digest"]
+    review = {**updated_review, "review_digest": review["review_digest"]}
     refuse("review digest mismatch")
-    notes_path.write_text(notes_original, encoding="utf-8")
+    assert evidence_path.read_text(encoding="utf-8") == original
 
-    # restored evidence admits cleanly afterwards
-    assert admit(project, review) == 0
+    # Only a fresh exact native review may admit the changed evidence.
+    assert admit(project, updated_review, extra=native_profile) == 0
     capsys.readouterr()
-    assert read_current(project)["commit"] == revision
+    assert read_current(project)["commit"] == updated_review["revision"]
 
 
 # ---------------------------------------- [3] atomic activation and preservation
@@ -534,9 +609,7 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     monkeypatch.undo()
 
     # The human re-reviews the actually active native version before retrying.
-    assert admit(
-        project, second_review, extra=["--context-expected-current", native_current]
-    ) == 0
+    assert admit(project, second_review, extra=["--context-expected-current", native_current]) == 0
     capsys.readouterr()
     assert read_current(project)["commit"] == second_review["revision"]
 
@@ -1396,9 +1469,7 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     # failure AFTER the atomic rename (the real post-rename boundary): the
     # previous descriptor is restored and still serves — never a silent new one
     monkeypatch.setattr(proposals, "_fsync_path", flaky_fsync(descriptor_dir, 2))
-    assert admit(
-        project, second_review, extra=["--context-expected-current", native_current]
-    ) == 1
+    assert admit(project, second_review, extra=["--context-expected-current", native_current]) == 1
     assert "restored" in json.loads(capsys.readouterr().err)["error"]["message"]
     assert read_current(project) == first
     runtime = QueryRuntime.open_project(project)
@@ -1408,9 +1479,7 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     monkeypatch.undo()
 
     # The human confirms a fresh overall preview against the actual native pin.
-    assert admit(
-        project, second_review, extra=["--context-expected-current", native_current]
-    ) == 0
+    assert admit(project, second_review, extra=["--context-expected-current", native_current]) == 0
     capsys.readouterr()
     assert read_current(project)["commit"] == second_review["revision"]
 

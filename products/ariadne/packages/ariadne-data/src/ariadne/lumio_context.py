@@ -1513,10 +1513,6 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
         if native_found is not None:
             computation = native_found[1]
             signals.append(context._page_view(native_found[0], computation, now))
-    else:
-        computation = context._computation_meta(Path(context_dir), metric)
-        if computation is not None:
-            signals.append(context._page_view(f"computations/{metric}.md", computation, now))
     result = {
         "metric_page": page.content,
         "policies": [p.content for p in binding.required_policies],

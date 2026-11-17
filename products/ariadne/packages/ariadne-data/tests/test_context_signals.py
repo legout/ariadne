@@ -150,6 +150,7 @@ def _write(root_rel: str, text: str, tmp_path) -> pathlib.Path:
 # native query journeys (see the context_signals views in the admitted
 # multi-fact journeys and node 1/2).
 
+
 def test_term_match_carries_the_envelope_and_serializes_through_the_json_adapter(
     tmp_path, monkeypatch
 ):
@@ -173,6 +174,53 @@ def test_term_match_carries_the_envelope_and_serializes_through_the_json_adapter
     assert signals["warnings"] == [{"code": "context_stale", "path": "references/term.md"}]
     # the existing CLI adapter serializes the whole match, dates included
     json.dumps(match, default=cli_json_default)
+
+
+def test_revision1_native_context_never_reads_classic_computation(tmp_path):
+    """C6: a frozen revision-1 SDK view cannot acquire classic attestation signals."""
+    from lumio_wiki.ariadne_context import (
+        ContextBinding,
+        ContextIdentity,
+        ContextPageView,
+        ContextSnapshot,
+    )
+    from lumio_wiki.records import AriadneMetricReference
+
+    from ariadne.lumio_context import metric_context
+
+    classic = tmp_path / "context_layer"
+    (classic / "computations").mkdir(parents=True)
+    (classic / "computations/revenue.md").write_text(
+        "---\ntype: computation\nattestation: pending\n---\n\nRetired computation.\n",
+        encoding="utf-8",
+    )
+    page = ContextPageView(
+        namespace="urn:uuid:context-signals",
+        entity_id="entity:revenue",
+        kind="metric",
+        path="metrics/revenue.md",
+        content="# Revenue\n",
+        body="# Revenue\n",
+        body_start_line=1,
+        native={"type": "metric", "title": "Revenue", "sources": []},
+        sources=(),
+        published_version="published-1",
+        citation="exact-pinned-native-citation",
+    )
+    snapshot = ContextSnapshot(
+        identity=ContextIdentity(
+            page.namespace, 1, page.published_version, "a" * 64, "b" * 64, "c" * 64
+        ),
+        pages=(page,),
+        bindings=(ContextBinding(page.entity_id, AriadneMetricReference("sales", "revenue"), ()),),
+    )
+    result = metric_context(
+        snapshot, {"selector": {}, "digest": "d" * 64}, classic, "sales", "revenue"
+    )
+    assert [entry["path"] for entry in result["context_signals"]["pages"]] == ["metrics/revenue.md"]
+    assert "attestation" not in result and "governed_note" not in result
+    assert result["bound_release"] == "d" * 64
+    assert [entry["citation"] for entry in result["citations"]] == ["exact-pinned-native-citation"]
 
 
 def test_public_surface_exposes_no_clock_parameter_or_clock_api():

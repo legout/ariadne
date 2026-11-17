@@ -4,9 +4,8 @@ This documentation targets Ariadne 0.8.0 and is organized by reader goal, follow
 
 ## Tutorials
 
-- [Lumio + Ariadne locally](../../../integration/docs/tutorials/lumio-ariadne-local.md) — start here for a complete example: knowledge, reviewed release, 150 EUR result, citations and an explicit update. No Docker, S3 or model key.
-
-- [Get started](tutorials/getting-started.md) — learn by creating a project and reaching a first governed query.
+- [Get started](tutorials/getting-started.md) — create a current native project and reach a first governed query.
+- [Historical joint example](../../../integration/docs/tutorials/lumio-ariadne-local.md) — the preserved Core 0.6.0 / SDK 0.4.0 tutorial with 150 EUR and two orders; not the current setup route.
 
 ## How-to guides
 

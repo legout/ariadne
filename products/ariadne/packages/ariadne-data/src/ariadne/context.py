@@ -62,44 +62,6 @@ _HEADING_RE = re.compile(r"#{1,6}\s+(.+?)\s*$")
 # snapping outward to whole words (spec: bounded, verbatim).
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _computation_meta(root: Path, name: str) -> dict | None:
-    """The computation page's frontmatter meta, or None when no such page is
-    readable (read problems are just another missing caveat — never a
-    failure). The page enters spec 0011 §5's consumed set exactly when this
-    existing caveat path reads it; its attestation semantics live in
-    ``metric_context`` (``attestation: pending``, ADR-0007 scoped extension)."""
-    try:
-        page = root / "computations" / f"{name}.md"
-        if not page.resolve().is_relative_to(root) or not page.is_file():
-            return None
-        match = _FRONTMATTER_RE.match(page.read_text(encoding="utf-8"))
-        meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
-    except Exception:
-        return None
-    return meta if isinstance(meta, dict) else {}
-
-
 # ------------------------------------------------- deterministic OKF generation
 
 # ------------------------------------------------------- frontmatter primitives
@@ -153,8 +115,6 @@ def _load(text: str) -> tuple[dict | None, str]:
 # tests/test_author.py). Fields attached mechanically after validation (metric
 # governed_by/dimensions/grain, computation runtime/attester) carry their own
 # targeted errors below, not this shared list.
-
-
 
 
 # System-generated candidate bookkeeping (index trees, log) is not authored
@@ -234,15 +194,9 @@ def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
     return index, all_parsed
 
 
-
-
-
-
 # ------------------------------------------- the Git-candidate finalize pass
 
 _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
-
-
 
 
 def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
@@ -412,9 +366,7 @@ def _native_computation_state(
     )
 
 
-def _refresh_native_computation_page(
-    text: str, name: str, info: dict, sanctioned: str
-) -> str:
+def _refresh_native_computation_page(text: str, name: str, info: dict, sanctioned: str) -> str:
     """The surgical refresh of one STALE core-generated Computation page: the
     derived facts (resolved sanctioned SQL fence, runtime, dataset sources)
     update to the current definition and the predecessor's obsolete
@@ -461,9 +413,7 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     semantic_id = f"{info['model']}::{name}"
     model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
     meta = {
-        "id": "entity:"
-        + semantic_id.replace("::", "-").replace("_", "-").lower()
-        + "-computation",
+        "id": "entity:" + semantic_id.replace("::", "-").replace("_", "-").lower() + "-computation",
         "entity_types": ["computation"],
         "tags": ["computation"],
         "title": f"sanctioned SQL — {semantic_id}",
@@ -501,8 +451,6 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
         "```sql\n" + sanctioned + "\n```\n"
     )
     return f"---\n{front}\n---\n\n{body}"
-
-
 
 
 # -------------------------- K1 (issue #41): core-owned physical schema pages
@@ -1320,8 +1268,6 @@ def build_native_dataset_page(
         )
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True, default_flow_style=False)
     return f"---\n{front}---{body}", flags
-
-
 
 
 # ------------- K2 (issue #42): structured References and term resolution
@@ -2723,8 +2669,6 @@ def resolve_term_entries(
     }
 
 
-
-
 # ---------------------------------------------- deterministic index generation
 
 # Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
@@ -2750,12 +2694,6 @@ _FOLDER_BLURBS = {
     "computations": "Sanctioned computations: SQL, runtime, attester.",
     "skills": "Operational guides: author, review, query.",
 }
-
-
-
-
-
-
 
 
 # ------------------ advisory supplied source-quality evidence (spec 0013, #53)
@@ -3223,6 +3161,8 @@ DATA_SIGNALS_MAX_ASSETS = 64
 DATA_SIGNALS_MAX_REPORTS = 128
 DATA_SIGNALS_MAX_BYTES = 64 * 1024
 _PAGE_FRONTMATTER_READ_BYTES = 64 * 1024
+
+
 def _coerce_validated_instant(value: object) -> datetime:
     """The instant of a VALIDATED profile timestamp (aware datetime or aware
     ISO string — the producer authoring gate rejected everything else)."""

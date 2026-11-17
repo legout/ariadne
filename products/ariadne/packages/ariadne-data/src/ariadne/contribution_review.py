@@ -197,13 +197,11 @@ def _static_validation(project: Path, record: dict, tree: Path, resolved_sources
         authoring_sources.resolved_digest(resolved_sources) if resolved_sources else None,
     )
     errors.extend(authoring._graph_citation_errors(tree))
-    errors.extend(
-        authoring._stale_schema_binding_errors(tree, approval.get("approval_digest"))
-    )
+    errors.extend(authoring._stale_schema_binding_errors(tree, approval.get("approval_digest")))
     errors.extend(authoring._asserted_claim_errors(tree))
     errors.extend(answer_examples.validate_candidate_records(project, record, tree))
     names = {entry["name"] for entry in resolved_sources or []}
-    _citations, citation_errors = authoring._verified_citations(tree, project, names)
+    _citations, citation_errors = authoring._verified_citations(tree, names)
     errors.extend(citation_errors)
     performed_set = {check.name for check in result.report.checks} if result.report else set()
     performed_set.update(
@@ -346,9 +344,7 @@ def check_contribution_commit(project, proposal, review, revision):
     commit_tree = _tree(project, commit)
     mismatches = []
 
-    ancestry = proposals._git(
-        ["merge-base", "--is-ancestor", base, commit], worktree, check=False
-    )
+    ancestry = proposals._git(["merge-base", "--is-ancestor", base, commit], worktree, check=False)
     if ancestry.returncode != 0:
         mismatches.append(f"commit {commit} does not descend from reviewed base {base}")
     if commit_tree != review["candidate_tree"]:

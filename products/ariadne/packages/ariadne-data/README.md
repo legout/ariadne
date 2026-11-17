@@ -11,14 +11,17 @@ Ariadne is a Python package with embedded DuckDB. Use it locally through the CLI
 
 ## Start locally
 
-Follow [Lumio + Ariadne locally](../../../../integration/docs/tutorials/lumio-ariadne-local.md) for a complete
-worked example with three synthetic orders: **150 EUR recognized revenue and two
-completed orders**, returned with the governing policy and citations. It uses the
-historically tested published Core 0.6.0 / Lumio 0.4.0 pair (a historical
-pairing preserved as tutorial evidence — current guidance pairs Core 0.8.0
-with the Lumio SDK 0.7 line, which `ariadne-data` requires),
-ordinary Git and local files; no Docker, S3 or model key is needed. The [standalone tutorial](../../docs/tutorials/getting-started.md)
-remains available for a purely local CLI-driven journey (no service, app or cloud).
+Follow the [getting-started tutorial](../../docs/tutorials/getting-started.md)
+for the current native project route, then the
+[context guide](../../docs/how-to/context-knowledge.md). Local CLI use needs no
+service, app or cloud; its Lumio Knowledge Base is required, not an optional
+second catalog.
+
+The [historical joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+preserves the Core 0.6.0 / SDK 0.4.0 example with **150 EUR recognized revenue
+and two completed orders**. Its older package/layout contract is not the
+current setup route. This source tree requires the SDK 0.7 line for Core 0.8;
+exact build pairing is separate from package version strings.
 
 ## Documentation
 
@@ -45,7 +48,7 @@ Ariadne in this shared repository; `ariadne-data` requires its compatible
 `lumio-wiki` SDK (the 0.7 line for Core 0.8), while `lumio-wiki` never
 requires Ariadne.
 [Lumio bound releases](../../../../integration/docs/reference/lumio-bound-releases.md)
-describe the optional integrated context binding: one shared Content Commit, an
+describe the required native context binding: one shared Content Commit, an
 operator-confirmed overall admission activating a local immutable Bound Release,
 strict `metric`/`policy`/`reference` profiles at revision 1 with revision-scoped
 explicit opt-ins — revision 2 for the `dataset`/`table`/`computation` technical

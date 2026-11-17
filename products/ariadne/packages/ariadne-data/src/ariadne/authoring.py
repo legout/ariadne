@@ -42,7 +42,7 @@ from ariadne import (
     profiler,
     proposals,
 )
-from ariadne.author import MAX_ROUNDS, _load_frontmatter_meta
+from ariadne.author import MAX_ROUNDS
 from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historical seam
     EVIDENCE_PART_CHARS,
     MAX_DOCUMENTS_PER_CALL,
@@ -118,23 +118,6 @@ _LAYER_EDITORS = {
 EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
 
 
-def _citation_record(
-    reference: str, project: Path, source_id: str | None = None
-) -> tuple[dict, str | None]:
-    """Observe one permitted document and check any native digest-prefix binding."""
-    resource, title, data = _document_bytes(reference, project)
-    _convert_snapshot(data, Path(title).suffix, display=title)
-    digest = _sha256_hex(data)
-    binding_error = None
-    if isinstance(source_id, str) and re.fullmatch(r"[0-9a-f]{12}", source_id):
-        if not digest.startswith(source_id):
-            binding_error = (
-                f"recorded document digest binding {source_id} does not match "
-                f"permitted original bytes (current sha256 prefix {digest[:12]})"
-            )
-    return {"resource": resource, "title": title, "digest": digest}, binding_error
-
-
 def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
     """Refuse candidate sources outside the approved registry before bind/audit.
 
@@ -208,7 +191,7 @@ def _graph_citation_errors(tree: Path) -> list[str]:
             selected = lumio_context.validated_selector(
                 yaml.safe_load(selector_blob.read_bytes().decode("utf-8"))
             )
-        except (OSError, ValueError, yaml.YAMLError):
+        except OSError, ValueError, yaml.YAMLError:
             selected = None  # the candidate gate owns a malformed selector
         if selected is not None and selected.get("support_revision", 1) >= 2:
             return _native_graph_policy_errors(tree, selected["namespace"])
@@ -276,9 +259,7 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
                 "page carrying its governing Policy closure"
             )
             continue
-        closure, diagnostics = policy_closure(
-            kb.pages, page.ariadne_profile, namespace=namespace
-        )
+        closure, diagnostics = policy_closure(kb.pages, page.ariadne_profile, namespace=namespace)
         for diagnostic in diagnostics:
             errors.append(f"knowledge/{page.path}: {diagnostic.message}")
         owner_datasets = owners_of(name)
@@ -496,9 +477,7 @@ class AuthoringProject:
                 # the operator's evidence age budget drives the candidate
                 # side's explicit as_of/stale freshness states too (K4 fix
                 # pass, finding 3); no confirmations exist on a candidate
-                evidence_max_age_hours=project_inspection_limits(project)[
-                    "receipt_max_age_hours"
-                ],
+                evidence_max_age_hours=project_inspection_limits(project)["receipt_max_age_hours"],
             )
         result.update(
             {
@@ -563,107 +542,14 @@ def _cited_resources(meta: dict) -> list[tuple[str, str | None]]:
     return resources
 
 
-def _tree_citation(tree: Path, page: Path, resource: str) -> str | None:
-    """The tree-relative path of a citation that resolves INSIDE the effective
-    bundle — context-root-relative first (``policies/x.md`` — the runtime's
-    citation contract), then the citing page's own directory (the generated
-    computations cite ``../../semantic_layer/...``), then bundle-root-relative
-    (``data/seed_notes.md``); None when it resolves nowhere. Containment is
-    checked against the materialized TREE (the whole candidate is the citation
-    universe): an escaping traversal is just another unresolvable reference."""
-    root = tree.resolve()
-    context = tree / "context_layer"
-    for base in (context, page.parent, tree):
-        try:
-            resolved = (base / resource).resolve()
-        except OSError:  # pragma: no cover - pathological resource spellings
-            return None
-        if resolved.is_relative_to(root) and resolved.is_file():
-            return resolved.relative_to(root).as_posix()
-    return None
+def _verified_citations(tree: Path, source_names: set[str]) -> tuple[list[dict], list[str]]:
+    """Verify native KB citations against captured pages and approved sources.
 
-
-def _verified_citations(
-    tree: Path, project: Path, source_names: set[str]
-) -> tuple[list[dict], list[str]]:
-    """Verify every citation of the effective bundle's OKF pages (spec §3–4):
-    a citation resolves as a CANDIDATE page (inside the effective tree), an
-    APPROVED source-table identity, or a DOCUMENT inside the operator's input
-    boundary — verified through the shared boundary seam with its sha256
-    (:func:`_citation_record`), matching the revision-bound proposal review
-    contract. Returns (verified citations, errors): a citation resolving
-    nowhere is broken, and broken INHERITED citations block even when only one
-    file changed (AC2)."""
+    Inherited broken citations still block the complete candidate. Retired
+    classic bytes remain in its artifact digest, never its citation authority.
+    """
     citations: dict[tuple[str, str], dict] = {}
     errors: list[str] = []
-    context_dir = tree / "context_layer"
-    pages = sorted(context_dir.rglob("*.md")) if context_dir.is_dir() else []
-    for page in pages:
-        rel = f"context_layer/{page.relative_to(context_dir)}"
-        try:
-            meta = _load_frontmatter_meta(page.read_text(encoding="utf-8"))
-        except yaml.YAMLError as exc:
-            # a malformed draft page is a validation FAILURE the page gate
-            # already names structurally; here it becomes a citation
-            # diagnostic in the report — never an exception that escapes
-            # validate_proposal with the whole report (spec §4)
-            errors.append(
-                f"{rel}: frontmatter is not valid YAML — its citations cannot be verified: {exc}"
-            )
-            continue
-        for resource, source_id in _cited_resources(meta):
-            if (bundle_rel := _tree_citation(tree, page, resource)) is not None:
-                citations[("bundle", resource)] = {
-                    "resource": resource,
-                    "kind": "bundle",
-                    "path": bundle_rel,
-                }
-            elif resource.startswith("ariadne://"):
-                # K1 (issue #41): a canonical catalog asset resource — the
-                # identified catalog/profile citation for physical facts. The
-                # source it names must be one of the approved registry
-                # identities (the approval separately binds the resolved
-                # location; a navigation resource can never confer access).
-                try:
-                    _kind, parts = parse_resource(resource)
-                except ValueError as exc:
-                    errors.append(
-                        f"{rel}: cited catalog resource {resource!r} is not canonical: {exc}"
-                    )
-                    continue
-                if parts[0] not in source_names:
-                    errors.append(
-                        f"{rel}: cited catalog resource {resource!r} names source "
-                        f"{parts[0]!r} which is not an approved registry identity "
-                        f"(approved: {', '.join(sorted(source_names)) or 'none'})"
-                    )
-                    continue
-                citations[("asset", resource)] = {
-                    "resource": resource,
-                    "kind": "catalog_asset",
-                    "source": parts[0],
-                }
-            elif resource in source_names or resource.split(".", 1)[0] in source_names:
-                citations[("source", resource)] = {"resource": resource, "kind": "source"}
-            else:
-                try:  # the operator's document boundary (verified, digest-bound)
-                    citation, binding_error = _citation_record(resource, project, source_id)
-                except ValueError as exc:
-                    errors.append(
-                        f"{rel}: cited resource {resource!r} does not resolve as a "
-                        "bundle page, approved source identity or operator-bound "
-                        f"document — broken citation: {exc}"
-                    )
-                    continue
-                citations[("document", resource)] = {
-                    "resource": resource,
-                    "kind": "document",
-                    "title": citation["title"],
-                    "digest": citation["digest"],
-                    "location": citation["resource"],
-                }
-                if binding_error:
-                    errors.append(f"{rel}: cited document {resource!r}: {binding_error}")
     knowledge = tree / "knowledge"
     if (tree / "context_integration.yaml").is_file() and knowledge.is_dir():
         # F2 (fix pass, spec0029 §1.5): EVERY captured KB Reference — hidden
@@ -944,41 +830,15 @@ def _contract_evidence_eligible(
 
 
 def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> list[str]:
-    """spec 0025 §4 (measurement invalidation): every generated table page —
-    the classic context_layer route AND the integrated producer-native
-    knowledge/ route (#83 review fix F2, read through the producer's public
-    frontmatter parse) — whose measured observations carry a
-    ``source_binding`` must carry the CURRENT effective approval digest:
-    schema and selected-value evidence measured under a different endpoint
-    is stale provenance and refuses validation until the schema is refreshed
-    under the current binding. Pages without a measured binding make no
-    endpoint claim; a missing optional stamp proves nothing."""
+    """Refuse native Table observations bound to a different approved source.
+
+    All captured native Table profiles, including hidden/unreferenced pages,
+    retain spec0025 §4 measurement invalidation. Unbound facts prove no endpoint.
+    """
     errors: list[str] = []
-    tables_dir = tree / "context_layer" / "tables"
-    if tables_dir.is_dir() and approval_digest is not None:
-        for page in sorted(tables_dir.rglob("*.md")):
-            rel = f"context_layer/tables/{page.relative_to(tables_dir)}"
-            try:
-                meta = context._load_frontmatter_meta(page.read_text(encoding="utf-8"))
-            except yaml.YAMLError:
-                continue  # the page-contract gate owns malformed pages
-            ariadne_meta = meta.get("ariadne") if isinstance(meta, dict) else None
-            observations = (
-                ariadne_meta.get("observations") if isinstance(ariadne_meta, dict) else None
-            )
-            bound = observations.get("source_binding") if isinstance(observations, dict) else None
-            if isinstance(bound, str) and bound and bound != approval_digest:
-                errors.append(
-                    f"{rel}: its measured schema/value observations are bound to a "
-                    f"different effective storage identity ({bound[:12]}, the candidate "
-                    f"now validates under {approval_digest[:12]}) — refresh_schema under "
-                    "the current endpoint before validation (spec 0025 §4)"
-                )
     knowledge = tree / "knowledge"
     if knowledge.is_dir() and approval_digest is not None:
-        from lumio_wiki import (  # pyright: ignore[reportMissingImports] — optional SDK
-            parse_frontmatter,
-        )
+        from lumio_wiki import parse_frontmatter
 
         # D1 (#83 delta review): enumerate EVERY captured knowledge page by its
         # producer-parsed native profile KIND — a Table profile's endpoint
@@ -1192,17 +1052,14 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             else:  # never open the audit connection for an unauthorized source
                 result = validate(tree)  # compile-only: the boundary error blocks
                 errors = [auth_error, *result.errors]
-            page_errors = (
-                _graph_citation_errors(tree)
-                + _stale_schema_binding_errors(
-                    tree, approval.get("approval_digest") if approval else None
-                )
+            page_errors = _graph_citation_errors(tree) + _stale_schema_binding_errors(
+                tree, approval.get("approval_digest") if approval else None
             )
             # K4 (issue #44): conflicting asserted claims refuse validation
             # alongside the receipt-verification gate
             claim_errors = _asserted_claim_errors(tree)
             example_errors = answer_examples.validate_candidate_records(project, record, tree)
-            citations, citation_errors = _verified_citations(tree, project, names)
+            citations, citation_errors = _verified_citations(tree, names)
             errors.extend(page_errors)
             errors.extend(example_errors)
             errors.extend(citation_errors)
@@ -1599,14 +1456,13 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
 
 
 def _kb_relative_provenance(text: str, path: str) -> list[str]:
-    """The RELATIVE native provenance citations of one technical profile page
-    (native ``sources[].resource`` bundle paths), parsed through the
-    producer's PUBLIC frontmatter parse (#83 review fix F2, spec0032 §§5–6):
-    these must resolve inside the integrated candidate's knowledge subtree
-    through the existing containment gate — an operator-owned document
-    outside the captured KB never becomes frozen bundle evidence, and a
-    same-path legacy context_layer page is never a fallback."""
-    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
+    """KB-contained technical provenance and retained native Metric Policy paths.
+
+    Producer-parsed Metric paths follow the SDK's retained-Policy predicate;
+    other Metric provenance does not become a KB dependency. Classic pages
+    and external documents never supply missing KB evidence.
+    """
+    from lumio_wiki import parse_frontmatter
 
     try:
         full, _body, _start = parse_frontmatter(text, path)
@@ -1617,6 +1473,7 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
         "table",
         "dataset",
         "computation",
+        "metric",
     ):
         return []
     native = profile.get("native")
@@ -1634,7 +1491,12 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
             else None
         )
         if isinstance(resource, str) and resource and not resource.startswith("ariadne://"):
-            relative.append(resource)
+            if profile["kind"] != "metric" or resource.startswith("policies/"):
+                relative.append(resource)
+    if profile["kind"] == "metric":
+        governed_by = native.get("governed_by")
+        if isinstance(governed_by, str) and governed_by.startswith("policies/"):
+            relative.append(governed_by)
     return relative
 
 
@@ -1821,7 +1683,7 @@ def _review_candidate(
             data = (tree / Path(*PurePosixPath(rel).parts)).read_bytes()
             bodies.append(_review_body(rel, data, part=part))
         source_names = {entry["name"] for entry in resolved_sources or []}
-        citations, _citation_errors = _verified_citations(tree, project, source_names)
+        citations, _citation_errors = _verified_citations(tree, source_names)
         approval = authoring_sources.approval_state(project, resolved_sources, source_digest)
         approved = approval["approved"]
         artifact_digest = candidate_scope_digest(tree)
