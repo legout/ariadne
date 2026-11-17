@@ -61,7 +61,7 @@ def native_page(kind, title, resource, body):
     stays reserved to generated physical-table profiles with Core
     provenance; the METRIC declares its dimensions/grain from the actual
     MODEL (dimension field ``label``, dataset primary key ``id``)."""
-    entity_id = "entity:" + title.lower().replace(" ", "-")
+    entity_id = "entity:" + title.lower().replace(" ", "-").replace("_", "-")
     policy_extra = ""
     if kind == "metric":
         policy_extra = (
@@ -176,6 +176,8 @@ def main():
         command("git", "init", "-q", str(project))
         command("git", "config", "user.name", "Wheel Operator", cwd=project)
         command("git", "config", "user.email", "wheel@example.test", cwd=project)
+        # setup without Git materializes only the selected agent install (S2)
+        (project / "data").mkdir()
         (project / "data/seed_notes.md").write_text(
             "# Events\n\nOne row per unique event id; count every event once.\n", encoding="utf-8"
         )
