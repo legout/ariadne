@@ -663,16 +663,19 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(tmp_path):
     assert any(GOTCHA_1 in body for body in result["context"]["policies"])
     assert any(GOTCHA_2 in body for body in result["context"]["policies"])
 
-    expected_citations = {
-        path: f"{NAMESPACE} {entity} v{record['commit']} {path}"
-        for path, entity in (
-            ("metrics/gross_margin.md", "entity:gross-margin"),
-            ("policies/order-status-billing.md", "entity:order-status-billing"),
-            ("policies/emea-currency-cutover.md", "entity:emea-currency-cutover"),
-        )
+    cited_pages = (
+        ("metrics/gross_margin.md", "entity:gross-margin"),
+        ("policies/order-status-billing.md", "entity:order-status-billing"),
+        ("policies/emea-currency-cutover.md", "entity:emea-currency-cutover"),
+    )
+    # Exact page/release identities stay in the citations block ...
+    assert {c["citation"] for c in result["context"]["citations"]} >= {
+        f"{NAMESPACE} {entity} v{record['commit']} {path}" for path, entity in cited_pages
     }
-    # Native Computation signals use the SDK-relative locator, unlike Metric/Policy citations.
-    expected_citations["computations/gross_margin.md"] = "computations/gross_margin.md"
+    # ... while signals identify each page by its bundle-relative path (spec0011 §4).
+    expected_citations = {
+        path: path for path in (*(p for p, _ in cited_pages), "computations/gross_margin.md")
+    }
     signals = result["context"]["context_signals"]
     views = {page["path"]: page for page in signals["pages"]}
     assert len(signals["pages"]) == 4
