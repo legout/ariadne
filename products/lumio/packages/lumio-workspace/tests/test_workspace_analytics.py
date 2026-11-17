@@ -16,11 +16,13 @@ import pytest
 from ariadne import admission, authoring_sources, execution
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
+from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
     serialize_source_reference_manifest,
 )
+from lumio_wiki.source_registry import SourceRegistry
 from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState, create_app
 from lumio_workspace.analytics import AnalyticsError, AnalyticsService
 from lumio_workspace.intake import IntakeService
@@ -37,16 +39,30 @@ mode: categorized
 categories:
   - name: policies
   - name: metrics
+  - name: computations
 ontology:
   entity_types:
     policy: {}
     metric: {}
+    computation: {}
 """
 SELECTOR = """version: 1
 mode: integrated
 subtree: knowledge
 namespace: urn:demo:retail
 profile: ariadne-context/1
+support_revision: 2
+policy_bindings:
+  version: 1
+  bindings:
+    - subject: {kind: metric, identity: retail_sales::revenue}
+      policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
+      operations: [get_metric, query_metrics]
+      enforcement: null
+    - subject: {kind: metric, identity: retail_sales::revenue}
+      policy: {namespace: urn:demo:retail, entity_id: entity:cancelled-orders}
+      operations: [get_metric, query_metrics]
+      enforcement: null
 """
 MODEL = """version: 0.2.0.dev0
 semantic_model:
@@ -272,6 +288,28 @@ def _git(cwd: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+MODEL_SOURCE = "model-retail_sales"
+COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
+MODEL_DIGEST = hashlib.sha256(MODEL.encode("utf-8")).hexdigest()
+
+
+def _retain_model(profile: Path) -> None:
+    """Register and retain the model original in the profile's registry/store."""
+    settings = json.loads(profile.read_text(encoding="utf-8"))
+    registry = SourceRegistry(Path(settings["source_registry"]))
+    registry.register_version(MODEL_SOURCE, MODEL.encode("utf-8"))
+    store = LocalDirectoryArtifactStore(Path(settings["artifact_store"]["root"]))
+    retained = retain_artifact(
+        store,
+        registry,
+        source_id=MODEL_SOURCE,
+        raw_bytes=MODEL.encode("utf-8"),
+        content_type="text/plain",
+        filename=f"{MODEL_SOURCE}.txt",
+    )
+    assert retained == MODEL_DIGEST
+
+
 def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
     project = root / "proj"
     project.mkdir(parents=True)
@@ -289,8 +327,6 @@ def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
         ),
         "data/seed_notes.md": "# Seed notes\n\nCompleted orders enter recognized revenue.\n",
         "semantic_layer/models/retail_sales.yml": MODEL,
-        "context_layer/policies/recognized-revenue.md": NATIVE_POLICY,
-        "context_layer/metrics/revenue.md": NATIVE_METRIC,
         "knowledge/lumio.yaml": CONTROL,
         "knowledge/metrics/retail-revenue.md": METRIC,
         "knowledge/policies/retail-return-policy.md": RETURN_POLICY,
@@ -302,8 +338,17 @@ def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     manifest = project / "knowledge" / SOURCE_REFERENCE_MANIFEST_BASENAME
+    # The Core-generated Computation cites the OSI model; integrated retention
+    # requires that original bound here and retained (see _retain_model).
     manifest.write_bytes(
-        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
+        serialize_source_reference_manifest(
+            SourceReferenceManifest(
+                version=1,
+                namespace=NAMESPACE,
+                sources={MODEL_SOURCE: "active"},
+                bindings={COMPUTATION_ENTITY: {MODEL_SOURCE: MODEL_DIGEST}},
+            )
+        )
     )
     _git(project, "init", "-q")
     _git(project, "config", "user.name", "Synthetic Fixture")
@@ -471,6 +516,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         ),
         encoding="utf-8",
     )
+    _retain_model(profile)
     overall = admission.overall_review(
         project,
         started["proposal"],
@@ -1061,11 +1107,11 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
     control = project / "knowledge" / "lumio.yaml"
     control.write_text(
         CONTROL.replace(
-            "categories:\n  - name: policies\n  - name: metrics\n",
-            "categories:\n  - name: policies\n  - name: metrics\n  - name: procedures\n",
+            "  - name: metrics\n",
+            "  - name: metrics\n  - name: procedures\n",
         ).replace(
-            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n",
-            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n"
+            "    computation: {}\n",
+            "    computation: {}\n"
             "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
             "artifact. Its referent is the artifact itself, not a person, organization, "
             "service, or business object mentioned in it.\"\n"
@@ -1102,6 +1148,7 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
         ),
         encoding="utf-8",
     )
+    _retain_model(profile)
     overall = admission.overall_review(
         project,
         proposal["proposal"],
@@ -1425,11 +1472,11 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
     control = project / "knowledge" / "lumio.yaml"
     control.write_text(
         CONTROL.replace(
-            "categories:\n  - name: policies\n  - name: metrics\n",
-            "categories:\n  - name: policies\n  - name: metrics\n  - name: procedures\n",
+            "  - name: metrics\n",
+            "  - name: metrics\n  - name: procedures\n",
         ).replace(
-            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n",
-            "ontology:\n  entity_types:\n    policy: {}\n    metric: {}\n"
+            "    computation: {}\n",
+            "    computation: {}\n"
             "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
             "artifact. Its referent is the artifact itself, not a person, organization, "
             "service, or business object mentioned in it.\"\n",
@@ -1462,6 +1509,7 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
         ),
         encoding="utf-8",
     )
+    _retain_model(profile)
     overall = admission.overall_review(
         project,
         proposal["proposal"],

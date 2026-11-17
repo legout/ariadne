@@ -813,6 +813,7 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
         ),
         encoding="utf-8",
     )
+    fixtures._retain_model(profile)
     overall = admission.overall_review(
         project,
         started["proposal"],
@@ -1319,6 +1320,7 @@ def test_native_admitted_query_does_not_require_authoring_attachment(
         ),
         encoding="utf-8",
     )
+    fixtures._retain_model(profile)
     overall = admission.overall_review(
         project,
         started["proposal"],
@@ -1461,6 +1463,7 @@ def test_native_source_preparation_preserves_publication_corruption(
         ),
         encoding="utf-8",
     )
+    fixtures._retain_model(profile)
     overall = admission.overall_review(
         project,
         started["proposal"],

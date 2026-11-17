@@ -1354,7 +1354,9 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
             standalone_review = client.get(f"/review/{task['task_id']}")
             assert standalone_review.status_code == 200, standalone_review.text
             assert "<dd>disabled</dd>" in standalone_review.text
-            assert "no retained original" in standalone_review.text
+            # review-only member: one static state, no original claim (spec0035 §3)
+            assert "source inspection requires separate authorization" in standalone_review.text
+            assert "verified retained original" not in standalone_review.text
             pre_flip_digest = _digest(standalone_review.text)
 
             # F1 mode transition (named integrated negative): the operator
@@ -1448,7 +1450,9 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
                 review = standalone.get(f"/review/{task['task_id']}")
                 assert review.status_code == 200, review.text
                 assert "<dd>disabled</dd>" in review.text
-                assert "no retained original" in review.text
+                # review-only member: one static state, no original claim (spec0035 §3)
+                assert "source inspection requires separate authorization" in review.text
+                assert "verified retained original" not in review.text
                 decided = standalone.post(
                     f"/review/{task['task_id']}",
                     headers={"Origin": "https://workspace.test"},

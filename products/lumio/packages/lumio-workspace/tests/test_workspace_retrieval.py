@@ -466,7 +466,11 @@ def test_scoped_evidence_preserves_version_and_hides_restricted(
             "path": "restart_runbook.md",
             "published_version": v1,
         }
-        assert set(read_v1) == {"found", "title", "summary", "markdown", "entity_id", "citation"}
+        assert set(read_v1) == {
+            "found", "title", "summary", "markdown", "entity_id", "citation", "sources"
+        }
+        # #104: published attribution plus a reference action only; no private store facts
+        assert all(set(s) == {"id", "title", "url", "reference"} for s in read_v1["sources"])
 
         # --- Stable Entity IDs and exact versions across surfaces and versions.
         current_read = _tool_result(
