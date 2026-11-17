@@ -268,8 +268,8 @@ NATIVE_METRIC_PAGE = (
     "    model: events\n"
     "    metric: event_count\n"
     "  required_policies:\n"
-    "    - namespace: \"urn:uuid:authoring-fixture\"\n"
-    "      entity_id: \"entity:all-events-count\"\n"
+    '    - namespace: "urn:uuid:authoring-fixture"\n'
+    '      entity_id: "entity:all-events-count"\n'
     "  native:\n"
     "    type: metric\n"
     "    title: event_count\n"
@@ -458,6 +458,134 @@ def complete_bundle_project(tmp_path: Path, *, native_state: bool = True) -> Pat
     return project
 
 
+def select_revision4_fixture(tree: Path) -> str:
+    """Explicit human revision-4 selection for the unchanged three-event fixture."""
+    events_payload = json.dumps(["events", None, "events", "events"], separators=(",", ":"))
+    events_uri = "ariadne://table/" + base64.urlsafe_b64encode(
+        events_payload.encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    table_page = (
+        "---\n"
+        'id: "entity:events-table"\n'
+        'title: "Events Table"\n'
+        "entity_types:\n  - table\n"
+        "tags:\n  - events\n"
+        'summary: "The events fact table."\n'
+        'lifecycle: "approved"\n'
+        'visibility: "public"\n'
+        "sources:\n"
+        '  - id: "owner-notes"\n'
+        '    title: "Owner notes"\n'
+        "ariadne_profile:\n"
+        "  version: 1\n"
+        "  kind: table\n"
+        "  core_ref:\n"
+        "    kind: resource\n"
+        f'    id: "{events_uri}"\n'
+        "  native:\n"
+        "    type: table\n"
+        '    title: "Events Table"\n'
+        '    description: "The events fact table."\n'
+        "    tags:\n      - events\n"
+        f'    resource: "{events_uri}"\n'
+        "    grain:\n"
+        "      primary_key: [id]\n"
+        '      cardinality_enforcement: "strict_1_to_1"\n'
+        "    sources:\n"
+        '      - id: "owner-notes"\n'
+        '        title: "Owner notes"\n'
+        "---\n\n"
+        "# Events Table\n\nThe event rows the fixture registers.\n"
+    )
+    (tree / "context_integration.yaml").write_text(
+        NATIVE_SELECTOR.replace("support_revision: 2", "support_revision: 4"),
+        encoding="utf-8",
+    )
+    control = tree / "knowledge" / "lumio.yaml"
+    control.write_text(
+        control.read_text(encoding="utf-8")
+        .replace("  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n")
+        .replace("    metric: {}\n", "    metric: {}\n    answer-example: {}\n"),
+        encoding="utf-8",
+    )
+    (tree / "knowledge" / "tables").mkdir(parents=True, exist_ok=True)
+    (tree / "knowledge" / "tables" / "events-table.md").write_text(table_page, encoding="utf-8")
+    run_git(
+        tree,
+        "add",
+        "--",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/tables/events-table.md",
+    )
+    run_git(tree, "commit", "-q", "-m", "human: select revision-4 capabilities")
+    return run_git(tree, "rev-parse", "HEAD").strip()
+
+
+def commit_native_document(
+    tree: Path, private: Path, text: str, *, intent: str
+) -> tuple[str, Path]:
+    """Retain a real original and human-commit its exact native binding; no Core ingest store."""
+    import hashlib
+
+    from lumio_wiki.artifact_store import LocalDirectoryArtifactStore
+    from lumio_wiki.authoring_journey import (
+        CandidateRequest,
+        CandidateSourceRecord,
+        ingest_candidate,
+    )
+    from lumio_wiki.source_registry import SourceRegistry
+
+    private.mkdir(parents=True, exist_ok=True)
+    original = private / "original.md"
+    original.write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    authored = private / "source-notes.md"
+    authored.write_text(
+        "---\nid: entity:native-source-notes\ntitle: Source Notes\n"
+        "entity_types: [reference]\ncategory: references\ntype: document\n"
+        "durability_rationale: The retained source supports these notes.\n"
+        "tags: [reference]\nsummary: Source-backed notes.\nlifecycle: draft\n"
+        "visibility: public\nsources:\n  - id: native-notes\n    title: Notes\n"
+        "claims: []\nsynthetic: false\n---\n\n" + text,
+        encoding="utf-8",
+    )
+    result = ingest_candidate(
+        tree / "knowledge",
+        CandidateRequest(
+            schema_version=1,
+            base_revision=run_git(tree, "rev-parse", "HEAD").strip(),
+            sources=[CandidateSourceRecord("native-notes", str(original), digest, intent)],
+            pages=[str(authored)],
+        ),
+        source_registry=SourceRegistry(private / "registry"),
+        artifact_store=LocalDirectoryArtifactStore(private / "store"),
+    )
+    [binding] = [
+        item
+        for item in result.bindings
+        if item.entity_id == "entity:native-source-notes" and item.source_id == "native-notes"
+    ]
+    assert binding.content_hash == digest and binding.retained is True
+    assert all(item.retained for item in result.bindings)
+    profile = private / "profile.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "namespace": "urn:uuid:authoring-fixture",
+                "source_registry": str(private / "registry"),
+                "retention": "required",
+                "artifact_store": {"kind": "local", "root": str(private / "store")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_git(tree, "add", "--", "knowledge")
+    run_git(tree, "commit", "-q", "-m", "human: native source evidence")
+    return run_git(tree, "rev-parse", "HEAD").strip(), profile
+
+
 def worktree_of(project: Path, proposal: str) -> Path:
     return project / ".ariadne" / "worktrees" / proposal
 
@@ -485,6 +613,46 @@ def commit_paths(project: Path, revision: str) -> set[str]:
 
 
 # ---------------------------------------------------------- [1] the red seam
+
+
+@pytest.mark.parametrize(
+    ("legacy_rel", "legacy_text"),
+    [
+        ("context_layer/references/poison.md", "---\ntitle: [\n---\n"),
+        (
+            "context_layer/tables/poison.md",
+            "---\nariadne:\n  observations:\n    source_binding: " + "f" * 64 + "\n---\n",
+        ),
+        (
+            "context_layer/references/poison.md",
+            "---\nsources:\n  - resource: retired-missing-document.md\n---\n",
+        ),
+    ],
+    ids=["malformed", "stale-binding", "document-citation"],
+)
+def test_native_validation_ignores_retired_context_pages(tmp_path, legacy_rel, legacy_text):
+    """C6: classic canaries remain captured bytes, never native validation authority."""
+    project = complete_bundle_project(tmp_path)
+    legacy = project / legacy_rel
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(legacy_text, encoding="utf-8")
+    run_git(project, "add", "--", legacy_rel)
+    run_git(project, "commit", "-q", "-m", "human: inert classic canary")
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], policy_pages("Native rule, revised.")
+    )
+
+    result = api.validate_proposal(started["proposal"], edited["revision"])
+    assert result["ok"] is True, result["errors"]
+    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
+    assert outcomes["bind"] == outcomes["grain"] == "passed"
+    assert run_git(project, "show", f"{result['revision']}:{legacy_rel}") == legacy_text
+    review = api.review_proposal(started["proposal"])
+    assert legacy_rel in {entry["resource"] for entry in review["files"]}
+    assert all(citation["kind"] != "document" for citation in review["citations"])
 
 
 def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(tmp_path):
@@ -538,9 +706,7 @@ def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(
     assert record["commit"] == result["revision"]
     assert record["artifact_digest"] == result["artifact_digest"]
     assert "data/seed_notes.md" in record["artifact_files"]
-    assert any(
-        path.startswith("knowledge/computations/") for path in record["artifact_files"]
-    )
+    assert any(path.startswith("knowledge/computations/") for path in record["artifact_files"])
     assert run_git(project, "ls-files", "--", ".ariadne") == ""
 
     # determinism (plan residual risk: timestamp regeneration): an unchanged
@@ -597,23 +763,33 @@ def test_single_file_edits_breaking_inherited_dependencies_fail_validation(tmp_p
     """Issue #36 [5]/AC2: a broken cited Policy and a model edit introducing an
     unsafe grain each block the candidate even though only ONE file changed —
     the inherited dependency checks run against the whole effective bundle."""
+    from lumio_wiki.git_authoring import GitAuthoringError
+
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
 
+    if why == "broken-policy":
+        before = record_of(project, started["proposal"])
+        tree = worktree_of(project, started["proposal"])
+        original = (tree / NATIVE_METRIC_REL).read_bytes()
+        status = run_git(tree, "status", "--porcelain", "--untracked-files=all")
+        with pytest.raises(GitAuthoringError, match=r"policies/removed\.md"):
+            apply(api, started)
+        assert branch_of(project, started["proposal"]) == started["candidate_revision"]
+        assert record_of(project, started["proposal"]) == before
+        assert (tree / NATIVE_METRIC_REL).read_bytes() == original
+        assert run_git(tree, "status", "--porcelain", "--untracked-files=all") == status
+        assert not (project / ".ariadne" / "current.json").exists()
+        return
+
     result = _validated_failure(apply, api, started)
     assert result["ok"] is False and result["status"] == "invalid"
     assert result["attempts"] == 1  # a changed failed validation consumed a round
-    if why == "broken-policy":
-        assert any("broken citation" in error for error in result["errors"])
-        assert any("policies/removed.md" in error for error in result["errors"])
-        outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-        assert outcomes["citations"] == "failed"
-    else:
-        assert any("grain audit failed" in error for error in result["errors"])
-        outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-        assert outcomes["grain"] == "failed"
+    assert any("grain audit failed" in error for error in result["errors"])
+    outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
+    assert outcomes["grain"] == "failed"
     # the failed validation still reports the EXACT final revision (the finalize
     # commit) and leaves recoverable errors — a stale expected revision is refused
     assert result["revision"] == branch_of(project, started["proposal"])
@@ -704,18 +880,10 @@ def test_a_rebased_commit_never_resets_the_repair_rounds(tmp_path):
     started = api.start_proposal()
     approved(api, project, started)
     result = _validated_failure(
-        lambda api, started: api.edit_pages_batch(
+        lambda api, started: api.edit_proposal(
             started["proposal"],
             started["candidate_revision"],
-            [
-                {
-                    "path": NATIVE_METRIC_REL,
-                    "content": NATIVE_METRIC_PAGE.replace(
-                        "resource: policies/all-events-count.md",
-                        "resource: policies/removed.md",
-                    ),
-                }
-            ],
+            {"kind": "model", "name": "events", "content": UNSAFE_GRAIN_MODEL_YML},
         ),
         api,
         started,
@@ -891,9 +1059,13 @@ def test_review_returns_revisions_inventory_bodies_citations_and_is_read_only(tm
     # source identity, verified citations and the stored report with full scope
     assert review["sources_digest"] and review["source_approved"] is True
     citations = {(c["kind"], c["resource"]) for c in review["citations"]}
-    assert ("document", "notes.md") in citations
     assert ("bundle", "policies/all-events-count.md") in citations
-    assert ("source", "events.events") in citations
+    assert ("document", "notes.md") not in citations
+    assert ("source", "events.events") not in citations
+    assert {
+        "context_layer/references/joins/events--events.md",
+        "context_layer/tables/events.md",
+    } <= paths  # retired citation inputs remain exact review artifacts, not authority
     assert review["report"]["revision"] == validated["revision"]
     assert review["report"]["ok"] is True
     assert set(review["report"]["performed_checks"]) >= {"bind", "grain", "page_contract"}
@@ -907,11 +1079,12 @@ def test_review_returns_revisions_inventory_bodies_citations_and_is_read_only(tm
 
 
 def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validated(tmp_path):
-    """Issue #36 [4]: a candidate that moved past its validated revision has NO
-    report for the new commit, and changed document evidence marks the stored
-    validation stale — neither can be represented as an unchanged validated
-    candidate (spec §4: repair invalidates earlier review/validation evidence)."""
+    """Changed native evidence cannot reuse old validation or reset repair history."""
+    from ariadne.admission import reconcile
+
     project = complete_bundle_project(tmp_path)
+    private = tmp_path / "native-evidence"
+    commit_native_document(project, private, "# Source Notes\n\nOriginal rule.\n", intent="new")
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
@@ -926,22 +1099,31 @@ def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validate
     assert after_move["revision"] == moved["revision"]
     assert after_move["report"] is None
 
-    # validate the moved candidate, then change the cited document's bytes: the
-    # stored validation is reported stale, never silently reused
+    # Native originals are immutable captured versions: a new source binding
+    # requires a new authored revision, not a mutable Classic document reread.
     revalidated = api.validate_proposal(started["proposal"], moved["revision"])
     assert revalidated["ok"] is True
-    (project / "data" / "docs" / "notes.md").write_text("# Rule notes, changed\n", encoding="utf-8")
+    prior_review = api.review_proposal(started["proposal"])
+    evidence = (
+        project / ".ariadne/validation" / started["proposal"] / f"{revalidated['revision']}.json"
+    )
+    original_evidence = evidence.read_bytes()
+    updated, _profile = commit_native_document(
+        worktree_of(project, started["proposal"]),
+        private,
+        "# Source Notes\n\nChanged rule.\n",
+        intent="update",
+    )
+    reconciled = reconcile(project, started["proposal"], revalidated["revision"], updated)
+    assert reconciled["validation_invalidated"] is True
     stale = api.review_proposal(started["proposal"])
-    assert stale["validation_stale"] is True
-    assert any("document evidence" in reason for reason in stale["stale_reasons"])
-    # the report itself is still readable (the exact validated revision), but
-    # the review says the evidence no longer matches the current bytes
-    assert stale["report"]["ok"] is True and stale["report"]["revision"] == moved["revision"]
-    # ...and an unchanged-retry validation cannot return the stale evidence: the
-    # changed binding context re-validates (consuming a round: the moved
-    # candidate's validation was round 2, the changed-document re-run round 3)
-    refreshed = api.validate_proposal(started["proposal"], moved["revision"])
-    assert refreshed.get("idempotent") is None  # a real re-run, not the stored copy
+    assert stale["revision"] == updated
+    assert stale["review_digest"] != prior_review["review_digest"]
+    assert stale["report"] is None  # never present the old source version as validated
+    assert evidence.read_bytes() == original_evidence  # historical proof is not rewritten
+    refreshed = api.validate_proposal(started["proposal"], updated)
+    assert refreshed["ok"] is True
+    assert refreshed.get("idempotent") is None
     assert refreshed["attempts"] == 3
 
 
@@ -959,9 +1141,7 @@ def test_review_bodies_arrive_in_bounded_parts(tmp_path):
         [{"path": NATIVE_POLICY_REL, "content": long_policy}],
     )
     review = api.review_proposal(started["proposal"])
-    policy = next(
-        entry for entry in review["files"] if entry["resource"].endswith("all-events-count.md")
-    )
+    policy = next(entry for entry in review["files"] if entry["resource"] == NATIVE_POLICY_REL)
     assert policy["parts"] > 1 and policy["complete"] is False
 
 
@@ -985,12 +1165,8 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
     second = api.review_proposal(started["proposal"], part=2)  # must not raise
     assert second["revision"] == edited["revision"]
 
-    policy1 = next(
-        entry for entry in first["files"] if entry["resource"].endswith("all-events-count.md")
-    )
-    policy2 = next(
-        entry for entry in second["files"] if entry["resource"].endswith("all-events-count.md")
-    )
+    policy1 = next(entry for entry in first["files"] if entry["resource"] == NATIVE_POLICY_REL)
+    policy2 = next(entry for entry in second["files"] if entry["resource"] == NATIVE_POLICY_REL)
     # the long policy's LATER content arrives: part 2 of the same artifact
     assert policy1["parts"] == policy2["parts"] > 1
     assert policy2["part"] == 2 and policy2["exhausted"] is False
@@ -1114,12 +1290,9 @@ def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
     assert any("not valid YAML" in error for error in result["errors"])
     outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
     assert outcomes["structural"] == "failed"
-    # the broken draft never rode a finalize commit: the finalize commit carries
-    # ONLY bookkeeping (index trees — no computations, no model bytes), the draft
-    # model bytes stand exactly as edited, and the error is repairable against
-    # the returned final revision
-    finalize_paths = commit_paths(project, result["revision"])
-    assert finalize_paths and all(path.endswith("index.md") for path in finalize_paths)
+    # Invalid model bytes derive no native pages: validation retains the sole model edit.
+    assert result["revision"] == edited["revision"]
+    assert commit_paths(project, result["revision"]) == {"M\tsemantic_layer/models/events.yml"}
     draft = proposals._read_blob(project, result["revision"], "semantic_layer/models/events.yml")
     assert draft == b"version: [unclosed\n"
     repaired = api.edit_proposal(
@@ -1616,9 +1789,7 @@ def test_native_profile_trust_claims_inherit_or_refuse(tmp_path):
     assert "ariadne:" in inherited  # the base carries native.ariadne
     # A Reference's authored Schema heading is not a measured Table section.
     inherited += "\n\n## Schema\n\nAuthored reference schema.\n"
-    allowed = api.edit_pages_batch(
-        pid, allowed["revision"], [{"path": rel, "content": inherited}]
-    )
+    allowed = api.edit_pages_batch(pid, allowed["revision"], [{"path": rel, "content": inherited}])
     assert allowed["changed"] is True
 
     # F2 completion — native TABLE generated facts (positive producer shape):
@@ -1674,7 +1845,7 @@ def test_native_profile_trust_claims_inherit_or_refuse(tmp_path):
         "            state: observed\n            top_values:\n"
         '              - value: "00123"\n                count: 1\n',
         "    ariadne:\n      version: 1\n      reference_role: identifier\n"
-      "      representations: []\n      mappings: []\n",
+        "      representations: []\n      mappings: []\n",
     )
     assert "reference_role: identifier" in laundered  # the authored extension shape
     with pytest.raises(ValueError, match="native trust/generated claim"):
@@ -1762,12 +1933,13 @@ def test_path_title_mismatch_refuses_before_any_write(tmp_path):
     # nothing moved: bytes, branch, record; no refused draft leaked anywhere
     assert branch_of(project, pid) == revision
     assert record_of(project, pid)["candidate_revision"] == revision
-    assert proposals._read_blob(
-        project, revision, "knowledge/references/order-status-codes.md"
-    ) == a_bytes
-    assert proposals._read_blob(
-        project, revision, "knowledge/references/order-glossary.md"
-    ) == b_bytes
+    assert (
+        proposals._read_blob(project, revision, "knowledge/references/order-status-codes.md")
+        == a_bytes
+    )
+    assert (
+        proposals._read_blob(project, revision, "knowledge/references/order-glossary.md") == b_bytes
+    )
     assert run_git(project, "status", "--porcelain") == ""
 
     # a title resolving THROUGH AN ALIAS to another recorded page cannot
@@ -1907,8 +2079,13 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     project = complete_bundle_project(tmp_path / "history", native_state=False)
     (project / "semantic_layer" / "models" / "events.yml").unlink()
     (project / "context_layer" / "metrics" / "event_count.md").unlink()
-    run_git(project, "add", "--", "semantic_layer/models/events.yml",
-            "context_layer/metrics/event_count.md")
+    run_git(
+        project,
+        "add",
+        "--",
+        "semantic_layer/models/events.yml",
+        "context_layer/metrics/event_count.md",
+    )
     run_git(project, "commit", "-q", "-m", "human: docs-only legacy input")
     legacy_commit = run_git(project, "rev-parse", "HEAD").strip()
     (project / "context_integration.yaml").write_text(
@@ -1940,8 +2117,14 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     # the native-state commit adds the integrated selector and the native
     # KB; the metric/model pair is already absent from the docs-only legacy
     # input, so no second deletion is needed
-    run_git(project, "add", "--", "context_integration.yaml", "knowledge/lumio.yaml",
-            "knowledge/.lumio-authoring.yaml")
+    run_git(
+        project,
+        "add",
+        "--",
+        "context_integration.yaml",
+        "knowledge/lumio.yaml",
+        "knowledge/.lumio-authoring.yaml",
+    )
     run_git(project, "commit", "-q", "-m", "human: native state added")
 
     api = AuthoringProject(project)
@@ -2013,7 +2196,7 @@ def test_selected_snapshot_requires_native_identity_without_classic_pages(tmp_pa
         record.pop("bound_release")
     if native_format != "unselected":
         (snapshot / "context_integration.yaml").write_text(
-            'version: 1\nmode: integrated\nsubtree: knowledge\n'
+            "version: 1\nmode: integrated\nsubtree: knowledge\n"
             'namespace: "urn:uuid:native-fixture"\nprofile: ariadne-context/1\n',
             encoding="utf-8",
         )
@@ -2300,14 +2483,14 @@ def test_refresh_preserves_meaning_and_exposes_schema_changes_for_review(tmp_pat
 
     collection = collection_resource("sales", None, "sales")
     dataset_rel = _generated_rel(collection, "sales", kind="datasets")
-    dataset_native = _load_frontmatter_meta(
-        (worktree / dataset_rel).read_text(encoding="utf-8")
-    )["ariadne_profile"]["native"]
+    dataset_native = _load_frontmatter_meta((worktree / dataset_rel).read_text(encoding="utf-8"))[
+        "ariadne_profile"
+    ]["native"]
     assert sales_resource in dataset_native["ariadne"]["tables"]
     narrower = api.refresh_schema(proposal, second["revision"], [SALES_ASSET])
-    dataset_native = _load_frontmatter_meta(
-        (worktree / dataset_rel).read_text(encoding="utf-8")
-    )["ariadne_profile"]["native"]
+    dataset_native = _load_frontmatter_meta((worktree / dataset_rel).read_text(encoding="utf-8"))[
+        "ariadne_profile"
+    ]["native"]
     # the support page (refreshed earlier) stays represented on the shared
     # collection's overview only if it shares the collection — it does not
     # (distinct sources): the invariant is that the SALES overview never drops
@@ -2332,9 +2515,7 @@ def test_refresh_preserves_meaning_and_exposes_schema_changes_for_review(tmp_pat
     _f, b = _page_split((worktree / sales_rel).read_text(encoding="utf-8"))
     from lumio_wiki.git_authoring import GitAuthoringError
 
-    with pytest.raises(
-        GitAuthoringError, match="observed_value_columns must map column names"
-    ):
+    with pytest.raises(GitAuthoringError, match="observed_value_columns must map column names"):
         api.edit_pages_batch(
             proposal,
             third["revision"],
@@ -2397,8 +2578,7 @@ def _lake_collection_project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (kb / ".lumio-authoring.yaml").write_text(
-        'version: 1\nnamespace: "urn:uuid:lake-collection-fixture"\nsources: {}\n'
-        "bindings: {}\n",
+        'version: 1\nnamespace: "urn:uuid:lake-collection-fixture"\nsources: {}\nbindings: {}\n',
         encoding="utf-8",
     )
     (project / "context_integration.yaml").write_text(
@@ -2515,7 +2695,7 @@ def test_refresh_refuses_generated_target_collision_without_overwrite(tmp_path):
         'summary: "A deliberately planted page."\n'
         'lifecycle: "draft"\n'
         'visibility: "public"\n'
-        'sources:\n  - id: planted-note\n    title: Planted note\n'
+        "sources:\n  - id: planted-note\n    title: Planted note\n"
         "---\n\n# Occupied table slot\n\nDeliberately planted at the target.\n"
     )
     planted = api.edit_pages_batch(
@@ -2576,9 +2756,7 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     revision = edit_selection({"region": "VARCHAR"}, first["revision"])
     observed = api.refresh_schema(proposal, revision, [SALES_ASSET])
     assert observed["changed"] is True
-    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"][
-        "value_evidence"
-    ]
+    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"]["value_evidence"]
     assert evidence["region"] == {
         "state": "observed",
         "top_values": [
@@ -2608,16 +2786,13 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
         {"column": "region", "from": "VARCHAR", "to": "INTEGER"}
     ]
     schema_rows = {
-        row["column"]: row
-        for row in meta["ariadne_profile"]["native"]["ariadne"]["schema"]
+        row["column"]: row for row in meta["ariadne_profile"]["native"]["ariadne"]["schema"]
     }
     assert schema_rows["region"]["type"] == "INTEGER"  # the current fact moved
 
     # repeating the refresh stays unavailable (the old binding is never erased)
     repeat = api.refresh_schema(proposal, changed_type["revision"], [SALES_ASSET])
-    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"][
-        "value_evidence"
-    ]
+    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"]["value_evidence"]
     assert evidence["region"] == {"state": "unavailable", "reason": "type_changed"}
     assert repeat["revision"] != changed_type["revision"] or repeat["changed"] is False
     revision = repeat["revision"]
@@ -2625,9 +2800,7 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     # explicit rebinding restores exact INTEGER evidence (1:2, 2:1 by literals)
     revision = edit_selection({"region": "INTEGER"}, revision)
     rebound = api.refresh_schema(proposal, revision, [SALES_ASSET])
-    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"][
-        "value_evidence"
-    ]
+    evidence = page_meta()["ariadne_profile"]["native"]["ariadne"]["observations"]["value_evidence"]
     assert evidence["region"] == {
         "state": "observed",
         "top_values": [
@@ -2767,9 +2940,7 @@ def test_native_generated_facts_are_protected_while_curated_body_is_editable(tmp
     assert edited["changed"] is True
     landed = _load_frontmatter_meta(page_path.read_text(encoding="utf-8"))
     assert landed["ariadne_profile"]["native"]["ariadne"] == original_facts
-    assert "Curated operator note added after generation." in page_path.read_text(
-        encoding="utf-8"
-    )
+    assert "Curated operator note added after generation." in page_path.read_text(encoding="utf-8")
 
 
 def test_selected_column_evidence_family_states(tmp_path):
@@ -2902,10 +3073,7 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     # its column name) — the refresh refuses, nothing moves. The fixture
     # stays well under the profiler's 64 KiB payload ceiling (spec0035 §8):
     # ~80 columns of short two-valued strings
-    wide = [
-        (f"order_line_{i:03d}" + "_detail" * 8, "a" if i % 2 == 0 else "b")
-        for i in range(80)
-    ]
+    wide = [(f"order_line_{i:03d}" + "_detail" * 8, "a" if i % 2 == 0 else "b") for i in range(80)]
     write_parquet(
         project / "data" / "sales" / "orders.parquet",
         [(1, *(v for _n, v in wide)), (2, *("b" if v == "a" else "a" for _n, v in wide))],
@@ -2953,9 +3121,7 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     write_parquet(support_parquet, [(1, "t1"), (2, "t2"), (3, "t3")], ["order_id", "ticket"])
     support_con = duckdb.connect()
     assert (
-        support_con.execute(
-            f"SELECT COUNT(*) FROM read_parquet('{support_parquet}')"
-        ).fetchone()[0]
+        support_con.execute(f"SELECT COUNT(*) FROM read_parquet('{support_parquet}')").fetchone()[0]
         == 3
     )  # the pending source carries 3 authored rows…
     support_con.close()
@@ -3056,8 +3222,15 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
     run_git(project, "init", "-q")
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
-    run_git(project, "add", "--", "ariadne.yaml", "data/seed_notes.md", "knowledge",
-            "context_integration.yaml")
+    run_git(
+        project,
+        "add",
+        "--",
+        "ariadne.yaml",
+        "data/seed_notes.md",
+        "knowledge",
+        "context_integration.yaml",
+    )
     run_git(project, "commit", "-q", "-m", "human: native duckdb lake")
 
     # spec0022 alias identity: an ATTACHED native duckdb catalog opens under

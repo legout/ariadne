@@ -221,7 +221,7 @@ def seed_demo_db(db_path: Path) -> Path:
 
 
 # Passage coordinates below are hand-counted from this native Reference (spec0002).
-PASSAGE_PAGE = '''---
+PASSAGE_PAGE = """---
 id: "entity:passage-demo"
 title: "Passage demo"
 entity_types:
@@ -284,7 +284,7 @@ pangolin note inside the four-tilde fence
 ~~~~
 
 Okapi paragraph after the four-tilde fence.
-'''
+"""
 
 
 @pytest.fixture(scope="module")
@@ -511,8 +511,8 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
 
 def test_list_datasets_returns_demo_tables_with_columns(facade):
     datasets = {d["name"]: d for d in asyncio.run(facade.list_datasets())}
-    assert set(datasets) == {"orders", "customers", "currency_conversion_rate"}
-    order_columns = {c["name"]: c["type"] for c in datasets["orders"]["columns"]}
+    assert set(datasets) == {"demo.orders", "demo.customers", "demo.currency_conversion_rate"}
+    order_columns = {c["name"]: c["type"] for c in datasets["demo.orders"]["columns"]}
     assert {"order_id", "customer_id", "status", "amount"} <= set(order_columns)
     assert all(
         isinstance(c["type"], str) and c["type"] for d in datasets.values() for c in d["columns"]
@@ -663,16 +663,19 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(tmp_path):
     assert any(GOTCHA_1 in body for body in result["context"]["policies"])
     assert any(GOTCHA_2 in body for body in result["context"]["policies"])
 
-    expected_citations = {
-        path: f"{NAMESPACE} {entity} v{record['commit']} {path}"
-        for path, entity in (
-            ("metrics/gross_margin.md", "entity:gross-margin"),
-            ("policies/order-status-billing.md", "entity:order-status-billing"),
-            ("policies/emea-currency-cutover.md", "entity:emea-currency-cutover"),
-        )
+    cited_pages = (
+        ("metrics/gross_margin.md", "entity:gross-margin"),
+        ("policies/order-status-billing.md", "entity:order-status-billing"),
+        ("policies/emea-currency-cutover.md", "entity:emea-currency-cutover"),
+    )
+    # Exact page/release identities stay in the citations block ...
+    assert {c["citation"] for c in result["context"]["citations"]} >= {
+        f"{NAMESPACE} {entity} v{record['commit']} {path}" for path, entity in cited_pages
     }
-    # Native Computation signals use the SDK-relative locator, unlike Metric/Policy citations.
-    expected_citations["computations/gross_margin.md"] = "computations/gross_margin.md"
+    # ... while signals identify each page by its bundle-relative path (spec0011 §4).
+    expected_citations = {
+        path: path for path in (*(p for p, _ in cited_pages), "computations/gross_margin.md")
+    }
     signals = result["context"]["context_signals"]
     views = {page["path"]: page for page in signals["pages"]}
     assert len(signals["pages"]) == 4

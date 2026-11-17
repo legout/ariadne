@@ -120,7 +120,7 @@ def test_scaffold_creates_native_kb_and_expected_inputs(tmp_path):
     assert "revenue" in notes  # a human-voice example rule, not schema documentation
 
     env = (target / ".env.example").read_text(encoding="utf-8")
-    assert "Point ARIADNE_ENV at this file" in env
+    assert "process environment" in env
     assert "Never commit credentials" in env
 
     gitignore = (target / ".gitignore").read_text(encoding="utf-8")
@@ -311,9 +311,11 @@ def test_scaffold_refuses_a_retired_context_layer_project(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "retired standalone Context layout" in err
     assert "ariadne-init" in err  # fresh-setup guidance
-    assert (target / "context_layer" / "metrics" / "old.md").read_text(
-        encoding="utf-8"
-    ).startswith("---")  # untouched
+    assert (
+        (target / "context_layer" / "metrics" / "old.md")
+        .read_text(encoding="utf-8")
+        .startswith("---")
+    )  # untouched
     assert not (target / "knowledge").exists()  # never converted
 
 

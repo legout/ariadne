@@ -71,9 +71,9 @@ def connection_spy(monkeypatch):
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
-    def spy(registry, read_only=True):
+    def spy(registry, read_only=True, **kwargs):
         opened.append([src.path for src in registry.sources])
-        return real(registry, read_only)
+        return real(registry, read_only, **kwargs)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
     monkeypatch.setattr(ariadne.execution, "build_connection", spy)

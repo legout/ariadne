@@ -18,11 +18,13 @@ There is no plain-root serving route. The former `--served`, `--sources` and `--
 
 `ariadne setup --project DIR [--namespace NAMESPACE --private-profile PROFILE]` is read-only with respect to authority and Git configuration: it inspects filenames and prints operator handoffs. A fresh project is initialized only through the explicit `--namespace`/`--private-profile` selections (delegated once to the public initializer; the machine-local profile stays outside the repository), and an existing native Knowledge Base resumes by metadata validation, never reinitialization; conflicting selections refuse. It never runs `git init/config`, opens a source, approves sources, or admits. `ariadne status --project DIR [--json]` reports Git prerequisites, proposals, source approval, admission, and readiness without connecting to sources. `ariadne review --project DIR [--proposal ID]` is an operator walkthrough for one Git proposal; without an ID it lists pending proposals. A terminal prompt does not establish authenticated human identity.
 
-For the complete runnable local pair, use [the joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
-The command table below includes standalone capabilities. With
-`context_integration.yaml`, `query-detail`, `query-records`, `define-metric`,
-`save-example` and `search-examples` refuse; use the exact supported set in
-[Bound Releases](../../../../integration/docs/reference/lumio-bound-releases.md#supported-and-refused-operations).
+Use [Getting started](../tutorials/getting-started.md) for a current native project.
+The [historical joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+retains the older Core 0.6.0 / SDK 0.4.0 example only.
+Availability of the commands below is frozen by the admission's explicit
+support revision, not by selector presence. See the exact supported set in
+[Bound Releases](../../../../integration/docs/reference/lumio-bound-releases.md#supported-and-refused-operations);
+unsupported calls refuse without planning, SQL or a legacy fallback.
 `list-datasets` reads the approved live catalog; it is not source-free.
 
 ## Query and discovery

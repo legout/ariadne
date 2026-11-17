@@ -53,7 +53,6 @@ from pathlib import Path
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
-from lumio_wiki.git_authoring import GitAuthoringError
 from lumio_wiki.source_references import (
     SOURCE_REFERENCE_MANIFEST_BASENAME,
     SourceReferenceManifest,
@@ -507,16 +506,12 @@ def _metric_page(
         "summary": f"The {name} metric.",
         "lifecycle": "approved",
         "visibility": "public",
-        "sources": [
-            {"id": "src-metric-review", "title": "Metric review, 2026-10-05"}
-        ],
+        "sources": [{"id": "src-metric-review", "title": "Metric review, 2026-10-05"}],
         "ariadne_profile": {
             "version": 1,
             "kind": "metric",
             "metric_ref": {"model": model, "metric": metric},
-            "required_policies": [
-                {"namespace": NAMESPACE, "entity_id": POLICY_ENTITY}
-            ],
+            "required_policies": [{"namespace": NAMESPACE, "entity_id": POLICY_ENTITY}],
             "native": {
                 "type": "metric",
                 "status": "stable",
@@ -777,9 +772,7 @@ def test_absent_profile_keeps_metric_usable_and_coverage_unknown(tmp_path, monke
     behavior — the numerically valid query succeeds and discloses unknown
     coverage for the IDENTIFIED pinned page, with NO warning invented merely
     for the profile's absence."""
-    (runtime, _project), resource = _simple_quality_project(
-        tmp_path, reports=None
-    )
+    (runtime, _project), resource = _simple_quality_project(tmp_path, reports=None)
     result = _get_metric(runtime, monkeypatch)
     assert _rows_by_region(result) == {"NA": 2, "EMEA": 1}
     signals = result["data_signals"]
@@ -800,9 +793,7 @@ def test_absent_profile_keeps_metric_usable_and_coverage_unknown(tmp_path, monke
 # and the disclosure honesty stays exercised with producer-valid inputs.
 
 
-def test_same_named_tables_in_distinct_sources_never_share_a_report_by_name(
-    tmp_path, monkeypatch
-):
+def test_same_named_tables_in_distinct_sources_never_share_a_report_by_name(tmp_path, monkeypatch):
     """Spec §7 AC3 (quality-only slice): the executed query reads demo's
     orders; archive's same-named orders carries a valid report — the report
     stays on archive's exact canonical asset and never reaches the metric's
@@ -816,9 +807,7 @@ def test_same_named_tables_in_distinct_sources_never_share_a_report_by_name(
         sources={"demo": demo_db, "archive": archive_db},
         reports=None,
         with_demo_page=False,  # no pinned page binds demo's asset
-        extra_table_pages={
-            "archive-orders.md": _table_page(archive_resource, [EXPIRED_REPORT])
-        },
+        extra_table_pages={"archive-orders.md": _table_page(archive_resource, [EXPIRED_REPORT])},
     )
     result = _get_metric(runtime, monkeypatch)
     assert _rows_by_region(result) == {"NA": 2, "EMEA": 1}
@@ -837,9 +826,7 @@ def test_same_named_tables_in_distinct_sources_never_share_a_report_by_name(
     assert archive_resource not in json.dumps(signals)
 
 
-def test_known_period_contradiction_is_inapplicable_never_a_matching_pass(
-    tmp_path, monkeypatch
-):
+def test_known_period_contradiction_is_inapplicable_never_a_matching_pass(tmp_path, monkeypatch):
     """Issue #54 checklist 4, spec 0013 §3/§4 (§7 AC3): the requested range is
     the runtime's OWN mechanical fact — a November request over a report whose
     declared [start, end) evidence period is September is a KNOWN
@@ -1028,9 +1015,7 @@ def test_cte_and_derived_aliases_resolve_to_physical_identity_only(tmp_path, mon
         model=CTE_SHADOW_MODEL_YML,
         reports=[EXPIRED_REPORT],
         citations=[archive_resource],
-        extra_table_pages={
-            "archive-orders.md": _table_page(archive_resource, [EXPIRED_REPORT])
-        },
+        extra_table_pages={"archive-orders.md": _table_page(archive_resource, [EXPIRED_REPORT])},
     )
     shadow = _get_metric(shadow_runtime, monkeypatch)
     assert _rows_by_region(shadow) == {"EMEA": 70.0}  # archive's own rows
@@ -1064,9 +1049,7 @@ def test_predicate_subquery_reads_are_physical_dependencies(tmp_path, monkeypatc
         model=SUBQUERY_MODEL_YML,
         reports=None,
         citations=[demo_resource, archive_resource],
-        extra_table_pages={
-            "archive-orders.md": _table_page(archive_resource, [as_of_fail])
-        },
+        extra_table_pages={"archive-orders.md": _table_page(archive_resource, [as_of_fail])},
     )
     result = _get_metric(runtime, monkeypatch)
     # hand-derived: only demo order 1 appears in archive, so NA counts 1
@@ -1094,9 +1077,7 @@ def test_predicate_subquery_reads_are_physical_dependencies(tmp_path, monkeypatc
 def _batch_table_page_markdown(resource: str, reports: list | None, mutator=None) -> str:
     """The batch-page content of one quality-profiled native table page;
     ``mutator`` (called on the parsed frontmatter) builds each variant."""
-    meta = yaml.safe_load(
-        _table_page(resource, reports).split("---\n", 2)[1]
-    )
+    meta = yaml.safe_load(_table_page(resource, reports).split("---\n", 2)[1])
     if mutator is not None:
         mutator(meta)
     front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
@@ -1106,7 +1087,6 @@ def _batch_table_page_markdown(resource: str, reports: list | None, mutator=None
 def _batch_project(tmp_path: Path, resource: str):
     from ariadne.authoring import AuthoringProject
     from tests.test_git_authoring import run_git, worktree_of
-
 
     """One real authoring project whose initial bundle carries the plain
     native table page; the batch matrix submits every variant against its
@@ -1145,9 +1125,7 @@ def test_valid_supplied_profile_passes_the_native_batch(tmp_path):
         [
             {
                 "path": "knowledge/tables/orders.md",
-                "content": _batch_table_page_markdown(
-                    resource, [EXPIRED_REPORT, UNKNOWN_REPORT]
-                ),
+                "content": _batch_table_page_markdown(resource, [EXPIRED_REPORT, UNKNOWN_REPORT]),
             }
         ],
     )
@@ -1163,7 +1141,7 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
     naive/plain-date timestamps, broken period/ordering invariants,
     executable payload keys, mismatched asset/citation identity, duplicate
     IDs, missing scope declarations, validity and count invariants fail the
-    producer structural gate INSIDE the public native page batch — before any
+    Core authoring gate INSIDE the public native page batch — before any
     byte is written, never as a query refusal."""
     import pytest
 
@@ -1190,15 +1168,15 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
         "naive-yaml-datetime": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"
         ][0].__setitem__("reported_at", datetime(2026, 9, 1)),
-        "plain-date-value": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
-            "reports"
-        ][0].__setitem__("reported_at", date(2026, 9, 1)),
+        "plain-date-value": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"]["reports"][
+            0
+        ].__setitem__("reported_at", date(2026, 9, 1)),
         "executable-payload-key": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"
         ][0].__setitem__("sql", "SELECT 1"),
-        "mismatched-asset": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
-            "reports"
-        ][0].__setitem__("asset", table_resource("other", "other", "main", "orders")),
+        "mismatched-asset": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"]["reports"][
+            0
+        ].__setitem__("asset", table_resource("other", "other", "main", "orders")),
         "unresolved-citation": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"
         ][0].__setitem__("source_ids", ["no-such-citation"]),
@@ -1207,27 +1185,21 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
         ][1].__setitem__(
             "id", m["ariadne_profile"]["native"]["ariadne_quality"]["reports"][0]["id"]
         ),
-        "period-start-not-before-end": lambda m: m["ariadne_profile"]["native"][
-            "ariadne_quality"
-        ]["reports"][0]["checks"][0].__setitem__(
-            "tested_period", {**period_backwards, "field": "order_date"}
-        ),
+        "period-start-not-before-end": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
+            "reports"
+        ][0]["checks"][0].__setitem__("tested_period", {**period_backwards, "field": "order_date"}),
         "omitted-scope-period": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"
-        ][0]["scope"].pop(
-            "period"
-        ),  # plan §2: the field is required — null is the explicit
+        ][0]["scope"].pop("period"),  # plan §2: the field is required — null is the explicit
         # non-time-bounded declaration; omission is not one
         "validity-before-report": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
             "reports"
         ][0].__setitem__("valid_until", "2026-08-01T00:00:00+00:00"),
-        "empty-checks": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"][
-            "reports"
-        ][0].__setitem__("checks", []),
+        "empty-checks": lambda m: m["ariadne_profile"]["native"]["ariadne_quality"]["reports"][
+            0
+        ].__setitem__("checks", []),
         "check-without-tested-scope": drop_tested_scope,
-        "page-without-resource-binding": lambda m: m["ariadne_profile"]["native"].pop(
-            "resource"
-        ),
+        "page-without-resource-binding": lambda m: m["ariadne_profile"]["native"].pop("resource"),
         "null-profile": lambda m: m["ariadne_profile"]["native"].__setitem__(
             "ariadne_quality", None
         ),
@@ -1237,27 +1209,15 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
     api, started, page = _batch_project(tmp_path, resource)
     for name, mutator in cases.items():
         content = _batch_table_page_markdown(resource, [EXPIRED_REPORT, UNKNOWN_REPORT], mutator)
-        if name == "page-without-resource-binding":
-            # stripping the core-owned resource binding is the same forgery:
-            # the native trust/generated-claim boundary refuses the edit
-            with pytest.raises(ValueError, match="trust/generated claim"):
-                api.edit_pages_batch(
-                    started["proposal"],
-                    started["candidate_revision"],
-                    [{"path": "knowledge/tables/orders.md", "content": content}],
-                )
-        else:
-            with pytest.raises(GitAuthoringError):
-                api.edit_pages_batch(
-                    started["proposal"],
-                    started["candidate_revision"],
-                    [{"path": "knowledge/tables/orders.md", "content": content}],
-                )
+        with pytest.raises(ValueError, match="ariadne_quality"):
+            api.edit_pages_batch(
+                started["proposal"],
+                started["candidate_revision"],
+                [{"path": "knowledge/tables/orders.md", "content": content}],
+            )
         # every refusal left the candidate untouched: the batch is atomic
         current = yaml.safe_load(page.read_text(encoding="utf-8").split("---\n", 2)[1])
-        assert current == yaml.safe_load(
-            _table_page(resource, None).split("---\n", 2)[1]
-        ), name
+        assert current == yaml.safe_load(_table_page(resource, None).split("---\n", 2)[1]), name
 
 
 # ---------------------------------------------- issue #54 (spec 0013 §4/§7
@@ -1449,8 +1409,8 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     the metric without its own report keeps partial/unknown coverage with
     its evidence visible — never "all sources passed"."""
     monkeypatch.setattr(context, "_assessment_now", lambda: ASSESS_NOW)
-    runtime, _project, demo_resource, archive_resource, regions_resource = (
-        _admit_multifact_project(tmp_path / "quality", quality=True)
+    runtime, _project, demo_resource, archive_resource, regions_resource = _admit_multifact_project(
+        tmp_path / "quality", quality=True
     )
 
     request = {
@@ -1601,16 +1561,20 @@ def _bounds_project(tmp_path: Path, *, with_reports: bool):
     """One admitted project with three fact metrics over three tables; ta/tb
     optionally carry the two shared reports, tc stays report-less."""
     project = tmp_path / "proj"
-    db = _sqlite_db(project / "mf.db", ORDERS, ddl=(
-        "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
-        " amount REAL NOT NULL);"
-        "CREATE TABLE ta (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
-        " amount REAL NOT NULL);"
-        "CREATE TABLE tb (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
-        " amount REAL NOT NULL);"
-        "CREATE TABLE tc (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
-        " amount REAL NOT NULL)"
-    ))
+    db = _sqlite_db(
+        project / "mf.db",
+        ORDERS,
+        ddl=(
+            "CREATE TABLE orders (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
+            " amount REAL NOT NULL);"
+            "CREATE TABLE ta (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
+            " amount REAL NOT NULL);"
+            "CREATE TABLE tb (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
+            " amount REAL NOT NULL);"
+            "CREATE TABLE tc (order_id INTEGER PRIMARY KEY, region TEXT NOT NULL,"
+            " amount REAL NOT NULL)"
+        ),
+    )
     resources = {name: table_resource("demo", "demo", "main", name) for name in ("ta", "tb", "tc")}
     files: dict[str, str | bytes] = {
         "data/seed_notes.md": "# Seed notes\n\nBounds.\n",

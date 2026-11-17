@@ -14,6 +14,7 @@ from importlib import import_module
 from pathlib import Path
 
 import pytest
+import yaml
 from ariadne import admission, execution
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
@@ -29,7 +30,9 @@ from lumio_workspace.review import ReviewService, render_review
 
 # integration/tests/conftest.py supplies Core's native test-helper namespace.
 fx = import_module("tests.s3_fixture")
-run_git = import_module("tests.test_git_authoring").run_git
+native_fixture = import_module("tests.test_git_authoring")
+run_git = native_fixture.run_git
+admit = import_module("tests.test_git_admission").admit
 s3_git_project = import_module("tests.test_s3_storage_access").s3_git_project
 
 S3_MODEL = """version: 0.2.0.dev0
@@ -173,6 +176,38 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         model.write_text(S3_MODEL, encoding="utf-8")
         knowledge = project / "knowledge"
         knowledge.mkdir()
+        control = {
+            "version": 2,
+            "mode": "categorized",
+            "categories": [
+                {"name": name}
+                for name in (
+                    "references", "metrics", "policies", "computations", "tables", "datasets"
+                )
+            ],
+            "ontology": {
+                "entity_types": {
+                    kind: {}
+                    for kind in ("reference", "metric", "policy", "computation", "table", "dataset")
+                },
+                "predicates": {},
+                "redirects": {},
+            },
+        }
+        (knowledge / "lumio.yaml").write_text(yaml.safe_dump(control, sort_keys=False))
+        (knowledge / "metrics").mkdir()
+        (knowledge / "policies").mkdir()
+        (knowledge / "metrics/event-count.md").write_text(
+            native_fixture.NATIVE_METRIC_PAGE
+            .replace("urn:uuid:authoring-fixture", "urn:demo:retail")
+            .replace("      - label\n", "      - region\n")
+        )
+        (knowledge / "policies/all-events-count.md").write_text(native_fixture.NATIVE_POLICY_PAGE)
+        (project / "context_integration.yaml").write_text(
+            native_fixture.NATIVE_SELECTOR
+            .replace("support_revision: 2", "support_revision: 3")
+            .replace("urn:uuid:authoring-fixture", "urn:demo:retail")
+        )
         (knowledge / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
             serialize_source_reference_manifest(
                 SourceReferenceManifest(
@@ -188,9 +223,14 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
             "add",
             "--",
             "semantic_layer/models/events.yml",
-            f"knowledge/{SOURCE_REFERENCE_MANIFEST_BASENAME}",
+            "knowledge",
+            "context_integration.yaml",
         )
         run_git(project, "commit", "-q", "-m", "human: model the independent S3 rows")
+        # Identical proposals share a revision while effective endpoint grants differ.
+        git_date = run_git(project, "show", "-s", "--format=%cI", "HEAD").strip()
+        monkeypatch.setenv("GIT_AUTHOR_DATE", git_date)
+        monkeypatch.setenv("GIT_COMMITTER_DATE", git_date)
         api = AuthoringProject(project)
         bindings = tmp_path / "source-bindings.json"
         bindings.write_text(
@@ -296,17 +336,17 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         # A second valid identity at the unchanged endpoint retains the exact
         # native approval while validation, admission, and query use B's rows.
         _set_endpoint(monkeypatch, b, rotated=True)
-        validated = api.validate_proposal(prepared["native_proposal"], prepared["native_candidate"])
+        refreshed = api.refresh_schema(
+            prepared["native_proposal"],
+            prepared["native_candidate"],
+            [{"source": "events", "catalog": None, "schema": "events", "table": "events"}],
+        )
+        validated = api.validate_proposal(prepared["native_proposal"], refreshed["revision"])
         assert validated["ok"] is True, validated["errors"]
         assert validated["approval_digest"] == approved_b["approval_digest"]
         native_review = api.review_proposal(prepared["native_proposal"])
-        admitted = admission.admit_revision(
-            project,
-            prepared["native_proposal"],
-            native_review["revision"],
-            native_review["review_digest"],
-            confirmed_by="human:synthetic-operator",
-        )
+        assert admit(project, native_review) == 0
+        admitted, _snapshot = admission.resolve_admission(project)
         assert admitted["source_digest"] == approved_b["approval_digest"]
         assert admitted["storage_bindings"]["local"]["endpoint"] == b.endpoint_url
         result = analytics.query_data(

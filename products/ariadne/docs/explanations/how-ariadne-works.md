@@ -12,14 +12,17 @@ Metrics are declared in OSI YAML. Ariadne validates and compiles the declaration
 
 Context pages describe policies, tables, schemas, business terms, and other guidance. Ariadne can return the relevant pages and policies with a result so the agent can explain caveats. A term alias, observed value, schema measurement, example answer, or routing-map pointer is guidance—not permission to join tables, rewrite a query, or override a required policy.
 
-## When Lumio supplies the knowledge
+## The Lumio knowledge foundation
 
 Lumio maintains the curated knowledge pages and their stable identities;
 Ariadne owns metric execution and checks the supported Metric/Policy/Reference
 profiles. One reviewed Git commit captures the knowledge and analytics inputs.
 The operator confirms the combined release, after which navigation and metric
 context use its pinned immutable knowledge. A plain Git update never activates
-a new release or repins an existing session. See [the local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
+a new release or repins an existing session. See the
+[native context guide](../how-to/context-knowledge.md); the
+[historical joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+retains only the older Core 0.6.0 / SDK 0.4.0 example.
 
 An ordinary knowledge page can explain a term without becoming an executable
 metric or an approved technical mapping. The Semantic Layer owns calculation;
@@ -66,6 +69,6 @@ An ad-hoc metric is explicitly `governed: false`. It can be useful for explorati
 
 ## Integrations do not change authority
 
-The local CLI is the core interface and MCP is an optional adapter; neither gains source-approval or admission authority. In authoring, agents can draft and inspect proposals, while the operator performs the human-only decisions. The separately installed Ariadne Agent is outside this Core change; its compatibility has not been re-certified.
+The local CLI is the core interface and MCP is an optional adapter; neither gains source-approval or admission authority. In authoring, agents can draft and inspect proposals, while the operator performs the human-only decisions. The separately distributed Ariadne Agent is retired; external host agents use the CLI, optional MCP facade and packaged skill.
 
 For task-oriented steps, see the [getting-started tutorial](../tutorials/getting-started.md), [Git-backed authoring](../how-to/git-authoring.md), and [Context knowledge](../how-to/context-knowledge.md).

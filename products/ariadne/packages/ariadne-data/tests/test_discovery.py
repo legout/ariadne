@@ -95,7 +95,7 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
             "id: order-number-contract\nversion: producer-release-A\n",
         },
     )
-    from tests.test_context_admission import admit
+    from tests.test_git_admission import admit, read_current
 
     assert admit(project, review) == 0
     capsys.readouterr()
@@ -121,14 +121,18 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
     runtime = DiscoveryRuntime.open_project(project)
     native = asyncio.run(runtime.resolve_term("order number"))
     assert cli(["search", "order number", "--json", "--project", str(project)]) == 0
-    groups = json.loads(capsys.readouterr().out)["groups"]
+    discovery = json.loads(capsys.readouterr().out)
+    groups = discovery["groups"]
     assert groups["metrics"]["status"] == "unavailable"
-    assert "no governed metric catalog" in groups["metrics"]["reason"]
+    assert "no admitted metric catalog" in groups["metrics"]["reason"]
     assert groups["terms"]["result"] == native
     assert native["admission"]["revision"] == review["revision"]
     paths = [hit["path"] for hit in groups["pages"]["items"]]
     assert "root-draft.md" not in paths and "draft.md" not in paths
-    assert groups["examples"]["items"] == []
+    assert groups["examples"]["status"] == "unavailable"
+    assert "search_examples" in groups["examples"]["reason"]
+    assert "search_examples" in discovery["support"]["unsupported"]
+    assert "items" not in groups["examples"]
     contracts = groups["contracts"]
     assert contracts["status"] == "available" and contracts["complete"] is True
     assert contracts["total_matches"] == 1
@@ -142,7 +146,8 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
     assert "Contracts — available" in human and "producer-release-A" in human
     assert "unadmitted-draft" not in human
 
-    runtime.context_dir.joinpath("tampered.md").write_text("# hand-edited snapshot\n")
+    snapshot = project / read_current(project)["snapshot"]
+    (snapshot / "knowledge" / "tampered.md").write_text("# hand-edited snapshot\n")
     with pytest.raises(ValueError, match="pinned snapshot changed"):
         asyncio.run(runtime.discover("order number"))
     assert cli(["search", "order number", "--json", "--project", str(project)]) == 1

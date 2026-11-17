@@ -3209,7 +3209,17 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     )
 
     legacy_project = contract_project(tmp_path / "legacy")
-    run_git(legacy_project, "rm", "-q", "-r", "--", "context_layer")
+    # contract_project is native-only since C6: no classic bundle to remove, but
+    # its native governed metric/Policy pair goes (this candidate has NO metric).
+    assert not (legacy_project / "context_layer").exists()
+    run_git(
+        legacy_project,
+        "rm",
+        "-q",
+        "--",
+        "knowledge/metrics/order-count.md",
+        "knowledge/policies/all-orders-count.md",
+    )
     run_git(legacy_project, "rm", "-q", "--", "semantic_layer/models/orders.yml")
     legacy_kb = legacy_project / "knowledge"
     for rel in ("policies/retail-return-policy.md", "references/order-number.md"):

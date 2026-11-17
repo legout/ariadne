@@ -255,15 +255,15 @@ def test_bounded_native_parts_display_required_scope_before_selection(
     tmp_path, monkeypatch, capsys
 ):
     project, api, candidate = context_only_candidate(tmp_path / "managed")
-    page = order_reference_page().replace(
-        "ariadne:\n", "# padding\n" * (authoring.EVIDENCE_PART_CHARS // 10 + 1) + "ariadne:\n"
-    )
+    front, body = order_reference_page().rsplit("---\n", 1)
+    page = front + "---\n" + "# padding\n" * (authoring.EVIDENCE_PART_CHARS // 10 + 1) + body
     edited = api.edit_pages_batch(
         candidate["proposal"],
         candidate["revision"],
         [{"path": REFERENCE_PAGE_REL, "content": page}],
     )
     assert api.validate_proposal(candidate["proposal"], edited["revision"])["ok"]
+    expected_first = api.review_proposal(candidate["proposal"], part=1)
     expected_part = api.review_proposal(candidate["proposal"], part=2)
     before = governed(project)
     calls = []
@@ -280,9 +280,11 @@ def test_bounded_native_parts_display_required_scope_before_selection(
         == 0
     )
     output = capsys.readouterr().out
-    assert json.dumps(expected_part, indent=2) in output
-    scope = output.split("Required scope/representations — exact reviewed Reference page:")[1]
-    assert "store_id" in scope and "scope:" in scope
+    before_selection = output.split("Select --confirm-mapping", 1)[0]
+    assert "Select --confirm-mapping" in output
+    assert json.dumps(expected_first, indent=2) in before_selection
+    assert json.dumps(expected_part, indent=2) in before_selection
+    assert "store_id" in before_selection and "scope:" in before_selection
     assert calls == [] and governed(project) == before
 
 
@@ -306,9 +308,7 @@ def test_skipped_assertions_stay_asserted_without_confirmation(tmp_path, monkeyp
     # the operator completes the same advertised command with the composite
     # confirmation flags — NO selection: skipped assertions stay asserted
     assert (
-        admission.main(
-            native_admission_args(project, payload, destination=tmp_path / "published")
-        )
+        admission.main(native_admission_args(project, payload, destination=tmp_path / "published"))
         == 0
     )
     assert results[0]["confirmed_mappings"] == []
@@ -317,9 +317,10 @@ def test_skipped_assertions_stay_asserted_without_confirmation(tmp_path, monkeyp
     assert current is not None
     page = project / current["snapshot"] / REFERENCE_PAGE_REL
     meta = yaml.safe_load(page.read_text().split("---")[1])
-    assert [
-        m["claim"] for m in meta["ariadne_profile"]["native"]["ariadne"]["mappings"]
-    ] == ["hypothesis", "asserted"]
+    assert [m["claim"] for m in meta["ariadne_profile"]["native"]["ariadne"]["mappings"]] == [
+        "hypothesis",
+        "asserted",
+    ]
     assert current["confirmed_mappings"] == []
     output = capsys.readouterr().out
     assert output.count("Select --confirm-mapping") == 1
@@ -332,9 +333,7 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
     selection = "order-number:global-order-concatenation"
     published = tmp_path / "published"  # operator-owned composite destination (spec0032 §10)
     assert (
-        admission.main(
-            native_admission_args(project, first, [selection], destination=published)
-        )
+        admission.main(native_admission_args(project, first, [selection], destination=published))
         == 0
     )
     capsys.readouterr()
@@ -389,9 +388,7 @@ def test_native_retained_and_lapsed_outcomes_are_reported(tmp_path, monkeypatch,
     # footnotes — the citation rides both the page citations and the native
     # footnote list (the classic single-list append retired)
     meta["ariadne_profile"]["native"]["sources"].append(dict(citation))
-    meta["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = [
-        "orders-catalog"
-    ]
+    meta["ariadne_profile"]["native"]["ariadne"]["mappings"][1]["source_ids"] = ["orders-catalog"]
     edited = api.edit_pages_batch(
         first["proposal"],
         branch_of(project, first["proposal"]),
@@ -541,7 +538,11 @@ def test_failure_after_native_activation_reports_current_without_retry(
 
     def activate_then_fail(argv):
         calls.append(argv)
-        assert native(argv) == 0
+        assert argv == native_admission_args(project, payload)
+        # The synthetic human completes the command; review never supplies these flags.
+        assert (
+            native(native_admission_args(project, payload, destination=tmp_path / "published")) == 0
+        )
         raise failure("after activation")
 
     monkeypatch.setattr(admission, "main", activate_then_fail)
@@ -645,7 +646,11 @@ def test_interrupted_post_admission_inspection_guides_status_without_pre_call_cl
 
     def activate_then_interrupt(argv):
         calls.append(argv)
-        assert native(argv) == 0
+        assert argv == native_admission_args(project, payload)
+        # The synthetic human completes the command before inspection is interrupted.
+        assert (
+            native(native_admission_args(project, payload, destination=tmp_path / "published")) == 0
+        )
         monkeypatch.setattr(admission, "load_current", interrupt_inspection)
         raise KeyboardInterrupt
 

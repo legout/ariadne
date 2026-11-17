@@ -40,6 +40,9 @@ from ariadne.discovery import DiscoveryRuntime  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from tests.test_git_admission import admit, read_current  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
+    NATIVE_METRIC_PAGE,
+    NATIVE_POLICY_PAGE,
+    NATIVE_SELECTOR,
     approved,
     branch_of,
     run_git,
@@ -301,10 +304,10 @@ def write_native_db(path: Path, table: str, columns: dict[str, str], rows: list[
 
 def contract_project(root: Path, *, native: bool = True, with_labels: bool = False) -> Path:
     """A real temporary Git data project whose human-created initial artifact
-    revision is a complete existing bundle. The default fixture is the
-    approved profile's NATIVE DuckDB source (a real catalog file with exact
-    original types); ``native=False`` keeps the legacy parquet file-view
-    variant for the non-native-source guard case."""
+    revision carries one native Knowledge Base. The default physical source
+    is the approved profile's NATIVE DuckDB catalog with exact original types;
+    ``native=False`` selects the parquet file-view source guard case, never
+    a different knowledge backend."""
     project = root / "proj"
     project.mkdir(parents=True, exist_ok=True)
     rows = [(1, 10.0, "EMEA"), (2, 20.0, "AMER"), (3, 30.0, "EMEA")]
@@ -332,11 +335,30 @@ def contract_project(root: Path, *, native: bool = True, with_labels: bool = Fal
     model = MODEL_YML.replace("source: orders.main.orders", f"source: {model_source}")
     (project / "semantic_layer" / "models" / "orders.yml").write_text(model, encoding="utf-8")
     pages = {
-        "context_layer/tables/orders.md": TABLES_PAGE,
-        "context_layer/references/joins/orders--orders.md": REFERENCE_PAGE,
-        "context_layer/policies/all-orders-count.md": POLICY_PAGE,
-        "context_layer/metrics/order_count.md": METRIC_PAGE,
-        "context_layer/skills/run-the-demo.md": SKILLS_PAGE,
+        "knowledge/lumio.yaml": (
+            "version: 2\nmode: categorized\n"
+            "categories:\n  - name: references\n  - name: metrics\n  - name: policies\n"
+            "  - name: computations\n  - name: tables\n  - name: datasets\n"
+            "ontology:\n  entity_types:\n    reference: {}\n    metric: {}\n    policy: {}\n"
+            "    computation: {}\n    table: {}\n    dataset: {}\n"
+            "  predicates: {}\n  redirects: {}\n"
+        ),
+        "knowledge/.lumio-authoring.yaml": (
+            "version: 1\nnamespace: urn:uuid:contracts-fixture\nsources: {}\nbindings: {}\n"
+        ),
+        "context_integration.yaml": (
+            NATIVE_SELECTOR.replace("events", "orders")
+            .replace("event_count", "order_count")
+            .replace("authoring-fixture", "contracts-fixture")
+        ),
+        "knowledge/policies/all-orders-count.md": NATIVE_POLICY_PAGE.replace("events", "orders"),
+        "knowledge/metrics/order-count.md": (
+            NATIVE_METRIC_PAGE.replace("events", "orders")
+            .replace("event-count", "order-count")
+            .replace("event_count", "order_count")
+            .replace("authoring-fixture", "contracts-fixture")
+            .replace("      - label\n", "      - region\n")
+        ),
     }
     for rel, content in pages.items():
         path = project / rel

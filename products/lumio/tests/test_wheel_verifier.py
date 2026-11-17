@@ -53,3 +53,49 @@ def test_python_roots_includes_relocated_purelib_and_platlib_modules(
         "pure_module",
         "pure_package",
     }
+
+
+def test_workspace_dependency_boundary_tracks_approved_metadata(monkeypatch):
+    import runpy
+    from types import SimpleNamespace
+
+    import pytest
+
+    verifier = runpy.run_path(
+        str(ROOT / "packages/lumio-workspace/scripts/verify_workspace_wheel.py")
+    )
+    boundary = verifier["assert_dependency_boundary"]
+    requirements = [
+        "authlib<2,>=1.6",
+        "httpx<1,>=0.28",
+        "itsdangerous<3,>=2.2",
+        "lumio-wiki[documents,mcp,s3]<0.8,>=0.7",
+        "mcp<3,>=2.2",
+        "starlette<2,>=1.7",
+        "uvicorn<1,>=0.54",
+        'ariadne-data[spreadsheets]<0.9.0,>=0.8.0; extra == "analytics"',
+        'lumio-lancedb<0.8.0,>=0.7.0; extra == "retrieval"',
+    ]
+    installed = [SimpleNamespace(metadata={"Name": "lumio-workspace"})]
+    metadata = verifier["importlib"].metadata
+    monkeypatch.setattr(metadata, "requires", lambda name: requirements)
+    monkeypatch.setattr(metadata, "distributions", lambda: installed)
+    util = verifier["importlib"].util
+    real_find_spec = util.find_spec
+    monkeypatch.setattr(
+        util,
+        "find_spec",
+        lambda name: (
+            None if name in {"ariadne", "duckdb", "sqlglot", "pyarrow"} else real_find_spec(name)
+        ),
+    )
+    boundary()
+    requirements.append('unexpected>=1; extra == "unreviewed"')
+    with pytest.raises(AssertionError):
+        boundary()
+    requirements.pop()
+    for name in ("ariadne-data", "lumio-lancedb"):
+        installed.append(SimpleNamespace(metadata={"Name": name}))
+        with pytest.raises(AssertionError):
+            boundary()
+        installed.pop()

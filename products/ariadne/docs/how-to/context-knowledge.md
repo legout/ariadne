@@ -5,8 +5,10 @@ Use these procedures when maintaining schemas, business terms, identifier mappin
 Curated context lives in the Lumio `knowledge/` subtree and follows the
 [Bound Release contract](../../../../integration/docs/reference/lumio-bound-releases.md).
 The standalone `context_layer/` route is retired; do not create a second
-editable context mirror. [The local tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
-shows that route with supplied files.
+editable context mirror. For a new native project, follow
+[Getting started](../tutorials/getting-started.md). The
+[historical joint tutorial](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+retains the older Core 0.6.0 / SDK 0.4.0 example, not the current setup route.
 
 ## Refresh a table schema
 

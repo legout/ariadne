@@ -139,9 +139,7 @@ def _example_release(root):
         # this fixture's replacement — a duplicate category is invalid control
         CONTROL.replace(
             "  - name: metrics\n", "  - name: metrics\n  - name: answer-examples\n"
-        ).replace(
-            "    metric: {}\n", "    metric: {}\n    answer-example: {}\n"
-        )
+        ).replace("    metric: {}\n", "    metric: {}\n    answer-example: {}\n")
     )
     bindings = {
         "version": 1,
@@ -213,9 +211,12 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         "source": "submitted_result.sql",
         "text": _EXACT_SQL,
     }
-    assert native["answer"]["result_digest"] == hashlib.sha256(
-        json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    assert (
+        native["answer"]["result_digest"]
+        == hashlib.sha256(
+            json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
 
     # Ordinary search is admitted-only; candidate search is explicit and labeled.
     assert cli_run("search-examples", "gross margin region") == 0
@@ -324,7 +325,7 @@ def test_oversize_excerpt_and_sql_refuse_before_creating_a_candidate(project, ca
     ("overrides", "message"),
     [
         ({"sources": ["../../../../etc/passwd"]}, "escapes"),
-        ({"sources": ["semantic_layer/models/orders.yml"]}, "metric or Policy"),
+        ({"sources": ["semantic_layer/models/orders.yml"]}, "knowledge page"),
         ({"sources": False}, "sources"),
         ({"sources": {}}, "sources"),
         (
@@ -377,9 +378,7 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
     saved = json.loads(capsys.readouterr().out)
     root = project
     valid_page = (worktree_of(project, saved["proposal"]) / saved["path"]).read_text("utf-8")
-    question = yaml.safe_load(valid_page.split("---")[1])["ariadne_profile"]["native"][
-        "question"
-    ]
+    question = yaml.safe_load(valid_page.split("---")[1])["ariadne_profile"]["native"]["question"]
 
     def variant_page(new_id: str, *, without_provenance: bool = False, malformed: bool = False):
         """One authored native variant of the saved Example: a distinct page
@@ -417,9 +416,7 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
     )
     hits = json.loads(capsys.readouterr().out)
     assert (
-        next(hit for hit in hits if hit["id"] == "entity:legacy-without-sql")["provenance"][
-            "sql"
-        ]
+        next(hit for hit in hits if hit["id"] == "entity:legacy-without-sql")["provenance"]["sql"]
         is None
     )
 
@@ -465,8 +462,9 @@ def test_define_metric_examples_retain_only_the_actual_operation_arguments(proje
     saved = json.loads(capsys.readouterr().out)
     page = _candidate_page(project, saved)
     metadata = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
-    assert metadata["method"]["operation"] == "define_metric"
-    assert metadata["method"]["arguments"]["source"] == "demo.main.orders"
+    method = metadata["ariadne_profile"]["native"]["method"]
+    assert method["operation"] == "define_metric"
+    assert method["arguments"]["source"] == "demo.main.orders"
 
 
 def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, capsys):

@@ -2,9 +2,10 @@
 
 This tutorial takes a data owner from an empty project directory to a fresh query against a human-admitted Git catalog. Ariadne can prepare the work, but it does not make the owner's source-approval, review, or admission decisions.
 
-Want the complete local Lumio + Ariadne example with supplied data, knowledge pages
-and a hand-worked result? Start with [Local knowledge and governed metrics](../../../../integration/docs/tutorials/lumio-ariadne-local.md).
-This page covers the standalone Ariadne setup route for your own project.
+This is the current local route: one native Lumio Knowledge Base and the OSI
+semantic layer in your project, without a server or cloud. The
+[historical joint example](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
+preserves the older Core 0.6.0 / SDK 0.4.0 numerical journey, not this setup contract.
 
 ## Prerequisites
 

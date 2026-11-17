@@ -348,9 +348,21 @@ def test_conflicting_identity_never_overwrites_or_replaces_pending_proposal(tmp_
 def test_existing_registry_is_preserved_without_route_choice(tmp_path, capsys):
     project = tmp_path / "existing"
     project.mkdir()
+    prepare_git(project)
     registry = b"# operator-owned registry\n"
     (project / "ariadne.yaml").write_bytes(registry)
-    assert run_setup(project, "", "--no-input") == 0
+    assert (
+        run_setup(
+            project,
+            "",
+            "--no-input",
+            "--namespace",
+            NATIVE_NAMESPACE,
+            "--private-profile",
+            str(tmp_path / "profile.json"),
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     assert "git_managed" in output and "Route choice required" not in output
     assert (project / "ariadne.yaml").read_bytes() == registry

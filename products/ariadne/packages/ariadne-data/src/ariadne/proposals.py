@@ -561,9 +561,7 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
         base_native = base_profile.get("native")
         if isinstance(base_native, dict):
             inherited_slot = base_native
-            base_has_generated_block = (
-                inherited_kind != "reference" and "ariadne" in base_native
-            )
+            base_has_generated_block = inherited_kind != "reference" and "ariadne" in base_native
     # The generated rendered BODY of an inherited native generated page is
     # core-owned exactly like the outer generated pages: altering, dropping or
     # adding the rendered Schema/Observations sections refuses even when every
@@ -764,11 +762,15 @@ def _scope_files(project: Path) -> list[str]:
                 raise GitError(f"initial contract {path.name!r} must not be a symlink")
             if path.is_file():
                 rels.append(path.relative_to(project).as_posix())
-    for rel in sorted(
-        path
-        for path in sorted(contracts.iterdir())
-        if path.is_file() and path.suffix in _MODEL_SUFFIXES
-    ) if contracts.is_dir() else []:
+    for rel in (
+        sorted(
+            path
+            for path in sorted(contracts.iterdir())
+            if path.is_file() and path.suffix in _MODEL_SUFFIXES
+        )
+        if contracts.is_dir()
+        else []
+    ):
         rels.append(rel.relative_to(project).as_posix())
     # C6 (spec0035 §6): the retired standalone context_layer/ and
     # answer_examples/ initial-revision walks are gone — the native contract's
@@ -927,7 +929,7 @@ def refuse_unsupported_project(project: str | Path) -> None:
         try:
             manifest = load_source_reference_manifest(kb_dir)
             control = load_control_file(kb_dir)
-        except (ControlFileError, SourceReferenceError):
+        except ControlFileError, SourceReferenceError:
             return False
         return manifest is not None and control is not None
 
@@ -949,8 +951,7 @@ def refuse_unsupported_project(project: str | Path) -> None:
         raise ValueError(
             f"{project} uses the retired standalone Context layout or carries a "
             "knowledge/ directory without the native Knowledge Base state (Control "
-            "File + Source Reference Manifest); "
-            + _UNSUPPORTED_PROJECT_GUIDANCE
+            "File + Source Reference Manifest); " + _UNSUPPORTED_PROJECT_GUIDANCE
         )
 
 
@@ -1168,8 +1169,6 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
-
-
 # ------------------------------------------------- native KB page batches
 
 # One knowledge-page edit of a complete batch: exactly the documented fields.
@@ -1251,6 +1250,9 @@ def edit_page_batch(
     ``AuthoringProject.edit_pages_batch`` surface never forwards it."""
     project = Path(project).resolve()
     pairs = check_page_batch(pages)
+    if not core_generated:
+        for rel, _content in pairs:
+            refuse_generated(rel)
     _load_record(project, proposal)  # identity/belonging errors surface early
     worktree_root = project / WORKTREES_REL / proposal
     with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
@@ -1298,6 +1300,7 @@ def _edit_page_batch_locked(
         write_pages_into_worktree,
     )
     from lumio_wiki.ingest import ProposedPage  # pyright: ignore[reportMissingImports]
+    from lumio_wiki.knowledge_base import FrontmatterError
 
     # spec0035 C1 fix (F3): the producer-owned page identity decides where
     # a title actually lives. A path-addressed batch entry whose declared
@@ -1326,7 +1329,10 @@ def _edit_page_batch_locked(
         identical = False
         if not (worktree_root / rel).exists():
             _refuse_untracked_new_artifact(project, worktree_root, rel, current)
-        meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+        try:
+            meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+        except FrontmatterError as exc:
+            raise GitAuthoringError(f"{rel}: {exc}") from exc
         title = meta.get("title") if isinstance(meta, dict) else None
         if not isinstance(title, str) or not title.strip():
             raise ValueError(
@@ -1457,8 +1463,6 @@ def refuse_untracked_scope(project: Path, record: dict) -> None:
                     f"draft {rel!r} — an interrupted artifact creation left it as "
                     "evidence" + _HUMAN_RESOLUTION
                 )
-
-
 
 
 def _validation_path(project: Path, proposal: str, revision: str) -> Path:

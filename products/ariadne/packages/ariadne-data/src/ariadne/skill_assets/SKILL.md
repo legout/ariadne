@@ -411,7 +411,7 @@ activated only by human overall admission, is the sole Context authority:
 - `ariadne search-context "<query>" --project .` navigates that pinned release
   source-free: native lexical ranking over the operator-scoped published
   pages, with SDK namespace, Entity ID, Published Version and exact
-  page/passage citations in every hit. The Ariadne Agent adds the read-only
+  page/passage citations in every hit. The optional integration below exposes read-only
   `list_context_pages` and `read_context_page` tools over the same
   pinned snapshot (there are no dedicated CLI commands for them). Ordinary
   unprofiled pages are documentation, never Core-validated References; hidden

@@ -24,7 +24,7 @@ from typing import Any
 
 # Distributions that must never ride along in the base service environment:
 # the Ariadne producer (plus its heavyweight runtime) is gated behind the
-# ``analytics`` extra, and the LanceDB adapter is not a service dependency.
+# ``analytics`` extra, and the LanceDB adapter stays behind ``retrieval``.
 FORBIDDEN_DISTRIBUTIONS = {
     "ariadne-data",
     "ariadne",
@@ -43,13 +43,14 @@ EXPECTED_BASE_REQUIREMENTS = sorted(
         "authlib<2,>=1.6",
         "httpx<1,>=0.28",
         "itsdangerous<3,>=2.2",
-        "lumio-wiki[documents,mcp]<0.7.0,>=0.6.0",
+        "lumio-wiki[documents,mcp,s3]<0.8,>=0.7",
         "mcp<3,>=2.2",
         "starlette<2,>=1.7",
         "uvicorn<1,>=0.54",
     ]
 )
 EXPECTED_ANALYTICS_REQUIREMENTS = ["ariadne-data[spreadsheets]<0.9.0,>=0.8.0"]
+EXPECTED_RETRIEVAL_REQUIREMENTS = ["lumio-lancedb<0.8.0,>=0.7.0"]
 
 # The hatch force-include assets: losing either template breaks the owner
 # setup and browser review surfaces even though imports still succeed.
@@ -140,7 +141,7 @@ def assert_installed_wheel(wheel: Path) -> None:
 
 
 def assert_dependency_boundary() -> None:
-    """Pin the base dependency set and the analytics-only Core gate."""
+    """Pin declared base/extras while keeping optional runtimes out of the base."""
     requirements = importlib.metadata.requires("lumio-workspace") or []
     base: list[str] = []
     extras: dict[str, list[str]] = {}
@@ -153,7 +154,10 @@ def assert_dependency_boundary() -> None:
         extra = marker.split("==", 1)[1].strip().strip("'\"").lower()
         extras.setdefault(extra, []).append(spec.replace(" ", "").lower())
     assert sorted(base) == EXPECTED_BASE_REQUIREMENTS, base
-    assert extras == {"analytics": EXPECTED_ANALYTICS_REQUIREMENTS}, extras
+    assert extras == {
+        "analytics": EXPECTED_ANALYTICS_REQUIREMENTS,
+        "retrieval": EXPECTED_RETRIEVAL_REQUIREMENTS,
+    }, extras
     assert all(importlib.util.find_spec(name) is None for name in FORBIDDEN_MODULES)
     installed = {
         distribution.metadata["Name"].lower().replace("_", "-")

@@ -44,7 +44,7 @@ pip install ariadne-data   # local CLI + query engine; optional extras: [mcp], [
 
 Runnable local example: the
 [getting-started tutorial](products/ariadne/docs/tutorials/getting-started.md),
-plus standalone source fixtures in
+plus local source fixtures in
 [`products/ariadne/examples/retail-demo/`](products/ariadne/examples/retail-demo/)
 (an already-admitted project; not the combined onboarding recipe). Package
 details:
@@ -57,17 +57,17 @@ explicit: an installed compatible SDK, compatible artifacts, source approval
 and an operator-confirmed overall admission are required — colocation or
 installing both packages activates nothing.
 
-Minimum installation for this route is both published packages
-(`pip install ariadne-data lumio-wiki`); the joint tutorial pins the exact
-compatible pair it exercises (`ariadne-data==0.6.0`, `lumio-wiki==0.4.0`).
+Core's base installation resolves its required compatible SDK. The native
+contract in this source tree pairs Core 0.8 with the SDK 0.7 line; package
+versions alone do not establish a qualified build pairing. Follow the current
+[getting-started tutorial](products/ariadne/docs/tutorials/getting-started.md)
+and [native context guide](products/ariadne/docs/how-to/context-knowledge.md).
 
-Runnable local example: the joint tutorial
-[Lumio + Ariadne locally](integration/docs/tutorials/lumio-ariadne-local.md),
-with its complete synthetic project in
-[`integration/examples/local-lumio-ariadne/`](integration/examples/local-lumio-ariadne/) — three
-synthetic orders, **150 EUR recognized revenue and two completed orders**
-with the complete governing Policy and citations, then a Git update that
-stays inactive until reviewed confirmation.
+The [historical joint tutorial](integration/docs/tutorials/lumio-ariadne-local.md)
+and its [synthetic project](integration/examples/local-lumio-ariadne/) preserve
+the Core 0.6.0 / SDK 0.4.0 example: **150 EUR recognized revenue and two
+completed orders**. That older package/layout contract is not the current
+setup route; do not carry its classic catalog into a new native project.
 
 ## Using versus developing
 

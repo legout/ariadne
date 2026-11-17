@@ -1,14 +1,14 @@
 # Lumio bound releases reference
 
-Ariadne projects can optionally bind a Lumio knowledge base as the source of
-governed context. This page is the reference for that integrated route: what
-the binding requires, what it admits, and what it refuses. The integration is
-delivered against a strict local subset — everything not listed as supported
-below refuses. Projects without the integration keep the standalone behavior
-documented in the other references; nothing here adds a requirement for them.
+Current Ariadne projects require one native Lumio Knowledge Base as their
+Context foundation. This reference describes its binding, admission and frozen
+operation support; there is no standalone Core backend or optional-SDK fallback.
+Lumio itself remains independently usable without Ariadne.
 
-Start with [the complete local tutorial](../tutorials/lumio-ariadne-local.md)
-for supplied example files, exact commands and expected results.
+For a new project, use
+[Getting started](../../../products/ariadne/docs/tutorials/getting-started.md).
+The [historical joint tutorial](../tutorials/lumio-ariadne-local.md) preserves
+the Core 0.6.0 / SDK 0.4.0 example, not the current package/layout contract.
 
 ## The integrated selector
 
@@ -37,9 +37,8 @@ integrated query operations below. Older admissions keep their own frozen
 capability tables — a revision-1/2 admission never silently gains operations,
 and a revision the installed consumer does not implement refuses.
 
-- Absence of the selector keeps the existing standalone route.
-- A malformed or unsupported selector refuses; it never downgrades to
-  standalone.
+- Absence of the selector refuses with fresh native setup guidance.
+- A malformed or unsupported selector refuses; it never selects a legacy backend.
 - An existing integrated runtime cannot be downgraded by a query or tool
   argument.
 
@@ -75,7 +74,7 @@ manifest):
 | Area | Delivered behavior |
 | --- | --- |
 | Storage | Local immutable Published Versions, plus optional S3 object storage released with Core 0.7.0: an `s3://` destination is admitted only with an explicitly selected declared storage profile, its verified private local admission records and the frozen transport binding; mutable/current/latest reads and plain directories always refuse. |
-| Profiles | Revision-scoped, always checked across the entire captured KB. **Revision 1 (the legacy released pairing):** `metric`, `policy` and `reference` only. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. **Revisions ≥2 (released with Core 0.7.0):** the native `dataset`, `table` and `computation` technical profiles additionally join the supported set behind the explicit revision opt-in below — revision-scoped capability that existing admissions never gain silently, and `skill` profiles remain refused on every revision. |
+| Profiles | Revision-scoped, always checked across the entire captured KB. **Revision 1 (the legacy released pairing):** `metric`, `policy` and `reference` only. A `reference` profile is supported ONLY as a fully validated structured Reference (native Reference contract; authentic Core receipts for measured authority, native source-backed manual assertion eligibility, exact human mapping confirmation). Any other Ariadne profile kind anywhere in the KB refuses admission — even when no metric references it. Ordinary unprofiled pages stay KB content and are never exposed as Core-validated technical references. **Revisions ≥2 (released with Core 0.7.0):** the native `dataset`, `table` and `computation` technical profiles additionally join the supported set behind the explicit revision opt-in below — revision-scoped capability that existing admissions never gain silently, and `skill` profiles remain refused on every revision. **Revision 4:** native `answer_example` pages additionally support explicit save/search; older admissions never gain that capability silently. |
 | `get_metric` | Governed calculation with one exact Context Binding and the complete required Policy Closure, resolved in the same pinned snapshot before SQL. |
 | `query_metrics` | Multiple predefined metrics over the admitted multi-fact graph, complete per-metric Policy context, exact citations. |
 | `discover`, `list_metrics` | Source-free disclosure of the admitted catalog, binding identity and available/unavailable operations. No source is opened. |
@@ -85,7 +84,8 @@ manifest):
 | `query_detail` (revision 3) | Governed detail projection over the admitted graph's proven lookup paths. Resolves the root dataset and the requested lookup tables statically, consumes each with its full published Table view in the additive `input_context` before any planner, live audit, bind or SELECT; an unproved path keeps its native planner refusal — wiki text never authorizes a join. |
 | `query_records` (revision 3) | Bounded single-dataset record selection, always `governed: false`. The one consumed table's full published view and the applicable Policy inventory ride the additive `input_context`; a calculation-specific exclusion (for example cancelled-order revenue) never filters records. |
 | `define_metric` (revision 3) | One-shot unsaved Ad-hoc execution, always `governed: false` with `context: null` and a separate pinned `input_context` covering every allowed nested source table. The static IO-authority boundary still runs first; no proposal, page or Computation record is ever created. |
-| Refused integrated operations | Operations outside the admission's declared support revision refuse as unsupported before planning or SQL — never a legacy-context fallback. Revision ≤2 admissions keep refusing `query_detail`, `query_records` and `define_metric`; `save_example`/`search_examples` refuse on every revision. The same callables keep working in standalone projects. |
+| `save_example`, `search_examples` (revision 4) | Explicit saves create reviewable native KB drafts; search returns scoped method references with pinned provenance. Reuse executes a fresh sanctioned query, never a cached answer or historical SQL. |
+| Refused operations | Operations outside the admission's declared support revision refuse before planning or SQL, never through a legacy fallback. Revisions ≤2 refuse `query_detail`, `query_records` and `define_metric`; revisions ≤3 refuse `save_example`/`search_examples`. |
 
 A fully validated structured Reference (spec0029 §1.5) is the one supported
 exception: its declared representations/mappings and the Core-attached
@@ -227,16 +227,25 @@ outside tools goes through `search-context` and the pinned release's pages.
 
 ## SDK pairing
 
-The Lumio SDK is an optional dependency of the integrated route: a standalone
-Core install never imports or requires it, and an integrated admission
-requires an installed SDK build that actually provides the bound operations —
-an older SDK refuses admission instead of being advertised with capabilities
-it lacks. Public package version strings alone do not qualify a source for
-these capabilities: the exact candidate wheel pairing (Core and producer
-source refs and wheel digests) is recorded with the qualification run
-evidence, not assumed from published versions.
+The native Core base wheel requires the compatible Lumio SDK; a base
+SDK-only installation neither requires nor imports Ariadne. An admission binds
+an installed SDK build that actually provides its operations. Public version
+strings alone do not qualify a pairing: record exact Core/producer source refs
+and wheel digests with the qualification evidence.
 
-### Release 0.8.0 / 0.6.0
+### Native Core 0.8 / SDK 0.7 contract
+
+This source tree requires `lumio-wiki>=0.7,<0.8` for `ariadne-data` 0.8.
+Installing the matching Core base wheel resolves that SDK dependency; MCP and
+LanceDB remain optional. Coordinate compatible built wheels when the SDK build
+is not yet published; do not substitute SDK 0.6 or claim PyPI was qualified.
+A changed build/support set requires genuine validation and a fresh matching
+admission, never an upgrade of an existing Bound Release in place.
+
+The older pairings below are historical contracts, not current installation
+instructions or evidence that the native pairing has been qualified.
+
+### Historical pre-native pairing 0.8.0 / 0.6.0
 
 The public pairing is `ariadne-data==0.8.0` with
 `lumio-wiki==0.6.0` (Python >=3.14). Install the exact pair:
@@ -256,7 +265,7 @@ review, explicit private-profile managed admission, bounded selected-resource
 profiling seams, and the stored-value XLSX import (optional `spreadsheets`
 extra) — none of which existing admissions gain silently.
 
-### Release 0.7.0 / 0.5.0
+### Historical pairing 0.7.0 / 0.5.0
 
 The public pairing is `ariadne-data==0.7.0` with
 `lumio-wiki==0.5.0` (Python >=3.14). Install the exact pair:

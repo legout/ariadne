@@ -42,6 +42,7 @@ from ariadne.authoring import AuthoringProject  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     SEED_NOTES,
     complete_bundle_project,
+    select_revision4_fixture,
 )
 
 # The Analyst registration: the QueryRuntime operations under their
@@ -190,7 +191,7 @@ def test_stdio_toolsets_share_core_and_exclude_human_operations(tmp_path, toolse
 # ------------------------------------- [2] fresh onboarding vs admitted state
 
 
-def _admitted_project(tmp_path: Path) -> tuple[Path, dict]:
+def _admitted_project(tmp_path: Path, *, revision4: bool = False) -> tuple[Path, dict]:
     """One admitted managed project: the operator's human-only journey
     (approve the candidate's resolved source identity, validate, review,
     ``ariadne-admit --confirm``) performed OUTSIDE every agent surface, with
@@ -198,6 +199,8 @@ def _admitted_project(tmp_path: Path) -> tuple[Path, dict]:
     from tests.test_git_admission import _policy_edit, admit, admitted_ready
 
     project = complete_bundle_project(tmp_path / "admitted")
+    if revision4:
+        select_revision4_fixture(project)
     api = AuthoringProject(project)
     review, _journey = admitted_ready(api, project, _policy_edit("The rule body, admitted."))
     assert admit(project, review) == 0
@@ -342,7 +345,7 @@ def test_record_query_discovery(tmp_path):
     Authoring registration gains no query operation. One bounded call over the
     admitted project proves the registered surface; the business cases live in
     ``tests/test_query_records.py`` (not repeated per transport)."""
-    project, _review = _admitted_project(tmp_path)
+    project, _review = _admitted_project(tmp_path, revision4=True)
 
     async def run() -> dict:
         out = {}

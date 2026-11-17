@@ -16,8 +16,10 @@ with per-endpoint credentials in ``s3.json`` and the 4.48-required
 connection with an explicit config-provider secret (fixture-authoring side,
 never the Ariadne builder under test); arbitrary bytes (the native DuckDB
 catalog) upload through a minimal stdlib SigV4 PUT. Every test owns its full
-container lifecycle (start/stop in fixtures, no cross-test reuse) and cleans
-up even on failure.
+service lifecycle (start/stop in fixtures, no cross-test reuse) and cleans
+up even on failure. Explicit ARIADNE_TEST_WEED_MINI selects an installed
+absolute weed binary and isolated loopback mini processes instead of Docker;
+a missing selected runtime never falls back.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import json
 import os
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -45,6 +48,16 @@ ORACLE_A = {"count": 3, "sum": 60, "emea_sum": 40}
 ORACLE_B = {"count": 2, "sum": 200}
 
 _IMAGE = "chrislusf/seaweedfs:4.48"
+
+
+def _mini_binary() -> Path | None:
+    value = os.environ.get("ARIADNE_TEST_WEED_MINI")
+    if value is None:
+        return None
+    path = Path(value)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError("ARIADNE_TEST_WEED_MINI requires an existing executable absolute path")
+    return path.resolve()
 
 
 def _free_port() -> int:
@@ -120,7 +133,7 @@ def _sigv4(
 
 
 class S3Endpoint:
-    """One loopback S3-compatible endpoint: its own container, port and
+    """One loopback S3-compatible endpoint: its own service, port and
     synthetic credentials. Created data lives under ``s3://retail/`` /
     ``s3://analytics/`` — the spec's disjoint scopes."""
 
@@ -145,6 +158,9 @@ class S3Endpoint:
         self.hostport = f"127.0.0.1:{self.port}"
         self._tmp = tmp
         self._container = f"ariadne-s1-fx-{name}-{self.port}"
+        self._mini_binary = _mini_binary()
+        self._mini_process = None
+        self._mini_log = None
 
     # ---------------------------------------------------------- lifecycle
 
@@ -179,33 +195,39 @@ class S3Endpoint:
         security.write_text('[jwt.filer_signing]\nkey = "fixture"\n', encoding="utf-8")
         config.chmod(0o644)
         security.chmod(0o644)
-        subprocess.run(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                self._container,
-                "-p",
-                f"{self.port}:8333",
-                "-v",
-                f"{config}:/etc/seaweedfs/s3.json:ro",
-                "-v",
-                f"{security}:/data/security.toml:ro",
-                _IMAGE,
-                "server",
-                "-dir",
-                "/data",
-                "-master.volumeSizeLimitMB=64",
-                "-s3",
-                "-s3.config=/etc/seaweedfs/s3.json",
-                "-s3.port=8333",
-            ],
-            check=True,
-            capture_output=True,
-        )
+        if self._mini_binary is not None:
+            self._start_mini(config, security)
+        else:
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "-d",
+                    "--name",
+                    self._container,
+                    "-p",
+                    f"{self.port}:8333",
+                    "-v",
+                    f"{config}:/etc/seaweedfs/s3.json:ro",
+                    "-v",
+                    f"{security}:/data/security.toml:ro",
+                    _IMAGE,
+                    "server",
+                    "-dir",
+                    "/data",
+                    "-master.volumeSizeLimitMB=64",
+                    "-s3",
+                    "-s3.config=/etc/seaweedfs/s3.json",
+                    "-s3.port=8333",
+                ],
+                check=True,
+                capture_output=True,
+            )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
+            if self._mini_process is not None and self._mini_process.poll() is not None:
+                self.stop()
+                raise RuntimeError(f"weed mini exited before readiness; inspect {self._tmp}")
             try:
                 status, _ = _sigv4(
                     self.access_key,
@@ -214,7 +236,7 @@ class S3Endpoint:
                     "GET",
                     f"{self.endpoint_url}/",
                 )
-                if status in (200, 403, 400):  # the S3 gateway answers authenticated requests
+                if status == 200 or (self._mini_binary is None and status in (403, 400)):
                     return self
             except OSError:
                 pass
@@ -222,7 +244,58 @@ class S3Endpoint:
         self.stop()
         raise RuntimeError(f"seaweedfs fixture {self.name} did not come up on {self.endpoint_url}")
 
+    def _start_mini(self, config: Path, security: Path) -> None:
+        data = (self._tmp / f"mini-{self.name}-{self.port}").resolve()
+        data.mkdir(mode=0o700)
+        home = data / "home"
+        home.mkdir()
+        (data / "security.toml").write_bytes(security.read_bytes())
+        (data / "filer.toml").write_text(
+            f"[leveldb2]\nenabled = true\ndir = {json.dumps(str(data / 'filerldb'))}\n"
+        )
+        # Unix socket paths must fit the kernel limit even under a long state root.
+        sockets = Path(tempfile.mkdtemp(prefix="ariadne-mini-sock-"))
+        ports = {self.port}
+        while len(ports) < 8:
+            ports.add(_free_port())
+        master, master_rpc, volume, volume_rpc, filer, filer_rpc, s3_rpc = sorted(
+            ports - {self.port}
+        )
+        argv = [
+            str(self._mini_binary), "mini", f"-dir={data}",
+            "-ip=127.0.0.1", "-ip.bind=127.0.0.1",
+            f"-master.port={master}", f"-master.port.grpc={master_rpc}",
+            "-master.telemetry=false", "-master.volumeSizeLimitMB=64",
+            f"-volume.port={volume}", f"-volume.port.grpc={volume_rpc}", "-volume.max=4",
+            f"-filer.port={filer}", f"-filer.port.grpc={filer_rpc}",
+            f"-filer.localSocket={sockets / 'filer.sock'}",
+            f"-s3.port={self.port}", f"-s3.port.grpc={s3_rpc}",
+            f"-s3.localSocket={sockets / 's3.sock'}", f"-s3.config={config.resolve()}",
+            "-s3.iam=false", "-s3.port.iceberg=0", "-s3.port.lance=0",
+            "-webdav=false", "-admin.ui=false", "-admin.port.legacy=0",
+        ]
+        self._mini_log = (data / "mini.log").open("wb")
+        try:
+            self._mini_process = subprocess.Popen(
+                argv, cwd=data, stdout=self._mini_log, stderr=subprocess.STDOUT,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)},
+            )
+        except OSError:
+            self._mini_log.close()
+            raise
+
     def stop(self) -> None:
+        if self._mini_binary is not None:
+            if self._mini_process is not None and self._mini_process.poll() is None:
+                self._mini_process.terminate()
+                try:
+                    self._mini_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._mini_process.kill()
+                    self._mini_process.wait(timeout=5)
+            if self._mini_log is not None:
+                self._mini_log.close()
+            return
         subprocess.run(
             ["docker", "rm", "-f", self._container], capture_output=True, check=False
         )
@@ -398,7 +471,10 @@ def native_view_catalog_bytes(endpoint: S3Endpoint, s3_parquet_url: str) -> byte
 
 def require_docker() -> None:
     """The live S3 checks are REQUIRED (spec 0025 §§7 AC2/AC5): a missing
-    transport capability blocks the check — it is never silently skipped."""
+    transport capability blocks the check — it is never silently skipped.
+    The historical helper name also checks explicitly selected native mini."""
+    if _mini_binary() is not None:
+        return
     try:
         probe = subprocess.run(
             ["docker", "version", "--format", "{{.Client.Version}}"],
