@@ -47,6 +47,10 @@ Compiled Page passage or say the topic is not covered.
    `pip install lumio-wiki` (or `pip install 'lumio-wiki[documents]'` for
    PDF/image/office/HTML sources, `pip install 'lumio-wiki[llm]'` for an
    unattended OpenAI-compatible Distiller, `pip install 'lumio-wiki[all]'` for both).
+   PyPI may lag the source (0.6.0 while 0.7 is unreleased); to match a newer
+   skill copy, install its pinned Git revision:
+   `pip install "lumio-wiki @ git+https://github.com/legout/ariadne@REV#subdirectory=products/lumio/packages/lumio-wiki"`.
+   Ask the human before installing.
 2. Run `lumio-wiki doctor` once per session to see the install shape: version,
    which optional capabilities are present, and where the packaged skill lives.
 3. For a project's first run, use `lumio-wiki setup <path>`. It creates or
