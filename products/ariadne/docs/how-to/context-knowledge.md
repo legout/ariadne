@@ -103,10 +103,20 @@ These are operator actions for a machine-local Lumio profile with
 `retention: required`. Source approval for SQL access does not register or
 retain originals. Core does not register cited sources automatically.
 
-1. Inspect the candidate's cited source IDs, including generated Computation
-   pages. For example, `retail_sales::revenue` cites `model-retail_sales`;
-   its original is the exact candidate `semantic_layer/models/retail_sales.yml`
-   bytes, not a later working-copy revision.
+1. Inspect every source ID the candidate's pages cite (each page's `sources`),
+   not only the authored ones. Generated pages cite technical evidence too:
+   - a Computation page cites its OSI model, e.g. `retail_sales::revenue`
+     cites `model-retail_sales`, whose original is the exact candidate
+     `semantic_layer/models/retail_sales.yml` bytes, not a later working copy;
+   - a refreshed Table or Dataset page cites its approved catalog asset
+     (`catalog-<source>-<schema>-<table>` / `catalog-<source>-<schema>`), whose
+     original is the approved source file the refresh read (for a SQLite
+     source, that database file);
+   - authored Policy and Metric pages cite their own sources, such as Seed Notes
+     or the governing Policy page.
+
+   Validate the candidate first: the finalize pass adds the Computation pages
+   and their citations.
 2. Use the native operator APIs `SourceRegistry.register_version` and
    `retain_artifact` with those genuine bytes and the selected private registry
    and artifact store. Derive the content digest from the original bytes;

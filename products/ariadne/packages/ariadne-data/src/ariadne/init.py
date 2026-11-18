@@ -213,7 +213,7 @@ _ARIADNE_ENTITY_TYPES = (
 
 # Core's own KB categories beyond the SDK's seeded catalog: the page kinds of
 # the ariadne knowledge path (spec0035 §2).
-_CORE_CATEGORIES = ("metrics", "policies", "answer-examples")
+_CORE_CATEGORIES = ("metrics", "policies", "computations", "answer-examples")
 
 
 def _core_control_file():  # noqa: PLR0911 - none; single return path

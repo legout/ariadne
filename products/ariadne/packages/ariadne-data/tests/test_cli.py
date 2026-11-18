@@ -218,17 +218,6 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     model = root / "semantic_layer" / "models" / "orders.yml"
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_text(GOLDEN_OSI, encoding="utf-8")
-    # The init-seeded Control File plus the computations category the finalize
-    # pass needs — the established category-extension idiom (ADR-0009): the
-    # human base revision declares the vocabulary the generated sanctioned-SQL
-    # Computation pages occupy (the computation Entity Type is already seeded).
-    control = root / "knowledge" / "lumio.yaml"
-    control.write_text(
-        control.read_text(encoding="utf-8").replace(
-            "  - metrics\n", "  - metrics\n  - computations\n"
-        ),
-        encoding="utf-8",
-    )
     pages = {
         "policies/order-status-billing.md": _native_policy_page(
             "order-status-billing",

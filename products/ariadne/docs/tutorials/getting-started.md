@@ -57,6 +57,42 @@ ariadne setup --project . --namespace "urn:uuid:your-retail-namespace" --private
 
 `--agents` installs the packaged Ariadne skill; `--agent` selects the host integration. Skill installation is separate from source approval and catalog admission.
 
+## Select the integrated route
+
+Setup does not choose the project's capability revision for you. Before the
+first proposal, the operator writes `context_integration.yaml` at the project
+root. Use your setup namespace; start with no Policy bindings, because no
+metric exists yet:
+
+```yaml
+version: 1
+mode: integrated
+subtree: knowledge
+namespace: urn:uuid:your-retail-namespace
+profile: ariadne-context/1
+support_revision: 2
+policy_bindings:
+  version: 1
+  bindings: []
+```
+
+Revision 2 is the minimum for schema refresh (native Table/Dataset pages) and
+generated Computation pages; without this file `refresh-schema` refuses.
+Use `support_revision: 4` when you will save Answer Examples. The first
+`ariadne-authoring start` commits it with the other setup files. When you add
+a governed metric, list each required Policy under `bindings` in the same
+proposal, for example:
+
+```yaml
+  bindings:
+    - subject: {kind: metric, identity: sales::revenue}
+      policy: {namespace: urn:uuid:your-retail-namespace, entity_id: entity:revenue-policy}
+      operations: [get_metric, query_metrics]
+      enforcement: null
+```
+
+See the [Bound Release reference](../../../../integration/docs/reference/lumio-bound-releases.md#the-integrated-selector) for every key.
+
 ## Approve sources and author the catalog
 
 The wizard reports the project route, detected files, and next steps. For Git-managed projects, the operator reviews the proposed source identities and explicitly approves the exact proposal/digest before any source is opened for profiling. Credentials stay in the environment and are referenced by variable name in the registry.

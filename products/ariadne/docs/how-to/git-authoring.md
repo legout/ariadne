@@ -6,7 +6,7 @@ For a new project, the [getting-started tutorial](../tutorials/getting-started.m
 
 ## Create and admit a proposal
 
-Declare the source registry in `ariadne.yaml` and put any operator-approved documents under an allowed project path. Start a proposal:
+Declare the source registry in `ariadne.yaml` and put any operator-approved documents under an allowed project path. A new project also needs the operator-authored `context_integration.yaml` selector ([Select the integrated route](../tutorials/getting-started.md#select-the-integrated-route)); without it schema refresh refuses. Start a proposal:
 
 ```bash
 ariadne-authoring start --project .
