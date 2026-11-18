@@ -111,7 +111,8 @@ def test_scaffold_creates_native_kb_and_expected_inputs(tmp_path):
     categories = {
         entry["name"] if isinstance(entry, dict) else entry for entry in control["categories"]
     }
-    assert {"metrics", "policies"} <= categories
+    # finalize writes knowledge/computations/<metric>.md for the first governed metric
+    assert {"metrics", "policies", "computations"} <= categories
     manifest = load_source_reference_manifest(target / "knowledge")  # the KB root
     assert manifest.namespace == NAMESPACE and manifest.sources == {}  # unadmitted
 
