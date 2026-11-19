@@ -136,9 +136,7 @@ untyped); native DuckDB read-only attach; window and CTE queries.
 
 - A file outside the allowed directory, a sibling prefix glob, a symlink that points
   outside, `http(s)`, `~/`, and a `..` path that leaves the directory.
-- `ATTACH` of a new file (inside or outside the directory) is refused only outside the
-  allowed directory. Inside it the attach **succeeded**, which was already possible
-  under 1.5.6 for an allowed path.
+- `ATTACH` of a new file **outside** the allowed directory (see the differences below for inside).
 - `INSTALL`, `SET s3_endpoint`, `CREATE PERSISTENT SECRET`.
 - `read_text` and `glob` on an outside path.
 - `COPY TO` outside the allowed directory, and `COPY TO s3://…` without httpfs loaded
@@ -146,10 +144,11 @@ untyped); native DuckDB read-only attach; window and CTE queries.
 - `INSERT` into a read-only attach (refused with a type error in this probe, so it does
   not prove the read-only refusal by itself).
 
-**Differences from 1.5.6:** `COPY TO` a local file **inside** the allowed directory
-succeeds. That behavior is not in the 1.5.6 list, but the earlier note only recorded
-`COPY TO` to a file outside; this is a requirement input for B (the statement guard
-already covers it).
+**Differences from 1.5.6 (not verified against 1.5.6 in this run):** inside the allowed
+directory, `ATTACH` of a new file and `COPY TO` a local file both **succeed** under 2.0.0.
+The 1.5.6 note records both as refused, but only tested a target that was not covered by
+the allow-list, so the comparison is inconclusive. B's statement guard must refuse both
+statements regardless.
 
 **Gap classes under 2.0.0:**
 
