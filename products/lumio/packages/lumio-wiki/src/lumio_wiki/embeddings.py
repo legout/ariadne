@@ -84,24 +84,6 @@ def normalize_vector(vector: list[float]) -> list[float]:
     return [v / norm for v in vector]
 
 
-def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Return the cosine similarity of two equal-length vectors."""
-    if len(a) != len(b):
-        raise EmbeddingDimensionMismatch(
-            f"cosine_similarity dimension mismatch: {len(a)} != {len(b)}"
-        )
-    dot = 0.0
-    na = 0.0
-    nb = 0.0
-    for x, y in zip(a, b, strict=True):
-        dot += x * y
-        na += x * x
-        nb += y * y
-    if na == 0.0 or nb == 0.0:
-        return 0.0
-    return dot / (math.sqrt(na) * math.sqrt(nb))
-
-
 def reciprocal_rank_fusion(
     ranked_id_lists: list[list[str]],
     *,
@@ -141,7 +123,3 @@ def load_embedding_model(index_dir: Path) -> EmbeddingModelInfo | None:
     return msgspec.json.decode(path.read_bytes(), type=EmbeddingModelInfo)
 
 
-def is_semantic_index_stale(index_dir: Path, info: EmbeddingModelInfo) -> bool:
-    """Return True if no vector metadata exists or it was built by a different model."""
-    stored = load_embedding_model(index_dir)
-    return stored is None or stored != info

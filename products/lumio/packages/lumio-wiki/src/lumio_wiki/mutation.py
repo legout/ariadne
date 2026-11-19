@@ -491,28 +491,6 @@ class MutationBackup:
             file_format="special entry (FIFO, socket, or device)",
         )
 
-    def capture_basename_sweep(
-        self, root: str | os.PathLike[str], basenames: Iterable[str]
-    ) -> None:
-        """Snapshot every existing entry whose filename matches ``basenames``.
-
-        Case-insensitive on the basename (reserved-artifact discovery folds
-        case), exact on the parent path. The walk never follows symlinked
-        directories and never opens anything — capture classifies entries on
-        ``lstat`` metadata, so a FIFO named like a reserved artifact is
-        recorded without ever being read.
-        """
-        wanted = {name.lower() for name in basenames}
-        root_path = Path(root)
-        for dirpath, dirnames, filenames in os.walk(root_path):
-            dirnames.sort()
-            filenames.sort()
-            for filename in filenames:
-                if filename.lower() not in wanted:
-                    continue
-                relative = (Path(dirpath) / filename).relative_to(root_path).as_posix()
-                self.capture_path(root_path, relative)
-
     def restore_all(
         self,
         root: str | os.PathLike[str],
