@@ -279,6 +279,12 @@ def test_local_credential_and_browser_session_lifecycle(
         assert _login(client, expiring_browser).status_code == 303
         assert client.get("/workspace").status_code == 200
         clock["now"] += 11
+        # README "Authentication mode": an expired credential is refused exactly like an
+        # unknown one, by the credential store itself (not only by the bearer layer).
+        assert state.authenticate_local_credential(expiring_api, purpose="api") is None
+        unknown = "unknown-credential.secret"
+        assert state.authenticate_local_credential(unknown, purpose="api") is None
+        assert state.authenticate_local_credential(alice_api_two, purpose="api") is not None
         assert _call_tool(client, expiring_api).status_code == 401
         assert client.get("/workspace", follow_redirects=False).status_code == 303
         _read_success(_call_tool(client, alice_api_two))
