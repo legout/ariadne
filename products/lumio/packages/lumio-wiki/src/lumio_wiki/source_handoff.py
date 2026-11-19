@@ -1559,7 +1559,7 @@ class _BudgetedReader(io.RawIOBase):
         view = memoryview(buffer).cast("B")
         data = self._handle.read(min(len(view), remaining, _HANDOFF_STREAM_CHUNK_BYTES))
         if not data:
-            # D2 (delta review): a terminal end of stream must not skip the
+            # a terminal end of stream must not skip the
             # independent overhead invariant on bytes already consumed.
             self.enforce_overhead()
             return 0
@@ -1570,7 +1570,7 @@ class _BudgetedReader(io.RawIOBase):
                 f"({self.consumed} bytes consumed from a changed transfer file); "
                 "an explicit refusal, never a partial handoff"
             )
-        # F4/D2: the ACTUAL container is bounded independently of the unused
+        # the ACTUAL container is bounded independently of the unused
         # maximum manifest/payload allowances — the excess refuses as it is
         # consumed, before it is hashed and long before EOF.
         self.enforce_overhead()
@@ -1579,7 +1579,7 @@ class _BudgetedReader(io.RawIOBase):
         return len(data)
 
     def enforce_overhead(self) -> None:
-        """D2/F4: the dynamic independent overhead invariant, enforced on
+        """the dynamic independent overhead invariant, enforced on
         already-consumed bytes at activation, on every consumed chunk and at
         EOF — a terminal end of stream can never skip it."""
         if self.overhead_limit is not None and self.consumed > self.overhead_limit:
@@ -1652,7 +1652,7 @@ class _RegularOnlyTarBlocks(io.RawIOBase):
                 "regular file; only plain regular records are allowed, and "
                 "forbidden records are refused before their bodies are processed"
             )
-        # D1/E1 (delta reviews): take the numeric bytes only up to the FIRST
+        # take the numeric bytes only up to the FIRST
         # NUL — where tarfile's own numeric parsing also stops — then trim
         # OUTER ASCII spaces only and require the remaining bytes to be plain
         # octal digits (empty means zero). Interior spaces, GNU base-256 lead
@@ -2197,7 +2197,7 @@ def _stream_validate_handoff(
                         expected_sizes = {
                             version.content_hash: version.size for version in parsed.versions
                         }
-                        # F4: bound the ACTUAL container independently of the
+                        # bound the ACTUAL container independently of the
                         # maximum manifest/payload allowances — everything
                         # beyond the manifest, the declared payloads and the
                         # configured overhead ceiling refuses as consumed,

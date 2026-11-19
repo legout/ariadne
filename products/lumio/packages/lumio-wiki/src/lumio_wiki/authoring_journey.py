@@ -699,7 +699,7 @@ def ingest_candidate(
                     "managed authoring binds sources to stable Entities",
                     code="missing_entity_id",
                 )
-            # F9 (spec 0010 §3): an existing page keeps its Entity identity.
+            # an existing page keeps its Entity identity.
             # A same-title update is the effective destination of the existing
             # page, so replacing its Entity ID is refused BEFORE any private
             # registration or authoring write; explicit native merge/removal

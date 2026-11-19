@@ -427,7 +427,7 @@ def _extend_control_file_ontology(
 class GraphImportCandidate(msgspec.Struct, frozen=True):
     """One assembled graph-import mutation shared by both authoring routes.
 
-    G3 (spec 0008 §7): the deterministic stub-page/Control-File computation
+    the deterministic stub-page/Control-File computation
     is route-independent; native Git authoring applies it as ordinary
     worktree file edits. Never a persisted proposal wrapper itself.
     """

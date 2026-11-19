@@ -1298,7 +1298,7 @@ def review_knowledge_changes(
         )
         kb_valid = False
     exact_source_verification = "registry" if source_registry is not None else "unavailable"
-    # F5: structural Source Reference Manifest consistency is always validated;
+    # structural Source Reference Manifest consistency is always validated;
     # only exact private version resolution depends on a selected registry.
     from lumio_wiki.source_references import validate_source_references
 
@@ -1353,7 +1353,7 @@ def review_knowledge_changes(
             )
         )
 
-    # F2: every changed path under the selected subtree must have supported
+    # every changed path under the selected subtree must have supported
     # readable review facts (a displayed page, the Control File or the Source
     # Reference Manifest); anything else — unsupported file kinds and valid
     # marked derived artifacts excluded from pages — is disclosed and never
@@ -1586,7 +1586,7 @@ def check_authoring_commit(
     repo_root, subtree = resolve_repository(Path(kb_root).resolve())
     _validate_review_record(review)
     mismatches: list[str] = []
-    # F4: the check binds the SELECTED Knowledge Base, not just the
+    # the check binds the SELECTED Knowledge Base, not just the
     # repository — the selected subtree must be the reviewed subtree, and the
     # commit must carry that subtree's reviewed namespace (read from the
     # commit's own manifest bytes, never the mutable worktree).

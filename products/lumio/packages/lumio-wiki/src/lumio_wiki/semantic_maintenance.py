@@ -399,7 +399,7 @@ class SemanticDreamReviewer:
         for page_path in finding.pages:
             source = Path(self.kb.root) / page_path
             if base_markdowns is not None and page_path in base_markdowns:
-                # F8: compose against the already-composed candidate page,
+                # compose against the already-composed candidate page,
                 # not a fresh read of the original.
                 markdown = base_markdowns[page_path]
             else:

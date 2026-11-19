@@ -227,7 +227,7 @@ def resolve_repository(kb_root: str | Path) -> tuple[Path, str]:
     subtree = root.relative_to(toplevel.resolve()).as_posix()
     if subtree == ".":
         # A Knowledge Base selected at the repository root has an empty
-        # subtree: Git tree paths are already root-relative (finding 12).
+        # subtree: Git tree paths are already root-relative.
         subtree = ""
     return toplevel.resolve(), subtree
 
@@ -415,7 +415,7 @@ class SealedSourceVersion(msgspec.Struct, frozen=True):
 
     Spec 0008 §3.3: historical binding metadata retains the exact version's
     inspection facts — captured from the registry at publication time, never
-    resolved from later registry state (finding 16).
+    resolved from later registry state.
     """
 
     source_id: str
@@ -967,7 +967,7 @@ def _refuse_unsafe_worktree_mutation(
     Spec 0008 §2: operations refuse a detached/unselected mutation target,
     unresolved Git conflicts, and an operation that would overwrite unrelated
     uncommitted edits — there is no implicit stash. Every affected path must be
-    clean in the worktree before the helper writes it (finding 1).
+    clean in the worktree before the helper writes it.
     """
     if _git_exit(repo_root, "symbolic-ref", "-q", "HEAD") != 0:
         raise GitAuthoringError(
@@ -1038,7 +1038,7 @@ def _normalize_expected(expected_current: str | None) -> str:
     Spec 0008 §4.1: ``none`` explicitly means an absent current pointer, never
     "ignore the current state". An omitted expectation is refused at the SDK
     boundary so every admission is bound to one exact reviewed baseline
-    (finding 3) — there is no ``(any)`` mode.
+     — there is no ``(any)`` mode.
     """
     if expected_current is None or not str(expected_current).strip():
         raise GitAuthoringError(
@@ -1111,7 +1111,7 @@ def _source_impact(
     its last eligible support, and ``page-removed`` when the entity itself is
     gone from the candidate (an explicit Page Removal). A digest change is a
     ``replaced`` binding whose exact new version still supports the page —
-    distinct from a removed binding (finding 15).
+    distinct from a removed binding.
     """
     page_sources = page_sources or {}
     page_entities = set(page_sources)
@@ -1177,7 +1177,7 @@ def _source_impact(
         entity_id, source_id = key
         if after is None:
             # A REMOVED binding (not a replacement): the disposition comes
-            # from the candidate's remaining eligible support (finding 15).
+            # from the candidate's remaining eligible support.
             if entity_id not in page_entities:
                 support = "page-removed"
             elif _eligible_candidate_support(
@@ -2332,7 +2332,7 @@ def publish_revision(
             "admitted: " + "; ".join(review.blocking_diagnostics[:5])
         )
     # Required retention fails closed when it cannot be verified at all —
-    # including a missing Source Artifact Store configuration (finding 4).
+    # including a missing Source Artifact Store configuration.
     if retention_required:
         if artifact_store is None:
             raise PublicationRetentionError(
@@ -3284,7 +3284,7 @@ def ingest_into_worktree(
     a mid-write failure restores them through the mutation backup. The CLI
     supplies ``raw_source_path`` so tracked raw inputs are refused too.
 
-    D6: ``persist_observation(source_id, content_hash)`` — the ONE shared
+    ``persist_observation(source_id, content_hash)`` — the ONE shared
     native hook for required private observation records (URL/research/
     capture) — runs after the safety preflight and BEFORE the final worktree
     apply, so an unpersistable observation refuses the edit while the
@@ -3345,7 +3345,7 @@ def ingest_into_worktree(
             "the authored page carries no Entity ID; managed Git authoring binds "
             "sources to stable Entities (the v2 Entity contract)"
         )
-    # F4 (spec 0008 §§2/6): the shared complete page/control/manifest
+    # the shared complete page/control/manifest
     # candidate gate. Every newly routed producer (capture/URL/research)
     # lands here, so there is no per-command validator fork: Claims,
     # Evidence anchors, ontology, lifecycle, and dangling references are
@@ -3403,7 +3403,7 @@ def ingest_into_worktree(
                 "remain hash-only, but authoring files were not written — "
                 "retry the ingest to recover"
             ) from exc
-    # F1: the rewritten manifest is validated against the fully applied
+    # the rewritten manifest is validated against the fully applied
     # candidate view (the new page included) with exact selected-registry
     # resolution, AFTER registration (the new binding resolves to the just
     # recorded version) and BEFORE any authoring-file write — a refused
@@ -3895,7 +3895,7 @@ def merge_entities_in_worktree(
     manifest = _load_authoring_manifest(kb_path)
     manifest_rewrite = None
     if manifest is not None:
-        # F3 (spec 0008 §6): a merge transfers the retired Entity's exact
+        # a merge transfers the retired Entity's exact
         # bindings to the survivor together with the migrated knowledge; a
         # Page Removal's drop policy does not apply here. Incompatible
         # same-source selected versions refuse — never pick or "latest".
@@ -4284,7 +4284,7 @@ def reactivate_source_in_worktree(
     # Profile validity precedes registration here too; Source exact-pin
     # consistency still resolves after the new private version is registered.
     candidate_view = _refuse_profile_candidate_violations(kb_path, [], removed_titles=None, kb=kb)
-    # F6 (spec 0008 §3.2): the complete safety preflight runs BEFORE any
+    # the complete safety preflight runs BEFORE any
     # private version/metadata write — a refused authoring mutation must
     # never have already extended the selected private history.
     refuse_unsafe_private_selection(kb_path, source_registry, raw_source_path=raw_source_path)

@@ -1768,7 +1768,7 @@ def validate_candidate_knowledge_base(
 class MutationCandidateError(Exception):
     """A mutation-candidate assembly failed.
 
-    G4 (spec 0008 §7): the pure mutation assemblies relocated here from the
+    the pure mutation assemblies relocated here from the
     retired Proposal Pipeline; ``publish.py`` is the native apply/validation
     owner the worktree mutation routes already consume. This base replaces
     the retired ``ProposalPipelineError`` for the relocated pure behavior; it
@@ -2295,7 +2295,7 @@ def assemble_entity_merge_candidate(
     if isinstance(retired_data.get("claims"), list):
         _retarget_claim_objects(retired_data, retired_entity_id, surviving_entity_id)
         merged_claims.extend(retired_data["claims"])
-    # F3 (spec 0008 §6): the survivor's source list is the UNION with the
+    # the survivor's source list is the UNION with the
     # retired Entity's sources — migrated knowledge keeps its provenance.
     # Deduplication keys on the Source id (or title+url when id-less), the
     # same identity compound revision uses; conflicting same-id records keep
@@ -2516,7 +2516,7 @@ def assemble_page_rename_candidate(
     frontmatter = yaml.encode(data).decode("utf-8").strip()
     renamed_markdown = f"---\n{frontmatter}\n---\n{body}"
     if moving:
-        # D2: a moved page's path-resolved OUTBOUND links keep their pre-move
+        # a moved page's path-resolved OUTBOUND links keep their pre-move
         # targets — rewritten to the resolved target's root-absolute path so
         # the new directory (even with a same-basename different Entity)
         # cannot silently misroute them. Mirrors the shared path-resolution

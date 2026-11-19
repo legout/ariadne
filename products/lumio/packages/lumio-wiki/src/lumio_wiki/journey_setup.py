@@ -370,7 +370,7 @@ def plan_empty_setup(
     facts = discover_authoring_location(target)
     state, entries, manifest = _target_state(target, facts.repository_root)
     _refuse_ineligible(state, entries, manifest, target=target, namespace=namespace)
-    # R3: selected project guidance/skill destinations must not land inside
+    # selected project guidance/skill destinations must not land inside
     # the Knowledge Base itself — their Markdown would break KB validation.
     # Refused during planning with actionable guidance; the settled page
     # scanner and the requested actions stay untouched.
@@ -397,7 +397,7 @@ def plan_empty_setup(
                 "drop the skill selection"
             )
     if new_profile_payload is not None:
-        # R1: the prospective destination is revalidated here and in every
+        # the prospective destination is revalidated here and in every
         # recheck — resolved containment plus absent/occupied entry kind —
         # so drift at the confirmation prompt refuses BEFORE any action or
         # parent-directory write; create-only application stays the final

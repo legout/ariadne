@@ -582,7 +582,7 @@ class MutationBackup:
             data = (self._directory / captured.backup_name).read_bytes()
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(path, data)
-            # P5: the captured permission bits are part of the exact
+            # the captured permission bits are part of the exact
             # pre-mutation state. A chmod failure leaves bytes restored but
             # mode unrecovered — reported like any other restoration failure
             # (never suppressed), so the caller retains the backup and raises

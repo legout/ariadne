@@ -314,7 +314,7 @@ def _resolve_ingest_dir(args: argparse.Namespace, kb_root: Path) -> Path:
 def _local_source_registry(args: argparse.Namespace, kb_root: Path):
     """The default local source registry (read-only construction).
 
-    G4 (spec 0008 §7): the persisted IngestStore is retired; read-only
+    the persisted IngestStore is retired; read-only
     status/drift/resolve surfaces select the Source Registry directly at
     the historical ingest-store location. Construction creates nothing.
     """
@@ -2098,9 +2098,9 @@ def _run_empty_journey_setup(
             registry_default=home / ".lumio" / "registries" / namespace,
             store_default=home / ".lumio" / "artifacts" / namespace,
         )
-    # R2: the concrete skill action is resolved read-only BEFORE the preview.
+    # the concrete skill action is resolved read-only BEFORE the preview.
     skill_binding = _resolve_skill_binding(args, project_dir=project_dir)
-    # R4: the exact configuration outputs are rendered read-only BEFORE the
+    # the exact configuration outputs are rendered read-only BEFORE the
     # preview; the confirmed bytes are applied atomically at apply time.
     agents_enabled = not getattr(args, "no_agents_md", False)
     env_path = project_dir / ".env"
@@ -2177,7 +2177,7 @@ def _run_empty_journey_setup(
     def _write_env() -> None:
         from lumio_wiki.mutation import atomic_write_bytes
 
-        # R4: the confirmed .env bytes are applied ONCE, atomically; the
+        # the confirmed .env bytes are applied ONCE, atomically; the
         # progress prints never rewrite the destination.
         atomic_write_bytes(env_path, plan.env_bytes)
         print(f"  .env:           {env_path} ({KB_PATH_ENV_VAR}={plan.target})")
@@ -2199,7 +2199,7 @@ def _run_empty_journey_setup(
         # The creation-only --json envelope stays the sole stdout content:
         # the shared human-progress prints are captured here, not removed.
         with redirect_stdout(io.StringIO()) if as_json else nullcontext():
-            # R2/R4: recheck rebuilds the plan from live facts — freshly
+            # recheck rebuilds the plan from live facts — freshly
             # rendered configuration bytes and a freshly resolved skill
             # binding — so drift between preview and apply refuses.
             recheck_plan(
@@ -2215,7 +2215,7 @@ def _run_empty_journey_setup(
                 install_skill=_install_skill,
             )
     except EmptySetupError as exc:
-        # R6: headless agents still see the safe local residue/recovery
+        # headless agents still see the safe local residue/recovery
         # details next to the frozen JSON error envelope.
         if as_json:
             print(f"setup failure ({exc.code}): {exc}", file=sys.stderr)
@@ -3988,7 +3988,7 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
                 references_path = Path(args.references)
                 repo_root, _subtree = resolve_repository(kb)
                 if references_path.resolve().is_relative_to(repo_root):
-                    # F1: the reference selection is private input; refuse a
+                    # the reference selection is private input; refuse a
                     # repository-contained file BEFORE reading it.
                     raise CliError(
                         "the references selection must stay outside the content "
@@ -4034,7 +4034,7 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
     except ArtifactStoreError as exc:
         raise CliError(str(exc), code="artifact_store_error") from exc
     except OSError as exc:
-        # F2: ordinary transfer/filesystem failures (a missing or unreadable
+        # ordinary transfer/filesystem failures (a missing or unreadable
         # references file, an impossible output parent) surface as the
         # bounded versioned envelope, never as a raw escaping exception.
         raise CliError(
@@ -4119,7 +4119,7 @@ def _explicit_exchange_store(uri: str):
     try:
         obstore = _require_obstore()
     except KnowledgeBaseError as exc:
-        # F5: the optional-extra guard's actionable install guidance reaches
+        # the optional-extra guard's actionable install guidance reaches
         # the caller as this command's bounded versioned envelope.
         raise CliError(str(exc), code="invalid_source_exchange") from exc
     try:
@@ -4228,7 +4228,7 @@ def _cmd_source_exchange(args: argparse.Namespace) -> int:
     except SourceExchangeError as exc:
         raise CliError(str(exc), code=exc.code) from exc
     except KnowledgeBaseError as exc:
-        # F5: profile-mode selection crosses the unchanged JP resolver to the
+        # profile-mode selection crosses the unchanged JP resolver to the
         # optional-extra guard; its actionable guidance reaches the caller as
         # this command's bounded versioned envelope instead of a traceback.
         raise CliError(str(exc), code="invalid_source_exchange") from exc
@@ -4517,7 +4517,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         return _cmd_ingest_git_authoring(
             args, kb, raw_bytes, content_type, source_path, source_id, compiled_page
         )
-    # G4 (spec 0008 §7): every ingest route writes ordinary files/source
+    # every ingest route writes ordinary files/source
     # refs in the selected authoring worktree; the legacy proposal-staging
     # fallback is retired.
     return _cmd_ingest_worktree_passthrough(args, kb, raw_bytes, content_type, source_path)
@@ -4587,7 +4587,7 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
                 redacted_markdown,
                 source_registry=registry,
                 artifact_store=_artifact_store_from_env(),
-                # F6: the tracked-input guard must check the ACTUALLY
+                # the tracked-input guard must check the ACTUALLY
                 # resolved original transcript (explicit or manifest-named),
                 # never merely the manifest that names it.
                 raw_source_path=transcript_source_path or args.manifest,
@@ -4743,7 +4743,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
     except UrlFetchError as exc:
         raise CliError(str(exc)) from exc
 
-    # G3 (spec 0008 §7): an adopted Knowledge Base ingests fetched
+    # an adopted Knowledge Base ingests fetched
     # sources through ordinary worktree edits. F5: the URL/final-URL/
     # retrieval-time provenance is PERSISTED privately under the
     # selected registry root, exact-version-bound — console output
@@ -4874,7 +4874,7 @@ def _cmd_ingest_research(args: argparse.Namespace) -> int:
     authored_markdown = report.read_text(encoding="utf-8")
     consulted = _parse_research_manifest(args.manifest)
 
-    # G3 (spec 0008 §7): an adopted Knowledge Base ingests research
+    # an adopted Knowledge Base ingests research
     # bundles through ordinary worktree edits. F5: the consulted
     # URL/title/access-time manifest is PERSISTED privately under the
     # selected registry root, exact-version-bound — printing is not
@@ -4946,7 +4946,7 @@ def _print_worktree_mutation(result, *, title: str, details: Sequence[str] = ())
 def _cmd_remove_page(args: argparse.Namespace) -> int:
     """Remove one Compiled Page (and its dependent repairs) in the worktree.
 
-    G3 (spec 0008 §2/§6/§7): the deterministic removal edits the selected
+    the deterministic removal edits the selected
     Git authoring worktree as ordinary files — no proposal is staged and
     nothing is committed.
     """
@@ -5200,7 +5200,7 @@ def _cmd_legacy_proposals_export(args: argparse.Namespace) -> int:
 def _cmd_publish(args: argparse.Namespace) -> int:
     """Publish an exact reviewed Git revision (spec 0008 §4).
 
-    G4: the legacy ``publish <proposal-id>`` route is retired; publication
+    the legacy ``publish <proposal-id>`` route is retired; publication
     admits an exact commit through preview/confirm only.
     """
     if getattr(args, "revision", None):
@@ -6688,7 +6688,7 @@ def _cmd_dream(args: argparse.Namespace) -> int:
     _print_source_coverage(report.coverage)
     _print_validation_issues(lint.validation_report)
 
-    # F8/D3: composed edits wait here so the deterministic link repairs and
+    # composed edits wait here so the deterministic link repairs and
     # the semantic findings apply together in ONE checked apply below.
     semantic_pending: dict[str, str] = {}
     link_skipped: list[tuple[object, str]] = []
@@ -6714,7 +6714,7 @@ def _cmd_dream(args: argparse.Namespace) -> int:
         print(f"semantic_pages:       {len(semantic_report.pages)}")
         _print_semantic_findings(semantic_report.findings)
         if args.stage and semantic_report.findings:
-            # G3/D3 (spec 0008 §6): the deterministic mention repairs compose
+            # the deterministic mention repairs compose
             # FIRST — their coordinates come from the ORIGINAL scanned pages,
             # before any frontmatter-normalizing semantic edit can shift the
             # body's absolute lines — and the compatible semantic findings
@@ -7005,11 +7005,11 @@ def _require_git_source_registry(args: argparse.Namespace):
 def _cmd_source_register(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
 
-    # F9/D4/D5 (spec 0008 §3.2): on an adopted Knowledge Base the shared
+    # on an adopted Knowledge Base the shared
     # private registry is the explicitly selected one — never the legacy
     # ingest store — and its private-selection safety is preflighted
     # BEFORE any private write (the actual --file original included).
-    # D5: registration uses the native exact-version primitive: an
+    # registration uses the native exact-version primitive: an
     # identical retry converges, different bytes extend the immutable
     # history, and Git lifecycle intent/pins stay untouched until an
     # explicit authoring change.
@@ -7045,7 +7045,7 @@ def _cmd_source_list(args: argparse.Namespace) -> int:
     from lumio_wiki.source_references import load_source_reference_manifest
 
     manifest = load_source_reference_manifest(kb.root)
-    # F9: the selected registry's identities with Git manifest lifecycle
+    # the selected registry's identities with Git manifest lifecycle
     # intent disclosed for managed sources — the private registry's own
     # status is never masqueraded as the authoring lifecycle authority.
     # Sources without a manifest declaration are disclosed as unmanaged.
@@ -7087,7 +7087,7 @@ def _validated_source_id(source_id: str) -> str:
 def _cmd_source_retire(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
 
-    # G3 (spec 0008 §3.2/§3.3): lifecycle intent is a reviewed Git
+    # lifecycle intent is a reviewed Git
     # manifest edit, never a proposal-keyed pending transition. F2/F9:
     # the explicitly selected registry verifies the remaining exact
     # support.
@@ -7115,7 +7115,7 @@ def _cmd_source_retire(args: argparse.Namespace) -> int:
 def _cmd_source_candidate(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
 
-    # F9/D4: the advisory candidate is recorded in the explicitly selected
+    # the advisory candidate is recorded in the explicitly selected
     # shared private registry (the same history managed ingest uses),
     # preflighted against tracked/inside-KB private selections BEFORE
     # the private write.
@@ -7137,7 +7137,7 @@ def _cmd_source_candidate(args: argparse.Namespace) -> int:
 def _cmd_source_dismiss_candidate(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
 
-    # F9/D4: the selected shared private registry owns the candidate
+    # the selected shared private registry owns the candidate
     # record; its private selection is preflighted BEFORE the write.
     from lumio_wiki.git_authoring import GitAuthoringError, refuse_unsafe_private_selection
 
@@ -7170,9 +7170,9 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
     """
     kb, _report = _load_kb(args.path)
 
-    # G3: confirming a retirement candidate on an adopted Knowledge Base
+    # confirming a retirement candidate on an adopted Knowledge Base
     # records the candidate decision and applies the Git manifest edit.
-    # F9: the candidate belongs to the explicitly selected shared private
+    # the candidate belongs to the explicitly selected shared private
     # registry — never a legacy ingest store's unrelated history.
     from lumio_wiki.git_authoring import (
         GitAuthoringError,
@@ -7183,7 +7183,7 @@ def _cmd_source_confirm_candidate(args: argparse.Namespace) -> int:
 
     registry = _require_git_source_registry(args)
     try:
-        # D4: the private-selection safety preflight runs BEFORE BOTH the
+        # the private-selection safety preflight runs BEFORE BOTH the
         # Git manifest edit and the candidate decision write.
         refuse_unsafe_private_selection(kb.root, registry)
         candidate = registry.get_candidate(args.candidate_id)
@@ -7218,7 +7218,7 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
     raw_bytes = _read_source_file(args)
 
-    # G3: reactivation registers the new bytes in the explicitly
+    # reactivation registers the new bytes in the explicitly
     # selected private registry and flips the reviewed Git manifest
     # intent; spec 0008 §3.3 (r3): the affected Entities are pinned
     # explicitly through the operator's --entity selection — never
@@ -7509,7 +7509,7 @@ def _resolve_source_binding(
         kb, _report = _load_kb(args.path)
         manifest = load_source_reference_manifest(kb.root)
         if manifest is None:
-            # G4: prefer the EXPLICITLY selected private registry (arg or
+            # prefer the EXPLICITLY selected private registry (arg or
             # exported process value); the historical ingest-dir default
             # remains the fallback for readers with no selection.
             registry = _git_source_registry(args) or _local_source_registry(args, kb.root)

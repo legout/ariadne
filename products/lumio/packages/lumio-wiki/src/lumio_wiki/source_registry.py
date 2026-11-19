@@ -253,7 +253,7 @@ def _now() -> str:
 def _refuse_legacy_pending(state: _RegistryState) -> None:
     """Refuse native registry writes while unresolved legacy pending state exists.
 
-    G4 (spec 0008 §7): the proposal-keyed pending-transition API is retired,
+    the proposal-keyed pending-transition API is retired,
     but historical stores may still decode proposal-bound transitions. A
     native writer must never silently ignore that state (or clear it as a
     side effect): it refuses actionably, pointing at the legacy migration

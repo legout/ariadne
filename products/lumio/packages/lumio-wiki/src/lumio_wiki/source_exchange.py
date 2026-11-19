@@ -221,7 +221,7 @@ def _temp_workspace() -> Path:
     try:
         root_of_temp = Path(tempfile.gettempdir()).resolve()
     except OSError as exc:
-        # F5: discovery failures (CPython's documented FileNotFoundError
+        # discovery failures (CPython's documented FileNotFoundError
         # listing candidate directories) stay inside the operation boundary;
         # candidate paths never enter the message.
         raise SourceExchangeError(
@@ -446,7 +446,7 @@ def _copy_to_final(
             return  # an identical retry converges on the existing immutable object
         except SourceExchangeError as exc:
             if exc.code != "exchange_integrity_mismatch":
-                # F7: denied, missing or transient verification keeps its own
+                # denied, missing or transient verification keeps its own
                 # category — it is not an identity conflict.
                 raise
             # Readable verified bytes differ: a genuine identity conflict.
@@ -474,7 +474,7 @@ def _copy_to_final(
             return
         except SourceExchangeError as verify_exc:
             if verify_exc.code == "exchange_integrity_mismatch":
-                # F7: verified different bytes after a lost response conflict.
+                # verified different bytes after a lost response conflict.
                 raise SourceExchangeError(
                     "a different transfer already exists under this transfer "
                     "identifier; resolve the conflict explicitly — the existing "
@@ -482,7 +482,7 @@ def _copy_to_final(
                     code="exchange_conflict",
                 ) from verify_exc
             if verify_exc.code in ("exchange_access_denied", "exchange_not_found"):
-                # F7: a denied or genuinely-absent final keeps its truthful
+                # a denied or genuinely-absent final keeps its truthful
                 # classified category after an ambiguous copy response.
                 raise verify_exc from exc
             # Absence or a transient outcome after a lost response: retry the
@@ -521,7 +521,7 @@ def _publish_ready(store: Any, ready_key: str, payload: bytes) -> None:
             existing = _get_bounded(store, ready_key, READY_MAX_BYTES)
         except SourceExchangeError as exc:
             if exc.code != "exchange_integrity_mismatch":
-                # F7: denied, missing or transient comparison failures keep
+                # denied, missing or transient comparison failures keep
                 # their own truthful category — only an established different
                 # record is a conflict.
                 raise
@@ -554,7 +554,7 @@ def _publish_ready(store: Any, ready_key: str, payload: bytes) -> None:
             if verify_exc.code == "exchange_access_denied":
                 raise verify_exc from exc
             if verify_exc.code == "exchange_integrity_mismatch":
-                # F7: an unreadable/oversized existing record after a lost
+                # an unreadable/oversized existing record after a lost
                 # response is a different record: conflict.
                 raise SourceExchangeError(
                     "a different completion record already exists for this "
@@ -856,7 +856,7 @@ def download_source_transfer(
             "and expected digest",
             code="exchange_integrity_mismatch",
         )
-    # F1: the remote declared count is never resource authority — refuse any
+    # the remote declared count is never resource authority — refuse any
     # count above the kind's written container ceiling BEFORE fetching bytes.
     ceiling = _archive_ceiling(kind)
     if byte_count > ceiling:
