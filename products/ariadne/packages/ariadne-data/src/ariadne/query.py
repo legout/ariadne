@@ -627,9 +627,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         COMBINED mandatory context fits the complete-response budget — all
         before any planner/live-audit/bind/SELECT work. An unbound, hidden or
         incomplete binding refuses here; an answer that cannot carry its
-        required context never executes. C6: the retired standalone ``None``
-        route is gone — a session without the pinned native release refuses
-        honestly, and an empty mapping is returned for a malformed request
+        required context never executes. A session without the pinned native
+        release refuses honestly, and an empty mapping is returned for a malformed request
         (the planner's structured request validation still owns that
         refusal, before its own live audits)."""
         if self._context_snapshot is None:

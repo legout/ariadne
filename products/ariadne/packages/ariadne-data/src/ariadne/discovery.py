@@ -654,7 +654,7 @@ class _DiscoverySession:
         Integrated projects list the pinned scoped SDK facade's visible
         pages (A2, spec0029 §1.3); profiled entries reuse this session's
         already-verified native metadata for the advisory view, and no page
-        body is read per row. C6: the legacy snapshot read is retired."""
+        body is read per row."""
         self._refuse_unsupported("list_context_pages")
         if self._source_free:
             return []
@@ -681,7 +681,7 @@ class _DiscoverySession:
 
         Integrated projects read the pinned scoped SDK facade's complete
         canonical page (A2, spec0029 §1.3); hidden and unknown paths refuse
-        identically. C6: the legacy snapshot read is retired."""
+        identically."""
         self._refuse_unsupported("read_context_page")
         if self._source_free:
             raise ValueError("no admitted Context snapshot; use Authoring for a candidate")
