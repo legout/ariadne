@@ -73,16 +73,6 @@ def _load_frontmatter_meta(text: str) -> dict:
     return (yaml.safe_load(match.group(1)) or {}) if match else {}
 
 
-def _set_frontmatter(text: str, updates: dict) -> str:
-    """Update (or add) YAML frontmatter on an OKF page, preserving the body."""
-    match = _FRONTMATTER_RE.match(text)
-    meta = (yaml.safe_load(match.group(1)) or {}) if match else {}
-    meta.update(updates)
-    front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
-    body = match.group(2) if match else text
-    return f"---\n{front}\n---\n\n{body}"
-
-
 def _set_frontmatter_key(text: str, key: str, value) -> str:
     """Set — or REMOVE, with ``value=None`` — ONE frontmatter key, preserving
     every other key's order and the body (the K3 evidence-attachment seam:
@@ -463,17 +453,7 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
 SCHEMA_SECTION = "Schema"
 OBSERVATIONS_SECTION = "Observations"
 HISTORY_SECTION = "Schema history"
-MEANINGS_SECTION = "Column meanings"
 _CORE_SECTIONS = frozenset({SCHEMA_SECTION, OBSERVATIONS_SECTION, HISTORY_SECTION})
-
-# An authored column-meaning bullet: ``- `column` — meaning`` (any of the
-# three separators). A bullet opens ONE meaning block that also owns its
-# continuation lines (indented or lazy — a multiline Markdown explanation is
-# ONE block, issue #41: it moves into history complete, never leaving an
-# orphaned remainder in the active section); only parseable bullets name a
-# column, everything else stays verbatim wherever it sits.
-_MEANING_LINE_RE = re.compile(r"^[-*]\s+`([^`]+)`\s*[—:-]\s*(.+)$")
-_LIST_ITEM_RE = re.compile(r"^[-*]\s+")
 
 
 def _source_slug(source: str) -> str:
@@ -503,10 +483,6 @@ def _body_sections(body: str) -> list[tuple[str | None, list[str]]]:
     return chunks
 
 
-def _assemble_body(chunks: list[tuple[str | None, list[str]]]) -> str:
-    return "\n".join(line for _heading, lines in chunks for line in lines).strip()
-
-
 def core_body_sections(text: str) -> dict[str, str]:
     """The core-owned BODY sections of one page (``Schema``, ``Observations``,
     ``Schema history``) keyed by section heading: the section chunk from its
@@ -525,18 +501,6 @@ def core_body_sections(text: str) -> dict[str, str]:
         for heading, lines in _body_sections(body or "")
         if heading in _CORE_SECTIONS
     }
-
-
-def _schema_entry_text(value) -> str:
-    """One schema fact's honest text: unknown metadata stays the explicit
-    string ``unknown``; booleans render true/false."""
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if value is None:
-        return "unknown"
-    return str(value).replace("|", "\\|")
 
 
 def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict:
@@ -819,222 +783,6 @@ def _ensure_citation(existing_sources: list | None, citation: dict) -> list:
     ):
         sources.append(citation)
     return sources
-
-
-def _meaning_blocks(lines: list[str]) -> list[tuple[str | None, str, list[str]]]:
-    """The authored meanings section as ``(column or None, complete meaning
-    text, block lines)`` blocks: one block per list item — an authored meaning
-    bullet plus its continuation lines up to the next list item — with a
-    column of ``None`` for preamble lines and non-meaning bullets, which stay
-    verbatim wherever they sit. The complete text joins the bullet's meaning
-    with its continuation lines, so a removed/type-changed column's multiline
-    explanation moves into history as one block (issue #41)."""
-    blocks: list[tuple[str | None, str, list[str]]] = []
-    for line in lines:
-        if _LIST_ITEM_RE.match(line) or not blocks:
-            match = _MEANING_LINE_RE.match(line.strip())
-            blocks.append(
-                (
-                    match.group(1) if match else None,
-                    match.group(2).strip() if match else "",
-                    [line],
-                )
-            )
-        else:  # a continuation line belongs to the block above it
-            _column, text, block = blocks[-1]
-            parts = (text, line.strip())
-            blocks[-1] = (_column, " ".join(part for part in parts if part), [*block, line])
-    return blocks
-
-
-def _table_body(
-    *,
-    asset: dict,
-    columns: list[dict],
-    observations: dict,
-    flags: dict,
-    observed_at: str,
-    authored: str,
-) -> str:
-    """Assemble one table page's body from the authored content plus the
-    three core-owned sections."""
-    source, schema, table = asset["source"], asset["schema"], asset["table"]
-    chunks = _body_sections(authored)
-    # prior history ENTRIES survive verbatim (bullet lines only); the intro
-    # and the empty placeholder are regenerated — the section is core-owned
-    prior_history = [
-        line
-        for heading, lines in chunks
-        if heading == HISTORY_SECTION
-        for line in lines
-        if line.startswith("- ")
-    ]
-    authored_chunks: list[tuple[str | None, list[str]]] = [
-        (heading, lines) for heading, lines in chunks if heading not in _CORE_SECTIONS
-    ]
-    has_authored = any(line.strip() for _heading, lines in authored_chunks for line in lines)
-    if not has_authored:  # a page refresh never saw: seed the authored scaffold
-        authored_chunks = [
-            (
-                None,
-                [
-                    f"# {source}.{schema}.{table}",
-                    "",
-                    f"Physical table `{table}` of source `{source}` (schema `{schema}`).",
-                    "Summary: unknown — not yet authored.",
-                    "",
-                ],
-            )
-        ]
-    # meanings surgery: preserve blocks of identical columns verbatim, move
-    # removed/type-changed columns' COMPLETE meaning blocks (continuation
-    # lines included) into history, seed new columns
-    changed_columns = set(flags["removed"]) | {c["column"] for c in flags["type_changed"]}
-    retained: dict[str, str] = {}
-    meanings_index = next(
-        (i for i, (h, _l) in enumerate(authored_chunks) if h == MEANINGS_SECTION), None
-    )
-    if meanings_index is None:
-        meanings_lines: list[str] = []
-        authored_chunks.append((MEANINGS_SECTION, []))
-        meanings_index = len(authored_chunks) - 1
-    else:
-        # the chunk's first line IS the heading — it is re-emitted exactly once
-        _heading, lines = authored_chunks[meanings_index]
-        meanings_lines = lines[1:]
-        authored_chunks[meanings_index] = (_heading, [])  # rebuilt below
-    kept: list[str] = []
-    seen: set[str] = set()
-    for column, text, block in _meaning_blocks(meanings_lines):
-        if column is not None and column in changed_columns:
-            retained[column] = text  # the complete block moves to history
-            continue
-        if column is not None and column in seen:
-            kept.extend(block)  # a duplicate meaning stays verbatim
-            continue
-        if column is not None:
-            seen.add(column)
-        kept.extend(block)
-    known = {entry["column"] for entry in columns}
-    for column in sorted(known - seen):
-        kept.append(f"- `{column}` — unknown (not yet authored)")
-    heading, _ = authored_chunks[meanings_index]
-    stripped = [line for line in kept if line.strip()]
-    authored_chunks[meanings_index] = (
-        heading,
-        [f"## {MEANINGS_SECTION}", *stripped, ""],
-    )
-    history = prior_history + _history_entries(flags, observed_at, retained)
-    schema_rows = [
-        "| Column | Type | Nullable | Default | Comment |",
-        "| --- | --- | --- | --- | --- |",
-        *[
-            "| `{}` | {} | {} | {} | {} |".format(
-                entry["column"],
-                _schema_entry_text(entry["type"]),
-                _schema_entry_text(entry["nullable"]),
-                _schema_entry_text(entry["default"]),
-                _schema_entry_text(entry["comment"]),
-            )
-            for entry in columns
-        ],
-    ]
-    observation_lines = [
-        f"- observed_at: {observations['observed_at']}",
-        f"- scope: {observations['scope']}",
-        f"- row_count: {observations['row_count']}",
-        "- candidate keys (measured, not business-key declarations): "
-        + (", ".join(observations["candidate_keys"]) or "none observed"),
-        f"- citation: {observations['citation']}",
-        *[
-            f"- `{name}`: nulls {stats['null_count']}, distinct {stats['distinct_count']}"
-            for name, stats in observations["columns"].items()
-        ],
-    ]
-    if observations.get("source_binding"):
-        observation_lines.append(
-            "- source binding: the effective storage approval "
-            f"{observations['source_binding']} these measurements were taken under"
-        )
-    value_evidence = observations.get("value_evidence")
-    if value_evidence:
-        # C1 (issue #69, spec 0024 §3): the SAME selected measured facts,
-        # rendered as data inside the core-owned observation section — never
-        # an independently authored list or usage instructions. A measured
-        # null renders as the JSON literal null, never the string "NULL".
-        observation_lines.append(
-            "- value evidence (selected observed filter values — measured top "
-            "values, not a complete allowed-value domain):"
-        )
-        for name, entry in value_evidence.items():
-            if entry.get("state") == "observed":
-                rendered = ", ".join(
-                    f"{json.dumps(item['value'], ensure_ascii=False)} ({item['count']})"
-                    for item in entry["top_values"]
-                )
-                observation_lines.append(f"  - `{name}`: observed — {rendered}")
-            else:
-                observation_lines.append(f"  - `{name}`: unavailable ({entry['reason']})")
-    core: list[tuple[str | None, list[str]]] = [
-        (
-            SCHEMA_SECTION,
-            [
-                f"# {SCHEMA_SECTION}",
-                "",
-                "Core-generated physical schema (regenerated by refresh_schema; "
-                "authored meaning lives above). Declared metadata appears only "
-                "where the source provides it; unavailable metadata is unknown.",
-                "",
-                *schema_rows,
-                "",
-            ],
-        ),
-        (
-            OBSERVATIONS_SECTION,
-            [
-                f"## {OBSERVATIONS_SECTION}",
-                "",
-                "Core-generated observations of the stated scope — measurements, "
-                "not declared constraints: observed uniqueness or zero nulls is "
-                "never a NOT NULL or business-key declaration.",
-                "",
-                *observation_lines,
-                "",
-            ],
-        ),
-        (
-            HISTORY_SECTION,
-            [
-                f"## {HISTORY_SECTION}",
-                "",
-                "Core-generated record of detected schema changes: removed or "
-                "changed columns keep their prior authored meaning here for "
-                "review — a rename is never guessed.",
-                "",
-                *(history or ["(none — no schema changes recorded)"]),
-                "",
-            ],
-        ),
-    ]
-    return _assemble_body(authored_chunks + core)
-
-
-def _history_entries(flags: dict, observed_at: str, retained: dict[str, str]) -> list[str]:
-    """Deterministic history entries for one refresh's detected changes,
-    sorted by column, quoting the retained authored meaning when one exists."""
-    entries: list[str] = []
-    for column in sorted(flags["removed"]):
-        was = next((c["type"] for c in flags.get("_old_schema", []) if c["column"] == column), None)
-        note = f"`{column}` removed" + (f" (was {was})" if was else "")
-        if column in retained:
-            note += f"; retained meaning: {retained[column]}"
-        entries.append(f"- {observed_at} — {note}")
-    for change in flags["type_changed"]:
-        note = f"`{change['column']}` type changed {change['from']} -> {change['to']}"
-        if change["column"] in retained:
-            note += f"; retained meaning: {retained[change['column']]}"
-        entries.append(f"- {observed_at} — {note}")
-    return entries
 
 
 def build_native_table_page(
@@ -2171,17 +1919,6 @@ def _freshness_view(meta: dict, now: datetime) -> dict:
     return {"stale_after": disclosed, "state": state}
 
 
-def _page_meta(text: str) -> dict:
-    """Best-effort frontmatter of an arbitrary readable page for advisory
-    assessment (spec 0011 §4): unparseable frontmatter yields no metadata —
-    never a raise, never an invented claim."""
-    try:
-        meta = _load_frontmatter_meta(text)
-    except yaml.YAMLError:
-        return {}
-    return meta if isinstance(meta, dict) else {}
-
-
 def _jsonable(value: object) -> object:
     """Keep disclosed evidence JSON-shaped: YAML-native date/datetime values
     become ISO strings (spec 0011 §3), other values pass through untouched —
@@ -2671,30 +2408,6 @@ def resolve_term_entries(
 
 # ---------------------------------------------- deterministic index generation
 
-# Section heading for a folder's index.md (SPEC §8 example form: "# Metric").
-_SECTION_TITLES = {
-    "datasets": "Dataset",
-    "tables": "Table",
-    "references": "Reference",
-    "joins": "Join",
-    "policies": "Policy",
-    "metrics": "Metric",
-    "computations": "Computation",
-    "skills": "Skill",
-}
-# One-line blurb used when an index links a subdirectory (directories carry no
-# frontmatter to take a description from).
-_FOLDER_BLURBS = {
-    "datasets": "Physical collections: Dataset Overviews linking their tables.",
-    "tables": "Physical tables: row meaning, schema, join hints.",
-    "references": "Cross-table reference notes.",
-    "joins": "Join catalog: keys, cardinality evidence, grain safety.",
-    "policies": "Human-owned business rules the metrics cite.",
-    "metrics": "Governed metrics and the rules that make them right.",
-    "computations": "Sanctioned computations: SQL, runtime, attester.",
-    "skills": "Operational guides: author, review, query.",
-}
-
 
 # ------------------ advisory supplied source-quality evidence (spec 0013, #53)
 
@@ -3160,7 +2873,6 @@ DATA_SIGNALS_MAX_METRICS = 64
 DATA_SIGNALS_MAX_ASSETS = 64
 DATA_SIGNALS_MAX_REPORTS = 128
 DATA_SIGNALS_MAX_BYTES = 64 * 1024
-_PAGE_FRONTMATTER_READ_BYTES = 64 * 1024
 
 
 def _coerce_validated_instant(value: object) -> datetime:

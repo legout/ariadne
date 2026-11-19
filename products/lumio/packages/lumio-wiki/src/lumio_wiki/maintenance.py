@@ -57,10 +57,6 @@ class MaintenanceError(Exception):
     """A maintenance staging operation failed."""
 
 
-#: Provenance marker for proposals authored by the maintenance workflows, so
-#: a reviewing Maintainer can see the origin without re-deriving it.
-_ORIGIN = "cross-linker"
-
 #: Durability rationale restated on compound-revision proposals. Routing
 #: validation (issue #78, P2.6) requires EVERY proposed page in a categorized
 #: Knowledge Base — including revisions of existing pages — to carry a
@@ -320,10 +316,6 @@ DUPLICATE_CANDIDATE_LIMIT = 10
 SIGNAL_TOKEN_OVERLAP = 1
 SIGNAL_SHARED_ALIAS = 2
 SIGNAL_SHARED_CANONICAL_TITLE = 3
-
-#: Token-overlap alone never crosses an Entity Type boundary; exact surfaces
-#: (aliases, titles) do.
-_TOKEN_OVERLAP_NEEDS_SAME_TYPE = SIGNAL_TOKEN_OVERLAP
 
 
 @dataclass(frozen=True, slots=True)

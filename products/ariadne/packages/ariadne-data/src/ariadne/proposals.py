@@ -68,11 +68,6 @@ _COMMIT_RE = re.compile(r"[0-9a-f]{7,40}")
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 READ_PART_CHARS = 20_000
 
-# The OKF page sections a proposal may edit; computations/index.md/log.md are
-# system-generated (ADR-0007/ADR-0013: attestation is service-owned).
-# ``datasets`` holds the K1 Dataset Overviews (issue #41: applicable pages,
-# never invented categories).
-_OKF_PAGE_SECTIONS = ("datasets", "tables", "references", "policies", "metrics", "skills")
 _GENERATED_FILES = frozenset({"index.md", "log.md"})
 
 # Named env-style credential assignments the URL-password rule misses (the

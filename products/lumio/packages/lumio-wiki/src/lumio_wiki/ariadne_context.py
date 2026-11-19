@@ -250,8 +250,6 @@ _EVIDENCE_COUNT_KEYS = frozenset(
         "mismatch_count",
     }
 )
-#: The table ``ariadne`` block (core-generated schema/observations).
-_TABLE_ARIADNE_KEYS = frozenset({"schema", "observations"})
 _TABLE_ARIADDE_KEYS = frozenset({"schema", "observations"})
 _TABLE_OBSERVATION_KEYS = frozenset(
     {
@@ -265,8 +263,6 @@ _TABLE_OBSERVATION_KEYS = frozenset(
         "source_binding",
     }
 )
-#: The dataset ``ariadne`` block links exactly the documented tables.
-_DATASET_ARIADNE_KEYS = frozenset({"tables"})
 #: The dataset ``ariadne`` block links exactly the documented tables.
 _DATASET_ARIADDE_KEYS = frozenset({"tables"})
 _COMMON_CANDIDATE_KEYS = frozenset({"family", "left", "right", "scope", "pairing"})

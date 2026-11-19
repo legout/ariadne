@@ -14,20 +14,11 @@ import msgspec
 
 from lumio_wiki.mutation import atomic_write_bytes, mutation_lock
 
-#: Controlled action vocabulary for a staged Source lifecycle transition (#133).
-#: Names the primitive strings used by ``PendingSourceTransition.action`` and
-#: :func:`safe_lifecycle_trigger_display` so the switch sites share one typed
-#: reference instead of repeating bare literals. Kept off the msgspec struct
-#: fields (which stay ``str``) so legacy/future persisted values still decode.
-SourceLifecycleAction = Literal["retire", "reactivate"]
-
 #: Controlled result vocabulary for managed source registration (#149). Kept
 #: off the persisted msgspec structs because it describes the operation result,
 #: not registry state.
 SourceRegistrationAction = Literal["registered", "reused"]
 
-#: Controlled status vocabulary for a private Knowledge Source identity.
-SourceStatus = Literal["active", "retired"]
 
 #: Controlled status vocabulary for a Retirement Candidate review decision.
 RetirementCandidateStatus = Literal["pending", "confirmed", "dismissed"]

@@ -167,9 +167,6 @@ CLAIM_CHANGE_ADDED = "added"
 CLAIM_CHANGE_REMOVED = "removed"
 CLAIM_CHANGE_STATUS = "status"
 CLAIM_CHANGE_EDITED = "edited"
-CLAIM_CHANGE_KINDS = frozenset(
-    {CLAIM_CHANGE_ADDED, CLAIM_CHANGE_REMOVED, CLAIM_CHANGE_STATUS, CLAIM_CHANGE_EDITED}
-)
 
 
 def claim_state_summary(claim: Claim) -> str:

@@ -129,7 +129,6 @@ _VARIABLE_SCALAR_TYPES = frozenset(
     {"VARCHAR", "CHAR", "BPCHAR", "TEXT", "STRING", "BLOB", "VARBINARY"}
 )
 
-FLAG_PREFIX = "__ariadne_cell_overflow_"
 
 # Refusal text never embeds unrestricted caller-influenced strings (fix pass
 # 1, finding 2d): identifiers are truncated, lists capped — every refusal
