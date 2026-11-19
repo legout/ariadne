@@ -1,5 +1,7 @@
 # Plan 0036: Production-relevant test-suite cleanup
 
+> **Superseded** by [spec 0038 / plan 0038](2026-11-19-0038-lean-baseline.md) under umbrella spec 0037 (2026-11-19). Never approved; kept as history.
+
 Status: **proposed, revision 1**, 2026-11-12.
 Plan requested by the owner: **“ok. erstelle dafür einen Plan”**.
 Execution, child dispatch, tests/builds/installs, API removal, tracker mutation,
