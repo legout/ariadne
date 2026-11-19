@@ -371,6 +371,21 @@ def test_resolve_rejects_a_tampered_content_digest():
         S3Location(store, "kb").resolve()
 
 
+def test_resolve_rejects_a_same_length_content_tamper():
+    """Manifest integrity is digest AND size: bytes replaced by different bytes of
+    the identical length pass the size check and must still fail the digest check."""
+    store = _store()
+    _publish_version(store, "kb", "v1", FIXTURES / "valid")
+    content = _canonical_content(FIXTURES / "valid")
+    some_page = next(iter(content))
+    original = content[some_page]
+    tampered = bytes(original[:-1]) + bytes([original[-1] ^ 0x01])
+    assert tampered != original and len(tampered) == len(original)
+    obstore.put(store, f"kb/v1/{some_page}", tampered)
+    with pytest.raises(Exception, match="digest"):
+        S3Location(store, "kb").resolve()
+
+
 def test_resolve_rejects_a_wrong_published_version_fingerprint():
     """Content digests are valid, but the manifest's KB fingerprint is wrong."""
     store = _store()
