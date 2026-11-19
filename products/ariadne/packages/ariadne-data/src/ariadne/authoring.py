@@ -42,7 +42,6 @@ from ariadne import (
     profiler,
     proposals,
 )
-from ariadne.author import MAX_ROUNDS
 from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historical seam
     EVIDENCE_PART_CHARS,
     MAX_DOCUMENTS_PER_CALL,
@@ -89,6 +88,7 @@ from ariadne.validate import (
 )
 
 _GENERATED_FILES = frozenset({"index.md", "log.md"})
+MAX_ROUNDS = 3
 
 
 def _fsync_tree(root: Path) -> None:

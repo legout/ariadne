@@ -5,7 +5,7 @@ single SQLite file (``--db``) — read-only through the shared execution owner
 (:class:`ariadne.execution.DuckDBExecution` over :mod:`ariadne.sources`'
 connection builder), profiles every table, and emits a JSON-serializable
 dict. This output is the input contract of the authoring agent
-(``ariadne.author``, ticket #4), which combines it with ``examples/retail-demo/seed_notes.md``;
+which an authoring agent combines with ``examples/retail-demo/seed_notes.md``;
 the profiler surfaces statistics only — business rules live in the seed notes,
 never here.
 

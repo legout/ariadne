@@ -1027,15 +1027,6 @@ def test_define_metric_allows_grain_preserving_join(private):
     assert result["persistence"] == {"status": "not_saved"}
 
 
-def test_serve_facade_is_the_runtime_class():
-    """Ticket #7: ariadne.serve.Facade is the exact runtime class — a plain
-    alias, never a subclass or wrapper that could diverge."""
-    import ariadne.runtime
-    import ariadne.serve
-
-    assert ariadne.serve.Facade is ariadne.runtime.AriadneRuntime
-
-
 def test_startup_fails_fast_without_models(tmp_path):
     with pytest.raises(RuntimeError, match="no semantic models"):
         Facade(tmp_path / "semantic_layer", tmp_path / "context_layer", tmp_path / "demo.db")

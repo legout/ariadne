@@ -1,9 +1,7 @@
 """Governed and Ad-hoc query workflow (QueryRuntime).
 
 :class:`QueryRuntime` owns everything the served tree offers to consuming
-agents (spec 2026-09-23-0001 §3, ADR-0012; moved here from
-``ariadne.runtime`` in the modular-core extraction, spec 2026-10-02-0009 §2 /
-ADR-0016) — the MCP adapter (:mod:`ariadne.serve`) and the local CLI
+agents — the MCP adapter (:mod:`ariadne.serve`) and the local CLI
 (:mod:`ariadne.cli`) register these operations; they never duplicate
 compilation, execution, context, or grain logic:
 

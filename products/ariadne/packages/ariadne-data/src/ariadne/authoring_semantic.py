@@ -10,13 +10,14 @@ rename (spec §3). Content may be an incomplete or invalid draft: artifact
 validation is a later gate; only identity, payload bounds, credentials and the
 system-owned-artifact boundary apply now. Model/graph YAML is normalized to
 readable block scalars by the shared authoring normalizer
-(:func:`ariadne.author.normalize_layer_yaml`, issue #31) so the human reviews
+(:func:`normalize_layer_yaml`, issue #31) so the human reviews
 the same readable form at the Git gate.
 """
 
 from __future__ import annotations
 
-from ariadne.author import normalize_layer_yaml
+import yaml
+
 from ariadne.proposals import (
     check_artifact_content,
     check_artifact_name,
@@ -73,3 +74,33 @@ def resolve_identity(identity: dict) -> str:
         )
     check_edit_keys(identity, _IDENTITY_KEYS[identity["kind"]])
     return _relpath(identity)
+
+
+class _LayerDumper(yaml.SafeDumper):  # type: ignore[no-any-unimported]
+    """Use readable literal blocks for multiline strings."""
+
+
+def _block_str_representer(dumper: _LayerDumper, data: str):  # type: ignore[no-any-unimported]
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_LayerDumper.add_representer(str, _block_str_representer)
+
+
+def normalize_layer_yaml(content: str) -> str:
+    """Re-emit mapping YAML with multiline SQL as reviewable literal blocks."""
+    try:
+        doc = yaml.safe_load(content)
+    except yaml.YAMLError:
+        return content
+    if not isinstance(doc, dict):
+        return content
+    return yaml.dump(
+        doc,
+        Dumper=_LayerDumper,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=True,
+        width=4096,
+    )

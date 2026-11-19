@@ -9,8 +9,7 @@ Answer examples are proposal artifacts: ``save_example`` and
 ``search_examples`` use the same Git candidate and human admission as other
 authored content, with no separate review store. Authoring behavior lives in
 :class:`ariadne.authoring.AuthoringProject`; this adapter adds thin
-``authoring_``-prefixed wrappers. ``Facade`` is a compatibility alias for the
-public project factory, not a second runtime implementation.
+``authoring_``-prefixed wrappers.
 
 The three registrations (spec §6, AC7):
 
@@ -103,9 +102,6 @@ from ariadne.query import (  # pyright: ignore[reportMissingImports] — drift
 )
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 
-# Historical aliases expose only the Git-project factory; they cannot create a
-# runtime from mutable artifact roots or staging directories.
-Facade = QueryRuntime
 FacadeSource = (
     QueryRuntime | _QueryRuntimeSession | DeferredQueryRuntime | Callable[[], _QueryRuntimeSession]
 )

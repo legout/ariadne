@@ -574,11 +574,11 @@ def test_rejected_ephemeral_definition_does_not_change_git_state(served, tmp_pat
 
 def test_local_cli_runs_with_mcp_import_blocked(served, tmp_path):
     """§7/AC-1 in-suite: with ``mcp`` blocked, the base import chain
-    (ariadne.runtime + ariadne.cli) still serves the full local interface."""
+    (ariadne.query + ariadne.cli) still serves the full local interface."""
     root, db = served
     code = (
         "import sys; sys.modules['mcp'] = None; "
-        "import ariadne.cli, ariadne.runtime; "
+        "import ariadne.cli, ariadne.query; "
         "sys.exit(ariadne.cli.main(sys.argv[1:]))"
     )
     proc = subprocess.run(

@@ -1155,8 +1155,11 @@ def test_table_page_edit_adds_supplied_quality_metadata_without_touching_core_cl
     malformed declaration fails the producer structural gate inside the
     batch writer before any byte is written (never a query refusal,
     spec §5/§7 AC6)."""
-    from ariadne.author import _load_frontmatter_meta
-    from ariadne.context import QUALITY_MAX_TEXT_CHARS, QUALITY_PROFILE_MAX_BYTES
+    from ariadne.context import (
+        QUALITY_MAX_TEXT_CHARS,
+        QUALITY_PROFILE_MAX_BYTES,
+        _load_frontmatter_meta,
+    )
 
     project, resource = git_project_with_generated_table_page(tmp_path)
     api = AuthoringProject(project)

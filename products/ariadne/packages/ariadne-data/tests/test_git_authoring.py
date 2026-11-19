@@ -2389,7 +2389,7 @@ def test_refresh_preserves_meaning_and_exposes_schema_changes_for_review(tmp_pat
     refresh keeps still-represented dataset links (the same-collection carry
     is proven by its own focused test); the identical refresh is a no-op; a
     malformed authored selection refuses the refresh before any write."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
     api = AuthoringProject(project)
@@ -2621,7 +2621,7 @@ def test_narrower_native_refresh_keeps_other_tables_in_same_collection(tmp_path)
     collection that really regenerates its page never drops the other
     still-represented table's link, and a never-refreshed approved asset is
     never asserted documented. Oracle: the literal authored asset identities."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
     from ariadne.sources import collection_resource
 
     project = _lake_collection_project(tmp_path)
@@ -2720,7 +2720,7 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     explicit rebinding restores evidence; deselection removes ACTIVE evidence
     while the schema history survives. Expectations derive from the authored
     literals (EMEA 2 / AMER 1), never implementation output."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
     # one VARCHAR region column with hand-authored literals EMEA, EMEA, AMER
@@ -2896,7 +2896,7 @@ def test_native_generated_facts_are_protected_while_curated_body_is_editable(tmp
     unchanged (spec0032 §6: curated text stays curated, core-generated
     portions keep their existing protections; refresh_schema is the only
     legitimate regeneration path)."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
     api = AuthoringProject(project)
@@ -2950,7 +2950,7 @@ def test_selected_column_evidence_family_states(tmp_path):
     supported VARCHAR binding, ``unsupported_representation`` for a type the
     v1 contract cannot publish, ``column_missing`` for a selection naming an
     absent column; ONLY selected columns appear in value_evidence."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
     orders = project / "data" / "sales" / "orders.parquet"
@@ -3027,7 +3027,7 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     regenerated page that would exceed the 2,097,152-byte artifact bound
     refuses atomically the same way. Bounds are literal arithmetic, not
     implementation output."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
 
     project = _evolution_project(tmp_path)
     long_a, long_b = "A" * 4500, "B" * 4500
@@ -3171,7 +3171,7 @@ def test_uhugeint_native_integer_values_stay_exact(tmp_path):
     catalog column publishes exact INTEGER evidence with the hand-specified
     counts 7:2, 8:1, never floats (parquet cannot carry unsigned 128-bit, so
     the fixture is a native DuckDB source)."""
-    from ariadne.author import _load_frontmatter_meta
+    from ariadne.context import _load_frontmatter_meta
     from ariadne.sources import table_resource
 
     project = tmp_path / "proj"
@@ -3282,8 +3282,7 @@ def test_observation_facts_carry_the_effective_source_binding():
     frontmatter parse; a hand-authored reader fixture proves nothing about
     builder propagation. Synthetic measurement inputs are the deleted
     original's literals."""
-    from ariadne.author import _load_frontmatter_meta
-    from ariadne.context import build_native_table_page
+    from ariadne.context import _load_frontmatter_meta, build_native_table_page
 
     asset = {
         "source": "sales",
