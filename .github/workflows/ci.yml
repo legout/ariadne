@@ -8,11 +8,15 @@ on:
 jobs:
   workspace:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv lock --check
       - run: uv sync --locked
@@ -48,11 +52,15 @@ jobs:
   # wheel environment without the optional LanceDB adapter.
   core-source:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv lock --check
       - name: Core native lint (member config)
@@ -66,7 +74,7 @@ jobs:
         run: |
           WHEEL=$(ls dist/core | grep whl)
           SDK=$(ls dist/sdk | grep whl)
-          uv venv --python 3.14 /tmp/core-pair
+          uv venv --python ${{ matrix.python }} /tmp/core-pair
           uv pip install --python /tmp/core-pair/bin/python \
             "./dist/core/$WHEEL[mcp,dev,spreadsheets]" "./dist/sdk/$SDK"
       # The offline S3 storage-profile tests LOAD httpfs.
@@ -93,7 +101,7 @@ jobs:
       # not import mcp.
       - name: Core base wheel (mandatory SDK via metadata; MCP absent)
         run: |
-          uv venv --python 3.14 /tmp/core-standalone
+          uv venv --python ${{ matrix.python }} /tmp/core-standalone
           uv pip install --find-links dist/sdk \
             --python /tmp/core-standalone/bin/python \
             dist/core/ariadne_data-*.whl
@@ -113,6 +121,30 @@ jobs:
           /tmp/core-standalone/bin/python \
             "$GITHUB_WORKSPACE/products/ariadne/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
 
+  # Spec 0039 §3.4: Python 3.13 runs the wheel smoke only (wheel install, Core
+  # walkthrough, Lumio installed-wheel check); 3.12 and 3.14 run the full jobs.
+  python313-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv build --package ariadne-data --wheel --out-dir dist/core
+      - run: uv build --package lumio-wiki --wheel --out-dir dist/sdk
+      - run: |
+          uv venv --python 3.13 /tmp/smoke
+          uv pip install --find-links dist/sdk --python /tmp/smoke/bin/python dist/core/ariadne_data-*.whl
+      - name: Core walkthrough from the installed wheel
+        run: |
+          cd /tmp
+          /tmp/smoke/bin/python \
+            "$GITHUB_WORKSPACE/products/ariadne/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
+      - name: Lumio installed-wheel check
+        run: |
+          /tmp/smoke/bin/python -I products/lumio/scripts/verify_lumio_wiki_wheel.py \
+            dist/sdk/lumio_wiki-*.whl products/lumio/tests/fixtures/valid products/lumio/tests/fixtures/categorized_kb
 
   # Issue #180, AC6: run the canonical onboarding journey
   # (products/lumio/docs/quickstart.md)

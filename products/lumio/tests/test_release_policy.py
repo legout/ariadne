@@ -21,9 +21,8 @@ Guards the invariants the release pipeline depends on:
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 PRODUCT_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]  # .github/ stays at the repository root

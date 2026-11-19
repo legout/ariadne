@@ -924,7 +924,7 @@ def refuse_unsupported_project(project: str | Path) -> None:
         try:
             manifest = load_source_reference_manifest(kb_dir)
             control = load_control_file(kb_dir)
-        except ControlFileError, SourceReferenceError:
+        except (ControlFileError, SourceReferenceError):
             return False
         return manifest is not None and control is not None
 

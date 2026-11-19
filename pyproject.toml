@@ -64,6 +64,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+target-version = "py312"
 # The root selection owns the shared trees only: tests/, integration/ and
 # repository coordination files. Product areas lint themselves under their
 # own configurations — the Core member (E,F,W,I,UP — no B) from

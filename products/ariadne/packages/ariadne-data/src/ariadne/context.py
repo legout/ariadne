@@ -1727,7 +1727,7 @@ def evidence_freshness(observed_at: object, max_age_hours: float | None) -> dict
         if observed is None:
             raise ValueError(observed_at)
         age = datetime.now(UTC) - observed
-    except ValueError, TypeError, OverflowError:
+    except (ValueError, TypeError, OverflowError):
         return {
             "state": "unknown",
             "observed_at": observed_at,

@@ -476,7 +476,7 @@ def _project_conflict(pyproject: Path) -> str | None:
     try:
         with pyproject.open("rb") as fh:
             manifest = tomllib.load(fh)
-    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return (
             f"error: {pyproject} is not valid TOML; refusing to scaffold an "
             "ambiguous project (fix or remove the file, or use --force to override)"

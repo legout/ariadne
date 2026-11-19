@@ -5,7 +5,7 @@ description = "Portable, model-free Knowledge Base foundation for Lumio."
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{ name = "Volker L.", email = "ligno.blades@gmail.com" }]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = ["msgpack>=1.0", "msgspec[yaml]>=0.21.1"]
 
 # Issue #98: the standalone ``lumio-wiki`` CLI entry point. Declared here so a

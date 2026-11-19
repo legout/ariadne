@@ -243,7 +243,7 @@ def _metric_static_inventory(root: Path, model: str, metric: str) -> list[str]:
 
     try:
         graph = load_graph(Path(root) / "semantic_layer")
-    except GraphError, OSError, ValueError:
+    except (GraphError, OSError, ValueError):
         return []  # the structural/graph check owns that failure with its own diagnostic
 
     datasets = graph.datasets
@@ -1981,7 +1981,7 @@ def search_examples(manifest, query, limit=10, include_history=False, include_sq
         for entry in citations:
             try:
                 cited = _read(str(entry.get("path")))
-            except ValueError, KeyError, OSError, TypeError:
+            except (ValueError, KeyError, OSError, TypeError):
                 stale = True  # a missing/hidden/unreadable citation is stale
                 break
             if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get("sha256"):

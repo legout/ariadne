@@ -23,11 +23,11 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
-import tomllib
 
 ROOT = Path(__file__).parents[1]
 WIKI_MEMBER = ROOT / "products" / "lumio" / "packages" / "lumio-wiki"
@@ -63,7 +63,7 @@ def test_each_member_declares_an_independently_buildable_project():
         data = _pyproject(member)
         project = data["project"]
         assert project["name"] == name, f"{member} declares name={project['name']!r}"
-        assert project["requires-python"] == ">=3.14", name
+        assert project["requires-python"] == ">=3.12", name
         build = data["build-system"]
         assert build["requires"] == ["hatchling"], name
         assert build["build-backend"] == "hatchling.build", name

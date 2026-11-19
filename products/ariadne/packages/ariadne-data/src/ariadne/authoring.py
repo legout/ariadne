@@ -178,7 +178,7 @@ def _graph_citation_errors(tree: Path) -> list[str]:
             selected = lumio_context.validated_selector(
                 yaml.safe_load(selector_blob.read_bytes().decode("utf-8"))
             )
-        except OSError, ValueError, yaml.YAMLError:
+        except (OSError, ValueError, yaml.YAMLError):
             selected = None  # the candidate gate owns a malformed selector
         if selected is not None and selected.get("support_revision", 1) >= 2:
             return _native_graph_policy_errors(tree, selected["namespace"])
@@ -3411,7 +3411,7 @@ def _verify_receipt(
             if observed_at is None:
                 raise ValueError(observed)
             age = datetime.now(UTC) - observed_at
-        except ValueError, TypeError, OverflowError:
+        except (ValueError, TypeError, OverflowError):
             return None, (
                 f"receipt {receipt_id!r} carries no parseable measurement time — "
                 "its freshness is unknown and can never be verified as current"
