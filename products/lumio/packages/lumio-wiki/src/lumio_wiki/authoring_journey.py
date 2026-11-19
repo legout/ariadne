@@ -1,4 +1,4 @@
-"""Source extraction and complete managed-candidate authoring (spec 0010 §3).
+"""Source extraction and complete managed-candidate authoring.
 
 Two public operations for the external-agent authoring journey:
 
@@ -16,7 +16,7 @@ Two public operations for the external-agent authoring journey:
   New/changed original bytes are retained AND verified before success; a
   failure rolls the authored tree back while immutable private registration
   residue stays convergent and retry-safe. The narrowly explicit
-  ``retention="disabled"`` option (spec0034 §12.4) serves the managed
+  ``retention="disabled"`` option serves the managed
   standalone caller only under an owner-confirmed ``disabled`` private
   profile: it registers exact Source ID/hash/bindings without durable
   original bytes and must not select any artifact store; every existing
@@ -122,7 +122,7 @@ def _git_worktree_root(path: Path) -> Path | None:
 
 
 # ---------------------------------------------------------------------------
-# Extraction (spec 0010 §3): actual processor, truthful output, outside Git.
+# Extraction: actual processor, truthful output, outside Git.
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +250,7 @@ def extract_source(source_path: str | Path, *, output_dir: str | Path) -> Extrac
 class CandidateSourceRecord(msgspec.Struct, frozen=True):
     """One declared original: explicit identity, local bytes, intent.
 
-    The optional verbatim fields (spec0010 §3.1) select one authored request
+    The optional verbatim fields select one authored request
     page for exact converted-body preservation, independently of ``intent``;
     ``expected_text_digest`` is a caller expectation checked against the
     candidate body, not authentication of conversion provenance.
@@ -428,7 +428,7 @@ def load_candidate_request(path: str | Path) -> CandidateRequest:
 
 
 # ---------------------------------------------------------------------------
-# Complete managed candidate (spec 0010 §3, plan J1).
+# Complete managed candidate.
 # ---------------------------------------------------------------------------
 
 
@@ -479,7 +479,7 @@ def _refuse_request_files_inside_repository(repo_root: Path, *paths: Path) -> No
 def _refuse_private_selection_inside_repository(
     repo_root: Path, source_registry, artifact_store, original_paths: list[Path]
 ) -> None:
-    """Refuse private selections inside the CONTENT REPOSITORY (F7, spec §1/§2.1).
+    """Refuse private selections inside the CONTENT REPOSITORY.
 
     The managed candidate journey keeps originals, the private registry and
     the local artifact store outside the whole repository — root-level
@@ -520,7 +520,7 @@ def ingest_candidate(
 ) -> CandidateResult:
     """Validate one complete candidate completely, then apply it once.
 
-    ``retention`` is narrowly explicit and default-required (spec0034 §12.4):
+    ``retention`` is narrowly explicit and default-required:
     only the managed standalone caller under an owner-confirmed
     ``retention: disabled`` private profile may pass ``"disabled"`` — the
     explicit document-only exception that registers exact identity/hash and
@@ -530,7 +530,7 @@ def ingest_candidate(
     store still refuses. A failed required store write is a storage error,
     never an implicit exception.
 
-    Evaluation order (spec 0010 §3): read and parse every authored page and
+    Evaluation order: read and parse every authored page and
     the optional complete Control File, validate the WHOLE candidate
     (ontology, Claims, cross-page references, routing) before any private
     registration or authoring-file write, verify declared digests against
@@ -555,7 +555,7 @@ def ingest_candidate(
             "default required policy",
             code="invalid_retention_policy",
         )
-    # Loader-equivalent Source identity uniqueness (spec0010 §3.1): repeated
+    # Loader-equivalent Source identity uniqueness: repeated
     # Source IDs across the WHOLE source-record collection — distinct verbatim
     # selectors or mixed verbatim/distilled records — refuse BEFORE any
     # private registration, retention or authored write; originals are never
@@ -629,7 +629,7 @@ def ingest_candidate(
     candidate_pages: list[ProposedPage] = []
     page_entities: list[tuple[ProposedPage, str]] = []
     existing_pages_by_title = {page.title: page for page in kb.pages}
-    # Explicit verbatim preservation (spec0010 §3.1): each selected Source
+    # Explicit verbatim preservation: each selected Source
     # names exactly one authored request page; every selected page must cite
     # its paired Source ID. Refusals guess nothing.
     verbatim_by_page: dict[str, CandidateSourceRecord] = {}
@@ -671,7 +671,7 @@ def ingest_candidate(
         selected = verbatim_by_page.get(page_path.name)
         try:
             # A verbatim page is read without universal-newline translation so
-            # the converted body keeps its exact newline form (spec0010 §3.1).
+            # the converted body keeps its exact newline form.
             markdown = page_path.read_text(
                 encoding="utf-8", newline="" if selected is not None else None
             )
@@ -719,7 +719,7 @@ def ingest_candidate(
                 )
             page_entities.append((page, entity_id))
         if selected is not None:
-            # Exact converted-body expectation (spec0010 §3.1): the canonical
+            # Exact converted-body expectation: the canonical
             # closing delimiter contributes exactly ONE structural LF, which
             # is removed for comparison; actual source-leading blank lines
             # stay untouched, and the digest is the caller's expectation
@@ -790,7 +790,7 @@ def ingest_candidate(
         kb_path, candidate_pages, removed_titles=None, control_file=control, kb=kb
     )
 
-    # Worktree safety BEFORE any private registration (spec 0008 §2/§3.2):
+    # Worktree safety BEFORE any private registration:
     # unrelated uncommitted author edits are never overwritten.
     mutation_paths = [
         relative

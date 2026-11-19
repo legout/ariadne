@@ -1,14 +1,14 @@
-"""Ingest: raw Knowledge Source -> extracted Compiled Pages (issue #97).
+"""Ingest: raw Knowledge Source -> extracted Compiled Pages.
 
 Page-extraction / routing / diff / validation / blast-radius glue and the
-model-free ingestion entry points live here. G4 (spec 0008 §7) retired the
+model-free ingestion entry points live here. G4 retired the
 persisted Ingest-Proposal pipeline; ingestion output is ordinary page content
 written into the selected authoring worktree, and the original persisted wire
 format survives only in the private migration reader
 :mod:`lumio_wiki.legacy_proposals`. This module never imports LiteParse,
 MarkItDown, or an OpenAI provider at the module level. Source-processor
 routing (including document formats via the ``[documents]`` extra) is
-handled by :func:`select_source_processor` (issue #100); the actual
+handled by :func:`select_source_processor`; the actual
 converter implementations live in :mod:`lumio_wiki.source_processor`. An
 OpenAI-compatible Distiller is an adapter in the full application
 (``lumio.distiller``).
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
 
 class ConsultedSource(msgspec.Struct, frozen=True):
-    """One consulted URL recorded as research provenance (issue #178).
+    """One consulted URL recorded as research provenance.
 
     A research bundle's manifest entry: the URL, its title, and the access
     timestamp. Consulted sources are PROVENANCE — they never become Claims,
@@ -74,20 +74,20 @@ class SourceProvenance(msgspec.Struct, frozen=True):
     # submission origin without re-deriving it. ``None`` for normal uploads.
     origin: str | None = None
     # The explicit Knowledge Source identity this proposal was bound to under
-    # the managed host-Distiller workflow (issue #149): ``ingest <source>
+    # the managed host-Distiller workflow: ``ingest <source>
     # --compiled-page <page> --source-id <id>``. ``None`` for ordinary ingest
     # (legacy compatibility), which never establishes a private Source
     # identity. The id is a public, Maintainer-authored label that also appears
     # in the authored page's ``sources[].id``; the registry's version hashes
-    # and status stay private (ADR-0014).
+    # and status stay private.
     source_id: str | None = None
-    # issue #178: truthful URL provenance for fetched Knowledge Sources — the
+    # truthful URL provenance for fetched Knowledge Sources — the
     # FINAL URL after redirects and the retrieval timestamp. ``None`` for
     # local-file ingest. Fetched content is never page content by itself; it
     # is registered privately and reviewed through the ordinary pipeline.
     source_url: str | None = None
     retrieved_at: str | None = None
-    # issue #178: consulted URLs recorded by a research bundle manifest.
+    # consulted URLs recorded by a research bundle manifest.
     # Provenance only — never automatic Claims, Citations, or Evidence.
     consulted_sources: list[ConsultedSource] = msgspec.field(default_factory=list)
 
@@ -101,9 +101,9 @@ class ProposedPage(msgspec.Struct, frozen=True):
     to its Content Category path (``relative_path``); ``page_type`` is the
     page's free-form type semantics (distinct from the broad Content
     Category), and ``durability_rationale`` records why the page is durable
-    knowledge so a reviewing Maintainer can decide per page (issue #78).
+    knowledge so a reviewing Maintainer can decide per page.
 
-    ``compound_revision`` (issue #79) signals that this proposed page
+    ``compound_revision`` signals that this proposed page
     compounds an EXISTING Compiled Page: its Canonical Title matches a page
     already in the Knowledge Base, and publication must PRESERVE +
     DEDUPLICATE the existing page's prior Sources while ADDING the proposed
@@ -111,7 +111,7 @@ class ProposedPage(msgspec.Struct, frozen=True):
     trail. A plain title collision without this flag keeps the pre-#79
     replace semantics, so additive provenance is always explicit.
 
-    ``move_from_path`` (issue #80) signals an EXPLICIT Content Category / path
+    ``move_from_path`` signals an EXPLICIT Content Category / path
     move of an EXISTING Compiled Page: the page already lives at
     ``move_from_path`` and publication relocates it ATOMICALLY to
     ``relative_path`` (its new category path) while preserving its Canonical
@@ -119,7 +119,7 @@ class ProposedPage(msgspec.Struct, frozen=True):
     never sets this flag, so a move is always an explicit, reviewable
     operation — never an incidental side effect of a name collision.
 
-    ``rename_from`` (issue #140) signals a reviewed title rename of an
+    ``rename_from`` signals a reviewed title rename of an
     EXISTING Compiled Page: the page's Canonical Title changes from
     ``rename_from`` (the old title) to ``title`` (the new title), and the
     same atomic proposal repairs every canonical Relationship and every
@@ -141,7 +141,7 @@ class ProposedPage(msgspec.Struct, frozen=True):
 
 
 class ClaimChange(msgspec.Struct, frozen=True):
-    """One Claim-level before/after change disclosed for review (issue #169).
+    """One Claim-level before/after change disclosed for review.
 
     Compares the proposed Claims of one page against its existing published
     Claims by Claim ID: ``added`` (new ID), ``removed`` (ID gone), ``status``
@@ -151,7 +151,7 @@ class ClaimChange(msgspec.Struct, frozen=True):
     full page bodies) rendering status, object/literal, and evidence count.
     Proposed/rejected assertions stay in proposal state: they appear here
     with their proposal-only ``status`` and are blocked from publication by
-    candidate validation (ADR-0021).
+    candidate validation.
     """
 
     page_title: str
@@ -190,7 +190,7 @@ def compute_claim_changes(
     existing_claims: list[Claim],
     page_title: str,
 ) -> list[ClaimChange]:
-    """Diff proposed vs existing Claims of one page by Claim ID (issue #169).
+    """Diff proposed vs existing Claims of one page by Claim ID.
 
     Pure data: renders :class:`ClaimChange` records covering additions,
     removals, lifecycle (status) transitions, and edits — the Claim-level
@@ -251,7 +251,7 @@ def compute_claim_changes(
 
 
 class EntityMerge(msgspec.Struct, frozen=True):
-    """A reviewed Entity Merge (issue #169, ADR-0021).
+    """A reviewed Entity Merge.
 
     An explicit, proposal-first mutation: the surviving Entity keeps its
     stable ID and page; the retired Entity's page is excluded from the next
@@ -274,8 +274,8 @@ class BlastRadius(msgspec.Struct, frozen=True):
     Captures identity risks, relationship changes, visibility transitions,
     source provenance changes, and graph impact against the existing Knowledge
     Base. Duplicate candidates are reported for human review; no automatic
-    merging is performed. ``category_moves`` (issue #80) surfaces explicit
-    Content Category / path relocations for review. ``renames`` (issue #140)
+    merging is performed. ``category_moves`` surfaces explicit
+    Content Category / path relocations for review. ``renames``
     surfaces explicit title renames for review. ``claim_changes`` (issue
     #169) surfaces Claim-level additions, edits, lifecycle transitions, and
     removals — with compact before/after summaries, never full page bodies.
@@ -296,14 +296,14 @@ class BlastRadius(msgspec.Struct, frozen=True):
 
 
 class BodyLinkRepairCandidate(msgspec.Struct, frozen=True):
-    """Location-bearing disclosure of a body-link repair in a Page Removal (#135).
+    """Location-bearing disclosure of a body-link repair in a Page Removal.
 
     One internal Markdown/wikilink in another Compiled Page's body that
     resolved exactly to the removed page and is unwrapped to its readable
     text by the same proposal (``[[T]]``/``[[T|L]]`` -> ``T``/``L``,
     ``[L](t.md)`` -> ``L``). Disclosed so a Maintainer can see and adjust
     every repaired location during review; ambiguous destinations are never
-    guessed or listed (ADR-0014, ADR-0016). A link left un-repaired surfaces
+    guessed or listed. A link left un-repaired surfaces
     post-removal as a non-blocking broken-internal-link warning. ``origin``
     is the resolver's link origin (``markdown-link`` or ``wikilink``);
     ``line_start``/``line_end`` are 1-based and map to the source file.
@@ -399,15 +399,15 @@ def safe_lifecycle_impact_status_display(status: str) -> str:
 
 
 class ExternalImportCategoryMapping(msgspec.Struct, frozen=True):
-    """Category-mapping result for an external-vault import (issue #87, ADR-0009).
+    """Category-mapping result for an external-vault import.
 
     Carries the proposed pages routed by Content Category, a proposed Control
     File extension that adds any unmapped external categories the Maintainer
     has NOT declined, and per-category disclosure diagnostics. Shared/seeded
     categories pass through unchanged; unmapped categories become a reviewed
     Control File extension proposal rather than an automatic category or a
-    silent drop (ADR-0009). Declined categories drop their content with a
-    lossy-with-disclosure note (ADR-0007).
+    silent drop. Declined categories drop their content with a
+    lossy-with-disclosure note.
     """
 
     proposed_pages: list[ProposedPage] = msgspec.field(default_factory=list)
@@ -426,7 +426,7 @@ def _provenance_for(normalized, filename, content_type):
 
 
 class ManagedIngestError(ValueError):
-    """A managed host-Distiller ingest (issue #149) could not be staged.
+    """A managed host-Distiller ingest could not be staged.
 
     Raised before staging when the authored Compiled Page does not declare the
     chosen ``source_id`` in ``sources[].id`` (an inconsistent proposal would
@@ -450,7 +450,7 @@ def _declared_source_ids(markdown: str) -> set[str]:
 
 
 def _authored_page_declares_source(markdown: str, source_id: str) -> None:
-    """Block staging unless the authored page declares ``source_id`` (issue #149).
+    """Block staging unless the authored page declares ``source_id``.
 
     The authored Compiled Page must declare the chosen ``source_id`` in
     ``sources[].id`` so the page's Source ID resolves to the registered
@@ -472,7 +472,7 @@ def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
     authored page Markdown. The Proposal Pipeline expects frontmatter; this
     helper derives a title from the filename and wraps the text so it flows
     through the same pipeline as text/Markdown sources. The host agent
-    refines the page during review (issue #100, AC3).
+    refines the page during review.
     """
     if text.startswith("---"):
         return text
@@ -482,14 +482,14 @@ def _ensure_page_frontmatter(text: str, filename: str | None) -> str:
 
 
 def select_source_processor(filename: str | None, content_type: str | None) -> SourceProcessor:
-    """Route a Knowledge Source to its Source Processor (issue #100).
+    """Route a Knowledge Source to its Source Processor.
 
     Text and Markdown sources use the dependency-free
     :class:`TextMarkdownSourceProcessor`. Document sources (PDF, image, office,
     HTML, and broad document formats) use :class:`PdfSourceProcessor`
     (LiteParse), :class:`AnyDocSourceProcessor` (AnyDoc), or
     :class:`MarkItDownSourceProcessor` (MarkItDown) from the ``[documents]``
-    extra (ADR-0018). When the extra is absent, the document processor's
+    extra. When the extra is absent, the document processor's
     ``process`` raises :class:`MissingDocumentExtraError` with the exact
     install command.
     """
@@ -650,7 +650,7 @@ def _ensure_summary(markdown: str) -> str:
 
 
 # A distiller-emitted marker that separates multiple proposed Compiled Pages
-# distilled from a single Knowledge Source (issue #78). Each segment between
+# distilled from a single Knowledge Source. Each segment between
 # markers is a complete Markdown document (frontmatter + body).
 _PAGE_BREAK_MARKER = "<!-- lumio: page-break -->"
 
@@ -694,13 +694,13 @@ def _strip_ingest_routing_fields(markdown: str, *, complete_page: bool = False) 
     ``category`` is Content Category routing (the category path encodes it; the
     Control File declares the catalog), ``durability_rationale`` is
     ingest-review metadata, ``compound_revision`` is a publication
-    directive (issue #79), and ``move_from_path`` is an explicit category
-    move directive (issue #80): none is source-of-truth page content. The
+    directive, and ``move_from_path`` is an explicit category
+    move directive: none is source-of-truth page content. The
     page's free-form type (``type``) is retained as page semantics.
     The frontmatter is only rewritten when an ingest-only field is present,
     so sources that never declare them round-trip unchanged.
 
-    A complete verbatim page (spec0010 §3.1) reconstructs the closing ``---``
+    A complete verbatim page reconstructs the closing ``---``
     DIRECTLY followed by the parser's original body (which already starts
     with the delimiter's one structural LF) — adding another newline would
     corrupt the validated converted body.
@@ -754,9 +754,9 @@ def _extract_page_records(
     directive. A page is routed under its category path only when the
     category is configured in the Knowledge Base Control File; an
     unconfigured category is reported by the routing validator and never
-    creates an ad-hoc category path (issue #78).
+    creates an ad-hoc category path.
 
-    ``compound_revision`` (issue #79) marks a segment that compounds an
+    ``compound_revision`` marks a segment that compounds an
     EXISTING Compiled Page by Canonical Title: publication preserves +
     deduplicates the existing page's prior Sources while adding the segment's
     newly informing Sources. ``category``, ``durability_rationale``, and
@@ -765,7 +765,7 @@ def _extract_page_records(
     retained as page semantics). Legacy Flat Mode (no Control File) keeps the
     original single root-level page.
 
-    ``complete_page`` (spec0010 §3.1) parses one authored complete verbatim
+    ``complete_page`` parses one authored complete verbatim
     page: distiller page splitting, newline trimming and summary injection
     are skipped so the converted body stays byte-exact; routing, identity,
     ontology and whole-candidate validation still apply.
@@ -780,7 +780,7 @@ def _extract_page_records(
         page_type = _extract_scalar(data, "type")
         rationale = _extract_scalar(data, "durability_rationale")
         compound_revision = bool(data.get("compound_revision"))
-        # An explicit category move (issue #80): the distiller may emit the
+        # An explicit category move: the distiller may emit the
         # existing page's canonical path so publication relocates the page
         # to its declared category path. Blank/absent means no move.
         move_from_path = _extract_scalar(data, "move_from_path") or None
@@ -795,7 +795,7 @@ def _extract_page_records(
         # The distiller's ``durability_rationale`` is left as-is: when the
         # distiller omits it, no boilerplate is fabricated. A categorized
         # page without a rationale is blocked by ``_validate_page_routing``
-        # so a reviewing Maintainer classifies it (issue #78, P2.6).
+        # so a reviewing Maintainer classifies it.
         published = _strip_ingest_routing_fields(ensured, complete_page=complete_page)
         pages.append(
             ProposedPage(
@@ -818,7 +818,7 @@ def _synthesis_cross_source_issues(page: ProposedPage) -> list[ValidationIssue]:
     A synthesis page must draw from multiple sources or relate to other
     Compiled Pages; a single-source standalone page does not belong in the
     synthesis category. The ``synthetic`` flag stays governed by derivation
-    provenance, so this never inspects or mutates it (issue #78).
+    provenance, so this never inspects or mutates it.
     """
     data = _safe_frontmatter(page.markdown)
     sources = _as_sources(data.get("sources"))
@@ -854,7 +854,7 @@ def _validate_page_routing(
     or cross-page. Legacy Flat Mode (no Control File) enforces none of this.
 
     ``extra_categories`` widens the effective catalog with categories a
-    proposal carries as a Control File *extension* (issue #87, ADR-0009), so a
+    proposal carries as a Control File *extension*, so a
     yet-to-be-published extension category does not spuriously block the
     atomic proposal that proposes it. It does not create the categories: they
     exist only when the extension Control File is published.
@@ -864,9 +864,9 @@ def _validate_page_routing(
     configured = _configured_category_names(kb) | set(extra_categories)
     issues: list[ValidationIssue] = []
     for page in proposed_pages:
-        # Explicit category/path moves (issue #80) relocate already-valid
+        # Explicit category/path moves relocate already-valid
         # content, so they are exempt from routing re-validation here.
-        # Explicit title renames (issue #140) change only the page's identity,
+        # Explicit title renames change only the page's identity,
         # so they are exempt too: the content was already valid.
         if getattr(page, "move_from_path", None) or getattr(page, "rename_from", None):
             continue
@@ -928,7 +928,7 @@ def import_page_category(relative_path: str) -> str | None:
     A categorized Knowledge Base routes a page by the first segment of its
     path (its top-level directory), mirroring the loader's page-category
     derivation. A root-level imported page (no directory component) carries
-    no category. See ADR-0009.
+    no category..
     """
     parts = PurePosixPath(relative_path).parts
     if len(parts) <= 1:
@@ -961,11 +961,11 @@ def map_external_import_categories(
     File extension proposal: the page is kept and routed under its category
     path, and the proposed category is added to ``extension_control_file``
     for Maintainer review. No category is auto-created and no page is
-    silently dropped (ADR-0009).
+    silently dropped.
 
     A Maintainer may decline a proposed category via ``declined_categories``:
     the corresponding pages are dropped from the proposal and a
-    lossy-with-disclosure note is added (ADR-0007) so the drop is reviewable
+    lossy-with-disclosure note is added so the drop is reviewable
     before publish. Declining a category that is already configured has no
     effect: configured categories always pass through.
 
@@ -1149,8 +1149,8 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
         visibility = data.get("visibility")
         claims, _ = _as_claims(data.get("claims"), page.relative_path)
         sources = _as_sources(data.get("sources"))
-        # Identity risks. A compound revision (issue #79) or an explicit
-        # category move (issue #80) targets an existing Compiled Page by
+        # Identity risks. A compound revision or an explicit
+        # category move targets an existing Compiled Page by
         # Canonical Title on purpose: the title match is the point of the
         # proposal, not a duplicate risk, so it is reported only as a change
         # for review. A plain title collision (neither flag) keeps the
@@ -1210,7 +1210,7 @@ def compute_blast_radius(proposal_pages, kb) -> BlastRadius:
                     target = title_by_entity.get(claim.object, claim.object)
                     relationship_changes.append(f"{title}: +{claim.predicate} -> {target}")
 
-        # Claim-level before/after disclosure (issue #169): additions,
+        # Claim-level before/after disclosure: additions,
         # edits, lifecycle transitions, and removals per page, with compact
         # summaries — never full page bodies.
         existing_page = existing_by_title.get(title)

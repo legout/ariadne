@@ -6,7 +6,7 @@ immutable S3 **Published Version** containing canonical Knowledge Base content,
 a derived Discovery Graph artifact, and — when requested — a remote LanceDB
 index, with atomic compare-and-swap activation and explicit rollback.
 
-Publication protocol (ADR-0013, ADR-0019):
+Publication protocol:
 
 1. **Observe** — read and capture the active pointer version plus its ETag
    *before* any expensive preparation. The captured observation is the
@@ -30,7 +30,7 @@ Publication protocol (ADR-0013, ADR-0019):
    valid when no builder was requested.
 5. **Activate** — run the optional pre-activation hook (the extension point for
    the private Source Binding Manifest of the Source Artifact work, #164 /
-   ADR-0020: no source bytes ever enter the public manifest), then advance
+   no source bytes ever enter the public manifest), then advance
    ``current.json`` with **one** conditional put against the originally
    observed pointer. A backend that cannot supply an ETag for the existing
    pointer fails closed — publication is refused rather than falling back to
@@ -101,7 +101,7 @@ _GRAPH_REL = f"{DERIVED_DIR}/{GRAPH_ARTIFACT_FILENAME}"
 LANCE_COMPLETION_OBJECT = "completion.json"
 
 # Type aliases for the dependency-neutral publication seams. ``lumio-wiki``
-# never imports ``lumio-lancedb`` (ADR-0010): callers inject a builder closure
+# never imports ``lumio-lancedb``: callers inject a builder closure
 # (constructed e.g. from ``lumio_lancedb.remote_publication_builder``) and the
 # publisher calls it duck-typed.
 IndexBuilder = Callable[..., "RemoteIndexCompletion"]
@@ -170,7 +170,7 @@ class RemoteIndexCompletion(msgspec.Struct, frozen=True):
 class PreparedVersion(msgspec.Struct, frozen=True):
     """A fully built, validated, not-yet-activated Published Version.
 
-    Passed to the :data:`ActivationHook` so the Source Artifact work (#164)
+    Passed to the :data:`ActivationHook` so the Source Artifact work
     can bind the exact Published Version identity before Readers see it.
     """
 
@@ -390,7 +390,7 @@ def _activate_existing_s3_version(
 ) -> S3Manifest:
     """CAS-activate an already complete immutable version; never rebuild it.
 
-    Rollback (issue #163, ADR-0019) validates that the target version prefix
+    Rollback validates that the target version prefix
     carries a manifest whose entries are all present (a complete version), then
     conditionally advances ``current.json`` to it with one compare-and-swap
     against the currently observed pointer. No object under the target version
@@ -427,7 +427,7 @@ def list_cleanup_candidates(store: ObjectStore, prefix: str) -> list[CleanupCand
     written last, so its absence means an interrupted or failed publication).
     The active version is never a candidate; complete inactive versions are
     not candidates (they are valid rollback targets). Nothing is deleted —
-    reporting only (ADR-0019).
+    reporting only.
     """
     obstore = _require_obstore()
     clean_prefix = str(prefix).strip("/")
@@ -463,7 +463,7 @@ def list_cleanup_candidates(store: ObjectStore, prefix: str) -> list[CleanupCand
 def observe_current_pointer(store: ObjectStore, prefix: str) -> PointerObservation:
     """Read and capture the active pointer version plus its ETag.
 
-    The observation must happen *before* expensive preparation (issue #163):
+    The observation must happen *before* expensive preparation:
     the returned ETag is the compare-and-swap intent for activation, so a
     publisher that raced with a concurrent activation fails closed instead of
     overwriting it. ``(None, None)`` means no pointer exists yet.
@@ -536,7 +536,7 @@ def _serialize_graph_bytes(kb: Any, fingerprint: SourceFingerprint) -> bytes:
     Uses the public ``serialize_graph`` function (the same deterministic
     serialization ``KnowledgeBase.materialize_graph`` writes to disk), so the
     published artifact is byte-identical to a locally materialized one — but
-    without writing any derived bytes to local disk (ADR-0013).
+    without writing any derived bytes to local disk.
     """
     return serialize_graph(
         kb._knowledge_index(),
@@ -701,7 +701,7 @@ def _verify_and_encode_completion(
 
     The index must have been built from exactly this Published Version's
     canonical fingerprint — a mismatch means the builder indexed different
-    content, and activation is blocked (issue #163).
+    content, and activation is blocked.
     """
     if completion.fingerprint != fingerprint.digest:
         raise KnowledgeBaseError(
@@ -738,7 +738,7 @@ def _load_complete_version(
 ) -> S3Manifest:
     """Load and validate an already complete immutable version for rollback.
 
-    Complete + validated (ADR-0019) means: a manifest exists, decodes, names
+    Complete + validated means: a manifest exists, decodes, names
     this version, every canonical and derived object it lists is present, each
     declared derived object matches its manifest size and digest, and the
     whole version still resolves through the Reader seam — every canonical
@@ -860,7 +860,7 @@ def _activate_pointer(
     """Conditionally advance ``current.json`` against the observed pointer.
 
     The compare-and-swap uses the pointer observation captured **before**
-    preparation (issue #163): first publication uses a create-if-absent put;
+    preparation: first publication uses a create-if-absent put;
     subsequent activations use an update-if-match-ETag put against the
     originally observed ETag. A concurrent publication that touched the
     pointer in the meantime is detected and raises

@@ -1,4 +1,4 @@
-"""Private source transfer kinds (spec 0010 §5/§5.1): baseline and full handoff.
+"""Private source transfer kinds: baseline and full handoff.
 
 J0 delivers the metadata-only **Source Baseline Snapshot**: a distinct,
 versioned artifact kind carrying the exact Source Version metadata referenced
@@ -10,7 +10,7 @@ commits, plus optional supplementary exact references. Both kinds share
 strict archive and metadata parsing with explicit bounds; the full bundle is
 streamed end to end and never loaded whole into memory.
 
-Integrity model (spec 0010 §5/§5.1): the archive's SHA-256 digest is supplied
+Integrity model: the archive's SHA-256 digest is supplied
 out-of-band (maintainer-approved project setup or direct operator selection)
 and proves transfer integrity; matching Git bindings prove identity
 alignment. Neither establishes that the receiver verified source bytes or
@@ -963,7 +963,7 @@ def import_source_baseline(
 
 
 # ---------------------------------------------------------------------------
-# Full Source Handoff Bundle (spec 0010 §5, plan 0010 J3).
+# Full Source Handoff Bundle.
 # ---------------------------------------------------------------------------
 
 #: The single supported full-handoff schema version and its distinct kind.
@@ -1364,7 +1364,7 @@ def _handoff_version_dicts(versions: list[_HandoffVersion]) -> list[dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# Supplementary exact references (plan 0010 §5/J3): a strict, explicit list.
+# Supplementary exact references: a strict, explicit list.
 # ---------------------------------------------------------------------------
 
 
@@ -1458,7 +1458,7 @@ def parse_reference_selection(raw: bytes) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Git-derived selection: binding changes and version intent (plan 0010 J3).
+# Git-derived selection: binding changes and version intent.
 # ---------------------------------------------------------------------------
 
 

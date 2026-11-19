@@ -1,4 +1,4 @@
-"""Strict v1 Source Reference Manifest for Git-native authoring (spec 0008 §3.1).
+"""Strict v1 Source Reference Manifest for Git-native authoring.
 
 A versioned ``.lumio-authoring.yaml`` beside ``lumio.yaml`` carries authored
 provenance input for Git-native Knowledge Base authoring: a stable KB
@@ -242,7 +242,7 @@ def parse_source_reference_manifest(raw: bytes) -> SourceReferenceManifest:
     Rejects unsupported versions, unknown or missing fields, duplicate keys at
     every level, malformed digests, invalid Source IDs, and lifecycle statuses
     other than ``active``/``retired`` — each with a specific diagnostic rather
-    than silent tolerance (spec 0008 §3.1).
+    than silent tolerance.
     """
     try:
         text = raw.decode("utf-8")

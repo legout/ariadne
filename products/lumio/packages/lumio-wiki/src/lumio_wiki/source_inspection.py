@@ -1,4 +1,4 @@
-"""Authorized Source Artifact inspection and fetch (issue #165, ADR-0020).
+"""Authorized Source Artifact inspection and fetch.
 
 `lumio-wiki source inspect|fetch|link` resolve ONE exact Source Version for a
 source id — either the latest registry version (local worktree behavior) or
@@ -58,7 +58,7 @@ OUTCOME_SIGNING_UNSUPPORTED = "signing-unsupported"
 
 
 class SourceInspectionError(Exception):
-    """A distinct, actionable Source Artifact inspection outcome (#165).
+    """A distinct, actionable Source Artifact inspection outcome.
 
     ``outcome`` is one of the ``OUTCOME_*`` constants so callers (CLI,
     Workshop) can branch on the outcome — never on message text. The message
@@ -75,7 +75,7 @@ class ResolvedSourceBinding:
     """The ONE exact Source Version an inspect/fetch/link operates on.
 
     Carries only secret-free inspection metadata recorded at the ingest
-    boundary (#164): safe filename, media type, and size.
+    boundary: safe filename, media type, and size.
     """
 
     source_id: str
@@ -176,7 +176,7 @@ def read_binding_manifest(
     Maps store failures to the distinct #165 outcomes (access denied,
     historical-version mismatch, corruption) exactly as
     :func:`resolve_manifest_binding` does; callers that only need the entry
-    set (e.g. ``source resolve`` known-ids, issue #176) share this seam
+    set (e.g. ``source resolve`` known-ids) share this seam
     instead of re-implementing the error mapping.
     """
     try:
@@ -197,7 +197,7 @@ def read_binding_manifest(
             OUTCOME_CORRUPTION,
             "the stored Source Binding Manifest is malformed",
         ) from exc
-    # ADR-0020: the manifest binds the Published Version identity. A stored
+    # the manifest binds the Published Version identity. A stored
     # manifest that names a different version than the one requested is
     # corruption (misplaced or tampered), never a usable binding.
     if manifest.published_version != version:
@@ -223,7 +223,7 @@ def resolve_manifest_binding(
     manifest is read from the private Source Artifact Store, so no manifest
     means either the version does not exist or it predates artifact retention
     — both are the historical-version-mismatch outcome, and neither ever
-    falls back to the registry's latest version (ADR-0020).
+    falls back to the registry's latest version.
     """
     from lumio_wiki.source_registry import _validate_source_id
 

@@ -1,12 +1,12 @@
 """S3 Published Version diff — read-only deterministic comparison of manifests.
 
 t_66f162f2. Answers "what changed since the version I read?" (gap analysis
-recommendation 4) over the immutable Published Version protocol (ADR-0013):
+recommendation 4) over the immutable Published Version protocol:
 two complete versions are compared as parsed canonical content, never as raw
 paths or digests alone. The report carries stable added/removed/changed Page
 paths and Source identities, plus lifecycle/visibility transitions only when
 the canonical data names both sides. This is a pure read-only report: no prose
-digests, no mutable activity log (ADR-0022), no publication state — an agent
+digests, no mutable activity log, no publication state — an agent
 turns the deterministic delta into prose. Every ``.md`` file of both versions
 must parse as a Compiled Page (or be a reserved artifact such as the generated
 Navigation Index, which is derived state and excluded): anything else fails

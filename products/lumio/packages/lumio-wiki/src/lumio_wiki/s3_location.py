@@ -13,7 +13,7 @@ byte/range reads). ``obstore`` is an *optional* dependency declared behind the
 is absent, every public entrypoint raises an actionable error naming the exact
 install command.
 
-Publication protocol (ADR-0013):
+Publication protocol:
 
 * Each publication writes canonical Markdown, the Control File, and derived
   artifacts under a new immutable version prefix, alongside a **manifest**
@@ -71,16 +71,16 @@ S3_LOCATION_KIND = "s3"
 # The derived-artifact subdirectory under an immutable version prefix
 # (``{prefix}/{version}/derived/...``). Holds rebuildable, non-canonical state
 # such as the Discovery Graph MessagePack artifact and (later) remote LanceDB
-# tables. Never part of the manifest's canonical file list (ADR-0013).
+# tables. Never part of the manifest's canonical file list.
 DERIVED_DIR = "derived"
 
 # The remote LanceDB index subdirectory under an immutable version prefix
-# (``{prefix}/{version}/derived/lance/``, ADR-0019). Single source of truth for
+# (``{prefix}/{version}/derived/lance/``). Single source of truth for
 # the publisher (which builds there) and the Snapshot's dependency-neutral
-# remote derived-index descriptor (which points consumers there, issue #162).
+# remote derived-index descriptor (which points consumers there).
 LANCE_DERIVED_DIR = f"{DERIVED_DIR}/lance"
 
-# Bounded in-memory cache defaults (the no-managed-disk-cache policy, ADR-0013).
+# Bounded in-memory cache defaults (the no-managed-disk-cache policy).
 # A single resolved version is cached by default; the cap keeps the resident
 # byte footprint bounded. The cache is process-local and never touches disk.
 DEFAULT_MAX_CACHED_VERSIONS = 1
@@ -129,7 +129,7 @@ def _require_obstore() -> Any:
 # ---------------------------------------------------------------------------
 # Publication-protocol records (manifest + pointer).
 #
-# These frozen records ARE the wire contract between a publisher (issue #121)
+# These frozen records ARE the wire contract between a publisher
 # and a reader (this module). They are intentionally plain JSON-serializable so
 # a publisher written in any language can produce a manifest this reader accepts.
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ class S3Manifest(msgspec.Struct, frozen=True):
     over the materialized content and rejects a mismatch as corruption.
 
     Derived artifacts (the Discovery Graph MessagePack, and later remote LanceDB
-    tables) are rebuildable state, never canonical content (ADR-0011): they live
+    tables) are rebuildable state, never canonical content: they live
     in ``derived_files`` so a reader can integrity-check them without making them
     part of the canonical file tree or the fingerprint.
     """
@@ -174,7 +174,7 @@ class S3Manifest(msgspec.Struct, frozen=True):
     """Derived (non-canonical) artifacts — their presence in this list is the
     version's derived-artifact completion record."""
 
-    # -- Local Git-native publication provenance (spec 0008 §5) -------------
+    # -- Local Git-native publication provenance -------------
     #
     # Optional so S3 manifests and every pre-existing local manifest keep
     # decoding with their original shape (old-format reading compatibility):
@@ -270,7 +270,7 @@ def build_published_manifest(
 ) -> S3Manifest:
     """Build a manifest for an immutable version from canonical content.
 
-    Pure helper shared by the publisher (issue #121) and tests. ``content`` is the
+    Pure helper shared by the publisher and tests. ``content`` is the
     canonical Knowledge Base file tree (``{relative_path: bytes}`` — typically
     :func:`lumio_wiki.knowledge_base.canonical_content`). The fingerprint digest
     is the Published Version identity computed at publish time
@@ -281,7 +281,7 @@ def build_published_manifest(
     MessagePack artifact) keyed by its relative path under the version's
     ``derived/`` area. It is never part of the canonical file tree or the
     fingerprint — the reader integrity-checks it via ``derived_files`` and falls
-    back to in-memory derivation on any mismatch (ADR-0011, ADR-0013).
+    back to in-memory derivation on any mismatch.
     """
     files = [
         S3ManifestFile(
@@ -420,7 +420,7 @@ class S3Location:
         self._cache: dict[str, dict[str, bytes]] = {}
         # The object-store container URI (``s3://bucket``) the store is rooted
         # at, when known. A resolved Snapshot uses it to expose its Published
-        # Version's remote derived-index descriptor (issue #162, ADR-0019):
+        # Version's remote derived-index descriptor:
         # the descriptor's connect URI is container + key prefix, never
         # reconstructed per caller and never coerced through ``Path``.
         self._store_uri = store_uri.rstrip("/") if store_uri else None
@@ -594,7 +594,7 @@ class S3Location:
                 raise KnowledgeBaseError(
                     f"S3 manifest for {version!r} has a duplicate or empty path"
                 )
-            # ADR-0013: manifest paths are relative and confined to the
+            # manifest paths are relative and confined to the
             # immutable version prefix. Reject anything that could escape it
             # (absolute, backslash, or a ``..`` segment) so a corrupt or
             # hostile manifest cannot mix versions or read outside the prefix.
@@ -670,7 +670,7 @@ class S3Location:
     def _remote_derived_index_descriptor(self, version: str, fingerprint: Any) -> Any | None:
         """Describe this Published Version's remote derived index, when known.
 
-        Dependency-neutral (issue #162, ADR-0019): the descriptor carries the
+        Dependency-neutral: the descriptor carries the
         connect URI, sidecar prefix, immutable version, Published Version
         fingerprint, and this Location's authenticated store. Returned as
         ``None`` when the container URI is unknown (a directly constructed
@@ -720,7 +720,7 @@ class S3Location:
         when the same adjacency was derived in memory instead; ``note`` is
         ``None`` on the healthy path and otherwise names the truthful cause
         (not published / unreadable / corrupt / stale) plus nothing else. The
-        public observability seam for ``lumio-wiki status`` (issue #175): the
+        public observability seam for ``lumio-wiki status``: the
         graph is always complete and deterministic either way; the label
         discloses which source served it, never a health verdict.
 
@@ -761,7 +761,7 @@ class S3Location:
                 and hashlib.sha256(data).hexdigest() == graph_meta.digest
             ):
                 # Integrity-check the artifact bytes against the manifest
-                # digest BEFORE trusting its embedded fields (ADR-0013).
+                # digest BEFORE trusting its embedded fields.
                 note = "published graph artifact corrupt (manifest digest mismatch)"
             else:
                 state = deserialize_graph(data)
@@ -788,7 +788,7 @@ class S3Location:
         the manifest's ``derived_files`` digest; otherwise derives the same
         adjacency deterministically in memory from the loaded Knowledge Base.
         Never raises on a missing, stale, or corrupt artifact — the Discovery
-        Graph is derived state, never canonical content (ADR-0011, ADR-0013).
+        Graph is derived state, never canonical content.
 
         A coherently altered graph artifact (valid MessagePack, correct
         fingerprint/extractor fields, but different edges) is rejected by the

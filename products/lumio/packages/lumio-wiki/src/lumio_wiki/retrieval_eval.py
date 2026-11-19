@@ -1,4 +1,4 @@
-"""Gold-set evaluation harness for retrieval stages (issue #138).
+"""Gold-set evaluation harness for retrieval stages.
 
 Lumio had retrieval *inspection* (the Retrieval Trace) but no retrieval
 *measurement*. This module turns retrieval tuning from vibes into engineering:
@@ -7,7 +7,7 @@ through the **public retrieval seam** — :meth:`lumio_wiki.knowledge_base.Knowl
 — and recall@k is reported per pipeline stage. The result is a defensible,
 deterministic gate that catches retrieval regressions.
 
-Design tenets (issue #138):
+Design tenets:
 
 * **Public seam only.** Stages call ``KnowledgeBase.retrieve`` (the same surface
   the Core SDK ``lumio`` uses; ``lumio.core.retrieval`` is a compatibility alias
@@ -269,7 +269,7 @@ class ZeroIndexLexicalStage:
 
 
 class GraphExpansionStage:
-    """Discovery Graph expansion that selects eligible pages before ranking (issue #112).
+    """Discovery Graph expansion that selects eligible pages before ranking.
 
     Graph expansion is a *modifier* of lexical ranking, not a standalone ranker:
     it broadens the eligible page set along canonical accepted Claims plus
@@ -498,7 +498,7 @@ class EvalReport:
     # Name of the embedder used for semantic/hybrid stages (its
     # ``model_info.name``), or ``None`` for a model-free run. Surfaced so a
     # reviewer can tell the deterministic hash stand-in from a real embedding
-    # model at a glance (issue #158).
+    # model at a glance.
     embedder: str | None = None
     corpus_pages: int = 0
     disclosures: tuple[str, ...] = (
@@ -681,7 +681,7 @@ def evaluate(
     When ``stages`` is omitted, :func:`default_stages` builds the canonical
     ladder. LanceDB stages require a ``lancedb_adapter`` (a loaded
     ``LanceDBRetrievalAdapter``, obtained via :func:`load_lancedb_adapter`):
-    lumio-wiki cannot import ``lumio-lancedb`` (ADR-0010), so the caller injects
+    lumio-wiki cannot import ``lumio-lancedb``, so the caller injects
     it. Without it, only the base (zero-index + graph) ladder runs. When LanceDB
     stages run but no ``lancedb_index_dir`` is supplied, a fresh temp index is
     built so semantic/hybrid stages can run.
@@ -890,7 +890,7 @@ class DeterministicHashEmbedder:
 
     This is NOT a learned model and never makes a network call — it exists so
     the semantic/hybrid stages can be exercised deterministically inside the
-    model-free base layer (issue #138). Production deployments pass a real
+    model-free base layer. Production deployments pass a real
     :class:`~lumio_wiki.embeddings.Embedder`.
     """
 

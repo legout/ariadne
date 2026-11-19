@@ -1,4 +1,4 @@
-"""Graph exchange export and stub import (issue #193, ADR-0024, PRD-0005).
+"""Graph exchange export and stub import (PRD-0005).
 
 A third documented exchange surface alongside OKF Profiles 1/2: a
 structure-only, tool-interop projection of the Discovery Graph.
@@ -17,8 +17,8 @@ content, Sources, or private registry data. Edges are typed canonical
 Relationships (accepted entity-to-entity Claims) plus untyped Extracted
 References, marked by ``kind`` so consumers can distinguish reviewed
 knowledge from derived navigation. Visibility filtering is ENFORCED, NOT
-DISCLOSED (ADR-0024): the serializer receives only the authorized set,
-exactly as at the OKF export boundary (ADR-0007), so an export can never
+DISCLOSED: the serializer receives only the authorized set,
+exactly as at the OKF export boundary, so an export can never
 leak a title or summary the caller is not authorized to see. Excluded
 edges are dropped silently.
 
@@ -37,7 +37,7 @@ Entity ID and Entity Types; foreign nodes get a synthesized ID and the
 missing Entity Types and foreign categories are proposed as ONE Control
 File extension (the ADR-0009 pattern), never silently created or dropped.
 
-Deferred with a named trigger (ADR-0024): ``cypher.txt``, ``postgres.sql``,
+Deferred with a named trigger: ``cypher.txt``, ``postgres.sql``,
 ``graph.html`` — add when a real integration asks.
 
 Stability note: ``graph.json`` node fields are additive-only once shipped.
@@ -410,7 +410,7 @@ def _extend_control_file_ontology(
 ) -> Any:
     """Return a proposed Control File adding missing Entity Types to the ontology.
 
-    Mirrors :func:`extend_control_file_categories` (ADR-0009): the types are
+    Mirrors :func:`extend_control_file_categories`: the types are
     PROPOSED, never silently created; a reviewing Maintainer may fill in
     descriptions or discard the proposal. Existing declarations win.
     """
@@ -446,7 +446,7 @@ def assemble_graph_import(graph_path: str | Path, kb) -> GraphImportCandidate:
 
     Accepts Lumio exports and foreign wiki-export lineage: nodes resolve by
     ``id`` (Entity ID or path), titles by ``label``/``title``, categories by
-    the directory convention (first path segment, ADR-0009). Edges become
+    the directory convention (first path segment). Edges become
     Markdown link structure — typed relationships carry their predicate as a
     link title, extracted references stay unmarked — and never Claims.
 

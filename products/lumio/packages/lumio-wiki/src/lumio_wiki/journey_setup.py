@@ -1,4 +1,4 @@
-"""Public confirmed empty managed-KB creation (spec 0010 §2.2, plan 0010 J5a).
+"""Public confirmed empty managed-KB creation.
 
 One ephemeral preview → digest → guarded apply path, exposed through the
 package root (:mod:`lumio_wiki`) as the supported entry point for consumers
@@ -157,7 +157,7 @@ def _canonical_digest(payload: dict) -> str:
 
 
 def _store_view(store: PrivateLocalStore | PrivateS3Connection) -> dict:
-    """A non-secret view of one private resource declaration (§2.1)."""
+    """A non-secret view of one private resource declaration."""
     if isinstance(store, PrivateLocalStore):
         return {"kind": "local", "root": str(store.root)}
     view: dict = {
@@ -258,7 +258,7 @@ def _target_state(
     """Classify the creation target; every existing entry is visible.
 
     Ignored content counts: only the repository root may keep its own Git
-    administration entry (spec 0010 §2.2).
+    administration entry.
     """
     if not target.exists():
         return "absent", [], None
@@ -435,14 +435,14 @@ def plan_empty_setup(
         )
     if profile.retention != "required":
         # Same rule as the adopted journey: the managed journey requires
-        # retention 'required' (spec 0010 §2.1/§2.2).
+        # retention 'required'.
         raise EmptySetupError(
             "the guided managed journey requires retention 'required' in the "
             "selected private profile (spec 0010 §2.1); authoring and handoff "
             "with 'disabled' retention stay available through the explicit "
             "lower-level commands"
         )
-    # Prospective manifest validation without any temporary file (§2.2).
+    # Prospective manifest validation without any temporary file.
     manifest_bytes = serialize_source_reference_manifest(
         SourceReferenceManifest(version=SOURCE_REFERENCE_MANIFEST_VERSION, namespace=namespace)
     )
@@ -572,7 +572,7 @@ def recheck_plan(
 
     Changed branch, target occupancy, profile bytes, rendered configuration
     bytes or skill destination state each require a new preview and
-    confirmation — never silent substitution (spec 0010 §2.2, R2/R4).
+    confirmation — never silent substitution.
     """
     try:
         fresh = plan_empty_setup(
@@ -614,7 +614,7 @@ def apply_plan(
 
     An I/O failure reports the operation-owned residue already written and
     never removes or overwrites pre-existing operator content; a retry goes
-    through a new preview and never reinitializes (spec 0010 §2.2).
+    through a new preview and never reinitializes.
     """
     from lumio_wiki.knowledge_base import seeded_control_file, write_control_file
 

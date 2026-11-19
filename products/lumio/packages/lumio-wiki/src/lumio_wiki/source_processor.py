@@ -6,8 +6,8 @@ A Source Processor is the first stage of ingestion. It turns raw Knowledge
 Source bytes into a :class:`NormalizedSource` — normalized text plus stable,
 line-addressable sections — without depending on a model provider or a web
 request. Text and Markdown are handled by UTF-8 decoding and require no
-heavyweight converter (AC4); document formats are handled by three layered
-converters (ADR-0018): :class:`PdfSourceProcessor` (PDF and images → LiteParse,
+heavyweight converter; document formats are handled by three layered
+converters: :class:`PdfSourceProcessor` (PDF and images → LiteParse,
 which supplies real page boundaries and OCR for scanned pages),
 :class:`AnyDocSourceProcessor` (office formats → AnyDoc, which dominates
 MarkItDown on coverage, fidelity, and speed), and
@@ -44,7 +44,7 @@ class NormalizedSection(msgspec.Struct, frozen=True):
     page-addressable sources (e.g. a PDF page). It is ``None`` for sources
     whose converter does not supply page boundaries, in which case the
     ``title`` is a stable section label instead. Page numbers are never
-    invented (issue #100, AC5).
+    invented.
     """
 
     id: str
@@ -146,11 +146,11 @@ def _is_markdown(filename: str | None, content_type: str | None) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Document conversion infrastructure (issue #100)
+# Document conversion infrastructure
 # ---------------------------------------------------------------------------
 
 # Bounded extracted text and section/page counts so one pathological source
-# cannot exhaust memory (issue #100, AC5). Whole pages or sections are dropped
+# cannot exhaust memory. Whole pages or sections are dropped
 # once the bound is reached, keeping line offsets consistent with stored text.
 MAX_EXTRACTED_CHARS = 200_000
 MAX_SECTIONS = 200
@@ -170,7 +170,7 @@ DOCUMENTS_EXTRA_HINT = "pip install 'lumio-wiki[documents]'"
 _PDF_SIGNATURE = b"%PDF-"
 _ZIP_SIGNATURES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 
-# Content-type / extension routing (ADR-0001, layered by ADR-0018). PDFs and
+# Content-type / extension routing (layered by ADR-0018). PDFs and
 # images → LiteParse (real page boundaries and OCR for scanned pages); office
 # formats → AnyDoc (broad, fast, dependency-free office conversion); HTML and
 # the remaining broad document formats → MarkItDown.
@@ -178,7 +178,7 @@ _LITEPARSE_CONTENT_TYPES = frozenset({"application/pdf"})
 _LITEPARSE_EXTENSIONS = frozenset({".pdf"})
 _IMAGE_CONTENT_TYPE_PREFIX = "image/"
 _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp"})
-# AnyDoc office-format superset (issue #154, ADR-0018): Word, PowerPoint, Excel,
+# AnyDoc office-format superset: Word, PowerPoint, Excel,
 # OpenDocument, RTF, EPUB, and CSV, including the legacy binary (.doc/.ppt/.xls)
 # and macro-enabled/container variants. AnyDoc dominates MarkItDown on these.
 _ANYDOC_EXTENSIONS = frozenset(
@@ -217,7 +217,7 @@ def _require_documents_extra(module: str) -> None:
 
     Checked lazily (inside the converter function) so the module imports
     cleanly without LiteParse or MarkItDown installed. The message names the
-    exact install command (issue #100, AC4; PRD #93 user story 18).
+    exact install command (PRD #93 user story 18).
     """
     try:
         __import__(module)
@@ -437,7 +437,7 @@ class TextMarkdownSourceProcessor:
 
     Never imports LiteParse, MarkItDown, or any model provider, so a text or
     Markdown Knowledge Source can reach a reviewable Ingest Proposal without
-    those installed (issue #95, AC4). ``converted_by`` is ``"markdown"`` for
+    those installed. ``converted_by`` is ``"markdown"`` for
     Markdown sources and ``"text"`` otherwise.
     """
 
@@ -496,7 +496,7 @@ class DocumentSourceProcessor:
 class PdfSourceProcessor:
     """Convert PDF and image sources through LiteParse into page-addressable sections.
 
-    Routed through LiteParse (ADR-0001), which supplies real page boundaries
+    Routed through LiteParse, which supplies real page boundaries
     and OCR for scanned PDFs and images. The PDF is never opened or rendered,
     only text-extracted, so embedded JavaScript actions, launch annotations,
     and macros cannot execute. Pages are preserved verbatim; each section
@@ -630,7 +630,7 @@ def _process_document(
 class MarkItDownSourceProcessor:
     """Convert DOCX/HTML/broad document sources through MarkItDown into sections.
 
-    Routed through MarkItDown (ADR-0001), which produces a single Markdown
+    Routed through MarkItDown, which produces a single Markdown
     blob without page boundaries. Stable heading-based sections are derived
     from that Markdown, so citations identify the original filename plus a
     stable section (never an invented page number). The document is text-
@@ -674,7 +674,7 @@ class MarkItDownSourceProcessor:
 class AnyDocSourceProcessor:
     """Convert office document sources through AnyDoc into heading-based sections.
 
-    Routed through AnyDoc (``firecrawl-anydoc``; ADR-0018) for the office
+    Routed through AnyDoc (``firecrawl-anydoc``) for the office
     superset (Word/PowerPoint/Excel/OpenDocument/RTF/EPUB/CSV and their
     container variants). AnyDoc produces a single Markdown blob without page
     boundaries, so stable heading-based sections are derived from that Markdown
@@ -683,7 +683,7 @@ class AnyDocSourceProcessor:
     number). AnyDoc enforces resource limits inside the converter, so no
     external zip-bomb guard is needed. ``converted_by`` is ``"anydoc"``.
 
-    Fallback is explicit and observable (issue #154): a failed conversion is
+    Fallback is explicit and observable: a failed conversion is
     NEVER silently discarded and NEVER silently rerouted to another converter
     (which would break deterministic ``converted_by`` provenance and require the
     general extractor-provider abstraction this issue forbids). A failure raises
@@ -734,7 +734,7 @@ def select_document_processor(
     page boundaries and OCR), an :class:`AnyDocSourceProcessor` (office formats
     → AnyDoc), or a :class:`MarkItDownSourceProcessor` (HTML and the remaining
     broad document formats → MarkItDown). The routing layers AnyDoc on top of
-    the historical converter routing (ADR-0001) per ADR-0018 so provenance is
+    the historical converter routing per ADR-0018 so provenance is
     deterministic.
     """
     suffix = PurePath(filename or "").suffix.lower()
@@ -753,7 +753,7 @@ def select_document_processor(
 def source_converter_name(filename: str | None, content_type: str | None) -> str:
     """Return the converter NAME a source routes to, WITHOUT invoking it.
 
-    Managed host-Distiller ingest (issue #149) records the converter in private
+    Managed host-Distiller ingest records the converter in private
     proposal provenance from routing alone: the host coding agent already
     converted the original Knowledge Source and authored the Compiled Page, so
     the ``[documents]`` extra is never required and no converter runs. The

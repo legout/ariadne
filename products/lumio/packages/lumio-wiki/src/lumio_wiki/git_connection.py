@@ -1,6 +1,6 @@
 """Read-only Git connection diagnosis for the external-agent authoring journey.
 
-Specification 0010 §2 (plan 0010 J5): guided setup reports the local Git
+guided setup reports the local Git
 tool, identity, repository state and remote readability through bounded
 read-only probes. A successful ``ls-remote`` proves READ access only — push
 and pull-request capability stay explicitly ``unverified``; this module never
@@ -98,7 +98,7 @@ class GitRemoteStatus(msgspec.Struct, frozen=True):
 
 
 class GitConnectionReport(msgspec.Struct, frozen=True):
-    """Versioned, secret-free Git connection diagnosis (spec 0010 §2, plan J5).
+    """Versioned, secret-free Git connection diagnosis.
 
     ``push_pr`` is always ``unverified``: read access is reported separately
     from write capability, and no probe here can upgrade it.

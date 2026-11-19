@@ -1,4 +1,4 @@
-"""Private Source Artifact Store seam (issue #164, ADR-0020).
+"""Private Source Artifact Store seam.
 
 Retains the optional, private ORIGINAL bytes of a Knowledge Source as
 immutable **Source Artifacts** bound to exact Source Versions.
@@ -9,7 +9,7 @@ Adapters choose the physical layout; content-addressed physical deduplication
 never merges two distinct source identities (each artifact is stored under a
 key derived from BOTH the source id and the content hash).
 
-Separation contract (ADR-0020): artifacts, binding manifests, and this store
+Separation contract: artifacts, binding manifests, and this store
 live OUTSIDE public Published Version prefixes, canonical fingerprints,
 exports, retrieval, and indexes. Nothing here is Compiled Page content.
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 
 
 class ArtifactStoreError(Exception):
-    """Base error for private Source Artifact Store operations (#164).
+    """Base error for private Source Artifact Store operations.
 
     Messages never disclose object keys, credentials, or secret-bearing
     URLs (ADR-0020 ordinary-output rule).
@@ -39,20 +39,20 @@ class ArtifactStoreError(Exception):
 
 
 class ArtifactAccessDenied(ArtifactStoreError):
-    """The configured credentials cannot read the private store (#165).
+    """The configured credentials cannot read the private store.
 
     Raised for object-store permission/authentication denials and local
     filesystem permission errors so inspection can report access denial as
-    a distinct actionable outcome (issue #165, ADR-0020).
+    a distinct actionable outcome.
     """
 
 
 class ArtifactUnavailable(ArtifactStoreError):
-    """No artifact is retained for the requested identity (#165)."""
+    """No artifact is retained for the requested identity."""
 
 
 class ArtifactCorruption(ArtifactStoreError):
-    """Stored bytes failed digest or size verification (#165)."""
+    """Stored bytes failed digest or size verification."""
 
 
 class SigningUnavailable(ArtifactStoreError):
@@ -131,7 +131,7 @@ def local_publication_metadata_store(destination_identity: str) -> LocalDirector
 
 
 class SourceArtifactStore(Protocol):
-    """Identity-oriented seam for private Source Artifact retention (#164).
+    """Identity-oriented seam for private Source Artifact retention.
 
     ``source_id``/``content_hash`` address one exact artifact (the
     authoritative identity from ADR-0020); ``content_type`` and ``filename``
@@ -242,7 +242,7 @@ class InMemoryArtifactStore:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
         except ArtifactStoreError as exc:
-            # Denial is unknown-presence, not absence (#165): fail closed so
+            # Denial is unknown-presence, not absence: fail closed so
             # gates and inspection never misreport denied reads as missing.
             if isinstance(exc, ArtifactAccessDenied):
                 raise
@@ -285,7 +285,7 @@ class InMemoryArtifactStore:
 
 
 class LocalDirectoryArtifactStore:
-    """Local-filesystem adapter for single-maintainer development (#164).
+    """Local-filesystem adapter for single-maintainer development.
 
     Layout (private state, deliberately outside any Knowledge Base root the
     loader scans; callers choose the directory)::
@@ -355,7 +355,7 @@ class LocalDirectoryArtifactStore:
     def get_artifact(self, *, source_id: str, content_hash: str) -> bytes:
         path = self._artifact_path(source_id, content_hash)
         # Read-first (not ``exists``-first): a permission failure must surface
-        # as access denial, never masquerade as a missing artifact (#165).
+        # as access denial, never masquerade as a missing artifact.
         try:
             raw = path.read_bytes()
         except FileNotFoundError:
@@ -372,7 +372,7 @@ class LocalDirectoryArtifactStore:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
         except ArtifactStoreError as exc:
-            # Denial is unknown-presence, not absence (#165): fail closed so
+            # Denial is unknown-presence, not absence: fail closed so
             # gates and inspection never misreport denied reads as missing.
             if isinstance(exc, ArtifactAccessDenied):
                 raise
@@ -432,7 +432,7 @@ class LocalDirectoryArtifactStore:
         _validate_record_version(version)
         path = self.root / "bindings" / f"{version}.json"
         # Read-first: a permission failure is access denial, not a missing
-        # manifest (#165).
+        # manifest.
         try:
             return path.read_bytes()
         except FileNotFoundError:
@@ -449,7 +449,7 @@ class LocalDirectoryArtifactStore:
 
 
 class S3ArtifactStore:
-    """S3/object-store adapter over an injected obstore client (#164).
+    """S3/object-store adapter over an injected obstore client.
 
     The caller (deployment configuration) builds the obstore ``ObjectStore``
     with its own credentials; this adapter never sees them. Physical layout
@@ -491,7 +491,7 @@ class S3ArtifactStore:
         from obstore.exceptions import AlreadyExistsError  # type: ignore[import-not-found]
 
         key = self._key("artifacts", source_id, content_hash)
-        # Stored response metadata for authorized inspection (ADR-0020): the
+        # Stored response metadata for authorized inspection: the
         # safe filename, content type, and an attachment-preferring content
         # disposition ride the object as user metadata so delivery tooling
         # can force a download with a safe name instead of inline rendering.
@@ -534,7 +534,7 @@ class S3ArtifactStore:
         try:
             self.get_artifact(source_id=source_id, content_hash=content_hash)
         except ArtifactStoreError as exc:
-            # Denial is unknown-presence, not absence (#165): fail closed so
+            # Denial is unknown-presence, not absence: fail closed so
             # gates and inspection never misreport denied reads as missing.
             if isinstance(exc, ArtifactAccessDenied):
                 raise
@@ -568,7 +568,7 @@ class S3ArtifactStore:
             raise
         except (PermissionDeniedError, UnauthenticatedError) as exc:
             # A signing credential without object-read authority is access
-            # denial, not a signing-capability gap (#165).
+            # denial, not a signing-capability gap.
             raise ArtifactAccessDenied(
                 "access denied: credentials cannot sign for this artifact"
             ) from exc
@@ -635,10 +635,10 @@ class S3ArtifactStore:
 
 
 def sweep_orphaned_uploads(store: SourceArtifactStore, registry: Any) -> list[tuple[str, str]]:
-    """Report uploaded artifacts the registry has no binding for (#164).
+    """Report uploaded artifacts the registry has no binding for.
 
     An upload that succeeded but whose registry binding failed is a
-    *sweepable orphan* (ADR-0020): recoverable, reported here with the exact
+    *sweepable orphan*: recoverable, reported here with the exact
     identity, and safe to re-run — the idempotent saga re-uploads create-only
     and then records the binding. Physical keys are never exposed.
 
@@ -664,7 +664,7 @@ def sweep_orphaned_uploads(store: SourceArtifactStore, registry: Any) -> list[tu
 
 
 # ---------------------------------------------------------------------------
-# The private Source Binding Manifest (issue #164, ADR-0020).
+# The private Source Binding Manifest.
 # ---------------------------------------------------------------------------
 
 
@@ -752,11 +752,11 @@ def build_binding_manifest(
     source_reference_digest: str = "",
     validator_contract: str = "",
 ) -> SourceBindingManifest:
-    """Build the manifest for the pages being published (#164, ADR-0020).
+    """Build the manifest for the pages being published.
 
     Every non-synthetic page's declared ``sources[].id`` is resolved through
     the private registry to that source's CURRENT version hash. Synthetic
-    pages may omit provenance (ADR-0014) and are recorded with
+    pages may omit provenance and are recorded with
     ``synthetic_page=True`` only when they declare a source id anyway.
     ``pages`` are loaded Compiled Page records (``title``/``sources``/
     ``synthetic`` attributes). A declared source id the registry does not
@@ -805,7 +805,7 @@ def required_coverage_missing(
     *,
     captured_entries: list[SourceBindingEntry] | None = None,
 ) -> list[str]:
-    """Unmet artifact requirements under REQUIRED retention (#164, ADR-0020).
+    """Unmet artifact requirements under REQUIRED retention.
 
     "Publication blocks if a referenced non-synthetic source lacks a verified
     artifact" — evaluated against the pages being activated, not just the
@@ -879,7 +879,7 @@ def required_coverage_missing(
 
 
 # ---------------------------------------------------------------------------
-# The idempotent managed-ingest artifact saga (issue #164, ADR-0020).
+# The idempotent managed-ingest artifact saga.
 # ---------------------------------------------------------------------------
 
 
@@ -892,9 +892,9 @@ def retain_artifact(
     content_type: str | None,
     filename: str | None,
 ) -> str:
-    """Upload + bind one artifact: an idempotent, recoverable saga (#164).
+    """Upload + bind one artifact: an idempotent, recoverable saga.
 
-    Order (ADR-0020): SHA-256 → create-only upload → verify size/digest →
+    Order: SHA-256 → create-only upload → verify size/digest →
     record the registry binding. Any failure raises and is recoverable by
     re-running: the retry re-uploads create-only (a previous partial upload is
     digest-verified and kept) and then records the binding. A failed upload is
@@ -923,7 +923,7 @@ def retain_artifact(
 
 
 # ---------------------------------------------------------------------------
-# Required-retention activation gate (issue #164, ADR-0020).
+# Required-retention activation gate.
 # ---------------------------------------------------------------------------
 
 
@@ -938,7 +938,7 @@ def activation_binding_hook(
     required: bool,
     source_root: str | Path | None = None,
 ):
-    """Build the ``before_activation`` hook for S3 publication (#164).
+    """Build the ``before_activation`` hook for S3 publication.
 
     The returned closure builds the private Source Binding Manifest from the
     publisher's captured pages and source-version bindings. ``source_root``
@@ -1006,7 +1006,7 @@ def verify_rollback_coverage(
     expected_fingerprint: str | None = None,
     source_artifact_store: SourceArtifactStore | None = None,
 ) -> None:
-    """Gate ROLLBACK activation under required retention (#164, ADR-0020).
+    """Gate ROLLBACK activation under required retention.
 
     Activation blocks until every referenced non-synthetic source has a
     verified artifact — rollback is an activation of an already complete
@@ -1084,7 +1084,7 @@ def verify_rollback_coverage(
 
 
 # ---------------------------------------------------------------------------
-# Explicit artifact deletion with Published Version disclosure (#164).
+# Explicit artifact deletion with Published Version disclosure.
 # ---------------------------------------------------------------------------
 
 
@@ -1094,7 +1094,7 @@ def affected_published_versions(
     """Report the Published Versions whose binding covers this exact artifact.
 
     Deletion is explicit and must disclose which Published Versions lose
-    inspection coverage (ADR-0020). This lists the versions whose stored
+    inspection coverage. This lists the versions whose stored
     binding manifest binds ``(source_id, content_hash)``.
     """
     affected: list[str] = []
@@ -1119,7 +1119,7 @@ def delete_artifact_with_disclosure(
     source_id: str,
     content_hash: str,
 ) -> list[str]:
-    """Explicitly delete one artifact and disclose affected versions (#164).
+    """Explicitly delete one artifact and disclose affected versions.
 
     Retirement NEVER deletes historical artifacts; this is the only deletion
     path. Returns the Published Versions that lost inspection coverage, and

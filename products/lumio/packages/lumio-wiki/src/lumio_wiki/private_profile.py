@@ -1,4 +1,4 @@
-"""Explicit machine-local private source configuration (spec 0010 §2.1, JP).
+"""Explicit machine-local private source configuration.
 
 One explicitly selected profile file describes ONE configuration: the private
 Source Registry, the canonical original-artifact store, an explicit retention
@@ -168,7 +168,7 @@ def _parse_s3_connection(value: object, *, what: str) -> PrivateS3Connection:
         parsed = urlsplit(endpoint)
     except ValueError as exc:
         # A malformed endpoint (e.g. a truncated IPv6 literal) is one fixed
-        # value-free refusal on the safe inspection/error route (§2.1).
+        # value-free refusal on the safe inspection/error route.
         raise PrivateProfileError(f"{what} endpoint must be a well-formed http(s) URL") from exc
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise PrivateProfileError(f"{what} endpoint must be an http(s) URL with a host")
@@ -233,7 +233,7 @@ def _parse_artifact_store(value: object) -> PrivateLocalStore | PrivateS3Connect
 
 
 def _refuse_inside_repository(path: Path, repo_root: Path, *, what: str) -> None:
-    """Keep private state outside the Content Repository (spec 0010 §2.1).
+    """Keep private state outside the Content Repository.
 
     Includes ignored locations inside it: any resolved private selection at
     or below the repository root is refused.
@@ -337,7 +337,7 @@ def _s3_connection_client(
         "aws_skip_signature": False,
     }
     if what == "exchange":
-        # J4 amendment (spec 0010 §6 r4): ONLY exchange clients pin conditional
+        # J4 amendment: ONLY exchange clients pin conditional
         # copy-if-absent, required by the streaming staging/copy transport.
         # Artifact-store and publication construction stay unchanged.
         config["copy_if_not_exists"] = "multipart"

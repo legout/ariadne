@@ -1,4 +1,4 @@
-"""Standalone ``lumio-wiki`` command-line interface (issue #98).
+"""Standalone ``lumio-wiki`` command-line interface.
 
 A coding agent initializes, inspects, retrieves from, ingests into, reviews,
 and publishes a Knowledge Base through this CLI without cloning the Lumio
@@ -160,7 +160,7 @@ class CliError(Exception):
 
     ``exit_code`` defaults to ``2`` (the existing CLI convention for
     user-facing errors). Source-lifecycle handlers override it to ``1`` to
-    preserve the verbatim not-found contract (issue #133).
+    preserve the verbatim not-found contract.
     """
 
     def __init__(self, message: str, exit_code: int = 2, code: str = "cli_error") -> None:
@@ -359,7 +359,7 @@ def _load_kb(path: str | Path) -> tuple[KnowledgeBase, ValidationReport]:
 
 
 # ---------------------------------------------------------------------------
-# Object-store (S3) Knowledge Base Locations (issue #120, ADR-0013).
+# Object-store (S3) Knowledge Base Locations.
 #
 # A read command accepts either a local directory or an object-store URI
 # (``s3://bucket/path``). S3 reads resolve one immutable Published Version
@@ -386,7 +386,7 @@ def _s3_config_from_env() -> tuple[dict[str, str], dict[str, object]]:
     """Build obstore ``config``/``client_options`` from environment variables.
 
     ``LUMIO_S3_REGION`` / ``LUMIO_S3_ENDPOINT`` may also be recorded in the
-    project ``.env`` allowlist (issue #161, ADR-0019): exported process values
+    project ``.env`` allowlist: exported process values
     retain precedence, and the Lumio-specific key beats the generic ``AWS_*``
     fallback. Credentials are never read from ``.env`` — standard AWS
     credential resolution stays authoritative.
@@ -601,7 +601,7 @@ def _validate_location(path: str | Path):
 
 
 # ---------------------------------------------------------------------------
-# Remote LanceDB binding for S3 Published Versions (issue #162, ADR-0019).
+# Remote LanceDB binding for S3 Published Versions.
 #
 # A read command resolves the active S3 pointer exactly once and retains the
 # selected Published Version identity and canonical fingerprint. When the
@@ -626,7 +626,7 @@ def _retrieval_backend() -> str:
     Read from ``LUMIO_RETRIEVAL_BACKEND`` with exported-process precedence
     over the project ``.env`` allowlist (written by ``setup --retrieval``).
     An unknown value is an actionable configuration error, never a silent
-    default (issue #162).
+    default.
     """
     configured = load_project_config().get(RETRIEVAL_BACKEND_ENV_VAR)
     if configured is None:
@@ -662,7 +662,7 @@ def _bind_remote_lancedb(snapshot) -> tuple[Any, Any]:
     Snapshot's dependency-neutral descriptor — the CLI never reconstructs S3
     keys or coerces the URI through ``Path`` — and LanceDB receives the same
     credentials/region/endpoint configuration as canonical S3 reads through
-    its own ``storage_options`` (issue #162, ADR-0013).
+    its own ``storage_options``.
 
     Returns ``(lumio_lancedb_module, RemoteIndexLocation)``.
     """
@@ -695,7 +695,7 @@ def _bind_remote_lancedb(snapshot) -> tuple[Any, Any]:
 def _probe_lancedb_index(
     module: Any, location: Any, expected_fingerprint: Any
 ) -> tuple[bool | None, bool | None, str | None]:
-    """Probe a bound LanceDB index: presence, fingerprint, tables (issue #175).
+    """Probe a bound LanceDB index: presence, fingerprint, tables.
 
     Returns ``(healthy, fingerprint_matches, note)``; ``note`` is ``None`` on
     the healthy path and otherwise carries the exact degradation note search
@@ -758,7 +758,7 @@ def _remote_lance_page_search(
     Returns ``(results, note)``; ``note`` is ``None`` on the healthy path. A
     missing, corrupt, stale (fingerprint-mismatched), or unavailable remote
     index degrades truthfully: zero-index page search over the same Published
-    Version with a disclosed note (issue #162, ADR-0013). Embedding errors
+    Version with a disclosed note. Embedding errors
     propagate — they are configuration errors, not degradations.
     """
     from lumio_wiki.embeddings import EmbeddingError
@@ -792,7 +792,7 @@ def _index_fallback_note(results: list) -> str | None:
 
 
 def _reader_base_url() -> str | None:
-    """Resolve the optional Reader deployment base URL (issue #177).
+    """Resolve the optional Reader deployment base URL.
 
     Exported process value takes precedence over the project ``.env``
     allowlist, mirroring the other Lumio configuration keys. An invalid value
@@ -924,8 +924,8 @@ def _print_page_search_results(
         if page.summary:
             print(f"summary: {page.summary}")
         print(f"path:    {page.path}")
-        # Stable Entity ID for machine consumers (issue #172): titles are
-        # labels, IDs are identity (ADR-0021). Legacy pages omit the line.
+        # Stable Entity ID for machine consumers: titles are
+        # labels, IDs are identity. Legacy pages omit the line.
         if page.id:
             print(f"entity:  {page.id}")
         print(f"score:   {result.score}")
@@ -933,7 +933,7 @@ def _print_page_search_results(
             print(f"matched: {', '.join(result.matched_fields)}")
         if result.snippet:
             print(f"snippet: {result.snippet}")
-        # Labelled open actions (issue #177): the copyable page command and,
+        # Labelled open actions: the copyable page command and,
         # only when a Reader base URL is configured, the browser link.
         for line in render_open_actions(
             citation_open_actions(
@@ -963,7 +963,7 @@ def _print_evidence_results(
     copyable ``lumio-wiki page`` command, the optional Reader browser URL,
     and — when the KB is available to resolve the cited page's Sources — the
     authored external Source URL plus the explicit private-Source inspect
-    command (never an implicit signed/public artifact URL, ADR-0020).
+    command (never an implicit signed/public artifact URL).
     """
     if not results:
         print("No Evidence matched the query.")
@@ -1016,7 +1016,7 @@ def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]
     returned/found result). Graph traversal is always served from the
     in-memory Discovery Graph, so the trace never implies a persisted
     artifact was the traversal source — that freshness signal belongs to the
-    dedicated ``health`` command (issue #110, ADR-0011).
+    dedicated ``health`` command.
     """
     body = " ".join(outcome_fields)
     return f"# trace: scope={scope} direction={direction} {body}"
@@ -1028,7 +1028,7 @@ def _format_graph_trace(*, scope: str, direction: str, outcome_fields: list[str]
 
 
 def _reject_unsafe_uri(value: str) -> None:
-    """Refuse userinfo, query, or fragment in object-store URIs (ADR-0013).
+    """Refuse userinfo, query, or fragment in object-store URIs.
 
     Credentials belong in configuration (``aws_*`` keys / environment), never
     in a Location URI. The error is generic so it never repeats their values.
@@ -1050,7 +1050,7 @@ def _reject_unsafe_uri(value: str) -> None:
 
 
 def _validate_object_store_uri(flag: str, value: str) -> None:
-    """Reject non-object-store URIs for the setup location flags (issue #161)."""
+    """Reject non-object-store URIs for the setup location flags."""
     # Unsafe-URI check first: userinfo/query/fragment must be refused with a
     # generic message, never echoed back via the {value!r} path below.
     _reject_unsafe_uri(value)
@@ -1063,7 +1063,7 @@ def _validate_object_store_uri(flag: str, value: str) -> None:
 def _require_extra(module: str, install_command: str, reason: str) -> None:
     """Fail with one exact install command when an optional capability is missing.
 
-    Setup never mutates the active Python environment (ADR-0019); it detects a
+    Setup never mutates the active Python environment; it detects a
     missing optional distribution and prints the exact command to run.
     """
     if not _detect_module(module):
@@ -1076,7 +1076,7 @@ def _require_extra(module: str, install_command: str, reason: str) -> None:
 
 
 def _env_is_tracked_by_git(project_dir: Path) -> bool:
-    """Return whether the project's ``.env`` is tracked by git (issue #161).
+    """Return whether the project's ``.env`` is tracked by git.
 
     Used as the privacy guard for private Source Artifact Store URIs
     (ADR-0020): a tracked ``.env`` would leak the private URI through normal
@@ -1132,7 +1132,7 @@ def _wizard_ask(
 
 
 def _run_setup_wizard() -> dict[str, Any]:
-    """Interactive fallback when no location was passed (ADR-0019).
+    """Interactive fallback when no location was passed.
 
     Asks the same questions the flags answer, so the wizard and flag flows
     produce equivalent configuration.
@@ -1316,7 +1316,7 @@ def _collect_profile_payload(
     registry_default: Path,
     store_default: Path,
 ) -> str:
-    """Ask for one new private profile's declaration and preview it (§2.1).
+    """Ask for one new private profile's declaration and preview it.
 
     Shared by the adopted wizard route (which writes the file only after its
     own confirmation) and the empty-create route (which carries the payload
@@ -1358,7 +1358,7 @@ def _collect_profile_payload(
 
 def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interactive: bool):
     """Load the explicitly selected private profile — or create it only after
-    an interactive preview and confirmation (spec 0010 §2.1, plan 0010 J5).
+    an interactive preview and confirmation.
 
     Noninteractive setup never invents a profile; an invalid selection is
     removed again so a refusal leaves nothing behind. The profile path
@@ -1446,10 +1446,10 @@ def _resolve_journey_profile(args: argparse.Namespace, *, kb_path: Path, interac
 
 
 def _resolve_journey_registry(profile, *, kb_path: Path):
-    """Open only the profile's Source Registry through the JP resolver (§2.1).
+    """Open only the profile's Source Registry through the JP resolver.
 
     Registry-only needs keep artifact/exchange credentials untouched:
-    metadata-bootstrap readiness never requires them (plan 0010 J5).
+    metadata-bootstrap readiness never requires them.
     """
     from lumio_wiki.private_profile import (
         PrivateProfileError,
@@ -1477,7 +1477,7 @@ def _require_journey_word(value: str) -> str | None:
 def _journey_git_facts(
     kb_path: Path,
 ) -> tuple[Path | None, list[str], tuple[str, str] | None]:
-    """Native Git facts for unambiguous submission defaults (spec 0010 §2).
+    """Native Git facts for unambiguous submission defaults.
 
     Reports the configured remotes and the current branch's upstream tracking
     target — the meaningful default-target facts. A remote is never chosen by
@@ -1539,7 +1539,7 @@ def _journey_submission_settings(
     *,
     interactive: bool,
 ) -> dict[str, str | None]:
-    """Select the submission mode and Git remote/target branch (spec 0010 §2).
+    """Select the submission mode and Git remote/target branch.
 
     Valid existing settings (exported process values over the project .env)
     are preserved noninteractively and become the interactive Enter defaults.
@@ -1643,7 +1643,7 @@ def _print_journey_report(
     connection=None,
     repo_root: Path | None = None,
 ) -> None:
-    """Print the read-only journey readiness report (plan 0010 J5).
+    """Print the read-only journey readiness report.
 
     Reports baseline-metadata coverage, exchange capability truthfully
     (configuration alone proves nothing), the separate publication boundary,
@@ -1889,7 +1889,7 @@ def _maybe_install_skill(args: argparse.Namespace, *, project_dir: Path) -> None
     """Optional, explicit skill install, shared by the setup routes (J5a).
 
     Project bootstrap never writes into an agent trust surface unless one
-    target was requested (ADR-0017); a stale/modified installation is kept
+    target was requested; a stale/modified installation is kept
     and reported with its explicit update path.
     """
     _execute_bound_skill_action(_resolve_skill_binding(args, project_dir=project_dir))
@@ -1985,7 +1985,7 @@ def _run_empty_journey_setup(
     kb_path: Path | None,
     from_uri: str | None,
 ) -> int:
-    """One confirmed preview/apply path for empty managed-KB creation (§2.2).
+    """One confirmed preview/apply path for empty managed-KB creation.
 
     Headless runs preview by default and apply only with ``--confirm``; the
     interactive route collects the same choices, shows the same preview and
@@ -2065,13 +2065,13 @@ def _run_empty_journey_setup(
             )
         namespace = asked
     # Required submission choices are collected and validated BEFORE any
-    # write (§2.2), from the selected worktree's native Git facts.
+    # write, from the selected worktree's native Git facts.
     submission = _journey_submission_settings(facts.repository_root, interactive=interactive)
     profile_path: Path = args.private_profile
     new_payload: str | None = None
     if not profile_path.exists():
         # Noninteractive missing files were refused at the journey gate; only
-        # the interactive wizard may propose contents (§2.1/§2.2) — and the
+        # the interactive wizard may propose contents — and the
         # NEW destination itself is validated BEFORE any question or write,
         # with the same ordering and semantics as the adopted wizard route
         # (R1): resolved containment first, then the entry kind.
@@ -2156,7 +2156,7 @@ def _run_empty_journey_setup(
         # this run emits exactly the applied envelope or one bounded error.
     else:
         # Preview-only (noninteractive) or interactive confirmation: show the
-        # one concrete preview first (§2.2).
+        # one concrete preview first.
         if as_json:
             print(json.dumps(build_envelope(plan, phase="preview"), sort_keys=True))
         else:
@@ -2234,7 +2234,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     Knowledge Base if it does not exist and records optional S3 publication,
     retrieval-backend, and private source-store configuration in ``.env``.
     Reader form: ``setup --from <s3-uri>`` configures a read-only project
-    against an existing S3 Knowledge Base Location (issue #161, ADR-0019);
+    against an existing S3 Knowledge Base Location;
     any non-``s3://`` ``--from`` value is a git clone URL that is cloned,
     validated, and recorded as ``LUMIO_KB_PATH`` (bounded git transport).
     With no location in an interactive terminal a short wizard asks the same
@@ -2282,7 +2282,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             "--publish-to records an S3 publication destination for a local "
             "Maintainer worktree; it cannot be combined with --from"
         )
-    # 1b. Guided journey selection (spec 0010 §2/§2.1, plan 0010 J5): the
+    # 1b. Guided journey selection: the
     # explicit private profile is required and exclusive, and nothing is
     # written until the whole journey selection validates.
     journey = bool(getattr(args, "journey", False))
@@ -2404,7 +2404,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
 
     # 2. Optional capabilities: detect BEFORE any write; print one exact
-    # install command. Never mutate the active Python environment (ADR-0019).
+    # install command. Never mutate the active Python environment.
     if (
         (from_uri is not None and git_url is None)
         or publish_to is not None
@@ -2417,7 +2417,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         _require_extra("lumio_lancedb", "pip install 'lumio-lancedb[s3]'", "LanceDB retrieval")
 
     # 3. Privacy guard: never record a private Source Artifact Store URI in a
-    # .env git tracks (ADR-0020).
+    # .env git tracks.
     if source_store is not None and _env_is_tracked_by_git(project_dir):
         raise CliError(
             "refusing to record the private Source Artifact Store URI: this "
@@ -2453,7 +2453,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             created = True
         kb_display = kb_path
 
-    # 3b. Guided journey composition (spec 0010 §2/§2.1, plan 0010 J5): the
+    # 3b. Guided journey composition: the
     # private profile is validated or interactively created and confirmed, and
     # the journey machine settings are selected — all before any .env write.
     journey_profile = None
@@ -2543,7 +2543,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print(f"  AGENTS.md:      {agents_md}")
 
     # 6. Optional, explicit skill install. Project bootstrap never writes into
-    # an agent trust surface unless one target was requested (ADR-0017).
+    # an agent trust surface unless one target was requested.
     _maybe_install_skill(args, project_dir=project_dir)
 
     print()
@@ -2733,7 +2733,7 @@ def _agents_md_s3_config(
     retrieval: str | None,
     source_store: str | None,
 ) -> str:
-    """Render the optional project S3 configuration block (issue #161).
+    """Render the optional project S3 configuration block.
 
     Empty when no S3 setting is configured, so plain local setup writes the
     exact section it wrote before this feature.
@@ -2753,7 +2753,7 @@ def _agents_md_s3_config(
             "setting."
         )
     if source_store is not None:
-        # ADR-0020: AGENTS.md is a shared, typically tracked project file, so
+        # AGENTS.md is a shared, typically tracked project file, so
         # the private Source Artifact Store URI itself never appears here —
         # only the fact that `.env` holds it (guarded by the setup privacy
         # check).
@@ -2888,7 +2888,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 # The base CLI never imports sentence-transformers / openai / lumio_lancedb at
 # module load; they are pulled in only when a caller asks for --mode
 # semantic|hybrid. lumio-lancedb ships no concrete Embedder, so the CLI builds
-# one here from either an OpenAI-compatible provider or a local model (#75).
+# one here from either an OpenAI-compatible provider or a local model.
 # ---------------------------------------------------------------------------
 
 
@@ -2902,7 +2902,7 @@ class _LocalEmbedder:
 
         # Lazy: lumio-lancedb[embeddings] only. Loaded via importlib (a string
         # lookup) so the base package keeps no static sentence-transformers
-        # import (ADR-0010) and static analysis doesn't flag the optional dep.
+        # import and static analysis doesn't flag the optional dep.
         SentenceTransformer = importlib.import_module("sentence_transformers").SentenceTransformer
         self._model = SentenceTransformer(model_name)
         dim_fn = getattr(
@@ -2989,7 +2989,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
             except ValueError as exc:
                 raise CliError(str(exc)) from None
         # Resolve the active S3 pointer exactly once and retain the
-        # selected Published Version identity and fingerprint (issue #162).
+        # selected Published Version identity and fingerprint.
         snapshot = _resolve_s3_snapshot(value, version=requested_version)
         return _search_object_store(
             args,
@@ -3014,7 +3014,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
         _print_page_search_results(results, reader_base_url=reader_base, kb_location=str(kb.root))
         return 0
 
-    # semantic / hybrid — needs lumio-lancedb + an Embedder (ADR-0010, #75).
+    # semantic / hybrid — needs lumio-lancedb + an Embedder.
     from lumio_wiki.composition import OptionalCapabilityError, require_lancedb
 
     try:
@@ -3028,7 +3028,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
     embedder = _resolve_embedder(args.model)
     index_dir = args.index_dir or str(Path(args.path) / ".lumio" / "lance")
     # Build/refresh the derived LanceDB index; binds the adapter to the KB and
-    # writes BM25 + embedding tables under index_dir (issue #75, #138).
+    # writes BM25 + embedding tables under index_dir.
     kb = module.build_lancedb_index(kb, index_dir, embedder=embedder)
     results = kb.retrieve(
         args.query,
@@ -3051,7 +3051,7 @@ def _search_object_store(
     kb_location: str | None = None,
     published_version: str | None = None,
 ) -> int:
-    """Search an S3 Published Version: zero-index, or bound remote LanceDB (#162).
+    """Search an S3 Published Version: zero-index, or bound remote LanceDB.
 
     Backend and mode are separate choices: LanceDB BM25 may serve lexical
     mode, while semantic/hybrid additionally use the configured embedder and
@@ -3136,7 +3136,7 @@ def _search_object_store(
         )
     except EmbeddingError as exc:
         # Model identity / index configuration errors are actionable, never
-        # silently degraded (issue #162).
+        # silently degraded.
         raise CliError(str(exc)) from exc
     note = _index_fallback_note(results) or adapter.last_fallback_detail
     if getattr(args, "json", False):
@@ -3297,7 +3297,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
 
 
 def _entity_id_suffix(kb: KnowledgeBase, title: str) -> str:
-    """Stable Entity-ID suffix for one Canonical Page Title (#172).
+    """Stable Entity-ID suffix for one Canonical Page Title.
 
     ``" (entity:...)"`` when the title resolves to a page-owning Entity;
     empty for Legacy Flat Mode pages (title is the fallback graph key there,
@@ -3358,8 +3358,8 @@ def _cmd_paths(args: argparse.Namespace) -> int:
     found = path is not None
     hops = max(len(path) - 1, 0) if found else 0
     if found:
-        # Human-readable titles with stable Entity IDs (issue #172): titles
-        # are labels, IDs are identity (ADR-0021).
+        # Human-readable titles with stable Entity IDs: titles
+        # are labels, IDs are identity.
         print(" -> ".join(f"{title}{_entity_id_suffix(kb, title)}" for title in path))
     if args.trace:
         print(
@@ -3385,7 +3385,7 @@ def _cmd_paths(args: argparse.Namespace) -> int:
 
 
 def _cmd_entity(args: argparse.Namespace) -> int:
-    """Resolve one stable Entity from an exact ID, title, or alias (#172).
+    """Resolve one stable Entity from an exact ID, title, or alias.
 
     Deterministic exact/alias lookup is always available (zero-index,
     model-free). ``--candidates`` additionally runs optional LanceDB FTS
@@ -3424,7 +3424,7 @@ def _cmd_entity(args: argparse.Namespace) -> int:
 
 
 def _print_entity_candidates(kb: KnowledgeBase, args: argparse.Namespace) -> None:
-    """Print scored, review-only entity-resolution candidates (issue #172).
+    """Print scored, review-only entity-resolution candidates.
 
     ``None`` (index missing/stale/unhealthy) is disclosed truthfully; it is
     never presented as an empty result. The index is built on demand at the
@@ -3466,7 +3466,7 @@ def _cmd_hot(args: argparse.Namespace) -> int:
 
     Generates the Hot Index in memory from the Control File pins so it is
     always current and available without a prior publish. This is the curated
-    entry surface a coding agent consults first (issue #110, ADR-0011).
+    entry surface a coding agent consults first.
     """
     kb, _report = _load_kb(args.path)
     content = generate_hot_index(kb.control, kb.pages)
@@ -3481,7 +3481,7 @@ def _cmd_hot(args: argparse.Namespace) -> int:
 
 
 def _managed_ingest_selection(args: argparse.Namespace, kb_root):
-    """The ONE shared managed-ingest private selection (spec 0010 §2.1).
+    """The ONE shared managed-ingest private selection.
 
     Profile mode is exclusive and resolves registry+artifacts together;
     without it, the legacy explicit ``--source-registry``/environment
@@ -3604,7 +3604,7 @@ def _cmd_ingest_worktree_passthrough(
 ) -> int:
     """Passthrough/distilled ingest into the Git authoring worktree (G3).
 
-    Spec 0008 §7: an adopted Knowledge Base ingests through ordinary
+    an adopted Knowledge Base ingests through ordinary
     worktree file edits — no proposal is staged and nothing is committed.
     Conversion/distillation stays identical to the legacy route; only the
     staging target changes.
@@ -3668,7 +3668,7 @@ def _cmd_index(args: argparse.Namespace) -> int:
     With no ``dir`` argument prints the root Navigation Index (the exhaustive
     page catalog grouped by directory); with ``dir`` prints that directory's
     shallow index. Generated in memory so it is always current without a
-    prior publish (issue #110, ADR-0011).
+    prior publish.
     """
     kb, _report = _load_kb(args.path)
     indexes = generate_navigation_indexes(kb.pages)
@@ -3682,7 +3682,7 @@ def _cmd_index(args: argparse.Namespace) -> int:
 
 
 def _artifact_store_from_env():
-    """Resolve the optional private Source Artifact Store (issue #164).
+    """Resolve the optional private Source Artifact Store.
 
     ``LUMIO_SOURCE_STORE`` (exported process value, then the project
     ``.env`` allowlist written by ``setup --source-store``) selects the
@@ -3714,7 +3714,7 @@ def _artifact_store_from_env():
 def _git_source_registry(args: argparse.Namespace):
     """Resolve the explicitly selected private Source Registry, or ``None``.
 
-    Git-native authoring never guesses private state (spec 0008 §3.2): the
+    Git-native authoring never guesses private state: the
     shared registry comes from ``--source-registry``, the exported process
     value, or the project ``.env`` allowlist. ``None`` keeps preview honest —
     managed bindings then surface as a blocking review diagnostic instead of
@@ -3742,7 +3742,7 @@ def _git_source_registry(args: argparse.Namespace):
 def _private_profile_selection(args: argparse.Namespace, kb_root, needs: frozenset[str]):
     """Resolve an explicit ``--private-profile`` selection, or ``None``.
 
-    Profile mode is exclusive (spec 0010 §2.1): one selected file supplies
+    Profile mode is exclusive: one selected file supplies
     the registry, artifact store and retention policy, so any competing
     flag or environment/project selection is refused instead of merged.
     Without ``--private-profile`` every existing resolution behavior is
@@ -3780,7 +3780,7 @@ def _private_profile_selection(args: argparse.Namespace, kb_root, needs: frozens
 
 
 def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
-    """``private-profile inspect``: safe read-only validation (spec 0010 §2.1)."""
+    """``private-profile inspect``: safe read-only validation."""
     from lumio_wiki.private_profile import (
         PrivateProfileError,
         PrivateS3Connection,
@@ -3798,7 +3798,7 @@ def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
     except PrivateProfileError as exc:
         raise CliError(str(exc), exit_code=2, code="invalid_private_profile") from exc
     # Safe capabilities only: never private paths, bucket/prefix details or
-    # credential environment variable names (spec 0010 §2.1).
+    # credential environment variable names.
     artifact_store = "s3" if isinstance(profile.artifact_store, PrivateS3Connection) else "local"
     exchange = "s3" if profile.exchange is not None else "manual"
     if getattr(args, "json", False):
@@ -3828,7 +3828,7 @@ def _cmd_private_profile_inspect(args: argparse.Namespace) -> int:
 def _bootstrap_source_registry(args: argparse.Namespace, kb_root: Path):
     """Resolve the bootstrap Source Registry: registry-only profile or explicit flag.
 
-    Spec 0010 §2.1/§5.1: profile mode resolves only the ``registry`` resource
+    profile mode resolves only the ``registry`` resource
     (metadata bootstrap needs no artifact store or exchange access, so no
     unused S3 credentials are ever touched); without a profile the explicit
     ``--source-registry`` selection is required — bootstrap never guesses
@@ -3854,7 +3854,7 @@ def _bootstrap_source_registry(args: argparse.Namespace, kb_root: Path):
 
 
 def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
-    """``source-bootstrap export|inspect|import``: metadata-only bootstrap (§5.1)."""
+    """``source-bootstrap export|inspect|import``: metadata-only bootstrap."""
     from lumio_wiki.git_authoring import GitAuthoringError
     from lumio_wiki.source_handoff import (
         BaselineExport,
@@ -3935,7 +3935,7 @@ def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
 
 
 def _handoff_selection(args: argparse.Namespace, kb_root: Path):
-    """Resolve the full-handoff registry and artifact store (spec 0010 §2.1/§5).
+    """Resolve the full-handoff registry and artifact store.
 
     Profile mode resolves registry+artifacts together and refuses competing
     selections; without a profile the legacy explicit ``--source-registry`` /
@@ -3963,7 +3963,7 @@ def _handoff_selection(args: argparse.Namespace, kb_root: Path):
 
 
 def _cmd_source_handoff(args: argparse.Namespace) -> int:
-    """``source-handoff export|inspect|import``: full bundle transfer (§5)."""
+    """``source-handoff export|inspect|import``: full bundle transfer."""
     from lumio_wiki.artifact_store import ArtifactStoreError
     from lumio_wiki.git_authoring import GitAuthoringError, resolve_repository
     from lumio_wiki.source_handoff import (
@@ -4080,7 +4080,7 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
 
 
 def _explicit_exchange_store(uri: str):
-    """Build the exchange-only (store, prefix) from one explicit S3 URI (§6).
+    """Build the exchange-only (store, prefix) from one explicit S3 URI.
 
     The documented legacy env resolution (``_s3_config_from_env``) selects
     endpoint/region/credentials, but the store is constructed DIRECTLY with
@@ -4207,7 +4207,7 @@ def _exchange_selection(args: argparse.Namespace):
 
 
 def _cmd_source_exchange(args: argparse.Namespace) -> int:
-    """``source-exchange upload|download``: private S3 transfer transport (§6)."""
+    """``source-exchange upload|download``: private S3 transfer transport."""
     from lumio_wiki.knowledge_base import KnowledgeBaseError
     from lumio_wiki.source_exchange import (
         SourceExchangeError,
@@ -4248,7 +4248,7 @@ def _cmd_source_exchange(args: argparse.Namespace) -> int:
 
 
 def _cmd_extract(args: argparse.Namespace) -> int:
-    """``extract``: one real original through the actual processor (spec 0010 §3)."""
+    """``extract``: one real original through the actual processor."""
     from lumio_wiki.authoring_journey import AuthoringJourneyError, extract_source
 
     try:
@@ -4270,7 +4270,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
-    """``ingest-candidate``: one complete multi-page/ontology candidate (§3)."""
+    """``ingest-candidate``: one complete multi-page/ontology candidate."""
     from lumio_wiki.authoring_journey import (
         AuthoringJourneyError,
         ingest_candidate,
@@ -4336,7 +4336,7 @@ def _cmd_ingest_candidate(args: argparse.Namespace) -> int:
 def _review_source_registry(args: argparse.Namespace, kb_root: Path):
     """Resolve the review Source Registry: registry-only profile, flag, or None.
 
-    Spec 0010 §4: review optionally resolves exact Source Versions. Profile
+    review optionally resolves exact Source Versions. Profile
     mode resolves ONLY the ``registry`` resource (an artifact store or
     exchange is never touched for review); without a selection the review
     stays honest with exact-version verification disclosed as unavailable —
@@ -4355,7 +4355,7 @@ def _review_source_registry(args: argparse.Namespace, kb_root: Path):
 
 
 def _cmd_authoring_review(args: argparse.Namespace) -> int:
-    """``authoring-review``: readable review of the staged candidate (spec 0010 §4)."""
+    """``authoring-review``: readable review of the staged candidate."""
     from lumio_wiki.authoring_review import AuthoringReviewError, review_authoring_candidate
     from lumio_wiki.git_authoring import GitAuthoringError
 
@@ -4421,7 +4421,7 @@ def _cmd_authoring_review(args: argparse.Namespace) -> int:
 
 
 def _cmd_authoring_check(args: argparse.Namespace) -> int:
-    """``authoring-check``: verify one whole commit against its review (§4)."""
+    """``authoring-check``: verify one whole commit against its review."""
     from lumio_wiki.authoring_review import (
         AuthoringReviewError,
         check_authoring_commit,
@@ -4452,11 +4452,11 @@ def _cmd_authoring_check(args: argparse.Namespace) -> int:
 
 
 def _artifact_retention_required() -> bool:
-    """Whether artifact retention is configured as required (issue #164).
+    """Whether artifact retention is configured as required.
 
     ``LUMIO_ARTIFACT_RETENTION=required`` blocks publication activation
     while a referenced non-synthetic source lacks a verified artifact;
-    unset/``disabled`` preserves the hash-only behavior (ADR-0020).
+    unset/``disabled`` preserves the hash-only behavior.
     """
     value = os.environ.get(ARTIFACT_RETENTION_ENV_VAR) or load_project_config().get(
         ARTIFACT_RETENTION_ENV_VAR
@@ -4475,7 +4475,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     kb, _report = _load_kb(args.path)
     compiled_page = getattr(args, "compiled_page", None)
     source_id = getattr(args, "source_id", None)
-    # issue #149: --compiled-page and --source-id select the managed
+    # --compiled-page and --source-id select the managed
     # host-Distiller mode and are required together. With neither present the
     # ordinary text/Markdown/document ingest path is unchanged.
     if (compiled_page is None) != (source_id is None):
@@ -4494,7 +4494,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     raw_bytes = source_path.read_bytes()
     content_type = args.content_type or _infer_content_type(source_path)
 
-    # Git-native managed ingest (spec 0008 §7): when the Knowledge Base has
+    # Git-native managed ingest: when the Knowledge Base has
     # adopted the Source Reference Manifest, the managed host-Distiller route
     # writes ordinary files and exact bindings into the authoring worktree —
     # never a proposal. A present-but-invalid manifest is refused here for
@@ -4524,7 +4524,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _cmd_capture_session(args: argparse.Namespace) -> int:
-    """``capture session``: explicit, preview-first session capture (issue #179)."""
+    """``capture session``: explicit, preview-first session capture."""
     from lumio_wiki.capture import (
         CaptureError,
         capture_session,
@@ -4602,7 +4602,7 @@ def _cmd_capture_session(args: argparse.Namespace) -> int:
             raise CaptureError(str(exc)) from exc
         return result
 
-    # Two-phase preview-first flow (issue #179 AC2): phase 1 computes and
+    # Two-phase preview-first flow: phase 1 computes and
     # PRINTS the preview (sections + redaction counts) with nothing
     # registered or written; phase 2 — only under an explicit --yes — runs
     # the same validated inputs again to register and apply the worktree
@@ -4708,7 +4708,7 @@ def _cmd_capture_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_ingest_url(args: argparse.Namespace) -> int:
-    """Stage an HTTPS Knowledge Source under a stable Source ID (issue #178).
+    """Stage an HTTPS Knowledge Source under a stable Source ID.
 
     Safe, bounded URL ingestion: the fetch boundary rejects
     non-HTTPS schemes, credential-bearing URLs, private/loopback/link-local
@@ -4788,7 +4788,7 @@ def _cmd_ingest_url(args: argparse.Namespace) -> int:
 
 
 def _parse_research_manifest(path: Path) -> list:
-    """Parse and validate a consulted-URL manifest (issue #178).
+    """Parse and validate a consulted-URL manifest.
 
     The manifest is an explicit list of ``{url, title, accessed_at}`` entries.
     It fails closed: every URL must be HTTPS (no credentials), timestamps must
@@ -4859,7 +4859,7 @@ def _parse_research_manifest(path: Path) -> list:
 
 
 def _cmd_ingest_research(args: argparse.Namespace) -> int:
-    """Stage an agent-authored research report with consulted-URL provenance (issue #178).
+    """Stage an agent-authored research report with consulted-URL provenance.
 
     The bounded research bundle: the report is the host-agent-authored
     Compiled Page candidate (distinguishing quotations from synthesis is the
@@ -4972,7 +4972,7 @@ def _cmd_remove_page(args: argparse.Namespace) -> int:
 def _cmd_merge_entity(args: argparse.Namespace) -> int:
     """Merge one Entity into another as ordinary worktree edits (G3).
 
-    Spec 0008 §6/§7: the retired Entity's Claims migrate, dependents retarget,
+    the retired Entity's Claims migrate, dependents retarget,
     the redirect/pins repair, and the retired page becomes an explicit Git
     tree deletion — no proposal is staged and nothing is committed.
     """
@@ -5002,7 +5002,7 @@ def _cmd_merge_entity(args: argparse.Namespace) -> int:
 def _cmd_rename_page(args: argparse.Namespace) -> int:
     """Rename, recategorize, or re-alias one Compiled Page as worktree edits (G3/D2).
 
-    Required G3 completion (spec 0008 §6, ADR-0016): the native reviewed
+    Required G3 completion: the native reviewed
     title-rename primitive with optional category move and an explicit alias
     choice — stable Entity/Claim IDs and provenance preserved, exactly-
     resolved incoming links (renames AND moves), moved outbound targets, and
@@ -5073,7 +5073,7 @@ def _cmd_rename_page(args: argparse.Namespace) -> int:
 def _cmd_legacy_proposals_inventory(args: argparse.Namespace) -> int:
     """``legacy-proposals inventory``: pure-read legacy store inventory (G4).
 
-    Spec 0008 §7: read-only classification of the retired persisted store.
+    read-only classification of the retired persisted store.
     Creates nothing — no directories, lock files, receipts, or Git refs.
     """
     from lumio_wiki.legacy_proposals import inventory_legacy_store
@@ -5198,7 +5198,7 @@ def _cmd_legacy_proposals_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_publish(args: argparse.Namespace) -> int:
-    """Publish an exact reviewed Git revision (spec 0008 §4).
+    """Publish an exact reviewed Git revision.
 
     the legacy ``publish <proposal-id>`` route is retired; publication
     admits an exact commit through preview/confirm only.
@@ -5213,7 +5213,7 @@ def _cmd_publish(args: argparse.Namespace) -> int:
 
 
 def _print_publication_review(review) -> None:
-    """Print the stateless Publication Review (spec 0008 §4.1)."""
+    """Print the stateless Publication Review."""
     print(f"Publication Review (validator contract {review.validator_contract})")
     print(f"  revision:         {review.revision}")
     print(f"  subtree:          {review.subtree or '(repository root)'}")
@@ -5471,10 +5471,10 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
 def _lance_storage_options_from_env() -> dict[str, str]:
     """Build LanceDB's own S3 ``storage_options`` from environment variables.
 
-    LanceDB connects to its own URI with its own options (ADR-0013): Lumio
+    LanceDB connects to its own URI with its own options: Lumio
     never hands its obstore client to LanceDB. Mirrors the resolution order of
     :func:`_s3_config_from_env` (LUMIO_S3_* first — exported process value,
-    then the project ``.env`` allowlist written by setup (issue #161) — then
+    then the project ``.env`` allowlist written by setup — then
     the generic ``AWS_*`` fallback). Credentials are never read from ``.env``.
     """
     project = load_project_config()
@@ -5506,7 +5506,7 @@ def _lance_storage_options_from_env() -> dict[str, str]:
 
 
 def _publication_index_builder(destination: str):
-    """Build the remote-LanceDB publication index builder (issue #163).
+    """Build the remote-LanceDB publication index builder.
 
     The builder (``lumio_lancedb.remote_publication_builder``) builds the
     lexical BM25 + page tables under the version's ``derived/lance/`` prefix
@@ -5647,7 +5647,7 @@ def _cmd_diff_s3(args: argparse.Namespace) -> int:
 
 
 def _cmd_export_graph(args: argparse.Namespace) -> int:
-    """Write graph.json + graph.graphml over the authorized page set (issue #193)."""
+    """Write graph.json + graph.graphml over the authorized page set."""
     kb, _report = _load_kb(args.path)
     scope = ExportVisibilityScope((args.scope or "all").strip().lower())
     authorized = select_export_pages(kb.pages, scope)
@@ -5672,7 +5672,7 @@ def _cmd_export_graph(args: argparse.Namespace) -> int:
 def _cmd_import_graph(args: argparse.Namespace) -> int:
     """Import stub Compiled Pages from a graph.json into the worktree (G3).
 
-    Spec 0008 §7: graph exchange imports edit the selected Git authoring
+    graph exchange imports edit the selected Git authoring
     worktree as ordinary files (stub pages plus any Control File extension);
     broken edges stay disclosed diagnostics and edges never become Claims.
     """
@@ -5725,7 +5725,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
             f"graph_recovery:      run 'lumio-wiki health {args.path} --rebuild' "
             f"to materialize the Discovery Graph"
         )
-    # Structural topology diagnostics (issue #126, ADR-0011): read-only,
+    # Structural topology diagnostics: read-only,
     # model-free, distinct from the artifact/runtime observability above.
     # Discloses BOTH scopes so a Maintainer can distinguish missing reviewed
     # semantic Relationships (canonical) from missing navigation topology
@@ -5751,7 +5751,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Effective configuration + runtime state (issue #175).
+# Effective configuration + runtime state.
 #
 # ``status`` explains the project's effective Knowledge Base configuration and
 # retrieval state from one secret-free command, and ``setup`` prints the same
@@ -5766,7 +5766,7 @@ def _resolve_location_with_source(
 ) -> tuple[str, str]:
     """Resolve the effective Knowledge Base location and its config source.
 
-    Applies the documented precedence (issue #152, ADR-0017) and returns
+    Applies the documented precedence and returns
     ``(location, source_description)``: an explicit argument, an exported
     ``LUMIO_KB_PATH``, or the nearest trusted project ``.env``.
     """
@@ -5789,7 +5789,7 @@ def _resolve_location_with_source(
 
 
 def _redact_location(value: str) -> str:
-    """Return a secret-free Knowledge Base location for output (issue #175).
+    """Return a secret-free Knowledge Base location for output.
 
     Strips ``s3://user:pass@bucket/...`` userinfo the same way the S3
     Location contract keeps credentials off Locations and manifests
@@ -5813,7 +5813,7 @@ def _artifact_store_summary() -> tuple[str, bool | None]:
     """Summarize the private Source Artifact Store without credentials or keys.
 
     Returns ``(kind, available)``. Only the kind is reported: the store URI is
-    private (ADR-0020) and availability is never probed with credentials, so
+    private and availability is never probed with credentials, so
     ``available`` stays ``None`` (not probed) rather than guessed.
     """
     value = os.environ.get(SOURCE_STORE_ENV_VAR) or load_project_config().get(SOURCE_STORE_ENV_VAR)
@@ -5835,7 +5835,7 @@ def _lancedb_status_fields(
     """Collect the LanceDB requested/available/healthy/fingerprint fields.
 
     Never raises: every probe outcome degrades into ``lancedb_fallback`` with
-    recovery guidance (issue #175). Probes reuse the shared
+    recovery guidance. Probes reuse the shared
     :func:`_probe_lancedb_index` degradation taxonomy so ``status`` and
     ``search`` cannot disagree about index health.
     """
@@ -5914,7 +5914,7 @@ def _lancedb_status_fields(
 def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
     """Collect the effective configuration + runtime state as a flat dict.
 
-    The dict keys are the rendered output keys verbatim (issue #175): one
+    The dict keys are the rendered output keys verbatim: one
     stable shape feeds the human renderer, ``--json``, and the post-``setup``
     summary. Never includes credentials, signed URLs, private object keys, or
     provider secrets — private stores are summarized by kind only.
@@ -5967,7 +5967,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
         status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
         status["review_due"] = len(due_review_pages(snapshot.knowledge_base.pages))
-        # One immutable resolution serves every field (issue #175): the
+        # One immutable resolution serves every field: the
         # already-resolved Snapshot is handed back to its Location so a
         # concurrent pointer advance can never mix versions in one report.
         state, graph_source, graph_note = kb_location.graph_state_with_source(snapshot)
@@ -6089,7 +6089,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _print_setup_status_summary() -> None:
-    """Print the shared post-setup status summary (issue #175).
+    """Print the shared post-setup status summary.
 
     Runs after ``setup`` wrote its configuration. A not-yet-resolvable
     location (e.g. an S3 URI whose endpoint is unreachable right now) must
@@ -6105,7 +6105,7 @@ def _print_setup_status_summary() -> None:
 
 
 def _cmd_git_check(args: argparse.Namespace) -> int:
-    """``git-check``: read-only Git connection diagnosis (spec 0010 §2, plan J5)."""
+    """``git-check``: read-only Git connection diagnosis."""
     from lumio_wiki.git_connection import check_git_connection
 
     report = check_git_connection(args.project, remote=args.remote)
@@ -6148,7 +6148,7 @@ def _cmd_git_check(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Retrieval evaluation harness (issue #138): recall@k per pipeline stage
+# Retrieval evaluation harness: recall@k per pipeline stage
 # against a versioned gold set, over the public retrieve seam. Model-free at
 # the base layer; LanceDB stages run when installed.
 # ---------------------------------------------------------------------------
@@ -6184,7 +6184,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         # ``search --model``: an explicit ``--model``, or any provider env
         # (``LUMIO_PROVIDER_BASE_URL`` / ``LUMIO_PROVIDER_API_KEY``). The same
         # ``_resolve_embedder`` gives eval and search shared provider-first /
-        # local-fallback behavior and error messages (issue #158). Without
+        # local-fallback behavior and error messages. Without
         # either, keep the hermetic DeterministicHashEmbedder so the default
         # ``--semantic`` run stays offline and CI-stable.
         provider_configured = bool(
@@ -6203,7 +6203,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         # Inject the LanceDB adapter (loaded via importlib so lumio-wiki never
         # imports lumio-lancedb; ADR-0010). When installed and no index dir was
         # given, evaluate auto-builds a temp index so the default run shows what
-        # each installed stage buys (issue #138).
+        # each installed stage buys.
         adapter = load_lancedb_adapter()
         report = retrieval_eval.evaluate(
             kb,
@@ -6250,12 +6250,12 @@ def _cmd_eval_ontology(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Maintainer workflows (ADR-0015): lint, cross-link, dream.
+# Maintainer workflows: lint, cross-link, dream.
 # ---------------------------------------------------------------------------
 
 
 def _print_structure_summary(structural) -> None:
-    """Print the structural-topology lines shared by lint and dream (#126)."""
+    """Print the structural-topology lines shared by lint and dream."""
     print(f"structure_scope:     {structural.scope}")
     print(f"structure_pages:     {structural.page_count}")
     print(f"structure_edges:     {structural.edge_count}")
@@ -6272,7 +6272,7 @@ def _print_validation_issues(report) -> None:
 
 
 def _cmd_lint(args: argparse.Namespace) -> int:
-    """Read-only cross-page QA report with both graph scopes disclosed (ADR-0015).
+    """Read-only cross-page QA report with both graph scopes disclosed.
 
     Composes the authoritative validation report, the Discovery Graph health,
     and the canonical/discovery structural diagnostics. Never writes; exits 1
@@ -6365,7 +6365,7 @@ def _apply_composed_repairs(args: argparse.Namespace, kb, composed: dict[str, st
 
 
 def _apply_link_candidates(args: argparse.Namespace, kb, ranked, limit: int):
-    """Apply the top-ranked link repairs as worktree edits (G3, spec 0008 §6).
+    """Apply the top-ranked link repairs as worktree edits.
 
     An explicit apply operation edits the selected authoring worktree rather
     than staging stored proposals; the deterministic mention repairs compose
@@ -6397,7 +6397,7 @@ def _cmd_cross_link(args: argparse.Namespace) -> int:
 
     Read-only by default. With ``--stage``, stages one reviewable Ingest
     Proposal per top-ranked candidate (bounded by ``--limit``); nothing is
-    published without an explicit Maintainer publish (ADR-0015).
+    published without an explicit Maintainer publish.
     """
     kb, _report = _load_kb(args.path)
     candidates = lumio_wiki.find_link_candidates(kb.pages)
@@ -6445,7 +6445,7 @@ def _print_semantic_findings(findings) -> None:
 def _resolve_source_drift_inputs(
     args: argparse.Namespace, kb: KnowledgeBase
 ) -> tuple[SourceRegistry | None, SourceBindingManifest | None, str]:
-    """Resolve the optional private Source Drift inputs (issue #196).
+    """Resolve the optional private Source Drift inputs.
 
     Returns ``(registry, manifest, manifest_status)``. Read-only by
     contract: store construction never materializes state, and missing local
@@ -6760,7 +6760,7 @@ def _detect_module(name: str) -> bool:
 
 
 def _build_distiller(args: argparse.Namespace) -> Distiller:
-    """Construct the Distiller selected by ``--distiller`` (issue #101).
+    """Construct the Distiller selected by ``--distiller``.
 
     ``passthrough`` (default) uses the model-free
     :class:`PassthroughMarkdownDistiller` so the base wheel's journey is
@@ -6779,7 +6779,7 @@ def _build_distiller(args: argparse.Namespace) -> Distiller:
 
         # Detect the [llm] extra BEFORE validating provider configuration so a
         # base-install request for unattended distillation fails actionably
-        # with the exact install command (ADR-0010, PRD user story 18), never
+        # with the exact install command (PRD user story 18), never
         # a masked missing-config error that hides the required extra.
         if not _detect_module("openai"):
             raise CliError(
@@ -6957,7 +6957,7 @@ def _cmd_skill_update(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# source subcommands: private Knowledge Source lifecycle (issue #133)
+# source subcommands: private Knowledge Source lifecycle
 #
 # Explicit, stable Knowledge Source identities live in the private Source
 # Registry (outside portable KB content). Retirement/reactivation are
@@ -7071,7 +7071,7 @@ def _cmd_source_list(args: argparse.Namespace) -> int:
 def _validated_source_id(source_id: str) -> str:
     """Reject structurally invalid (e.g. secret-bearing) source ids generically.
 
-    The registry boundary convention (#133/ADR-0020): an invalid id is
+    The registry boundary convention: an invalid id is
     refused with a generic message that never echoes the value. The native
     Git lifecycle routes apply the same guard the retired pipeline owned.
     """
@@ -7251,7 +7251,7 @@ def _cmd_source_reactivate(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Authorized Source Artifact inspection (issue #165, ADR-0020).
+# Authorized Source Artifact inspection.
 #
 # `source inspect|fetch|link` resolve ONE exact Source Version for a source
 # id — the local registry's current version for a worktree, or the exact
@@ -7271,7 +7271,7 @@ def _active_published_version(uri: str) -> str:
 
     Reads only the activation pointer — not the whole Published Version —
     because inspect/fetch/link need the version identity, not page content.
-    The pointer only ever advances after a complete upload (#163), so an
+    The pointer only ever advances after a complete upload, so an
     observed version is complete by construction.
     """
     from lumio_wiki.s3_publish import observe_current_pointer
@@ -7302,7 +7302,7 @@ def _s3_version_is_native(path: str, version: str) -> bool:
 
     The version's public manifest is authoritative. An unreadable manifest
     cannot prove legacy status, so it counts as native and never unlocks the
-    legacy-store compatibility read (fail closed, spec 0008 §5).
+    legacy-store compatibility read (fail closed).
     """
     from lumio_wiki.s3_location import S3Location
 
@@ -7320,7 +7320,7 @@ def _s3_binding_manifest_store(path: str, version: str, metadata_store, artifact
     Native publications seal theirs in the target-scoped operational store;
     a legacy version whose manifest exists only in the configured private
     Source Artifact Store (LUMIO_SOURCE_STORE) keeps that exact history
-    readable (D1, spec 0008 §§3.3/§5). Corruption or a missing native
+    readable. Corruption or a missing native
     manifest never falls back — the operational store stays the store of
     record for native versions.
     """
@@ -7349,7 +7349,7 @@ def _s3_binding_manifest_store(path: str, version: str, metadata_store, artifact
 def _source_discovery_hint(
     args: argparse.Namespace, source_id: str, version: str | None, artifact_store
 ) -> str:
-    """Actionable discovery hint for a failed source-id lookup (issue #176).
+    """Actionable discovery hint for a failed source-id lookup.
 
     Returns a bounded set of close registered Source IDs (the reader-trial
     contract: the error points at the exact id or the exact command that
@@ -7627,11 +7627,11 @@ def _cmd_source_inspect(args: argparse.Namespace) -> int:
 
 
 def _source_not_retained_hint() -> str:
-    """The retention explanation appended to artifact-unavailable errors (#176).
+    """The retention explanation appended to artifact-unavailable errors.
 
     The reader trial showed "artifact not retained" without the missing step:
     artifacts enter the private store through managed ingest while a Source
-    Artifact Store is configured — the error must say so (issue #174).
+    Artifact Store is configured — the error must say so.
     """
     return (
         " — this Source Version was registered without artifact retention; "
@@ -7656,7 +7656,7 @@ def _cmd_source_fetch(args: argparse.Namespace) -> int:
         raw = fetch_verified_artifact(artifact_store, binding)
     except SourceInspectionError as exc:
         if exc.outcome == OUTCOME_UNAVAILABLE:
-            # Issue #176: unavailable is a distinct outcome and explains the
+            # unavailable is a distinct outcome and explains the
             # missing retention step instead of a bare "not retained".
             raise CliError(f"{exc}{_source_not_retained_hint()}", exit_code=1) from exc
         raise CliError(str(exc), exit_code=1) from exc
@@ -7697,7 +7697,7 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
             exit_code=1,
         )
     # Verify the exact bound artifact is present and digest-correct first, so
-    # an issued link downloads the same digest (issue #165 AC) and an
+    # an issued link downloads the same digest and an
     # unavailable/corrupt artifact is a distinct outcome, not a dead URL.
     try:
         fetch_verified_artifact(artifact_store, binding)
@@ -7728,7 +7728,7 @@ def _cmd_source_link(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Source identity resolution (issue #176, ADR-0020): `source resolve` maps a
+# Source identity resolution: `source resolve` maps a
 # Source ID, Entity ID, Canonical Page Title, alias, or page path to ONE
 # registered Knowledge Source when the mapping is unambiguous, and returns
 # identity + availability metadata. Ambiguity is truthful with bounded
@@ -7907,7 +7907,7 @@ def _cmd_source_resolve(args: argparse.Namespace) -> int:
 
 
 def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolution) -> int:
-    """Report an ambiguous/unknown resolution truthfully (issue #176).
+    """Report an ambiguous/unknown resolution truthfully.
 
     ``--json`` emits one machine-readable object on stdout (exit 1) so an
     agent can select the correct Source ID from the candidates; the human
@@ -7945,7 +7945,7 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
         if resolution.note:
             lines.append(resolution.note)
         if resolution.suggestions:
-            # Issue #176: the bounded close-id set IS the pointer —
+            # the bounded close-id set IS the pointer —
             # never both the ids and a discovery command.
             lines.append("close Knowledge Source ids: " + ", ".join(resolution.suggestions))
         else:
@@ -7961,7 +7961,7 @@ def _report_unresolved_source(args: argparse.Namespace, resolution: SourceResolu
 def _resolve_default_kb_path() -> str | None:
     """Resolve a default KB path when no positional ``<kb>`` was given.
 
-    Applies the documented precedence (issue #152, ADR-0017), minus the
+    Applies the documented precedence, minus the
     positional argument which argparse already handled:
 
     1. an exported process ``LUMIO_KB_PATH`` (never overwritten by a file); then
@@ -8060,7 +8060,7 @@ def _add_skill_target_arguments(
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:
-    """Serve the read-only MCP server over stdio (PRD-0007, ADR-0028)."""
+    """Serve the read-only MCP server over stdio (PRD-0007)."""
     from lumio_wiki.mcp_server import run_server
 
     try:
@@ -8450,7 +8450,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     paths_parser.set_defaults(func=_cmd_paths)
 
-    # entity (deterministic entity resolution, issue #172)
+    # entity (deterministic entity resolution)
     entity_parser = subparsers.add_parser(
         "entity",
         help="Resolve a stable Entity from an exact ID, title, or alias.",
@@ -8589,7 +8589,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(ingest_parser)
     ingest_parser.set_defaults(func=_cmd_ingest)
 
-    # capture (nested) — explicit, preview-first session capture (issue #179)
+    # capture (nested) — explicit, preview-first session capture
     capture_parser = subparsers.add_parser(
         "capture",
         help="Explicitly capture a session or research result for review.",
@@ -8764,7 +8764,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_export_parser.set_defaults(func=_cmd_capture_export)
 
-    # ingest-url (issue #178): safe, bounded URL ingestion into the worktree.
+    # ingest-url: safe, bounded URL ingestion into the worktree.
     ingest_url_parser = subparsers.add_parser(
         "ingest-url",
         help="Stage a fetched HTTPS Knowledge Source under a stable Source ID.",
@@ -8846,7 +8846,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(ingest_url_parser)
     ingest_url_parser.set_defaults(func=_cmd_ingest_url)
 
-    # ingest-research (issue #178): bounded research bundle.
+    # ingest-research: bounded research bundle.
     ingest_research_parser = subparsers.add_parser(
         "ingest-research",
         help="Stage an agent-authored research report with consulted-URL provenance.",
@@ -8889,7 +8889,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(ingest_research_parser)
     ingest_research_parser.set_defaults(func=_cmd_ingest_research)
 
-    # legacy-proposals (nested): private migration reader (G4, spec 0008 §7)
+    # legacy-proposals (nested): private migration reader
     legacy_parser = subparsers.add_parser(
         "legacy-proposals",
         help="Inventory and export retired legacy Ingest Proposals.",
@@ -9122,7 +9122,7 @@ def build_parser() -> argparse.ArgumentParser:
     rollback_s3_parser.add_argument("--json", action="store_true")
     rollback_s3_parser.set_defaults(func=_cmd_rollback_s3)
 
-    # rollback (Git-native local publication, spec 0008 §5)
+    # rollback (Git-native local publication)
     rollback_parser = subparsers.add_parser(
         "rollback",
         help="Activate a complete local Published Version (Git authoring).",
@@ -9166,7 +9166,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rollback_parser.set_defaults(func=_cmd_rollback)
 
-    # cleanup-s3 (issue #163, ADR-0019: report-only)
+    # cleanup-s3 (ADR-0019: report-only)
     cleanup_s3_parser = subparsers.add_parser(
         "cleanup-s3",
         help="Report inactive incomplete S3 version prefixes (cleanup candidates).",
@@ -9221,7 +9221,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diff_s3_parser.set_defaults(func=_cmd_diff_s3)
 
-    # remove-page (issue #135): stage an explicit Page Removal proposal.
+    # remove-page: stage an explicit Page Removal proposal.
     remove_page_parser = subparsers.add_parser(
         "remove-page",
         help="Stage an explicit Page Removal proposal.",
@@ -9272,7 +9272,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(merge_entity_parser)
     merge_entity_parser.set_defaults(func=_cmd_merge_entity)
 
-    # rename-page (G3 completion, spec 0008 §6 / ADR-0016): the native
+    # rename-page (G3 completion): the native
     # reviewed title rename with optional category move and explicit aliases.
     rename_page_parser = subparsers.add_parser(
         "rename-page",
@@ -9353,7 +9353,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     health_parser.set_defaults(func=_cmd_health)
 
-    # status — effective configuration + runtime state (issue #175).
+    # status — effective configuration + runtime state.
     status_parser = subparsers.add_parser(
         "status",
         help="Explain the effective Knowledge Base configuration and retrieval state.",
@@ -9388,7 +9388,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.set_defaults(func=_cmd_status)
 
-    # eval — retrieval gold-set evaluation harness (issue #138).
+    # eval — retrieval gold-set evaluation harness.
     eval_parser = subparsers.add_parser(
         "eval",
         help="Recall@k evaluation of retrieval stages against a versioned gold set.",
@@ -9587,7 +9587,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_dir_argument(dream_parser)
     dream_parser.set_defaults(func=_cmd_dream)
 
-    # export-graph (issue #193, ADR-0024)
+    # export-graph
     export_graph_parser = subparsers.add_parser(
         "export-graph",
         help="Export the Discovery Graph to graph.json + graph.graphml.",
@@ -9619,7 +9619,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_graph_parser.set_defaults(func=_cmd_export_graph)
 
-    # import-graph (issue #193, ADR-0024)
+    # import-graph
     import_graph_parser = subparsers.add_parser(
         "import-graph",
         help="Apply stub pages from a graph.json as ordinary Git worktree edits.",
@@ -9647,7 +9647,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor_parser.set_defaults(func=_cmd_doctor)
 
-    # private-profile — explicit private source configuration (spec 0010 §2.1).
+    # private-profile — explicit private source configuration.
     private_profile_parser = subparsers.add_parser(
         "private-profile",
         help="Inspect one explicit private source profile file (spec 0010 §2.1).",
@@ -9688,7 +9688,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     private_profile_inspect_parser.set_defaults(func=_cmd_private_profile_inspect)
 
-    # source-bootstrap — metadata-only baseline bootstrap (spec 0010 §5.1).
+    # source-bootstrap — metadata-only baseline bootstrap.
     source_bootstrap_parser = subparsers.add_parser(
         "source-bootstrap",
         help=("Export/inspect/import a metadata-only Source Baseline Snapshot (spec 0010 §5.1)."),
@@ -9798,7 +9798,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bootstrap_import_parser.set_defaults(func=_cmd_source_bootstrap)
 
-    # source-handoff — full private bundle transfer (spec 0010 §5).
+    # source-handoff — full private bundle transfer.
     source_handoff_parser = subparsers.add_parser(
         "source-handoff",
         help=("Export/inspect/import a full Source Handoff Bundle (spec 0010 §5)."),
@@ -9926,7 +9926,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     handoff_import_parser.set_defaults(func=_cmd_source_handoff)
 
-    # source-exchange — private S3 transfer transport (spec 0010 §6).
+    # source-exchange — private S3 transfer transport.
     source_exchange_parser = subparsers.add_parser(
         "source-exchange",
         help=("Upload/download private transfers through an S3 exchange (spec 0010 §6)."),
@@ -10017,7 +10017,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_exchange_selection_arguments(exchange_download_parser)
     exchange_download_parser.set_defaults(func=_cmd_source_exchange)
 
-    # git-check — read-only Git connection diagnosis (spec 0010 §2, plan J5).
+    # git-check — read-only Git connection diagnosis.
     git_check_parser = subparsers.add_parser(
         "git-check",
         help="Read-only Git connection diagnosis for the authoring journey.",
@@ -10048,7 +10048,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     git_check_parser.set_defaults(func=_cmd_git_check)
 
-    # extract — one real original through the actual processor (spec 0010 §3).
+    # extract — one real original through the actual processor.
     extract_parser = subparsers.add_parser(
         "extract",
         help="Extract one original into normalized material outside Git (spec 0010 §3).",
@@ -10082,7 +10082,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     extract_parser.set_defaults(func=_cmd_extract, journey_command=True)
 
-    # ingest-candidate — one complete multi-page/ontology candidate (§3).
+    # ingest-candidate — one complete multi-page/ontology candidate.
     ingest_candidate_parser = subparsers.add_parser(
         "ingest-candidate",
         help="Apply one complete managed candidate into the authoring worktree.",
@@ -10123,7 +10123,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_candidate_parser.set_defaults(func=_cmd_ingest_candidate, journey_command=True)
 
-    # authoring-review — readable review of the staged candidate (§4).
+    # authoring-review — readable review of the staged candidate.
     authoring_review_parser = subparsers.add_parser(
         "authoring-review",
         help="Review the staged candidate against one exact base commit (spec 0010 §4).",
@@ -10166,7 +10166,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     authoring_review_parser.set_defaults(func=_cmd_authoring_review, journey_command=True)
 
-    # authoring-check — verify the whole resulting commit (§4).
+    # authoring-check — verify the whole resulting commit.
     authoring_check_parser = subparsers.add_parser(
         "authoring-check",
         help="Verify one whole commit against its review report (spec 0010 §4).",
@@ -10196,7 +10196,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     authoring_check_parser.set_defaults(func=_cmd_authoring_check, journey_command=True)
 
-    # mcp — read-only MCP server over stdio (PRD-0007, ADR-0028); needs [mcp].
+    # mcp — read-only MCP server over stdio (PRD-0007); needs [mcp].
     mcp_parser = subparsers.add_parser(
         "mcp",
         help="Serve ONE read-only Knowledge Base over MCP stdio.",
@@ -10272,7 +10272,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_skill_target_arguments(skill_update, required=False)
     skill_update.set_defaults(func=_cmd_skill_update)
 
-    # source (nested) — private Knowledge Source lifecycle (issue #133)
+    # source (nested) — private Knowledge Source lifecycle
     source_parser = subparsers.add_parser(
         "source",
         help="Manage private Knowledge Source lifecycle state.",
@@ -10436,7 +10436,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_reactivate.set_defaults(func=_cmd_source_reactivate)
 
-    # Authorized Source Artifact inspection (issue #165, ADR-0020): the three
+    # Authorized Source Artifact inspection: the three
     # read-only operations resolve ONE exact Source Version behind a source
     # id — never fetch-by-hash, never an object key, never a silent fallback
     # to the latest version when a binding is requested but absent.

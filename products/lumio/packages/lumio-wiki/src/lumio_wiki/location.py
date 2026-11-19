@@ -1,4 +1,4 @@
-"""Public Knowledge Base Location + immutable Snapshot seam (issue #119, ADR-0013).
+"""Public Knowledge Base Location + immutable Snapshot seam.
 
 A **Knowledge Base Location** resolves an immutable **Published Version** (a
 **Snapshot**) from a local filesystem or — in a future capability — object
@@ -6,7 +6,7 @@ storage. The filesystem implementation here is the verified reference: it wraps
 the *existing* filesystem loading, validation, fingerprinting, zero-index
 retrieval, and Discovery Graph traversal, so every observable result matches the
 path-based Core SDK behavior exactly. Native S3 Locations are the parent epic
-(#118) and are intentionally out of scope for this module.
+ and are intentionally out of scope for this module.
 
 This seam preserves every existing filesystem workflow:
 
@@ -313,7 +313,7 @@ class KnowledgeBaseSnapshot(msgspec.Struct, frozen=True):
         )
 
     # ------------------------------------------------------------------
-    # Discovery Graph traversal (ADR-0011).
+    # Discovery Graph traversal.
     # ------------------------------------------------------------------
 
     def related_from(self, title: str, relationship_type: str | None = None) -> list[Relationship]:

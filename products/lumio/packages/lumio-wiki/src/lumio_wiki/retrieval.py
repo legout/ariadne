@@ -103,7 +103,7 @@ class ZeroIndexRetrieval:
                 f"{mode} retrieval requires the LanceDB retrieval adapter; "
                 "zero-index only supports mode='lexical'"
             )
-        # When the caller supplies graph-selected eligible pages (issue #112),
+        # When the caller supplies graph-selected eligible pages,
         # Evidence is ranked ONLY from them; otherwise every loaded page is
         # searchable. The graph owns page selection; the adapter owns ranking.
         search_pages = eligible_pages if eligible_pages is not None else pages

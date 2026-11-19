@@ -15,7 +15,7 @@ classes, so lexical-only deployments stay framework-free and there is no import
 cycle (providers already import ``lumio.core``).
 
 This is fresh retrieval over Compiled Pages / Knowledge Base Evidence. It is
-distinct from Conversation Recall (#59): no persisted Reader questions, no chat
+distinct from Conversation Recall: no persisted Reader questions, no chat
 context, and no shared recall records are involved here.
 """
 
@@ -30,7 +30,7 @@ import msgspec
 from lumio_wiki.records import EmbeddingModelInfo
 
 # Retrieval is scoped to Knowledge Base Evidence only. The literal excludes any
-# recall/chat notion, keeping the #59 boundary explicit at the type level (#75).
+# recall/chat notion, keeping the #59 boundary explicit at the type level.
 RetrievalMode = Literal["lexical", "semantic", "hybrid"]
 
 EMBEDDING_MODEL_FILE = "embedding_model.json"

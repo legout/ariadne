@@ -1,4 +1,4 @@
-"""Materialized Discovery Graph serialization (issue #108, ADR-0011; #170, ADR-0021).
+"""Materialized Discovery Graph serialization.
 
 The Discovery Graph adjacency (canonical accepted Claims plus Extracted
 References, in both outgoing and incoming directions) is materialized as a
@@ -9,13 +9,13 @@ A missing, stale, corrupt, partial, or incompatible artifact is ignored and
 the graph is rebuilt deterministically in memory — these functions NEVER raise
 on a bad artifact.
 
-Since issue #170 (ADR-0021) the adjacency is keyed by stable Entity IDs, not
+Since issue #170 the adjacency is keyed by stable Entity IDs, not
 Canonical Page Titles: a title or path change does not alter Entity identity
 or traversal topology. Each edge records its origin (accepted entity Claim or
 Extracted Reference), Claim ID, Predicate, direction view, and — for Extracted
 References — the source path/line and extractor version.
 
-Markdown remains the source of truth (ADR-0011). The artifact lives outside
+Markdown remains the source of truth. The artifact lives outside
 the Knowledge Base source tree and is never a Compiled Page, Reserved
 Artifact, fingerprint input, or OKF export entry. It works in an isolated
 ``lumio-wiki`` installation without LanceDB, PyArrow, or an operational
@@ -44,7 +44,7 @@ from lumio_wiki.records import (
 )
 
 # The MessagePack artifact format version. Bumped to 2 with the Entity-ID
-# rebuild (issue #170): keys are Entity IDs and edges carry the nine-field
+# rebuild: keys are Entity IDs and edges carry the nine-field
 # layout (endpoint, predicate, claim_id, origin, source_path, line_start,
 # line_end, extractor_version, scope), which a version-1 reader could
 # misinterpret. Both version 2 and the nine-field layout were introduced by
@@ -274,7 +274,7 @@ def deserialize_graph(data: bytes) -> GraphState | None:
     # Semantic consistency: a partially-written or tampered artifact can decode
     # cleanly yet carry an edge_count that disagrees with the adjacency, or an
     # incoming map that is not the reverse of outgoing. Reject both so a corrupt
-    # artifact is never promoted to live graph state (ADR-0011, AC3).
+    # artifact is never promoted to live graph state.
     if edge_count != sum(len(edges) for edges in outgoing.values()):
         return None
     if not _incoming_is_reverse_of_outgoing(outgoing, incoming):

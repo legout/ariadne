@@ -1,4 +1,4 @@
-"""Deterministic Source identity resolution (issue #176, ADR-0020).
+"""Deterministic Source identity resolution.
 
 `source resolve` and the enriched unknown-source errors share one resolution
 model. A query resolves to ONE registered Knowledge Source deterministically
@@ -174,7 +174,7 @@ def _by_page_identity(pages: list[CompiledPage], query: str, known_ids) -> Sourc
                     "Knowledge Source or Published Version binding"
                 ),
             )
-        # Bounded ambiguity (issue #176): a page may declare arbitrarily many
+        # Bounded ambiguity: a page may declare arbitrarily many
         # sources, so the candidate set is capped with a truthful truncation
         # note — never an unbounded dump.
         ordered: list[tuple[str, CompiledPage]] = []
@@ -255,7 +255,7 @@ def resolve_source(
     if result.outcome != OUTCOME_UNKNOWN:
         # An exact page surface (entity id/title/alias/path) is deterministic.
         return result
-    # Bounded close-id suggestions for the discovery error (issue #176):
+    # Bounded close-id suggestions for the discovery error:
     # the exact registered id or nothing — never an unbounded registry.
     suggestions = suggest_source_ids(known, key)
     if suggestions:

@@ -1,4 +1,4 @@
-"""Openable citation actions and the shared Reader route contract (issue #177).
+"""Openable citation actions and the shared Reader route contract.
 
 The full ``lumio`` application renders a cited Compiled Page in the browser
 at ``/kb/page/{title}`` (standalone Reading Room document). This module owns
@@ -22,7 +22,7 @@ derives the labelled open actions for a page or citation:
   never an object-store key);
 - ``source-artifact:`` the EXPLICIT private-Source action — the
   ``lumio-wiki source inspect`` command, never an automatically generated
-  signed URL (ADR-0020).
+  signed URL.
 
 These actions are purely additive rendering metadata: citation grounding
 fields (:class:`~lumio_wiki.records.Citation`) are unchanged and
@@ -77,7 +77,7 @@ def _shell_arg(value: str) -> str:
 
 
 def _external_document_url(url: str | None) -> str | None:
-    """Pass through only user-facing document URLs (issue #177 AC).
+    """Pass through only user-facing document URLs.
 
     Object-store URIs are private storage locations — they are never
     presented as document URLs, so they are dropped from the labelled
@@ -202,7 +202,7 @@ def source_inspect_command(
     entity_id: str | None = None,
     source_registry: str | None = None,
 ) -> str:
-    """The explicit private-Source action (ADR-0020).
+    """The explicit private-Source action.
 
     A private Source Artifact is opened through explicit, inspectable
     commands — never an implicitly emitted signed or public URL. The id is
@@ -259,7 +259,7 @@ def citation_open_actions(
     misconfiguration is actionable rather than silently degrading to no
     links. An authored ``source_url`` that is an object-store URI is
     dropped: object keys are never presented as user-facing document
-    URLs (issue #177 AC). ``published_version`` pins every executable
+    URLs. ``published_version`` pins every executable
     command to the exact resolved Published Version of an object-store
     Knowledge Base (A4 remediation) — never a local path, never a private
     URL.
@@ -293,7 +293,7 @@ def source_action_lines(
     """Render ONLY the Source-provenance action lines for one Source.
 
     Used by surfaces that already printed the page-level open/web actions and
-    now label each Source's own provenance distinctly (issue #177).
+    now label each Source's own provenance distinctly.
     """
     actions = CitationOpenActions(
         page_title="",

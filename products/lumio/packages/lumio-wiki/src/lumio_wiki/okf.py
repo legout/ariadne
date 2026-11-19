@@ -10,7 +10,7 @@ domain model. The Markdown body is preserved unchanged in the canonical source;
 export may append ordinary links for typed Relationships so OKF-only consumers
 can see the edge. OKF ``resource`` and legacy ``timestamp`` are omitted rather
 than invented, and Lumio-owned semantics travel in a versioned ``lumio``
-extension. See ADR-0007, ADR-0026, and ``project/research/okf-comparison.md``.
+extension., and ``project/research/okf-comparison.md``.
 
 Authorization boundary: the export serializers receive an **already-authorized**
 page sequence from the Core SDK authorization layer (for the public MVP scope,
@@ -392,7 +392,7 @@ def _render_compiled_page_profile2(
             lines.append(f"  - {_yaml_scalar(tag)}")
     lines.append(f"status: {_yaml_scalar(_okf_status_for_lifecycle(page.lifecycle))}")
     if page.review_after is not None:
-        # ADR-0023: review_after maps losslessly onto the OKF v0.2
+        # review_after maps losslessly onto the OKF v0.2
         # standard ``stale_after`` freshness field at the Profile 2 boundary.
         lines.append(f"stale_after: {_yaml_scalar(page.review_after)}")
     if page.sources:
@@ -632,7 +632,7 @@ def _bundle_paths(pages: list[CompiledPage]) -> set[str]:
 
 
 class ExportVisibilityScope(StrEnum):
-    """The authorized visibility scope for an OKF profile export (issue #68).
+    """The authorized visibility scope for an OKF profile export.
 
     The scope selects exactly which Compiled Page visibility classes the
     serializer receives. It is decided by the Core SDK authorization layer
@@ -662,7 +662,7 @@ def select_export_pages(
     pages: Sequence[CompiledPage],
     scope: ExportVisibilityScope,
 ) -> list[CompiledPage]:
-    """Select exactly the Compiled Pages authorized for ``scope`` (issue #68).
+    """Select exactly the Compiled Pages authorized for ``scope``.
 
     This is the Core SDK authorization selection for OKF profile export. The
     serializer receives only this already-authorized set and cannot widen it:
@@ -791,7 +791,7 @@ def export_okf_profile2(pages: Sequence[CompiledPage]) -> OkfProfile2Export:
 
 
 # ---------------------------------------------------------------------------
-# OKF Exchange Profile 1 import (issue #69): the inverse of the export boundary.
+# OKF Exchange Profile 1 import: the inverse of the export boundary.
 #
 # A safe generic Profile 1 directory tree is scanned (never trusting an imported
 # ``index.md`` as authoritative inventory), classified by reserved basename, and
@@ -815,7 +815,7 @@ class OkfImportError(ValueError):
 
 
 class OkfImportDiagnostic(msgspec.Struct, frozen=True):
-    """One importer diagnostic naming a document path, kind, and message (issue #70).
+    """One importer diagnostic naming a document path, kind, and message.
 
     ``severity`` is an outcome category a Maintainer can scan at a glance:
 
@@ -933,13 +933,13 @@ _PROFILE2_OKF_KEYS = {
 # identify the profile — but they carry no canonical Lumio semantics: they are
 # exchange-boundary and absent from the re-imported canonical page. A Lumio
 # export re-imported through the recognized extension must NOT diagnose its own
-# identification block as unknown producer extensions (issue #71).
+# identification block as unknown producer extensions.
 _LUMIO_IDENTIFICATION_KEYS = frozenset({"profile", "profile_version", "okf_version", "okf_pin"})
 # The semantic keys a recognized Lumio profile extension may carry that
 # map onto canonical Compiled Page metadata. Any key beyond these and the
 # identification block is an unknown producer extension: previewable, but
 # dropped at canonicalization with a diagnostic stating the profile does not
-# promise persistent lossless round-tripping (issue #70).
+# promise persistent lossless round-tripping.
 _RECOGNIZED_LUMIO_KEYS = {
     "aliases",
     "lifecycle",
@@ -966,7 +966,7 @@ def _okf_bundle_identity(entries: list[tuple[str, bytes]]) -> str:
 
 
 def _scan_okf_bundle(root: Path) -> tuple[list[tuple[str, Path]], list[str]]:
-    """Return ``(markdown_files, skipped)`` under a safe bundle root (issue #70).
+    """Return ``(markdown_files, skipped)`` under a safe bundle root.
 
     ``markdown_files`` is a sorted list of ``(relative_posix_path, absolute)``
     for every case-insensitive ``.md`` file that resolves inside ``root``.
@@ -1023,7 +1023,7 @@ def _classify_okf_doc(rel: str) -> str:
     history), ``"hot-index"`` for any case-insensitive ``hot.md`` (a reserved
     Hot Index artifact path, which conflicts with the derived-artifact role),
     and ``"page"`` otherwise. Classification is by basename only so reserved
-    paths are recognized at any depth (issue #70).
+    paths are recognized at any depth.
     """
     basename = PurePosixPath(rel).name.lower()
     if basename == NAV_INDEX_BASENAME:
@@ -1043,7 +1043,7 @@ def _record_reserved_artifact(
     not_page: str,
     diagnostics: list[OkfImportDiagnostic],
 ) -> None:
-    """Record a reserved artifact as ignored navigation/history input (issue #70).
+    """Record a reserved artifact as ignored navigation/history input.
 
     A reserved ``index.md`` / ``log.md`` / ``hot.md`` is never a Compiled Page.
     If its frontmatter cannot be parsed, a file-specific ``malformed-reserved``
@@ -1356,7 +1356,7 @@ def _okf_stale_after_to_review_after(
 ) -> str | None:
     """Map OKF v0.2 ``stale_after`` onto a proposed canonical ``review_after``.
 
-    ADR-0023: foreign freshness claims are reviewed, never silently trusted —
+    foreign freshness claims are reviewed, never silently trusted —
     a valid ISO date becomes a PROPOSED ``review_after`` with an explicit
     ``mapped`` diagnostic; anything else (malformed string, full timestamp)
     stays non-canonical with the standard dropped notice.
@@ -1480,7 +1480,7 @@ def _diagnose_broken_body_links(
     bundle_paths: set[str],
     diagnostics: list[OkfImportDiagnostic],
 ) -> None:
-    """Report internal Markdown body links absent from the bundle (issue #70).
+    """Report internal Markdown body links absent from the bundle.
 
     Each broken link is a ``warning``. Body links never become typed
     Relationships (those come only from a recognized ``lumio`` extension), and
@@ -1509,7 +1509,7 @@ def _diagnose_broken_body_links(
 
 
 def _reserved_artifact_is_malformed(text: str) -> bool:
-    """Return whether a reserved artifact's frontmatter cannot be parsed (issue #70)."""
+    """Return whether a reserved artifact's frontmatter cannot be parsed."""
     try:
         _data, _body, _line = _parse_frontmatter(text, Path("reserved"))
     except FrontmatterError:
@@ -1654,7 +1654,7 @@ def _parse_okf_page(
     diagnostics: list[OkfImportDiagnostic],
     parsing_policy: _ImportParsingPolicy,
 ) -> OkfImportPage:
-    """Parse one OKF Markdown document into a proposed Compiled Page (issue #70).
+    """Parse one OKF Markdown document into a proposed Compiled Page.
 
     Standard OKF fields map onto canonical Lumio fields. A recognized
     ``lumio`` extension for the selected profile overrides the safe generic
@@ -1774,7 +1774,7 @@ def _parse_okf_page(
         # The profile identification block (profile, profile_version,
         # okf_version, okf_pin) is recognized identification, not an unknown
         # producer extension; only keys beyond the identification block and the
-        # recognized semantic keys are diagnosed and dropped (issues #70, #71).
+        # recognized semantic keys are diagnosed and dropped.
         for key in lumio_raw:
             if key in _LUMIO_IDENTIFICATION_KEYS or key in _RECOGNIZED_LUMIO_KEYS:
                 continue
@@ -1851,14 +1851,14 @@ def _parse_okf_page(
     # canonicalization regardless of lumio classification.
     _diagnose_dropped_okf_fields(rel, data, diagnostics, parsing_policy)
     _diagnose_dropped_external_fields(rel, data, diagnostics, parsing_policy)
-    # ADR-0023: OKF v0.2 'stale_after' becomes a PROPOSED review_after with an
+    # OKF v0.2 'stale_after' becomes a PROPOSED review_after with an
     # explicit mapped diagnostic (never silently trusted) only in Profile 2.
     review_after = None
     if parsing_policy is _ImportParsingPolicy.GENERIC_OKF_V2:
         review_after = _okf_stale_after_to_review_after(rel, data.get("stale_after"), diagnostics)
         _diagnose_profile2_standard_fields(rel, data, body, diagnostics)
 
-    # Broken internal body links are warnings and never Relationships (issue #70).
+    # Broken internal body links are warnings and never Relationships.
     _diagnose_broken_body_links(rel, body, bundle_paths, diagnostics)
 
     markdown = _render_canonical_page_markdown(
@@ -1969,7 +1969,7 @@ def _import_markdown_tree(
         )
 
     # Unsupported non-Markdown files are listed as skipped and surfaced as
-    # ignored outcomes rather than silently dropped (issue #70).
+    # ignored outcomes rather than silently dropped.
     for rel in skipped:
         diagnostics.append(
             OkfImportDiagnostic(

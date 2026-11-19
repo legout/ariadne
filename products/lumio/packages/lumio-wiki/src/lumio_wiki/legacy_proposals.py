@@ -63,7 +63,7 @@ class SourceLifecycleChange(msgspec.Struct, frozen=True):
 
 
 class PageRemoval(msgspec.Struct, frozen=True):
-    """An explicit, reviewed removal of one Compiled Page (issue #135)."""
+    """An explicit, reviewed removal of one Compiled Page."""
 
     title: str
     lost_support_reason: str = ""

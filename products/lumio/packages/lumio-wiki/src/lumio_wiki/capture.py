@@ -1,8 +1,8 @@
-"""Explicit capture of a coding-agent session or research result (issue #179).
+"""Explicit capture of a coding-agent session or research result.
 
 Capture is the opt-in staging seam that turns the CURRENT session (or a
 research result) into ONE reviewable Ingest Proposal through the same
-managed host-Distiller contract as ordinary ingest (issue #149): an
+managed host-Distiller contract as ordinary ingest: an
 agent-authored Compiled Page plus a bounded capture manifest, bound to the
 original transcript/export bytes under an explicit source identity.
 
@@ -23,7 +23,7 @@ Contract highlights (issue #179 rules):
   transcript is refused with an actionable message; capture targets
   decisions, verified findings, commands/results, and citations.
 - Never auto-publish. Capture edits the selected Git authoring worktree;
-  review, commit, and publication stay explicit (spec 0008 §7).
+  review, commit, and publication stay explicit.
 - Vendor-neutral core. The manifest contract is client-agnostic; thin
   opt-in adapters (Pi, Codex, Claude Code, Hermes) export a transcript plus
   a manifest through the same seam, and unsupported clients write a manual
@@ -59,7 +59,7 @@ MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 
 REDACTED = "[REDACTED]"
 
-# Clients with a thin opt-in export adapter convention (issue #179). Any other
+# Clients with a thin opt-in export adapter convention. Any other
 # non-empty lowercase label is accepted — unsupported clients capture through
 # a manual manifest over the same contract.
 KNOWN_CLIENTS = ("pi", "codex", "claude-code", "hermes")
@@ -165,7 +165,7 @@ class CaptureError(ValueError):
 
 
 class CaptureManifest(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    """Bounded, vendor-neutral capture provenance (issue #179).
+    """Bounded, vendor-neutral capture provenance.
 
     ``client`` names the producing agent (a ``KNOWN_CLIENTS`` label or any
     lowercase label for a manual capture). ``transcript`` is either a path
@@ -464,7 +464,7 @@ def write_versioned_capture_record(
 def _redact_manifest(
     manifest: CaptureManifest,
 ) -> tuple[CaptureManifest, dict[str, int]]:
-    """Apply the redaction safety net to manifest field VALUES (issue #179).
+    """Apply the redaction safety net to manifest field VALUES.
 
     Secrets never enter manifests, logs, or output: free-text manifest
     values (project, transcript label, artifact names, redaction labels)
@@ -513,7 +513,7 @@ def capture_session(
     confirmed: bool = False,
     ingest: Callable[..., WorktreeIngestResult] | None = None,
 ) -> CaptureOutcome:
-    """Preview (and on confirmation apply) ONE session capture (issue #179).
+    """Preview (and on confirmation apply) ONE session capture.
 
     With ``confirmed=False`` nothing is registered and nothing is written:
     the returned outcome carries only the preview (included sections and
@@ -587,7 +587,7 @@ def capture_session(
     if not confirmed:
         return CaptureOutcome(preview=preview)
 
-    # Confirmed native Git route (spec 0008 §7): the caller's ingest writes
+    # Confirmed native Git route: the caller's ingest writes
     # the redacted page and the exact source binding into the selected
     # authoring worktree (and records the private capture record outside
     # Git). No proposal is staged; the legacy staged route is retired (G4).

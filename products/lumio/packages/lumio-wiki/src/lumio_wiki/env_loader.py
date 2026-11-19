@@ -1,7 +1,7 @@
 """Project ``.env`` discovery for the ``LUMIO_KB_PATH`` configuration key.
 
 A fresh ``lumio-wiki`` subprocess resolves the Knowledge Base path through a
-deterministic precedence (issue #152, ADR-0017):
+deterministic precedence:
 
 1. an explicit positional ``<kb>`` argument (handled by argparse);
 2. an exported process ``LUMIO_KB_PATH`` environment variable;
@@ -12,10 +12,10 @@ deterministic precedence (issue #152, ADR-0017):
 This module owns step 3 only. The CLI combines it with the exported-variable
 check (step 2) so an exported value is never overwritten by a ``.env`` file.
 
-Design constraints (ADR-0017):
+Design constraints:
 
 - Reads *only* the explicit Lumio configuration allowlist
-  (:data:`ENV_ALLOWLIST`, issue #161 / ADR-0019). It never loads arbitrary
+  (:data:`ENV_ALLOWLIST`). It never loads arbitrary
   keys into ``os.environ``; credentials are deliberately outside the
   allowlist.
 - Has no third-party dependencies, so the lightweight base wheel resolves a
@@ -227,7 +227,7 @@ def _trusted_project_root(start: Path) -> Path:
     """Return the trusted project root bounding discovery from ``start``.
 
     Walks from ``start`` upward and returns the nearest directory containing a
-    version-control marker (ADR-0017). When no marker is found, ``start``
+    version-control marker. When no marker is found, ``start``
     itself is the trusted root: the invocation directory's ``.env`` is read,
     but ancestors are never walked into untrusted territory.
     """
@@ -292,7 +292,7 @@ def load_project_config(start_dir: str | Path | None = None) -> dict[str, str]:
     """Load the explicit Lumio allowlist with exported-process precedence.
 
     For each allowlisted key, an exported process value retains precedence
-    over the project ``.env`` value (issue #161, ADR-0019): an exported key is
+    over the project ``.env`` value: an exported key is
     used as-is when non-empty, and an exported-but-empty value never falls
     back to ``.env``. Keys present in neither source are omitted. Never
     mutates ``os.environ`` and never returns keys outside

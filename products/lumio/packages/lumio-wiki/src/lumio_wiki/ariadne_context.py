@@ -1,4 +1,4 @@
-"""The Ariadne Context Profile and immutable scoped SDK view (spec 0009).
+"""The Ariadne Context Profile and immutable scoped SDK view.
 
 An explicitly versioned ``ariadne-context/1`` application profile over native
 Lumio content, plus the additive producer SDK for it. The envelope lives in
@@ -688,7 +688,7 @@ def _candidate_errors(where: str, candidate: object) -> list[str]:
 
 
 def _extension_errors(where: str, extension: object, footnote_ids: frozenset[str]) -> list[str]:
-    """The version-1 ``ariadne`` Reference extension contract (spec 0010 §5)."""
+    """The version-1 ``ariadne`` Reference extension contract."""
     if extension is None:
         return [f"{where} is null — null is not a supported extension form"]
     if not isinstance(extension, dict):
@@ -1022,7 +1022,7 @@ def native_metadata_errors(where: str, native: object, *, kind: str | None = Non
         return [f"{where} must be a mapping, got {type(native).__name__}"]
     errors: list[str] = []
     native_type = native.get("type")
-    # C6 quality-profile amendment (spec0009 §9): `ariadne_quality` is a
+    # C6 quality-profile amendment: `ariadne_quality` is a
     # kind-scoped OPTIONAL native field of TABLE profile pages only; every
     # other kind still refuses it as an unsupported field.
     allowed_keys = set(NATIVE_KEYS)
@@ -1273,7 +1273,7 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
     return errors
 
 
-# --- C6 quality-profile amendment (spec0009 §9, owner-approved 2026-11-12):
+# --- C6 quality-profile amendment (owner-approved 2026-11-12):
 # the OPTIONAL `ariadne_quality` native field of TABLE profile pages, with
 # structural validation ONLY. The closed v1 grammar is retained 1:1 from the
 # approved Ariadne source-quality contract (spec0013 r2 + the Core validator's
@@ -2161,7 +2161,7 @@ def validate_ariadne_profiles(
                 )
             )
         # Only metrics' retained native Policy references govern their typed
-        # closure; other pages' sources remain provenance (spec 0009 §4).
+        # closure; other pages' sources remain provenance.
         if profile.kind != "metric":
             continue
         for path in _native_policy_paths(page):
@@ -2211,7 +2211,7 @@ class ContextIdentity(msgspec.Struct, frozen=True):
 
     Fingerprint alone is insufficient: the selected subtree, publication
     manifest digest and Source Reference Manifest digest bind the exact
-    source/reference state separately (spec 0009 §5).
+    source/reference state separately.
     """
 
     namespace: str
@@ -2348,7 +2348,7 @@ class AriadneCandidateInspection(msgspec.Struct, frozen=True):
     """Structural/dependency diagnostics of one exact captured revision.
 
     Always unadmitted: inspection is never a served Context Snapshot and
-    never grants publication authority (spec 0009 §5).
+    never grants publication authority.
     """
 
     namespace: str

@@ -14,7 +14,7 @@ Knowledge Base on disk: they produce ``staged`` proposals that a Maintainer
 reviews and publishes through the Proposal Pipeline
 (``stage -> validate -> review -> publish``).
 
-The portable CLI carries no role gate (ADR-0015): the local operator IS the
+The portable CLI carries no role gate: the local operator IS the
 Maintainer, and the proposal-first guardrail is the write protection. The
 application-layer role gate stays in ``lumio.skills``.
 """
@@ -182,7 +182,7 @@ def find_ranked_link_candidates(kb: KnowledgeBase) -> list[RankedLinkCandidate]:
 
 
 # ---------------------------------------------------------------------------
-# Cross-link repair (ported from lumio.skills.cross_linker, ADR-0015).
+# Cross-link repair (ported from lumio.skills.cross_linker).
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +337,7 @@ class DuplicateEntityCandidate:
 # Synthesis candidates (t_c13aea62): read-only page pairs whose ACCEPTED
 # Claims justify a synthetic Compiled Page. Advisory always: authoring is a
 # Distiller decision routed through the ordinary ingest/proposal pipeline —
-# nothing is authored or staged automatically (ADR-0021, ADR-0015).
+# nothing is authored or staged automatically.
 # ---------------------------------------------------------------------------
 
 #: Default bound on synthesis candidates carried on a DreamReport.
@@ -455,7 +455,7 @@ def find_synthesis_candidates(
     (strongest), a claim in one direction, or both claiming the same object
     Entity (weakest). Literal, disputed, superseded, and dangling-claim
     targets never justify a candidate — the same accepted-entity projection
-    rule as canonical traversal (ADR-0021). Legacy Flat Mode pages (no Entity
+    rule as canonical traversal. Legacy Flat Mode pages (no Entity
     ID) and synthetic pages never enter the comparison. Deterministically
     ordered: strongest rank first, then Entity IDs.
     """
@@ -528,7 +528,7 @@ def find_synthesis_candidates(
 # Transitive impact (t_c13aea62): the bounded read-only reach of ONE selected
 # page/Entity. Canonical edges (accepted Claims) support the report; Discovery
 # edges only SELECT additional pages to inspect — they are never Evidence and
-# never support a conclusion (CONTEXT.md, ADR-0011). No community detection,
+# never support a conclusion (CONTEXT.md). No community detection,
 # no betweenness: direct canonical edges plus a depth-bounded reachability
 # census through the Knowledge Base's own traversal seam.
 # ---------------------------------------------------------------------------
@@ -634,7 +634,7 @@ def find_transitive_impact(
 
 
 # ---------------------------------------------------------------------------
-# Source Drift (issue #196, ADR-0014 / ADR-0020): the read-only comparison
+# Source Drift: the read-only comparison
 # between private source state and what currently supports published or
 # working-copy knowledge.
 # ---------------------------------------------------------------------------
@@ -642,7 +642,7 @@ def find_transitive_impact(
 
 @dataclass(frozen=True, slots=True)
 class SourceDriftFinding:
-    """One deterministic Source Drift observation (issue #196).
+    """One deterministic Source Drift observation.
 
     ``scope`` names which tier produced the finding: the current working
     copy or the active Published Version's private Source Binding Manifest.
@@ -697,12 +697,12 @@ def run_source_drift_check(
     them). The published-version tier iterates manifest entries directly and
     never resolves titles against ``kb.pages`` — the manifest describes the
     active Published Version, so a title absent from the worktree is still
-    reportable (ADR-0020). A retired source takes precedence over a hash
+    reportable. A retired source takes precedence over a hash
     mismatch for the same entry.
     """
     # Computed facts win: with no registry the working-copy tier never ran
     # and the manifest was never compared, so a caller-passed status can
-    # never be echoed as a clean 'checked' result (review finding, #196).
+    # never be echoed as a clean 'checked' result (review finding).
     if registry is None:
         return SourceDriftReport(
             findings=(),
@@ -857,7 +857,7 @@ def run_source_coverage_check(
     Pure and I/O-free: everything is passed in, nothing is read. A source is
     ``referenced`` when any current non-synthetic page declares its id in
     ``sources[].id`` — matching the drift check's support rule; synthetic
-    pages (which may omit provenance, ADR-0014) never confer support.
+    pages (which may omit provenance) never confer support.
     Retirement is lifecycle state, not distillation: a retired source still
     counts as unreferenced. Never a validation error; advisory by contract.
 
@@ -893,7 +893,7 @@ def run_source_coverage_check(
 
 
 # ---------------------------------------------------------------------------
-# The Dream Cycle (ADR-0015): reflect, then optionally stage repairs.
+# The Dream Cycle: reflect, then optionally stage repairs.
 # ---------------------------------------------------------------------------
 
 
@@ -903,9 +903,9 @@ class DreamReport:
 
     Composes the authoritative validation status, the Discovery Graph health,
     the structural topology diagnostics for BOTH scopes, the missing-link
-    candidates ranked by Discovery Graph impact (issue #127), the pages
-    due for review by ``review_after`` (ADR-0023), most overdue first, and
-    the optional Source Drift diagnostic (issue #196). Read-only and
+    candidates ranked by Discovery Graph impact, the pages
+    due for review by ``review_after``, most overdue first, and
+    the optional Source Drift diagnostic. Read-only and
     model-free: it never mutates Compiled Pages, graph state, or the store.
     """
 
@@ -1017,7 +1017,7 @@ def run_dream_cycle(
     resolvable page/Entity, the optional one-page transitive-impact report is
     composed over ``impact_scope``. Model-free; never writes. The rankings are
     advisory: they never author a page or infer a typed Relationship from a
-    Markdown-link proposal (ADR-0011), and nothing stages automatically.
+    Markdown-link proposal, and nothing stages automatically.
     """
     kb, validation_report = load_knowledge_base(kb_path)
     return _run_dream_cycle_loaded(

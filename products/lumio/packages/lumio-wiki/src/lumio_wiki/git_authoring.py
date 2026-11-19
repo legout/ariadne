@@ -1,4 +1,4 @@
-"""Git-native Knowledge Base authoring and local publication (spec 0008 §2–5).
+"""Git-native Knowledge Base authoring and local publication.
 
 An **Authoring Revision** is an exact Git commit plus its selected Knowledge
 Base subtree. Preview, validation, admission, and publication all consume the
@@ -209,7 +209,7 @@ def resolve_repository(kb_root: str | Path) -> tuple[Path, str]:
     """Return ``(repository_root, kb_subtree)`` for an authoring worktree.
 
     Refuses a bare repository and a path outside any repository — Git-native
-    operations never guess a mutation target (spec 0008 §2).
+    operations never guess a mutation target.
     """
     root = Path(kb_root).resolve()
     if not root.is_dir():
@@ -354,10 +354,10 @@ def capture_revision(kb_root: str | Path, revision: str) -> CapturedRevision:
     Only regular in-scope canonical files are captured: a symlink or submodule
     at a canonical position (any ``.md`` file, ``lumio.yaml``, or the Source
     Reference Manifest) is refused, never materialized as Reader knowledge,
-    and unrelated repository content is ignored (spec 0008 §5). Repository
+    and unrelated repository content is ignored. Repository
     hooks never execute: capture reads Git objects through plumbing only. A
     Git-tracked private ingest store inside the Knowledge Base is refused —
-    raw/registry paths never belong in Git (§3.2).
+    raw/registry paths never belong in Git.
     """
     root = Path(kb_root).resolve()
     repo_root, subtree = resolve_repository(root)
@@ -413,7 +413,7 @@ def capture_revision(kb_root: str | Path, revision: str) -> CapturedRevision:
 class SealedSourceVersion(msgspec.Struct, frozen=True):
     """Exact registered Source Version inspection metadata, sealed privately.
 
-    Spec 0008 §3.3: historical binding metadata retains the exact version's
+    historical binding metadata retains the exact version's
     inspection facts — captured from the registry at publication time, never
     resolved from later registry state.
     """
@@ -531,7 +531,7 @@ def _load_sealed(destination: Path, version: str) -> SealedSourceReferences:
 
 
 # ---------------------------------------------------------------------------
-# Bounded SDK restore disposition (spec0034 §12.5, 2026-11-11).
+# Bounded SDK restore disposition.
 #
 # A completed bounded restore persists a private restore record at the
 # published destination binding the exact resolved live destination and the
@@ -910,7 +910,7 @@ class PublicationReview(msgspec.Struct, frozen=True):
 def _refuse_destination_inside_worktree(kb_root: Path, destination: Path) -> None:
     """Refuse a publication destination inside the authoring Git worktree.
 
-    Spec 0008 §5: local activation happens outside the authoring worktree, and
+    local activation happens outside the authoring worktree, and
     adopting a plain filesystem Knowledge Base uses a separate destination —
     never an in-place replacement or relabelling of its working tree. A
     destination inside the repository would also mix immutable version copies,
@@ -930,7 +930,7 @@ def _refuse_destination_inside_worktree(kb_root: Path, destination: Path) -> Non
 def _refuse_tracked_private_paths(repo_root: Path, label: str, *paths: Path | None) -> None:
     """Refuse private selections that are Git-tracked in the authoring repository.
 
-    Spec 0008 §3.2: Git-tracked raw/registry paths are refused by managed
+    Git-tracked raw/registry paths are refused by managed
     operations — a ``.gitignore`` alone is not the guarantee. Paths outside
     this repository are not tracked here and stay allowed (explicit selection
     outside the Knowledge Base subtree remains supported).
@@ -964,7 +964,7 @@ def _refuse_unsafe_worktree_mutation(
 ) -> None:
     """Refuse a mutation target that would overwrite uncommitted author work.
 
-    Spec 0008 §2: operations refuse a detached/unselected mutation target,
+    operations refuse a detached/unselected mutation target,
     unresolved Git conflicts, and an operation that would overwrite unrelated
     uncommitted edits — there is no implicit stash. Every affected path must be
     clean in the worktree before the helper writes it.
@@ -1011,7 +1011,7 @@ def _refuse_unsafe_worktree_mutation(
 def _refuse_private_selection_inside_tree(kb_root: Path, *paths: Path | None) -> None:
     """Refuse a private registry/store selection inside the authoring subtree.
 
-    Spec 0008 §3.2: authoring worktrees use the explicitly configured private
+    authoring worktrees use the explicitly configured private
     source history/store — never raw bytes copied into Git. A private state
     directory inside the Knowledge Base subtree would be committed with the
     next author commit, so selection fails closed here.
@@ -1035,7 +1035,7 @@ def _registry_root(registry: SourceRegistry | None) -> Path | None:
 def _normalize_expected(expected_current: str | None) -> str:
     """Return the normalized explicit baseline; refuse an unchecked mode.
 
-    Spec 0008 §4.1: ``none`` explicitly means an absent current pointer, never
+    ``none`` explicitly means an absent current pointer, never
     "ignore the current state". An omitted expectation is refused at the SDK
     boundary so every admission is bound to one exact reviewed baseline
      — there is no ``(any)`` mode.
@@ -1102,7 +1102,7 @@ def _source_impact(
     page_sources: dict[str, frozenset[str]] | None = None,
     source_registry: SourceRegistry | None = None,
 ) -> list[PublicationSourceImpact]:
-    """Compare admitted and candidate source references (spec 0008 §3.3).
+    """Compare admitted and candidate source references.
 
     Source-lifecycle changes are disclosed per source; every binding change
     additionally discloses the affected Entity's support disposition computed
@@ -1299,7 +1299,7 @@ def preview_publication(
     fingerprint, manifest digest and namespace, source references and impact,
     page mutations, blocking diagnostics, requested derived artifacts, the
     secret-free destination identity, the expected-current baseline, the
-    retention policy, and the validator contract identity (spec 0008 §4.1).
+    retention policy, and the validator contract identity.
     """
     kb_path = Path(kb_root).resolve()
     destination_path: Path | None = None
@@ -1617,7 +1617,7 @@ def _review_from_capture(
                     # First-native-adoption compatibility (D1): pre-Git S3
                     # publications sealed their exact Source Binding Manifests
                     # in the configured private Source Artifact Store; adoption
-                    # still compares that exact history (spec 0008 §§3.3/§5).
+                    # still compares that exact history.
                     legacy_raw = None
                     if artifact_store is not None:
                         try:
@@ -1903,7 +1903,7 @@ def _reconcile_active_s3_activation(
     re-required here — a damaged active index must not block recovery to an
     independently verified healthy target, and legacy versions predate the
     new inventory (D2). Every activation path still fully validates the
-    TARGET version before CAS (spec 0008 §5).
+    TARGET version before CAS.
     """
     active = observe_current_pointer(location.store, location.prefix).version
     if active is None:
@@ -2289,7 +2289,7 @@ def publish_revision(
     )
     version = captured.revision
 
-    # Idempotent fast path (spec 0008 §5): retrying an ALREADY attempted
+    # Idempotent fast path: retrying an ALREADY attempted
     # identical publication — the admission receipt for this exact version
     # exists and the confirmation still matches its review digest — returns
     # the existing verified receipt AFTER re-enforcing the admission-bound
@@ -2510,7 +2510,7 @@ def _retry_admitted_publication(
     """Return the verified receipt of an identical prior attempt, or ``None``.
 
     A stored admission receipt whose review digest equals this confirmation
-    is an already-attempted identical publication (spec 0008 §5): the
+    is an already-attempted identical publication: the
     admission-bound policy and validator contract are re-enforced, the
     complete version and sealed private-binding state verified against the
     receipt, required retention re-verified, and only a genuinely
@@ -2528,7 +2528,7 @@ def _retry_admitted_publication(
         receipt.destination != str(destination)
         and _restored_root_authorization(destination) is not None
     ):
-        # Bounded restore disposition (spec0034 §12.5): an old destination's
+        # Bounded restore disposition: an old destination's
         # confirmation can never activate or recover a copied receipt at a
         # moved target. A restore marker is not new-target consent; the
         # fresh reviewed confirmation of the new target is required.
@@ -2600,7 +2600,7 @@ def _refuse_moved_imported_receipt_overwrite(destination: Path, version: str) ->
 
     Same-version re-admission through the ordinary publication path must not
     overwrite an imported receipt that was admitted at the moved-from
-    destination (spec0034 §12.5); an explicit approved recovery path for
+    destination; an explicit approved recovery path for
     such re-admission is outside the bounded grant. Same-destination
     receipts keep the existing identity/idempotency semantics unchanged.
     """
@@ -2670,7 +2670,7 @@ def _reconcile_receipt_activation(
 ) -> PublicationReceipt:
     """Complete or truthfully report an attempted publication's activation.
 
-    Retry semantics (spec 0008 §5, findings 8/9): an ALREADY successful
+    Retry semantics: an ALREADY successful
     admission is immutable historical evidence — the receipt is returned as
     recorded and the pointer is never reactivated, even when its original
     baseline version happens to be active again after a later rollback. Only
@@ -2840,7 +2840,7 @@ def _write_version_directory(
 
 
 class RollbackReview(msgspec.Struct, frozen=True):
-    """The stateless disclosure of one exact historical rollback (spec §5)."""
+    """The stateless disclosure of one exact historical rollback."""
 
     validator_contract: str
     destination: str
@@ -3066,7 +3066,7 @@ def preview_rollback(
     metadata_store: SourceArtifactStore | None = None,
     destination_identity: str | None = None,
 ) -> RollbackReview:
-    """Produce the stateless rollback review; mutate nothing (spec §5, F6).
+    """Produce the stateless rollback review; mutate nothing.
 
     Rollback is explicit review/confirmation plus expected-current
     activation: the preview verifies the complete target version, its
@@ -3272,7 +3272,7 @@ def ingest_into_worktree(
 ) -> WorktreeIngestResult:
     """Register private provenance and write ordinary files into the worktree.
 
-    The manifest-bearing managed ingest route (spec 0008 §7): the original
+    The manifest-bearing managed ingest route: the original
     bytes extend the explicitly selected private registry's immutable history
     (append-only, converging on identical bytes), the host-authored Compiled
     Page is written as an ordinary file through the checked destination
@@ -3464,7 +3464,7 @@ def _authored_entity_id(markdown: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Native deterministic mutations (G3, spec 0008 §2/§6/§7): every retained
+# Native deterministic mutations: every retained
 # producer edits ordinary files in the selected authoring worktree. No
 # proposal objects, no persisted queues, no implicit Git commit — authors
 # review the diff and commit explicitly; publication admits an exact commit.
@@ -3537,7 +3537,7 @@ def _candidate_page_record(destination):
 
 
 def _candidate_pages_view(kb, candidate_pages=(), removed_titles=()):
-    """The page view of the FULLY APPLIED candidate (F1, spec 0008 §2/§3.1).
+    """The page view of the FULLY APPLIED candidate.
 
     Proposed pages replace same-titled loaded pages (a ``rename_from`` title
     is superseded too); declared removals are excluded as the only true
@@ -3622,7 +3622,7 @@ def _manifest_without_entities(
 def _load_authoring_manifest(kb_path: Path) -> SourceReferenceManifest | None:
     """Load the Source Reference Manifest with bounded strict errors (D7).
 
-    Spec 0008 §3.1: an unsupported/malformed manifest fails with a
+    an unsupported/malformed manifest fails with a
     diagnostic rather than being ignored — at the native owner boundary
     that diagnostic is the bounded ``GitAuthoringError`` the CLI maps to
     its error contract, never an escaping ``SourceReferenceError``.
@@ -3641,7 +3641,7 @@ def refuse_unsafe_private_selection(
 ) -> None:
     """The shared private-selection safety preflight for native writers (D4).
 
-    Spec 0008 §3.2: Git-tracked raw inputs/registries and private state
+    Git-tracked raw inputs/registries and private state
     inside the Knowledge Base subtree are refused BEFORE any private byte
     is written — the same guards managed ingest and reactivation use,
     reused by the native source lifecycle writers
@@ -3808,7 +3808,7 @@ def remove_page_in_worktree(
 ) -> WorktreeMutationResult:
     """Remove one Compiled Page and repair its dependents as worktree edits.
 
-    Spec 0008 §2/§6: an explicit, declared removal relative to the current
+    an explicit, declared removal relative to the current
     tree — dependent Relationships drop, exactly-resolved body links unwrap,
     a stale Hot Index pin drops atomically, and the complete candidate
     (including the Control File and, when present, the Source Reference
@@ -3861,7 +3861,7 @@ def merge_entities_in_worktree(
 ) -> WorktreeMutationResult:
     """Merge one Entity into another as ordinary worktree edits.
 
-    Spec 0008 §6: the surviving Entity keeps its stable ID/page and absorbs
+    the surviving Entity keeps its stable ID/page and absorbs
     the retired Entity's Claims; Claim objects and exactly-resolved body
     links retarget; the retired ID becomes an ontology redirect; the retired
     page is an explicit Git tree deletion; a stale Hot Index pin and the
@@ -3961,7 +3961,7 @@ def write_pages_into_worktree(
 ) -> WorktreeMutationResult:
     """Write proposed Compiled Pages into the worktree as ordinary files.
 
-    The passthrough/graph/OKF/external-import producer (spec 0008 §7):
+    The passthrough/graph/OKF/external-import producer:
     destination checks, complete-candidate validation, and a fail-closed
     Source Reference Manifest cross-check precede any byte; a mid-write
     failure restores the prior state. No proposal, no commit. Source
@@ -3994,7 +3994,7 @@ def revise_pages_in_worktree(
 ) -> WorktreeMutationResult:
     """Revise existing Compiled Pages in place through the checked apply.
 
-    The maintenance/semantic explicit-apply producer (spec 0008 §6): link
+    The maintenance/semantic explicit-apply producer: link
     repairs and Dream Cycle findings edit the selected authoring worktree
     as ordinary files — never staged proposals. A Link repair never creates
     an accepted Claim; validation gates the complete candidate first.
@@ -4075,7 +4075,7 @@ def retire_source_in_worktree(
 ) -> WorktreeMutationResult:
     """Retire one managed Knowledge Source through Git lifecycle intent.
 
-    Spec 0008 §3.2/§3.3: retirement intent is reviewed in the Source
+    retirement intent is reviewed in the Source
     Reference Manifest, never a proposal-keyed pending transition. The page
     impact is computed first and retirement REFUSES to write when any
     declaring page would be left sole-source-lost — leave eligible support,
@@ -4339,7 +4339,7 @@ def rename_page_in_worktree(
 ) -> WorktreeMutationResult:
     """Rename, recategorize, and/or re-alias one Compiled Page as worktree edits.
 
-    Required G3 completion (spec 0008 §6, ADR-0016): the reviewed title
+    Required G3 completion: the reviewed title
     rename primitive with optional Content Category move and an explicit
     alias choice: an actual title rename requires ``keep_old_title_alias``
     True/False or an explicit replacement ``aliases`` set (including empty).

@@ -1,4 +1,4 @@
-"""Model-free evaluation of the entity-claim ontology (issue #173, ADR-0021).
+"""Model-free evaluation of the entity-claim ontology.
 
 Measures four deterministic behaviours against a versioned gold set —
 entity resolution, accepted-edge traversal, canonical/discovery scope

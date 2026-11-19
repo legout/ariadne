@@ -97,7 +97,7 @@ from lumio_wiki.retrieval import RetrievalAdapter, default_retrieval_adapter
 
 VALID_LIFECYCLES = {"draft", "review", "approved", "deprecated"}
 VALID_VISIBILITIES = {"public", "internal", "restricted"}
-# Entity/Claim identity contracts (ADR-0021, issue #168). Entity IDs and
+# Entity/Claim identity contracts. Entity IDs and
 # Claim IDs are ``entity:``/``claim:`` prefixed slugs; titles and paths are
 # not semantic identity.
 ENTITY_ID_PREFIX = "entity:"
@@ -107,14 +107,14 @@ IDENTIFIER_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
 # ADR-0021; title-based Relationship frontmatter input is removed.
 
 # ---------------------------------------------------------------------------
-# Public graph traversal seam (issue #106, ADR-0011) and Discovery Graph
+# Public graph traversal seam and Discovery Graph
 # (issue #107).
 #
 # The canonical graph contains only reviewed, typed Relationships resolved by
 # Canonical Page Title. The Discovery Graph additionally contains Extracted
 # References: deterministic, non-canonical directed references derived from
 # exactly-resolved internal Markdown links and unambiguous wikilinks in
-# Compiled Page bodies (ADR-0011). Traversal is direction-aware, cycle-safe,
+# Compiled Page bodies. Traversal is direction-aware, cycle-safe,
 # bounded by explicit depth / expanded-edge / result limits, and restricted to
 # a caller-supplied authorized candidate page set so endpoint resolution and
 # expansion can never surface a page the caller has no visibility to. The
@@ -142,7 +142,7 @@ DEFAULT_GRAPH_MAX_RESULTS = 50
 DEFAULT_GRAPH_HUB_SAMPLE = 10
 DEFAULT_GRAPH_ORPHAN_SAMPLE = 25
 DEFAULT_GRAPH_UNRESOLVED_SAMPLE = 5
-# Link-candidate graph-impact score weights (issue #127, ADR-0011).
+# Link-candidate graph-impact score weights.
 # Explicit, documented, stable integers. The total impact score for a
 # candidate is the sum of applicable signal weights. Higher = more structural
 # improvement. Ordering within the same score is lexicographic on the
@@ -155,7 +155,7 @@ LINK_IMPACT_WEIGHT_FRAGILE_STRENGTHENING = 10
 def _require_graph_scope(scope: str) -> None:
     """Validate the graph scope.
 
-    Both scopes are implemented (ADR-0011, issue #107):
+    Both scopes are implemented:
     ``canonical`` contains only reviewed typed Relationships, and
     ``discovery`` contains canonical Relationships plus Extracted References
     derived from exactly-resolved internal links. An unknown value raises
@@ -202,7 +202,7 @@ class _GraphTopology(NamedTuple):
 class _GraphExpansion(NamedTuple):
     """Graph-expansion output for retrieval: eligible pages + trace metadata.
 
-    Issue #172: alongside the eligible Compiled Pages the expansion records
+    alongside the eligible Compiled Pages the expansion records
     the claim-aware metadata a truthful Retrieval Trace discloses — resolved
     seed Entity IDs, unresolved seed names, traversed Claim IDs/Predicates,
     and the edge origins actually followed (accepted Claims and/or Extracted
@@ -227,7 +227,7 @@ def _compute_graph_topology(
     The single shared implementation for both ``graph_diagnostics`` and
     ``rank_link_candidates_by_graph_impact``. Iterates authorized nodes in
     sorted order for deterministic results. Nodes and endpoints are graph
-    keys (stable Entity IDs; issue #170).
+    keys (stable Entity IDs).
     """
     in_degree: dict[str, int] = {t: 0 for t in nodes}
     out_degree: dict[str, int] = {t: 0 for t in nodes}
@@ -277,7 +277,7 @@ def _compute_graph_topology(
     )
 
 
-# Navigation Index reserved derived-artifact semantics (issue #64).
+# Navigation Index reserved derived-artifact semantics.
 #
 # The case-insensitive basename ``index.md`` is reserved in every Knowledge Base
 # directory. A file with that basename is a Navigation Index only when its
@@ -294,13 +294,13 @@ def _compute_graph_topology(
 # ignored or overwritten.
 NAV_INDEX_BASENAME = "index.md"
 NAV_INDEX_ARTIFACT = "navigation-index"
-# The format version Navigation Index generation emits (issue #65). Kept in
+# The format version Navigation Index generation emits. Kept in
 # ``SUPPORTED_NAV_INDEX_VERSIONS`` so generated indexes are always recognized.
 NAV_INDEX_VERSION = 1
 SUPPORTED_NAV_INDEX_VERSIONS = frozenset({NAV_INDEX_VERSION})
 
 # ---------------------------------------------------------------------------
-# Knowledge Base Control File and reserved published artifacts (issue #77).
+# Knowledge Base Control File and reserved published artifacts.
 #
 # A categorized Knowledge Base carries a versioned root Control File
 # (``lumio.yaml``) declaring KB-local Content Categories and Maintainer-pinned
@@ -308,7 +308,7 @@ SUPPORTED_NAV_INDEX_VERSIONS = frozenset({NAV_INDEX_VERSION})
 # the Hot Index, and appends an append-only Activity Log entry recording the
 # successful transition. These are intentional Lumio OKF extensions: marked
 # reserved artifacts, consistent with the Navigation Index marker system, rather
-# than strict frontmatter-free OKF reserved-file syntax. See ADR-0008.
+# than strict frontmatter-free OKF reserved-file syntax..
 # ---------------------------------------------------------------------------
 
 # The root Control File. It is portable with the KB but is neither a Compiled
@@ -322,12 +322,12 @@ KB_MODE_LEGACY = "legacy-flat"
 # Mode values a *present* Control File may declare. Legacy Flat Mode is
 # represented by the absence of a Control File (see ``KB_MODE_LEGACY``), so a
 # present Control File must declare ``categorized``; declaring ``legacy-flat``
-# is contradictory and is rejected as a blocking error (ADR-0008, issue #77).
+# is contradictory and is rejected as a blocking error.
 SUPPORTED_CONTROL_FILE_MODES = frozenset({KB_MODE_CATEGORIZED})
 
 # The seeded Content Category catalog a new categorized Knowledge Base adopts.
 # The distiller may route only to configured categories; Maintainers propose
-# catalog changes through the normal review-and-publish workflow (issue #76).
+# catalog changes through the normal review-and-publish workflow.
 SEED_CATEGORY_CATALOG: list[ContentCategory] = [
     ContentCategory(name="concepts", description="Core ideas, definitions, and mental models."),
     ContentCategory(
@@ -352,7 +352,7 @@ SEED_CATEGORY_CATALOG: list[ContentCategory] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Extensible Content Category catalog (ADR-0009, issue #84).
+# Extensible Content Category catalog.
 #
 # The category catalog is data, not a fixed enum: a KB's Control File may
 # declare additional slug-valid categories beyond the seed. When the
@@ -365,14 +365,14 @@ SEED_CATEGORY_CATALOG: list[ContentCategory] = [
 #   * not collide with reserved basenames/markers (``RESERVED_CATEGORY_NAMES``).
 #
 # Adding, renaming, or removing a category is an explicit, reviewed Maintainer
-# action expressed as a Control File change — never automatic (ADR-0009).
+# action expressed as a Control File change — never automatic.
 # ---------------------------------------------------------------------------
 CATEGORY_MAX_LENGTH = 64
 CATEGORY_SLUG_RE = re.compile(r"[a-z][a-z0-9-]{0,63}\Z")
 # Category names that collide with reserved derived-artifact basenames
 # (``index``, ``hot``, ``log``) or the ``lumio`` marker system. A category
 # with one of these names would shadow a reserved path or marker and is
-# rejected (ADR-0007 and ADR-0009).
+# rejected.
 RESERVED_CATEGORY_NAMES = frozenset({"index", "hot", "log", "lumio"})
 
 # Reserved Activity Log artifact: append-only portable history of successful
@@ -395,7 +395,7 @@ SUPPORTED_HOT_INDEX_VERSIONS = frozenset({HOT_INDEX_VERSION})
 
 # Maps each reserved derived-artifact basename to the marker artifact it must
 # carry. The loader, validator, and fingerprint use this single registry so the
-# reserved-artifact contract has one source of truth (ADR-0007 and ADR-0008).
+# reserved-artifact contract has one source of truth.
 RESERVED_ARTIFACT_MARKERS: dict[str, str] = {
     NAV_INDEX_BASENAME: NAV_INDEX_ARTIFACT,
     ACTIVITY_LOG_BASENAME: ACTIVITY_LOG_ARTIFACT,
@@ -614,7 +614,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         return search_pages_over(candidates, query, limit)
 
     def entities(self) -> list[Entity]:
-        """Return the Entity identity/type projection of every page (ADR-0021).
+        """Return the Entity identity/type projection of every page.
 
         One Entity per Compiled Page, in page order; pages without an Entity
         contract (Legacy Flat Mode) are skipped.
@@ -632,7 +632,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         ]
 
     def resolve_entity(self, name: str) -> EntityResolution:
-        """Resolve one stable Entity from an exact ID, title, or alias (#172).
+        """Resolve one stable Entity from an exact ID, title, or alias.
 
         Deterministic priority: exact Entity ID, then exact Canonical Page
         Title, then exact alias. A name claimed by several pages (a shared
@@ -705,7 +705,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         return EntityResolution()
 
     def entity_id_for_title(self, title: str) -> str | None:
-        """Stable Entity ID owning ``title``, or ``None`` (issue #172).
+        """Stable Entity ID owning ``title``, or ``None``.
 
         The ID-bearing SDK seam for title-returning operations
         (:meth:`related_pages`, :meth:`shortest_path`): map each returned
@@ -722,7 +722,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         """Return canonical edges whose source page has the given Canonical Title.
 
         Each returned :class:`Relationship` is a derived, title-level view of
-        one accepted entity-to-entity Claim (ADR-0021): ``type`` is the Claim
+        one accepted entity-to-entity Claim: ``type`` is the Claim
         predicate and ``target`` the object entity's Canonical Page Title.
         """
         relationships: list[Relationship] = []
@@ -781,7 +781,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         return None
 
     # ------------------------------------------------------------------
-    # Public graph traversal seam (issue #106, ADR-0011).
+    # Public graph traversal seam.
     #
     # ``related_pages`` and ``shortest_path`` expose canonical-graph traversal
     # that is direction-aware, cycle-safe, bounded, and restricted to a
@@ -807,7 +807,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         ``title`` (a Canonical Page Title or Alias) is resolved to stable
         Entity IDs at the module edge; traversal runs over Entity-ID adjacency
         and results are returned as human-readable Canonical Page Titles —
-        titles are labels, never identity (issue #170, ADR-0021).
+        titles are labels, never identity.
 
         Expands graph neighbors breadth-first up to ``max_depth`` hops,
         following ``direction`` (``"outgoing"``, ``"incoming"``, or
@@ -815,7 +815,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         traverses only accepted entity-to-entity Claims (Claim Predicate IDs
         as the relationship type); ``"discovery"`` traverses canonical Claims
         PLUS Extracted References derived from exactly-resolved internal links
-        in Compiled Page bodies (ADR-0011, issue #107). In discovery scope,
+        in Compiled Page bodies. In discovery scope,
         equivalent edges (same source -> target) are deduplicated to a single
         endpoint.
 
@@ -900,7 +900,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         them in reverse; ``"both"`` treats them as undirected. ``scope``
         selects the graph: ``"canonical"`` (default) uses only reviewed typed
         Relationships; ``"discovery"`` uses canonical Relationships PLUS
-        Extracted References (ADR-0011, issue #107).
+        Extracted References.
 
         Traversal operates ONLY over ``candidate_titles``: both endpoints and
         every intermediate title must be in the authorized set, or ``None`` is
@@ -1042,7 +1042,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         return both_neighbors
 
     # ------------------------------------------------------------------
-    # Discovery Graph inspection (issue #107, ADR-0011).
+    # Discovery Graph inspection.
     # ------------------------------------------------------------------
 
     def extracted_references(self, title: str) -> list[ExtractedReference]:
@@ -1067,12 +1067,12 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         reserved-artifact targets are expected, correct exclusions and are
         intentionally silent. These are derived-state diagnostics, not
         blocking validation errors: a resolved link is deterministic and
-        does not require Maintainer approval (ADR-0011).
+        does not require Maintainer approval.
         """
         return list(self._knowledge_index().extraction_diagnostics)
 
     # ------------------------------------------------------------------
-    # Graph materialization (issue #108, ADR-0011).
+    # Graph materialization.
     #
     # The Discovery Graph adjacency is materialized as a versioned
     # MessagePack artifact in the derived index directory so startup can
@@ -1209,7 +1209,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         components, directed hubs — and is distinct from the artifact/runtime
         observability in :meth:`graph_health` (freshness, materialization,
         latency). It never changes graph ownership, persistence, retrieval
-        semantics, or the Evidence contract (ADR-0011).
+        semantics, or the Evidence contract.
 
         Orphan counts and hubs are DIRECTION-AWARE and directed-safe. Weakly
         connected components and largest-component coverage use an UNDIRECTED
@@ -1328,7 +1328,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         """Aggregate extraction diagnostics by (outcome, target).
 
         Extracted-reference outcomes (broken, ambiguous) are Discovery Graph
-        derivation diagnostics (ADR-0011). Repeated missing targets are strong
+        derivation diagnostics. Repeated missing targets are strong
         page/link-repair signals. Only diagnostics whose source page is in the
         authorized ``candidate`` set are included, preserving visibility. Full
         diagnostic detail (kind text, raw target, context) remains available
@@ -1390,7 +1390,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
           in the same weakly connected component but no direct edge exists
           between them; adding a direct edge strengthens the existing indirect
           (fragile) connection. The fragile topology is identified through the
-          same structural diagnostics seam (#126): directed inbound degrees,
+          same structural diagnostics seam: directed inbound degrees,
           undirected WCC projection, and direct-edge presence — the topology
           ``graph_diagnostics`` reports.
 
@@ -1411,11 +1411,11 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         Markdown link becomes an Extracted Reference, which participates in
         the Discovery Graph only. Canonical-scope impact is rejected because
         it would imply inferring a typed Relationship from a Markdown-link
-        proposal (ADR-0011).
+        proposal.
 
         The impact is ADVISORY: it never infers a typed Relationship from a
         Markdown-link proposal. An approved link remains an Extracted
-        Reference with navigation meaning only (ADR-0011).
+        Reference with navigation meaning only.
         """
         _require_graph_scope(scope)
         if scope != GRAPH_SCOPE_DISCOVERY:
@@ -1431,7 +1431,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
 
         candidate_set = self._graph_candidate(candidate_titles)
         all_titles = frozenset(page.title for page in self.pages if page.title)
-        # Authorized topology over stable Entity-ID graph keys (issue #170);
+        # Authorized topology over stable Entity-ID graph keys;
         # LinkCandidate fields stay title-oriented, so map at this edge.
         nodes = self._graph_allowed_keys(candidate_set & all_titles)
         key_of = index.graph_key_by_title
@@ -1589,7 +1589,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
     ) -> "_GraphExpansion":
         """Return the graph-expanded eligible Compiled Pages plus trace metadata.
 
-        Discovery Graph expansion (issue #112, ADR-0011): for each seed title,
+        Discovery Graph expansion: for each seed title,
         resolve authorized seed keys, expand authorized neighbors (scope /
         direction / depth bounded) breadth-first, and resolve to the loaded
         Compiled Pages. Authorization is the set of loaded page titles, so an
@@ -1714,7 +1714,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         adapter to be bound via :meth:`build_index` (``retrieval=...``).
 
         This is fresh retrieval over Compiled Pages / Knowledge Base Evidence.
-        It is distinct from Conversation Recall (#59): no persisted Reader
+        It is distinct from Conversation Recall: no persisted Reader
         questions, chat context, or shared recall records are involved.
 
         ``hints`` is an optional, bounded list of sanitized additional query
@@ -1723,9 +1723,9 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         Knowledge Base's own retrieval ranks them, never substituted for it;
         the original ``query`` always participates. Callers must keep the hint
         set bounded and sanitized (significant tokens only) so it cannot be
-        abused as a second free-form query (issue #55).
+        abused as a second free-form query.
 
-        Graph expansion (issue #112, ADR-0011): when ``graph_seed_titles`` is
+        Graph expansion: when ``graph_seed_titles`` is
         provided, the Discovery Graph selects eligible page identities (canonical
         Relationships plus Extracted References) BEFORE the adapter ranks
         Evidence. Only eligible pages are passed to the adapter; an Extracted
@@ -1760,7 +1760,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
                 max_depth=graph_max_depth,
             )
             eligible_pages = expansion.pages
-            # Truthful seed resolution (issue #172): resolved seed Entity IDs
+            # Truthful seed resolution: resolved seed Entity IDs
             # plus — as its own stage — any seed that authorized nothing.
             seed_note = ", ".join(expansion.resolved_seed_keys) or "(none resolved)"
             if expansion.unresolved_seeds:
@@ -1769,7 +1769,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
                     f"{', '.join(expansion.unresolved_seeds)}"
                 )
             prepended_stages.append(TraceStage("graph-seeds", seed_note))
-            # Claim-aware expansion disclosure (issue #172): scope, counts,
+            # Claim-aware expansion disclosure: scope, counts,
             # accepted-only lifecycle filter, followed edge origins, traversed
             # Claim IDs/Predicates (bounded), and the artifact source.
             detail = (
@@ -1795,7 +1795,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
             # built adapter index may be stale. Before composing them, assert the
             # stored fingerprint matches the current source. A mismatch (or a
             # missing fingerprint) is stale and triggers a rebuild so graph and
-            # Evidence never disagree (issue #112, ADR-0011).
+            # Evidence never disagree.
             if resolved is not None:
                 current_fp = self._current_captured_fingerprint_for_build()
                 stored_fp = load_stored_fingerprint(resolved)
@@ -2010,7 +2010,7 @@ class ExtractionDiagnostic(msgspec.Struct, frozen=True):
     link targets are dropped from the traversable Discovery Graph and surfaced
     here so Maintainers can act on them through existing health/validation
     contracts. Diagnostics are never blocking validation errors: a resolved
-    link is derived state, not a semantic claim (ADR-0011).
+    link is derived state, not a semantic claim.
     """
 
     source_path: str
@@ -2383,7 +2383,7 @@ def extract_references(pages: Sequence[CompiledPage]) -> list[ExtractedReference
 class _KnowledgeIndex:
     """In-memory exact-lookup and graph indexes derived from a list of pages.
 
-    Since issue #170 (ADR-0021) the graph adjacency is keyed by stable Entity
+    Since issue #170 the graph adjacency is keyed by stable Entity
     IDs, not Canonical Page Titles: a title or path change does not alter
     Entity identity or traversal topology. Pages in Legacy Flat Mode without
     an Entity ID fall back to their Canonical Page Title as the graph key, so
@@ -2406,7 +2406,7 @@ class _KnowledgeIndex:
         # Reverse adjacency: target graph key -> [GraphEdge(source)].
         # Built alongside the outgoing adjacency so incoming traversal and
         # ``both`` direction are derived from the same accepted-Claim set
-        # without a second pass (issue #106).
+        # without a second pass.
         self.incoming: dict[str, list[GraphEdge]] = {}
 
         for page in pages:
@@ -2426,7 +2426,7 @@ class _KnowledgeIndex:
             for source in page.sources:
                 self.by_source.setdefault(source.id, []).append(page)
             self.by_lifecycle.setdefault(page.lifecycle or "", []).append(page)
-        # Canonical adjacency (ADR-0021, issue #170): accepted entity-to-entity
+        # Canonical adjacency: accepted entity-to-entity
         # Claims projected onto stable Entity IDs. Disputed and superseded
         # Claims stay inspectable but never enter traversal; literal Claims
         # are not graph edges.
@@ -2451,18 +2451,18 @@ class _KnowledgeIndex:
                 self.incoming.setdefault(edge.endpoint, []).append(edge.reversed(source_key))
         # Canonical adjacency is stored pre-sorted so graph traversal
         # iterates canonical edges deterministically without per-node
-        # materialization/sorting (ADR-0011, issue #106).
+        # materialization/sorting.
         for edges in self.adjacency.values():
             edges.sort(key=_graph_edge_sort_key)
         for edges in self.incoming.values():
             edges.sort(key=_graph_edge_sort_key)
 
-        # Discovery Graph adjacency (issue #107, ADR-0011; issue #170):
+        # Discovery Graph adjacency:
         # EVERY canonical accepted Claim edge PLUS EVERY exactly-resolved
         # Extracted Reference, each retained with its full origin and
         # provenance metadata. Edges to the same endpoint are NOT merged
         # here: an Extracted Reference beside a Claim to the same target
-        # keeps its own provenance in the graph state (issue #170), while
+        # keeps its own provenance in the graph state, while
         # TRAVERSAL deduplicates endpoints through its visited set so a
         # related-page expansion still surfaces each page once. Extracted
         # edges carry no predicate/claim identity — they are never canonical
@@ -2517,7 +2517,7 @@ class _KnowledgeIndex:
 def _graph_edge_sort_key(
     edge: GraphEdge,
 ) -> tuple[str, str, str, str, str, int, int, str, str]:
-    """Deterministic total order over edges (issue #170)."""
+    """Deterministic total order over edges."""
     return edge.sort_key
 
 
@@ -2565,7 +2565,7 @@ def _as_string_list(value: Any) -> list[str]:
 
 
 def _as_review_after(value: Any, relative: str) -> tuple[str | None, list[ValidationIssue]]:
-    """Decode the optional ``review_after`` frontmatter field (ADR-0023).
+    """Decode the optional ``review_after`` frontmatter field.
 
     YAML decodes a bare ISO 8601 date to a ``datetime.date``; a QUOTED date
     (as rendered by OKF import and other double-quoting writers) stays a
@@ -2808,7 +2808,7 @@ def _reserved_artifact_basename(file: Path) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Read-only content source (issue #120, ADR-0013).
+# Read-only content source.
 #
 # Loading, validation, and fingerprinting read canonical Knowledge Base content
 # through this small seam so the SAME logic serves a local filesystem root and
@@ -2863,7 +2863,7 @@ class _FilesystemKbSource:
 class _InMemoryKbSource:
     """A :class:`_KbSource` over an in-memory materialization (no disk bytes).
 
-    Used by the S3 capability (issue #120): an immutable Published Version's
+    Used by the S3 capability: an immutable Published Version's
     canonical content is read from object storage into memory, validated against
     the manifest content digests, and loaded here so the Core SDK never writes a
     managed Knowledge Base copy to local disk.
@@ -2967,7 +2967,7 @@ def _parse_page(
 
     ``text`` is the page source and ``relative`` is its POSIX path relative to
     the Knowledge Base root. Source-agnostic so the same parser serves a
-    filesystem root and an in-memory materialization (issue #120, ADR-0013).
+    filesystem root and an in-memory materialization.
     The third element carries the structural Claim parser diagnostics so the
     loading path can surface them in the ``ValidationReport`` exactly once,
     without reparsing Claim frontmatter downstream.
@@ -3222,7 +3222,7 @@ def _ontology_issues(pages: list[CompiledPage], ontology: Ontology | None) -> li
     entity_types = ontology.entity_types if ontology is not None else {}
     predicates = ontology.predicates if ontology is not None else {}
 
-    # ADR-0021: in a Knowledge Base with a Control File (ontology present),
+    # in a Knowledge Base with a Control File (ontology present),
     # EVERY page declares exactly one stable Entity ID and at least one
     # controlled Entity Type. In Legacy Flat Mode (no Control File) the entity
     # contract is optional — there is no ontology to control it against.
@@ -3322,7 +3322,7 @@ def _ontology_issues(pages: list[CompiledPage], ontology: Ontology | None) -> li
                     )
                 )
                 # Domain/range checks need the definition, but object existence
-                # is definition-independent and still validated (ADR-0021).
+                # is definition-independent and still validated.
             if (
                 definition is not None
                 and definition.subject_types
@@ -3667,7 +3667,7 @@ def _as_ontology(value: Any) -> tuple[Ontology, list[ValidationIssue]]:
 
 
 def is_due_for_review(review_after: str | None, *, today: _date_cls | None = None) -> bool:
-    """Whether a page with ``review_after`` is due for review (ADR-0023).
+    """Whether a page with ``review_after`` is due for review.
 
     Due means ``today >= review_after``; an absent field never carries a
     freshness opinion. Expects the canonical ``YYYY-MM-DD`` string produced by
@@ -3683,7 +3683,7 @@ def is_due_for_review(review_after: str | None, *, today: _date_cls | None = Non
 def due_review_pages(
     pages: Sequence[CompiledPage], *, today: _date_cls | None = None
 ) -> list[CompiledPage]:
-    """Return the pages due for review, most overdue first (ADR-0023).
+    """Return the pages due for review, most overdue first.
 
     Deterministic ranking: ascending ``review_after`` (the oldest review date
     is the most overdue), then by path for stable ties. Model-free and
@@ -3699,7 +3699,7 @@ def _validate_page(
     """Validate a single page, returning all issues for that page."""
     page_issues: list[ValidationIssue] = []
 
-    # The typed Ariadne Context Profile envelope (spec 0009): a structurally
+    # The typed Ariadne Context Profile envelope: a structurally
     # invalid envelope refuses validation with named-path diagnostics
     # instead of becoming opaque accepted authority.
     _profile_record, profile_errors = parse_ariadne_profile(
@@ -3757,7 +3757,7 @@ def _validate_page(
             )
         )
 
-    # Freshness (ADR-0023): a malformed review_after date blocks; a due page
+    # Freshness: a malformed review_after date blocks; a due page
     # is advisory only — a warning that never fails validation.
     _review_after, review_after_issues = _as_review_after(data.get("review_after"), relative)
     page_issues.extend(review_after_issues)
@@ -3874,9 +3874,9 @@ def _load_pages_and_validate(
     ``log.md``, or ``hot.md`` with the matching supported ``lumio`` marker) is
     a reserved derived artifact: it is excluded from the loaded Compiled Page
     collection. A reserved path with a missing or malformed marker is a
-    blocking validation error rather than being skipped (issues #64 and #77).
+    blocking validation error rather than being skipped.
 
-    Source-agnostic (issue #120, ADR-0013): the same logic serves a filesystem
+    Source-agnostic: the same logic serves a filesystem
     root and an in-memory materialization of an immutable S3 Published Version.
     """
     pages: list[CompiledPage] = []
@@ -3914,7 +3914,7 @@ def _load_pages_and_validate(
             )
             continue
 
-        # Reserved derived-artifact classification (issues #64 and #77).
+        # Reserved derived-artifact classification.
         if reserved_basename is not None:
             classification = _classify_reserved_artifact(data, reserved_basename)
             if classification.valid:
@@ -3945,7 +3945,7 @@ def _cross_page_issues(
     pages: list[CompiledPage],
     index: _KnowledgeIndex,
 ) -> list[ValidationIssue]:
-    """Return cross-page validation issues including QA issue kinds (issue #86).
+    """Return cross-page validation issues including QA issue kinds.
 
     Surfaces the pre-existing structural checks (duplicate title, duplicate
     alias, unresolved relationship target) PLUS the Maintainer QA issue kinds
@@ -3959,7 +3959,7 @@ def _cross_page_issues(
     * **broken-internal-link** — broken/ambiguous/escaping/duplicate/
       unsupported link outcomes from the shared Extracted Reference
       resolver, carried with source page, severity, and location context.
-      Exactly-resolved links are derived state, never broken (ADR-0011).
+      Exactly-resolved links are derived state, never broken.
     * **stale** — pages in the ``deprecated`` Lifecycle, surfaced as
       content-health signals for Maintainer review.
     * **contradiction** — ``contradicts`` typed Relationships, surfaced so
@@ -4029,7 +4029,7 @@ def _orphan_issues(pages: list[CompiledPage], index: _KnowledgeIndex) -> list[Va
     """Return orphan-page findings with canonical vs discovery scope disclosure.
 
     A page is an orphan when it has no inbound topology from OTHER pages.
-    Two scopes are distinguished (ADR-0011, issue #86 AC2):
+    Two scopes are distinguished:
 
     * **Discovery scope** — the page has no inbound topology at all: no
       reviewed Relationship and no Extracted Reference targets it. This is
@@ -4089,7 +4089,7 @@ def _broken_internal_link_issues(
     """Surface shared-resolver link diagnostics as broken-internal-link findings.
 
     Consumes the ``ExtractionDiagnostic`` outcomes produced by the shared
-    Extracted Reference resolver (issue #107, ADR-0011) and surfaces each as
+    Extracted Reference resolver and surfaces each as
     a non-blocking ``warning`` with source page, target, kind, and line
     location so a Maintainer can act. Exactly-resolved links produce Extracted
     References, NOT diagnostics, and are therefore never reported here
@@ -4140,7 +4140,7 @@ def _contradiction_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
     A claim whose predicate is ``contradicts`` (when the KB's ontology
     declares it) is a valid, reviewed semantic claim. It is surfaced here so
     active contradiction claims are visible at a glance in the QA report,
-    supporting review-by-exception (#111).
+    supporting review-by-exception.
     """
     issues: list[ValidationIssue] = []
     for page in pages:
@@ -4161,14 +4161,14 @@ def _contradiction_issues(pages: list[CompiledPage]) -> list[ValidationIssue]:
 
 
 # ---------------------------------------------------------------------------
-# Knowledge Base Control File (issue #77).
+# Knowledge Base Control File.
 #
 # A categorized Knowledge Base carries a versioned root ``lumio.yaml`` declaring
 # its Content Category catalog and Maintainer-pinned Hot Index titles. It is
 # KB-local content control: validated by the Core SDK, portable with the KB,
 # fingerprinted as canonical content, but neither a Compiled Page nor an OKF
 # concept. A Knowledge Base with no Control File loads in Legacy Flat Mode with
-# a non-blocking migration warning (ADR-0008).
+# a non-blocking migration warning.
 # ---------------------------------------------------------------------------
 
 
@@ -4193,7 +4193,7 @@ def _as_categories(value: Any) -> tuple[list[ContentCategory], bool]:
         if isinstance(item, str):
             # A bare-string category must be non-empty, exactly like the
             # ``name`` field of a mapping entry. An empty bare name is a
-            # blocking validation error (issue #77).
+            # blocking validation error.
             if not item.strip():
                 return [], False
             categories.append(ContentCategory(name=item))
@@ -4241,7 +4241,7 @@ def _as_hot_index_pins(value: Any) -> tuple[list[HotIndexPin], bool]:
     Returns the parsed pins and a flag that is False when the raw value was
     structurally invalid (the caller emits a dedicated validation issue). A
     blank or whitespace-only pin title is rejected for both the bare-string and
-    mapping forms, exactly like a Category ``name`` (issue #77).
+    mapping forms, exactly like a Category ``name``.
     """
     if not isinstance(value, list):
         return [], False
@@ -4273,7 +4273,7 @@ def _load_and_validate_control_file(
     present, the file is validated as a KB-local content control: supported
     version, a Content Category catalog that is either absent/empty (applies
     the seeded default) or a well-formed list of slug-valid, reserved-name-
-    safe, unique category names (ADR-0009), and Hot Index pins that resolve
+    safe, unique category names, and Hot Index pins that resolve
     to existing Canonical Page Titles (analogous to Relationship target
     resolution). Declared categories are first-class for navigation,
     validation, and retrieval alongside seeded ones; each Compiled Page's
@@ -4281,7 +4281,7 @@ def _load_and_validate_control_file(
     ``pages=None`` to skip cross-page pin and category resolution (the
     lightweight parse seam used by :func:`load_control_file`).
 
-    Source-agnostic (issue #120, ADR-0013): reads canonical content through a
+    Source-agnostic: reads canonical content through a
     :class:`_KbSource` so the same validation serves a filesystem root and an
     in-memory S3 materialization.
     """
@@ -4355,7 +4355,7 @@ def _load_and_validate_control_file(
         # Legacy Flat Mode is represented by the *absence* of a Control File,
         # not by a present Control File that declares it. A present Control File
         # must declare ``mode: categorized``; ``legacy-flat`` here is
-        # contradictory and a blocking error (ADR-0008, issue #77).
+        # contradictory and a blocking error.
         issues.append(
             ValidationIssue(
                 file=CONTROL_FILE_BASENAME,
@@ -4381,7 +4381,7 @@ def _load_and_validate_control_file(
         )
         mode = KB_MODE_CATEGORIZED
 
-    # Content Category catalog (ADR-0009): the catalog is data, not a fixed
+    # Content Category catalog: the catalog is data, not a fixed
     # enum. An absent or empty declaration applies the seeded default; a
     # present declaration is validated for slug shape, reserved-name safety,
     # and uniqueness. Declared categories are first-class for navigation,
@@ -4390,7 +4390,7 @@ def _load_and_validate_control_file(
     categories: list[ContentCategory] = []
     catalog_structurally_valid = True
     if raw_categories is None or (isinstance(raw_categories, list) and not raw_categories):
-        # Absent or empty declaration applies the seeded default (ADR-0009).
+        # Absent or empty declaration applies the seeded default.
         categories = list(SEED_CATEGORY_CATALOG)
     else:
         parsed_categories, categories_ok = _as_categories(raw_categories)
@@ -4433,7 +4433,7 @@ def _load_and_validate_control_file(
                     )
                 seen.add(category.name)
 
-    # Page path-category validation (ADR-0009): a Compiled Page's category is
+    # Page path-category validation: a Compiled Page's category is
     # the first segment of its path. In a categorized Knowledge Base every
     # page with a directory component must live under a declared Content
     # Category; otherwise validation fails. Skipped on the structural parse
@@ -4542,9 +4542,9 @@ def seeded_control_file() -> KnowledgeBaseControlFile:
 
     A new categorized Knowledge Base adopts this catalog; Maintainers propose
     catalog and Hot Index pin changes through the normal review-and-publish
-    workflow. The seeded categories are broad navigation routing only (issue #76).
+    workflow. The seeded categories are broad navigation routing only.
     The version-2 seed carries an empty ontology: Entity Types and Predicates
-    are KB-local content a Maintainer declares deliberately (ADR-0021).
+    are KB-local content a Maintainer declares deliberately.
     """
     return KnowledgeBaseControlFile(
         version=CONTROL_FILE_VERSION,
@@ -4724,7 +4724,7 @@ def validate_proposed_control_file(
     applies, so a Maintainer reviews the exact issues the Core SDK would raise
     on load. Pass ``pages`` to resolve Hot Index pins against the current
     Canonical Page Titles; pass ``None`` for the structural-only parse seam.
-    Returns an empty list when the proposed Control File is valid (issue #77).
+    Returns an empty list when the proposed Control File is valid.
 
     The proposed Control File never touches the live Knowledge Base: it is
     written under a private temporary root and discarded when this call returns.
@@ -4791,7 +4791,7 @@ def _load_and_validate(
 ) -> tuple[KnowledgeBase, ValidationReport]:
     """Load and fully validate canonical Knowledge Base content from ``source``.
 
-    Source-agnostic (issue #120, ADR-0013): the resolved ``source.root`` is the
+    Source-agnostic: the resolved ``source.root`` is the
     Knowledge Base root carried on the returned :class:`KnowledgeBase` for
     diagnostics; read-only loading never touches the filesystem through it.
     """
@@ -4857,14 +4857,14 @@ def fingerprint_sources(root: str | Path) -> SourceFingerprint:
     makes the canonical fingerprint appear stale. Authored Markdown on a
     reserved path without a valid marker is still fingerprinted — there is no
     escape hatch from fingerprinting without occupying the valid reserved
-    artifact role (issues #64 and #77).
+    artifact role.
     """
     _captured, fingerprint = _capture_source(_FilesystemKbSource(Path(root).resolve()))
     return fingerprint
 
 
 def _fingerprint_sources(source: _KbSource) -> SourceFingerprint:
-    """Source-agnostic fingerprint core (issue #120, ADR-0013).
+    """Source-agnostic fingerprint core.
 
     Computes the same deterministic digest over canonical content whether the
     source is a filesystem root or an in-memory materialization of an
@@ -4913,7 +4913,7 @@ def canonical_content(source: _KbSource) -> dict[str, bytes]:
     Canonical content is the Control File (when present) plus every Markdown
     file under the source, including validly-marked reserved artifacts. This is
     the complete tree a publisher materializes under an immutable version prefix
-    (ADR-0013) and the complete tree a reader must materialize to load, validate,
+     and the complete tree a reader must materialize to load, validate,
     and fingerprint a Published Version byte-for-byte. Reserved-artifact
     *exclusion* happens only at fingerprint time (:func:`_fingerprint_sources`),
     never at materialization time — a reader needs the full tree so the loader
@@ -4934,7 +4934,7 @@ def is_fresh(previous: SourceFingerprint, current: SourceFingerprint) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Navigation Index generation (issue #65).
+# Navigation Index generation.
 #
 # A Published Version materializes one reserved, marked ``index.md`` at the
 # Knowledge Base root and in every directory containing Compiled Pages anywhere
@@ -4945,7 +4945,7 @@ def is_fresh(previous: SourceFingerprint, current: SourceFingerprint) -> bool:
 # for unchanged canonical content), carry the Navigation Index marker, omit
 # exchange-only metadata, and are written atomically so a generation failure
 # leaves the previously published tree usable. Loading, fingerprinting, and
-# retrieval already exclude valid marked indexes (issue #64).
+# retrieval already exclude valid marked indexes.
 # ---------------------------------------------------------------------------
 
 
@@ -5198,7 +5198,7 @@ def regenerate_navigation_indexes(path: str | Path) -> list[Path]:
     left untouched — they are blocking validation errors, not silently fixed —
     and a fresh tree is not churned. A failure rolls the tree fully back to its
     prior state. Regeneration touches only reserved derived artifacts, so the
-    canonical content fingerprint is unchanged (issues #64 and #66). Returns the
+    canonical content fingerprint is unchanged. Returns the
     committed index paths in path order.
     """
     root = Path(path).resolve()
@@ -5255,7 +5255,7 @@ def _commit_reserved_artifacts(
     restored (overwriting any new content a partial commit already placed), and
     any newly created target a partial commit had already placed is removed.
     The tree is therefore left exactly as it was — never a mix of old and new
-    artifacts and never a half-written set (ADR-0007 and ADR-0008). Returns the
+    artifacts and never a half-written set. Returns the
     committed artifact paths in path order.
     """
     keep = set(contents)
@@ -5400,7 +5400,7 @@ def _commit_navigation_indexes(
 
 
 # ---------------------------------------------------------------------------
-# Hot Index, Activity Log, and reserved-artifact publication (issue #77).
+# Hot Index, Activity Log, and reserved-artifact publication.
 #
 # A categorized Knowledge Base publishes a regenerated, Maintainer-pinned Hot
 # Index (``hot.md``) and an append-only Activity Log (``log.md``) alongside the
@@ -5408,7 +5408,7 @@ def _commit_navigation_indexes(
 # File's pinned titles and current Compiled Pages on every publish/sync. The
 # Activity Log is append-only: it records one grep-friendly entry per
 # successful published Knowledge Base state transition and is never regenerated
-# or pruned. See ADR-0008.
+# or pruned..
 # ---------------------------------------------------------------------------
 
 
@@ -5498,7 +5498,7 @@ def append_activity_log_entry(
     append-only: existing history is never rewritten, reordered, or pruned. The
     entry records only a successful published Knowledge Base state transition —
     Reader queries, failed or discarded proposals, unpublished uploads, and
-    private audit events never reach this portable log (ADR-0008).
+    private audit events never reach this portable log.
 
     The write is atomic for the new file case (temp + ``os.replace``); for an
     existing log it appends in place because the artifact is append-only and
@@ -5575,7 +5575,7 @@ def publish_reserved_artifacts(path: str | Path) -> list[Path]:
     touched here — it is append-only and is written separately, only after the
     Knowledge Base state is successfully published (see
     :func:`append_activity_log_entry`). Returns the committed paths in path
-    order (ADR-0008).
+    order.
     """
     root = Path(path).resolve()
     kb, report = load_knowledge_base(root)
@@ -5617,7 +5617,7 @@ def regenerate_reserved_artifacts(path: str | Path) -> list[Path]:
     Navigation Index hierarchy and the Hot Index from canonical content without
     churning fresh artifacts, and prunes orphaned valid marked artifacts. The
     Activity Log is append-only history and is never regenerated or pruned here.
-    Returns the committed paths in path order (ADR-0008).
+    Returns the committed paths in path order.
     """
     root = Path(path).resolve()
     kb, _report = load_knowledge_base(root)

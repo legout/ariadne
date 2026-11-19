@@ -94,7 +94,7 @@ def write_baseline_origin_record(
     content_hash: str,
     origin_created_at: str,
 ) -> Path:
-    """Record one Source Baseline Snapshot origin observation (spec 0010 §5.1).
+    """Record one Source Baseline Snapshot origin observation.
 
     Binds the exact snapshot digest, Git base revision and namespace to one
     imported exact version, and preserves the sender's ``origin_created_at``
@@ -130,7 +130,7 @@ def write_handoff_origin_record(
     content_hash: str,
     origin_created_at: str,
 ) -> Path:
-    """Record one full Source Handoff Bundle origin observation (spec 0010 §5).
+    """Record one full Source Handoff Bundle origin observation.
 
     Binds the exact bundle digest and the ORIGINAL handoff base/contribution
     revisions to one imported exact version, and preserves the sender's

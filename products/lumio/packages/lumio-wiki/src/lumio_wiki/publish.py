@@ -1,4 +1,4 @@
-"""Publish helpers for the standalone ingestion journey (issue #97).
+"""Publish helpers for the standalone ingestion journey.
 
 The candidate-validation and apply helpers that the Proposal Pipeline needs to
 publish proposed pages live here so the model-free journey can reach
@@ -130,7 +130,7 @@ class PublishError(Exception):
 
 
 class DestinationConflict(PublishError):
-    """A proposed destination set failed its pre-write checks (Plan 02 / P2, B01).
+    """A proposed destination set failed its pre-write checks.
 
     Raised before ANY candidate or live byte is written, so a conflict can
     never silently overwrite another page, allocate a suffix, or leave a
@@ -539,7 +539,7 @@ def _reject_occupied_target(
 ) -> None:
     """Reject an occupied destination before any write (B01).
 
-    Generalizes the explicit move collision guard (issue #80, P1.2) to every
+    Generalizes the explicit move collision guard to every
     write branch: an existing directory, an unreadable occupant, a special
     file (FIFO, socket, device — rejected via a nonblocking ``stat`` type
     probe so the preflight never opens a FIFO, whose read side would block
@@ -618,8 +618,8 @@ def _resolve_proposed_destinations(
     - a compound revision merges at the recorded path, and its new-page
       fallback is held to the same occupancy rule (compound-fallback
       collision rejected);
-    - an explicit move (issue #80) keeps its atomic-move collision guard, and
-      a reviewed rename (ADR-0016) keeps the old title's recorded path while
+    - an explicit move keeps its atomic-move collision guard, and
+      a reviewed rename keeps the old title's recorded path while
       blocking renames onto an existing title;
     - two pages resolving to the same destination within one proposal are a
       duplicate-target conflict (no last-writer-wins);
@@ -648,7 +648,7 @@ def _resolve_proposed_destinations(
 
     ``force_compound`` forces the compound branch for every proposed page:
     the public compound-revision writer (:func:`apply_compound_revision`) is
-    an unconditional merge (issue #79), so it routes the shared checks with
+    an unconditional merge, so it routes the shared checks with
     this flag even when the caller's record omits the ``compound_revision``
     flag.
     """
@@ -676,9 +676,9 @@ def _resolve_proposed_destinations(
         compound = force_compound or bool(getattr(page, "compound_revision", False))
         title = page.title
         if move_from:
-            # Explicit category/path move (issue #80): relocate ATOMICALLY.
+            # Explicit category/path move: relocate ATOMICALLY.
             # Both paths are escape-checked, and the original collision guard
-            # (issue #80, P1.2) is reused as the occupancy rule for the move.
+            #  is reused as the occupancy rule for the move.
             # A move source submitted as a SYMLINK is rejected FIRST, on
             # non-following lstat, BEFORE resolution loses the lexical path
             # (P2 review v4): ``_checked_relative_path`` resolves the link,
@@ -820,7 +820,7 @@ def _resolve_proposed_destinations(
                         file=target_relative,
                     ) from exc
         elif rename_from:
-            # Reviewed title rename (ADR-0016): the identity changes, the old
+            # Reviewed title rename: the identity changes, the old
             # title's recorded path is authoritative, and renaming onto an
             # existing title is blocked (uniqueness).
             if title != rename_from and title in existing_by_title:
@@ -941,7 +941,7 @@ def _write_destination(destination: _Destination, root: Path) -> Path:
     resolution time; this performs the branch's byte writes. A compound
     revision merges its resolution-time merge base (existing prior Sources
     are preserved and deduplicated, issue #79); a move unlinks its source
-    only after the destination is written (issue #80) — that source was
+    only after the destination is written — that source was
     verified removable (regular, readable, with a parent directory whose
     mode bits and sticky bit permit removing entries) and owned by the
     proposed page's title at resolution time, so the unlink can never remove
@@ -1228,7 +1228,7 @@ def apply_proposed_pages(
     """Write proposed Compiled Pages into the canonical working directory.
 
     Destinations are resolved and checked ONCE, up front, before ANY page is
-    written (Plan 02 / P2, B01): see :func:`_resolve_proposed_destinations`.
+    written: see :func:`_resolve_proposed_destinations`.
     A conflict raises :class:`DestinationConflict` while the Knowledge Base
     is still untouched, and the temporary candidate validation consumes the
     same resolution, so neither candidate validation nor live application can
@@ -1236,13 +1236,13 @@ def apply_proposed_pages(
     undeclared. Pages whose canonical title already exists update the
     existing file in place at its recorded path; new pages are written to
     their proposed relative path only when that path is unoccupied. A page
-    marked as a compound revision (issue #79) is written through additive
+    marked as a compound revision is written through additive
     provenance: the existing page's prior Sources are preserved and
     deduplicated against the proposed page's newly informing Sources, so the
     evidence trail is never silently replaced. Each target path must resolve
     inside ``working_dir``.
 
-    ``removed_titles`` (issue #135) removes the corresponding Compiled Page
+    ``removed_titles`` removes the corresponding Compiled Page
     files by Canonical Title AFTER the proposed page revisions are written, so
     a single atomic proposal can repair dependent pages (dropping the
     Relationships that targeted a removed page) and then remove the page. The
@@ -1274,7 +1274,7 @@ def apply_proposed_pages(
     exception). The mode bits are evaluated directly with the same
     root-safe algorithm as the other preflights, never ``os.access``.
 
-    ``control_file`` (issue #135) writes a proposed Knowledge Base Control
+    ``control_file`` writes a proposed Knowledge Base Control
     File — used by a Page Removal that must drop a stale Hot Index pin
     atomically with the removal. It is written only when supplied, and its
     fixed path (``lumio.yaml`` at the root) is resolved against the proposed
@@ -1373,7 +1373,7 @@ def affected_mutation_paths(
 def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> str:
     """Return proposed Markdown with prior Sources preserved and deduplicated.
 
-    Additive provenance for a compound revision (issue #79): the existing
+    Additive provenance for a compound revision: the existing
     Compiled Page's Sources are kept and the proposed page's Sources are
     added, deduplicated by ``id`` (preferring the record that carries a URL
     when the same id appears in both). Sources WITHOUT an ``id`` are valid
@@ -1391,10 +1391,10 @@ def merge_compound_sources(proposed_markdown: str, existing_markdown: str) -> st
     except Exception:
         existing_data = {}
 
-    # A compound revision is additive provenance (issue #79); a proposal that
+    # A compound revision is additive provenance; a proposal that
     # does not re-declare the Ariadne Context Profile envelope preserves the
     # existing envelope exactly as it preserves prior Sources — profile data
-    # is never silently discarded by the merge (spec 0009 §3).
+    # is never silently discarded by the merge.
     if "ariadne_profile" in existing_data and "ariadne_profile" not in proposed_data:
         proposed_data["ariadne_profile"] = existing_data["ariadne_profile"]
     existing_sources = as_sources(existing_data.get("sources"))
@@ -1446,7 +1446,7 @@ def apply_compound_revision(page, working_dir: str | Path) -> Path:
     the proposed relative path), merges its prior Sources with the proposed
     page's Sources via :func:`merge_compound_sources`, and writes the merged
     Markdown at the resolved target. The merge is UNCONDITIONAL here: this is
-    the public compound-revision writer (issue #79), so it routes the shared
+    the public compound-revision writer, so it routes the shared
     destination checks with the compound branch FORCED for this helper —
     even when the caller's record does not carry the ``compound_revision``
     flag, the existing page's prior Sources are preserved and deduplicated,
@@ -1625,13 +1625,13 @@ def validate_candidate_knowledge_base(
     temporary tree is discarded, so a validation failure never leaves a partial
     candidate behind (#37 spec review).
 
-    ``removed_titles`` and ``control_file`` (issue #135) apply a Page
+    ``removed_titles`` and ``control_file`` apply a Page
     Removal's page deletions and Hot Index pin update to the throwaway
     candidate so the removal and its dependent-edge repairs validate together
     as ONE candidate — exactly the gate publication uses.
 
     The candidate consumes the same pre-write destination resolution as live
-    application (Plan 02 / P2, B01): every destination and removal is
+    application: every destination and removal is
     resolved and checked against the REAL root BEFORE the throwaway candidate
     tree is copied, so a conflict — including an uncopyable occupant such as
     a Unix socket at a proposed destination, which ``copytree`` itself could
@@ -1695,7 +1695,7 @@ def validate_candidate_knowledge_base(
     existing_by_title = _existing_paths_by_title(root)
     try:
         # Resolve and check EVERY destination and removal against the REAL
-        # root BEFORE the candidate copy exists (Plan 02 / P2, B01): an
+        # root BEFORE the candidate copy exists: an
         # uncopyable occupant at a proposed destination must surface as the
         # same :class:`DestinationConflict` live apply raises — not as a
         # ``shutil.copytree`` failure — so candidate validation keeps live
@@ -1712,7 +1712,7 @@ def validate_candidate_knowledge_base(
         # (missing destination under a mode-denied nearest existing parent,
         # or a read-only same-title revision file) surfaces as an aggregated
         # destination issue against the REAL root, never as a filesystem
-        # exception from the candidate apply phase (Plan 02 / P2, B01).
+        # exception from the candidate apply phase.
         _reject_unusable_control_file_path(root, control_file)
         _reject_non_directory_ancestors(destinations, removals, root, control_file)
         _reject_unwritable_page_destinations(destinations, root)
@@ -1756,7 +1756,7 @@ def validate_candidate_knowledge_base(
 
 
 # ---------------------------------------------------------------------------
-# Pure mutation-candidate assemblies (G4, spec 0008 §7)
+# Pure mutation-candidate assemblies
 #
 # Relocated from the retired ``proposal_pipeline.py``: the deterministic
 # removal/merge/rename computations are route-independent pure behavior the
@@ -1781,7 +1781,7 @@ def _drop_claims_for_entity(data: dict, removed_entity_id: str) -> bool:
     The default, reviewed repair for a Page Removal (issue #135, AC5, as
     revised by ADR-0021): every canonical Claim whose object Entity would
     otherwise dangle is removed in the same proposal. Body links are repaired
-    separately (AC6): exactly-resolved links are unwrapped and ambiguous ones
+    separately: exactly-resolved links are unwrapped and ambiguous ones
     are never guessed. Returns whether any Claim was dropped.
     """
     changed = False
@@ -1809,9 +1809,9 @@ def _repair_page_for_removal(
     retired_title: str,
     pages,
 ) -> tuple[str, bool, list[str]]:
-    """Return a page's Markdown repaired for a Page Removal (issue #135).
+    """Return a page's Markdown repaired for a Page Removal.
 
-    Two reviewed repairs in one revision (ADR-0021): Claims whose object
+    Two reviewed repairs in one revision: Claims whose object
     Entity would dangle are dropped, and every internal body link that
     resolves — with the shared resolver's precedence — EXACTLY to the removed
     page is unwrapped to its readable text (``[[T]]``/``[[T|L]]`` -> ``T``/``L``,
@@ -1903,7 +1903,7 @@ def _compute_removal_diff(
 def _retarget_claim_objects(data: dict, from_id: str, to_id: str) -> bool:
     """Rewrite Claim objects pointing at ``from_id`` to ``to_id`` in place.
 
-    The reviewed Entity Merge repair (issue #169, ADR-0021): every Claim on a
+    The reviewed Entity Merge repair: every Claim on a
     page whose object Entity is being retired is retargeted to the surviving
     Entity ID in the same proposal. Returns whether any Claim was rewritten.
     """
@@ -1964,10 +1964,10 @@ def _repair_body_links_for_merge(
     surviving_path: str,
     pages,
 ) -> tuple[str, bool, list[str]]:
-    """Rewrite exactly-resolved body links targeting the retired page (issue #169).
+    """Rewrite exactly-resolved body links targeting the retired page.
 
     A reviewed Entity Merge repairs exactly resolved links in the same
-    proposal (ADR-0021): every internal link that resolves — with the shared
+    proposal: every internal link that resolves — with the shared
     resolver's precedence — to exactly the retired page is rewritten to
     target the surviving page (wikilinks and title-resolved links to the
     surviving Canonical Title, path-resolved links to a root-absolute
@@ -2024,7 +2024,7 @@ def _repair_body_links_for_merge(
 
 
 class MutationCandidate(msgspec.Struct, frozen=True):
-    """One assembled deterministic Knowledge Base mutation (G3, spec 0008 §2/§7).
+    """One assembled deterministic Knowledge Base mutation.
 
     Route-independent output of the shared removal/merge assembly: native Git
     authoring applies its pages/repairs as ordinary worktree file edits.
@@ -2052,7 +2052,7 @@ def assemble_page_removal_candidate(
     reason: str = "",
     affected_claim_notes: list[str] | None = None,
 ) -> MutationCandidate:
-    """Assemble an explicit Page Removal and its dependent repairs (#135).
+    """Assemble an explicit Page Removal and its dependent repairs.
 
     The deterministic computation shared by the staged-proposal route and
     native Git worktree edits: resolves the page by Canonical Title, drops
@@ -2201,7 +2201,7 @@ def assemble_entity_merge_candidate(
     *,
     reason: str = "",
 ) -> MutationCandidate:
-    """Assemble an Entity Merge and its dependent repairs (#169).
+    """Assemble an Entity Merge and its dependent repairs.
 
     The deterministic computation shared by the staged-proposal route and
     native Git worktree edits: the surviving Entity keeps its stable ID and
@@ -2209,7 +2209,7 @@ def assemble_entity_merge_candidate(
     exactly-resolved body links targeting the retired page are retargeted;
     the retired ID is recorded as an ontology redirect; the retired page is
     excluded from the next Published Version. Automatic or ambiguous merges
-    remain forbidden (ADR-0021).
+    remain forbidden.
     """
     retired_entity_id = retired_entity_id.strip()
     surviving_entity_id = surviving_entity_id.strip()
@@ -2438,7 +2438,7 @@ def assemble_page_rename_candidate(
 ) -> MutationCandidate:
     """Assemble a reviewed title rename / category move / alias edit (G3/D2).
 
-    The required native rename primitive (spec 0008 §6, ADR-0016): the
+    The required native rename primitive: the
     page's stable Entity ID, Claims, Sources, and provenance are preserved
     while its Canonical Title changes (``rename_from``), its Content
     Category path relocates atomically (``move_from_path``), and its alias
@@ -2507,7 +2507,7 @@ def assemble_page_rename_candidate(
             alias for alias in (data.get("aliases") or []) if alias != resolved_title
         ]
     if keep_old_title_alias and renaming:
-        # ADR-0016: the old title stays reachable as an EXPLICIT alias choice,
+        # the old title stays reachable as an EXPLICIT alias choice,
         # added to whatever alias set this edit produces.
         effective = list(data.get("aliases") or [])
         if resolved_title not in effective:
@@ -2548,7 +2548,7 @@ def assemble_page_rename_candidate(
         )
     ]
     # Repair exactly-resolved incoming body links on BOTH renames and moves
-    # — the same never-guess resolver the Entity Merge uses (ADR-0021). On a
+    # — the same never-guess resolver the Entity Merge uses. On a
     # move-only edit the title stays stable, so exactly the path-resolved
     # incoming links retarget to the new location.
     ambiguous_links: list[str] = []

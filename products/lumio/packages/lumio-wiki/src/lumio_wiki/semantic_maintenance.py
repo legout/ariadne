@@ -290,7 +290,7 @@ class SemanticDreamReviewer:
     ) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[SemanticFinding, str], ...]]:
         """Compute the explicit worktree edits for the report's findings (G3/D3).
 
-        Spec 0008 §6: an explicit apply operation edits the selected
+        an explicit apply operation edits the selected
         authoring worktree rather than staging stored proposals. Returns
         ``(edits, skipped)`` where ``edits`` are ``(page_path,
         final_markdown)`` pairs — at most ONE per page — and ``skipped``

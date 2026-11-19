@@ -1,4 +1,4 @@
-"""Internal mutation critical sections for durable private state (Plan 02 / P3).
+"""Internal mutation critical sections for durable private state.
 
 This module is the ONE filesystem boundary every mutating owner —
 :class:`~lumio_wiki.source_registry.SourceRegistry`,
@@ -94,7 +94,7 @@ class MutationLockError(RuntimeError):
 
     Raised instead of silently degrading: mutating durable registry, store,
     or Knowledge Base state without a real OS lock would lose updates across
-    cooperating processes (Plan 02 B02/B03). The message names the resource
+    cooperating processes. The message names the resource
     identity and the underlying reason so the operator can act on it.
     """
 
@@ -348,7 +348,7 @@ def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
 
 
 class MutationRollbackError(RuntimeError):
-    """A failed mutation's restoration could not fully succeed (Plan 02 / P5).
+    """A failed mutation's restoration could not fully succeed.
 
     Raised instead of ever claiming a rollback succeeded: the original
     mutation failure is chained as ``__cause__``, ``backup_dir`` names the
@@ -644,7 +644,7 @@ class MutationBackup:
         Walks deepest first so children are removed before their parents. A
         created directory that is already absent again IS the pre-mutation
         state — fully restored, never a failure. Any directory that cannot be
-        removed is a restoration failure and is reported (Plan 02 / P5): the
+        removed is a restoration failure and is reported: the
         mutation created it, the pre-mutation state had no such directory, so
         a leftover — even an empty one — means restoration is incomplete and
         must surface in :meth:`restore_all`'s failures (and keep the backup

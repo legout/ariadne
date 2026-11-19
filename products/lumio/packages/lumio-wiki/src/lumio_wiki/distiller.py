@@ -9,9 +9,9 @@ provider: the host coding agent may act as the Distiller
 either be an adapter over the full application's provider
 (``lumio.distiller.ProviderDistiller``) or the unattended
 :class:`OpenAIDistiller` shipped behind the ``lumio-wiki[llm]`` extra. Both
-keep the base wheel model-free (ADR-0010): the unattended Distiller imports
+keep the base wheel model-free: the unattended Distiller imports
 the OpenAI SDK lazily and raises an actionable, extra-naming error when the
-extra is absent (issue #101, AC1/AC4, PRD user story 18).
+extra is absent (PRD user story 18).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ _LLM_EXTRA_HINT = (
 # unattended Distiller produces the same shape of Markdown (page-break split,
 # required frontmatter fields, category-aware routing) the proposal pipeline
 # expects. Synthesis routing guidance is emitted only when ``synthesis`` is one
-# of the configured Content Categories (issue #78, P2.7) — a custom-catalog
+# of the configured Content Categories — a custom-catalog
 # Knowledge Base only ever sees its own categories offered.
 _DISTILL_SYSTEM_PROMPT_TEMPLATE = (
     "You are Lumio's ingest assistant. Convert the provided raw source text into one or "
@@ -100,7 +100,7 @@ class PassthroughMarkdownDistiller:
     """Model-free Distiller: the normalized text is already authored Markdown.
 
     Enables text and Markdown Knowledge Sources to reach a reviewable Ingest
-    Proposal without an OpenAI-compatible provider (issue #95, AC4). The host
+    Proposal without an OpenAI-compatible provider. The host
     coding agent authors the Compiled Page Markdown; this Distiller passes the
     normalized text through unchanged so downstream page extraction, summary
     generation, and category routing apply as they do for any distilled source.
@@ -118,15 +118,15 @@ class PassthroughMarkdownDistiller:
 
 
 class OpenAIDistiller:
-    """Unattended OpenAI-compatible Distiller (issue #101, ``lumio-wiki[llm]``).
+    """Unattended OpenAI-compatible Distiller (``lumio-wiki[llm]``).
 
     Implements the shared :class:`Distiller` interface so provider-driven
     ingestion produces the same page content as host-agent and document-driven
     ingestion (spec 0008 §7: ordinary worktree edits): provenance, category/type
     routing, durability rationale, validation, diff, and blast radius are
-    identical (AC3). The base ``lumio-wiki`` wheel never imports the OpenAI SDK
+    identical. The base ``lumio-wiki`` wheel never imports the OpenAI SDK
     at module load — ``openai`` is imported lazily inside ``__init__`` (when no
-    client is injected) so the model-free invariant holds (AC1, ADR-0010).
+    client is injected) so the model-free invariant holds.
 
     Construction:
 
@@ -134,7 +134,7 @@ class OpenAIDistiller:
       connection). When it is ``None``, the Distiller constructs one from
       ``base_url`` / ``api_key`` via the installed OpenAI SDK; if the SDK is
       absent it raises :class:`OpenAIDistillerError` naming the exact extra to
-      install (AC4, PRD user story 18).
+      install (PRD user story 18).
     - ``max_retries`` / ``backoff_seconds`` govern the structured-output retry
       behavior: transient provider errors (connection, timeout, rate-limit) are
       retried with linear backoff; a non-retryable error surfaces immediately
@@ -142,7 +142,7 @@ class OpenAIDistiller:
 
     The Distiller never makes a network call at construction time — only inside
     :meth:`distill`. Tests inject a fake client so no real API call is ever
-    made (AC6).
+    made.
     """
 
     def __init__(
@@ -172,7 +172,7 @@ class OpenAIDistiller:
         """Construct the OpenAI SDK client lazily (AC1: never imported at module load).
 
         Raises :class:`OpenAIDistillerError` with the actionable install hint
-        when the ``[llm]`` extra is not installed (AC4).
+        when the ``[llm]`` extra is not installed.
         """
         try:
             openai_module = importlib.import_module("openai")
@@ -200,7 +200,7 @@ class OpenAIDistiller:
         Same input/output shape as :meth:`PassthroughMarkdownDistiller.distill`
         so the two Distillers are interchangeable at the proposal pipeline seam.
         Retries transient provider errors and surfaces actionable errors on
-        empty model output or exhausted retries (AC2).
+        empty model output or exhausted retries.
         """
         system_prompt = _build_distill_system_prompt(
             categories,
@@ -225,7 +225,7 @@ class OpenAIDistiller:
         return content
 
     def _call_with_retry(self, messages: list[dict[str, str]]) -> str | None:
-        """Call the provider with structured-output retry/error behavior (AC2).
+        """Call the provider with structured-output retry/error behavior.
 
         Transient errors (by configured type name) are retried up to
         ``max_retries`` times with linear backoff; any other error surfaces

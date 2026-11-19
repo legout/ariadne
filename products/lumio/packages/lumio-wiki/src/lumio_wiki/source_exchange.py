@@ -1,4 +1,4 @@
-"""Private Source Exchange transport (spec 0010 §6 r4, plan 0010 J4).
+"""Private Source Exchange transport.
 
 Moves the two accepted private transfer kinds — the metadata-only **Source
 Baseline Snapshot** (J0) and the full **Source Handoff Bundle** (J3) —

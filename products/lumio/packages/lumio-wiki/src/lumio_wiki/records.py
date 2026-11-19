@@ -48,7 +48,7 @@ class Relationship(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Entity/Claim ontology records (issue #168, ADR-0021).
+# Entity/Claim ontology records.
 #
 # Each Compiled Page declares exactly one stable Entity ID and one or more
 # controlled Entity Types, and owns its subject Claims. A Claim carries
@@ -85,7 +85,7 @@ CLAIM_ORIGINS = frozenset({CLAIM_ORIGIN_AUTHORED, CLAIM_ORIGIN_MIGRATED})
 class Entity(msgspec.Struct, frozen=True):
     """The identity/type metadata of the Entity one Compiled Page represents.
 
-    A projection of a page's Entity contract (ADR-0021): the stable Entity
+    A projection of a page's Entity contract: the stable Entity
     ID, its controlled Entity Types, and the label/path surface. One Entity
     per page; titles and paths are labels, not identity.
     """
@@ -104,7 +104,7 @@ class EntityTypeDefinition(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Deterministic entity resolution (issue #172, ADR-0021).
+# Deterministic entity resolution.
 #
 # Exact/alias lookup and review-only resolution candidates. Resolution never
 # mutates: no retrieval path authors, merges, accepts, disputes, or
@@ -123,7 +123,7 @@ ENTITY_MATCH_REDIRECT = "redirect"
 
 
 class EntityResolution(msgspec.Struct, frozen=True):
-    """Deterministic exact/alias entity-resolution result (issue #172).
+    """Deterministic exact/alias entity-resolution result.
 
     ``entity`` is the ONE stable Entity resolved from an exact Entity ID,
     Canonical Page Title, or alias; ``matched_by`` discloses which surface
@@ -138,7 +138,7 @@ class EntityResolution(msgspec.Struct, frozen=True):
 
 
 class EntityResolutionCandidate(msgspec.Struct, frozen=True):
-    """One scored, review-only entity-resolution candidate (issue #172).
+    """One scored, review-only entity-resolution candidate.
 
     Produced by optional enhanced-adapter search (e.g. LanceDB FTS over the
     ``entities`` projection). A candidate is advisory context for a
@@ -174,7 +174,7 @@ class ClaimEvidence(msgspec.Struct, frozen=True):
 
     An anchor identifies a supporting section heading, a bounded 1-based
     line range within the page body, or both. It never exposes private
-    Source Artifact coordinates (ADR-0021).
+    Source Artifact coordinates.
     """
 
     section: str | None = None
@@ -209,7 +209,7 @@ class EntityRedirect(msgspec.Struct, frozen=True):
     """A retired Entity ID that resolves to a surviving Entity.
 
     Recorded by a reviewed Entity Merge; the retired ID no longer owns a
-    Compiled Page but keeps references resolvable (ADR-0021).
+    Compiled Page but keeps references resolvable.
     """
 
     from_id: str
@@ -225,7 +225,7 @@ class Ontology(msgspec.Struct, frozen=True):
 
 
 # The version of the internal-link extractor that produced an
-# ``ExtractedReference`` (ADR-0011, issue #107). Bumped only when the
+# ``ExtractedReference``. Bumped only when the
 # extraction algorithm changes in a way that would alter the derived set.
 EXTRACTOR_VERSION = "1"
 
@@ -239,7 +239,7 @@ class ExtractedReference(msgspec.Struct, frozen=True):
     Page Title), the ``markdown-link`` origin, the source path and 1-based line
     range for inspection, and the extractor version. It has only
     reference/navigation meaning: it is never Evidence, never a typed
-    Relationship, and is never written back into frontmatter (ADR-0011).
+    Relationship, and is never written back into frontmatter.
     """
 
     source_title: str
@@ -281,7 +281,7 @@ class PageRead(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Ariadne Context Profile records (spec 0009, ADR-0030).
+# Ariadne Context Profile records.
 #
 # An optional typed ``ariadne_profile`` envelope on a Compiled Page. The
 # envelope is application metadata: Lumio keeps its canonical identity,
@@ -357,7 +357,7 @@ class CompiledPage(msgspec.Struct, frozen=True):
 
     Every page in a categorized (Control File v2) Knowledge Base declares
     exactly one stable Entity ``id`` and at least one controlled Entity Type,
-    and owns its subject ``claims`` (ADR-0021, issue #168).
+    and owns its subject ``claims``.
     """
 
     path: str
@@ -375,7 +375,7 @@ class CompiledPage(msgspec.Struct, frozen=True):
     synthetic: bool = False
     body: str = ""
     body_start_line: int = 1
-    # Optional typed Ariadne Context Profile envelope (spec 0009). None is the
+    # Optional typed Ariadne Context Profile envelope. None is the
     # plain page form; a structurally invalid envelope parses to None and its
     # named-path diagnostics reach the ValidationReport instead.
     ariadne_profile: AriadneProfile | None = None
@@ -462,7 +462,7 @@ class EmbeddingModelInfo(msgspec.Struct, frozen=True):
     """Identity/version/dimension of the embedding model backing a vector index.
 
     Persisted alongside the derived index so the Core SDK can detect when the
-    configured embedding model changed and rebuild vectors from source (#75).
+    configured embedding model changed and rebuild vectors from source.
     """
 
     name: str
@@ -483,7 +483,7 @@ class Evidence(msgspec.Struct, frozen=True):
 
 
 class CitationOpenActions(msgspec.Struct, frozen=True):
-    """Labelled open actions for one cited Compiled Page (issue #177).
+    """Labelled open actions for one cited Compiled Page.
 
     Purely additive citation/rendering metadata: it never replaces the
     grounding fields on :class:`Citation` and every action defaults to
@@ -521,7 +521,7 @@ class Citation(msgspec.Struct, frozen=True):
     Compiled Page without changing the citation contract shared by clients.
     ``page_number`` carries an exact document page when the converter supplies
     one (e.g. a PDF page). It is never invented: when absent, the citation
-    falls back to a stable ``section_title`` instead (#35).
+    falls back to a stable ``section_title`` instead.
     """
 
     page_title: str
@@ -561,14 +561,14 @@ class PageSearchResult(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Link-candidate finder (issue #90, ADR-0011).
+# Link-candidate finder.
 #
 # A LinkCandidate is a deterministic, model-free proposal for a MISSING
 # authored link: a known Canonical Page Title or Alias mentioned in a Compiled
 # Page body without being inside a Markdown link, wikilink, or inline-code
 # span. It is strictly non-canonical: it never enters the Discovery Graph and
 # never becomes an Extracted Reference until a Maintainer approves it and
-# publishes the resulting Markdown proposal (#91). Once published, the link is
+# publishes the resulting Markdown proposal. Once published, the link is
 # derived as an Extracted Reference by the shared resolver on the next graph
 # derivation, without a second approval step.
 # ---------------------------------------------------------------------------
@@ -609,7 +609,7 @@ class HealthReport(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Materialized Discovery Graph (issue #108, ADR-0011; issue #170, ADR-0021).
+# Materialized Discovery Graph.
 #
 # The Discovery Graph adjacency is materialized as a versioned MessagePack
 # artifact in the derived index directory so startup can skip re-extraction
@@ -622,7 +622,7 @@ class HealthReport(msgspec.Struct, frozen=True):
 # Page Titles: a title or path change does not alter Entity identity or
 # traversal topology. Each edge carries its origin (accepted entity Claim or
 # Extracted Reference), Claim ID, Predicate, and — for Extracted References —
-# the source path/line and extractor version (ADR-0021).
+# the source path/line and extractor version.
 # ---------------------------------------------------------------------------
 
 #: Edge origin: an accepted, entity-to-entity Claim (canonical Knowledge Graph).
@@ -742,7 +742,7 @@ class GraphHealthReport(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Structural graph diagnostics (issue #126, ADR-0011).
+# Structural graph diagnostics.
 #
 # DISTINCT from the artifact/runtime observability in ``GraphHealthReport``
 # above (graph_fresh, materialization, startup_ms, traversal_latency_ms).
@@ -758,7 +758,7 @@ class GraphHub(msgspec.Struct, frozen=True):
     """One directed inbound/outbound hub entry in a structural report.
 
     A human-readable Canonical Page Title paired with its stable Entity ID
-    (issue #170) and its directed edge count for the report's scope. Hub
+     and its directed edge count for the report's scope. Hub
     status is navigational topology, never a Relationship semantic claim: a
     high inbound count means many edges point here, not that the page is
     semantically central.
@@ -843,7 +843,7 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Link-candidate graph-impact ranking (issue #127, ADR-0011).
+# Link-candidate graph-impact ranking.
 #
 # An advisory, read-only analysis that annotates each EXISTING deterministic
 # LinkCandidate with the structural improvement its approved Markdown link
@@ -853,7 +853,7 @@ class StructuralGraphReport(msgspec.Struct, frozen=True):
 # published change before the existing stage -> validate -> review -> publish
 # workflow succeeds. Approved links remain Extracted References with
 # navigation meaning only — Canonical Relationship impact is NEVER inferred
-# from a Markdown-link proposal (ADR-0011).
+# from a Markdown-link proposal.
 # ---------------------------------------------------------------------------
 
 #: Impact signal: the link would give an inbound connection to a page that is
@@ -896,7 +896,7 @@ class RankedLinkCandidate(msgspec.Struct, frozen=True):
 
     The impact is ADVISORY: it does not mutate Compiled Pages or graph state
     and never infers a Relationship. An approved link becomes an Extracted
-    Reference with navigation meaning only (ADR-0011).
+    Reference with navigation meaning only.
     """
 
     candidate: LinkCandidate
@@ -906,14 +906,14 @@ class RankedLinkCandidate(msgspec.Struct, frozen=True):
 
 
 # ---------------------------------------------------------------------------
-# Knowledge Base Control File and reserved published artifacts (issue #77).
+# Knowledge Base Control File and reserved published artifacts.
 #
 # A categorized Knowledge Base carries a versioned root Control File
 # (``lumio.yaml``) that declares KB-local Content Categories and Maintainer-
 # pinned Hot Index titles. It is portable with the KB but is neither a Compiled
 # Page nor an OKF concept: it is a Lumio-native content control. Publication
 # regenerates the reserved Navigation Index hierarchy and Hot Index and appends
-# an append-only Activity Log entry. See ADR-0008.
+# an append-only Activity Log entry..
 # ---------------------------------------------------------------------------
 
 
@@ -950,7 +950,7 @@ class KnowledgeBaseControlFile(msgspec.Struct, frozen=True):
     Index titles, and (version 2) the controlled Entity/Claim ontology
     (ADR-0021). Travels with the KB; validated as a KB-local content control,
     not a Compiled Page or an application-only setting. A Knowledge Base with
-    no Control File loads in Legacy Flat Mode (ADR-0008).
+    no Control File loads in Legacy Flat Mode.
     """
 
     version: int
@@ -968,7 +968,7 @@ class ActivityLogEntry(msgspec.Struct, frozen=True):
     The portable Activity Log (reserved ``log.md``) records only successful
     published Knowledge Base state transitions. It never carries Reader
     queries, failed or discarded proposals, unpublished uploads, or private
-    audit events (ADR-0008).
+    audit events.
     """
 
     timestamp: str

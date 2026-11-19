@@ -1,10 +1,10 @@
-"""Deterministic link-candidate finder (issue #90, ADR-0011).
+"""Deterministic link-candidate finder.
 
 A model-free Core SDK operation that scans Compiled Page bodies for UNLINKED
 mentions of known pages by Canonical Page Title or Alias and emits
 ``LinkCandidate`` proposals for the missing authored links.
 
-It complements the Extracted Reference resolver (issue #107): a mention that
+It complements the Extracted Reference resolver: a mention that
 already sits inside a Markdown link ``[...](...)`` or wikilink ``[[...]]`` is
 derived as an Extracted Reference by that shared resolver and is never
 re-proposed here. The link- and wikilink-construct patterns are imported from
@@ -14,9 +14,9 @@ rather than a second, drift-prone link parser.
 
 A candidate is strictly non-canonical. It does not enter the Discovery Graph
 and never becomes an Extracted Reference until a Maintainer approves it and
-publishes the resulting Markdown proposal (#91). Once published, the link is
+publishes the resulting Markdown proposal. Once published, the link is
 derived as an Extracted Reference on the next graph derivation without a
-second approval step (ADR-0011).
+second approval step.
 
 The finder is pure and deterministic: identical input yields identical output
 regardless of insertion order, and no LLM or randomness is involved.
@@ -158,7 +158,7 @@ def find_link_candidates(pages: Sequence[CompiledPage]) -> list[LinkCandidate]:
     contribute a resolvable target). Candidates are sorted by ``(source_path,
     line, column, target_title, term)``. The operation is pure and model-free;
     it never mutates a page and never publishes a link. Publishing the approved
-    Markdown proposal (#91) makes the link available as an Extracted Reference
+    Markdown proposal makes the link available as an Extracted Reference
     on the next graph derivation without a second approval step.
     """
     ordered = sorted(pages, key=lambda p: (p.path, p.title))

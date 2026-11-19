@@ -32,7 +32,7 @@ SAFE_FILENAME_MAX_LENGTH = 128
 def safe_artifact_filename(filename: str | None) -> str | None:
     """Return a safe, portable basename for private Source Version metadata.
 
-    ADR-0020 (#164): a Source Version records a *safe filename* — the basename
+    a Source Version records a *safe filename* — the basename
     only, with control characters stripped and the length capped — so a local
     source path (or a crafted ``../../`` traversal) is never persisted in the
     private registry and never reaches inspection output. ``None`` and empty
@@ -240,7 +240,7 @@ class _RegistryState(msgspec.Struct, frozen=True):
     sources: list[KnowledgeSource] = msgspec.field(default_factory=list)
     candidates: list[RetirementCandidate] = msgspec.field(default_factory=list)
     pending_transitions: list[_LegacyPendingSourceTransition] = msgspec.field(default_factory=list)
-    # Explicit KB namespace scope (spec 0010 §5.1, plan J0): ``None`` until an
+    # Explicit KB namespace scope: ``None`` until an
     # additive metadata import first scopes this registry. Existing registry
     # files decode without it and ordinary native writes never assign it.
     namespace: str | None = None
@@ -291,7 +291,7 @@ def _source_version(
 class SourceRegistry:
     """Persist private source identities outside portable Knowledge Base content.
 
-    Durability contract (Plan 02 / P3, B02): every read AND every mutation
+    Durability contract: every read AND every mutation
     goes through the per-registry interprocess mutation lock
     (:func:`lumio_wiki.mutation.mutation_lock`, keyed on this registry's
     normalized root, so every instance opened on that root shares one lock).
@@ -337,7 +337,7 @@ class SourceRegistry:
 
         G4 guard: any prospective state that would silently carry, drop, or
         mutate unresolved legacy pending transitions refuses instead — native
-        writers never ignore legacy proposal-bound state (spec 0008 §7).
+        writers never ignore legacy proposal-bound state.
 
         Every mutating method builds the prospective ``_RegistryState`` from
         the state re-read under the mutation lock and routes it through here,
@@ -422,7 +422,7 @@ class SourceRegistry:
         Register establishes a new identity only: it NEVER appends a version to
         an already-known identity (active or retired). A second registration is
         refused so unreviewed replacement cannot bypass review — reactivation is
-        the only reviewed path that appends a new Source Version (#133). The id
+        the only reviewed path that appends a new Source Version. The id
         is validated at the boundary (:func:`_validate_source_id`) so a pasted
         path, URL, content hash, or credential is never persisted, and the
         refusal error never echoes the (possibly secret-bearing) id.
@@ -460,7 +460,7 @@ class SourceRegistry:
         filename: str | None = None,
         content_type: str | None = None,
     ) -> tuple[SourceVersion, SourceRegistrationAction]:
-        """Resolve a managed host-Distiller source identity (issue #149).
+        """Resolve a managed host-Distiller source identity.
 
         One deep identity rule for the managed ``ingest --compiled-page
         --source-id`` workflow, so callers never reproduce registry/proposal
@@ -476,7 +476,7 @@ class SourceRegistry:
         * a RETIRED identity is rejected until the Maintainer reactivates it.
 
         Identity is by the explicit ``source_id`` only — filename/path never
-        establishes continuing identity (ADR-0014). The id is validated at the
+        establishes continuing identity. The id is validated at the
         boundary so a pasted path, URL, content hash, or credential is never
         persisted, and the refusal errors never echo the (possibly
         secret-bearing) id. Unlike :meth:`register_source`, the same-hash case
@@ -527,7 +527,7 @@ class SourceRegistry:
     ) -> tuple[SourceVersion, SourceRegistrationAction]:
         """Append one immutable Source Version under an explicit identity.
 
-        The Git-authoring registration rule (specification 0008 §3.2):
+        The Git-authoring registration rule:
         registering different bytes extends the identity's explicit immutable
         history — it never admits knowledge, switches a page's supporting
         version, or changes lifecycle status (retirement/reactivation intent
@@ -574,7 +574,7 @@ class SourceRegistry:
         content_type: str | None = None,
         namespace: str | None = None,
     ) -> tuple[SourceVersion, str]:
-        """Additively register one version's METADATA without raw bytes (spec 0010 §5.1).
+        """Additively register one version's METADATA without raw bytes.
 
         The Source Baseline Snapshot import seam: a fresh contributor receives
         exact referenced version metadata, never original bytes. A new record
@@ -608,7 +608,7 @@ class SourceRegistry:
         content_type)``. The complete input — every record's shape, in-batch
         duplicates, immutable conflicts against one fresh locked read, and
         the namespace scope — is validated BEFORE the single additive commit
-        (spec 0010 §5.1, plan J0; j0-review F3): a validation or namespace
+        (plan J0, j0-review F3): a validation or namespace
         conflict leaves the registry exactly as it was. New records are
         created ``artifact_available=False`` with an honest local timestamp;
         existing exact versions are never modified and locally verified
@@ -616,7 +616,7 @@ class SourceRegistry:
         the first namespace-carrying commit; a different explicit assignment
         is refused — never migrated.
 
-        ``new_source_ids`` (spec 0010 §5, plan J3) optionally names source
+        ``new_source_ids`` optionally names source
         ids whose versions the caller validated as NEW identities. Under the
         SAME locked fresh state as the whole-batch validation, a named id
         whose source already exists — while this batch's exact version is
@@ -666,7 +666,7 @@ class SourceRegistry:
                     "select the registry for this namespace instead"
                 )
             if new_source_ids:
-                # Atomic identity-intent constraint (spec 0010 §5, plan J3):
+                # Atomic identity-intent constraint:
                 # judged against this same locked fresh state, so a
                 # cooperating writer's registration cannot slip between the
                 # caller's pre-validation and this commit. Exact versions
@@ -745,7 +745,7 @@ class SourceRegistry:
     ) -> tuple[str | None, list[SourceVersion | None]]:
         """One locked consistent view: namespace scope plus exact version lookups.
 
-        Read-only (spec 0010 §5.1; j0-review F4): it never assigns a
+        Read-only (j0-review F4): it never assigns a
         namespace or mutates state. Callers deciding an export against the
         registry see one coherent snapshot instead of racing separate
         per-key reads; ``None`` entries mean the exact version is unknown.
@@ -772,7 +772,7 @@ class SourceRegistry:
     def find_version(self, source_id: str, content_hash: str) -> SourceVersion | None:
         """Resolve one EXACT registered Source Version, never registry-latest.
 
-        The Git-authoring lookup rule (specification 0008 §3.2): managed page
+        The Git-authoring lookup rule: managed page
         bindings resolve the exact reviewed content hash. ``None`` means the
         identity or the exact version is unknown — callers fail closed on
         that instead of falling back to ``versions[-1]``.
@@ -786,14 +786,14 @@ class SourceRegistry:
         return None
 
     def assigned_namespace(self) -> str | None:
-        """The registry's explicit KB namespace scope, or ``None`` (spec 0010 §5.1)."""
+        """The registry's explicit KB namespace scope, or ``None``."""
         with mutation_lock(self.root):
             return self._reload().namespace
 
     def record_artifact_binding(self, source_id: str, content_hash: str) -> None:
-        """Mark one exact Source Version as having a verified artifact (#164).
+        """Mark one exact Source Version as having a verified artifact.
 
-        The second half of the idempotent ingest saga (ADR-0020): the bytes
+        The second half of the idempotent ingest saga: the bytes
         were uploaded to the Source Artifact Store and verified there, and now
         the registry records availability for exactly ``(source_id,
         content_hash)``. Idempotent — recording an already-available binding is
@@ -827,7 +827,7 @@ class SourceRegistry:
             )
 
     def clear_artifact_binding(self, source_id: str, content_hash: str) -> None:
-        """Mark a version's artifact unavailable after explicit deletion (#164).
+        """Mark a version's artifact unavailable after explicit deletion.
 
         Only the explicit deletion path calls this (retirement preserves
         historical artifacts); the binding is cleared so inspection metadata

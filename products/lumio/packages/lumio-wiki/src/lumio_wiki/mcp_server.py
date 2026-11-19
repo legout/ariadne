@@ -1,4 +1,4 @@
-"""Read-only MCP server (Plan 06, PRD-0007, ADR-0028).
+"""Read-only MCP server (PRD-0007).
 
 ``lumio-wiki mcp <location>`` serves ONE Knowledge Base Location — a local
 path or an ``s3://`` object-store URI — over MCP stdio through the official
@@ -409,7 +409,7 @@ def build_server(location: KnowledgeBaseLocation) -> Any:
 
 
 def _reject_invalid_snapshot(snapshot: KnowledgeBaseSnapshot) -> None:
-    """Refuse to serve a Snapshot whose validation report has errors (AC1)."""
+    """Refuse to serve a Snapshot whose validation report has errors."""
     if not snapshot.validation_report.is_valid:
         raise KnowledgeBaseError(
             "the Knowledge Base is invalid; run 'lumio-wiki validate' and fix "

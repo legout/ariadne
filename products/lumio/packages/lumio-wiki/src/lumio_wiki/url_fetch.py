@@ -1,4 +1,4 @@
-"""Safe, bounded URL fetch boundary for URL Knowledge Source ingestion (issue #178).
+"""Safe, bounded URL fetch boundary for URL Knowledge Source ingestion.
 
 The ONE network seam behind ``lumio-wiki ingest-url`` / ``ingest-research``.
 Stdlib-only (``urllib`` + ``socket``) so the base wheel stays dependency-free
@@ -26,7 +26,7 @@ general SSRF primitive):
 
 Raw fetched bytes never enter the Knowledge Base; they are registered in the
 PRIVATE Source Registry (hash identity) and optionally retained as a private
-Source Artifact when retention is configured (ADR-0020). Publication always
+Source Artifact when retention is configured. Publication always
 goes through the ordinary staged-proposal review pipeline.
 """
 
