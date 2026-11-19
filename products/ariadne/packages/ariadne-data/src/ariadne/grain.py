@@ -61,7 +61,7 @@ class TargetKeyAudit:
 
 def _audit_statement(source: str, keys: tuple[str, ...]) -> str:
     """Assemble the one-scan audit SELECT from compiler-rendered key
-    expressions (fix pass F1: nothing here interpolates raw field text)."""
+    expressions."""
     wrapped = (
         f"({source})"
         if re.match(r"(?is)\s*(select|with)\b", source)
@@ -94,7 +94,7 @@ def relationship_target_audit(
     statement as raw text: every key is parsed and re-rendered by sqlglot
     (embedded quotes double into one quoted identifier), and the assembled
     audit must parse back as exactly ONE statement — anything else fails
-    closed before execution (fix pass F1; no-unvalidated-execution, spec §6).
+    closed before execution.
     """
     if not keys:
         raise ValueError("relationship target key audit requires at least one key field")

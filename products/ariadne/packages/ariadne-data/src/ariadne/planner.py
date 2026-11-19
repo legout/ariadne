@@ -981,7 +981,7 @@ def _joined_branch_sql(
     aggregation — a filter that reaches a lookup field filters that branch's
     population). Every field resolves against the dataset that declares it
     and each source-column reference carries that dataset's branch alias, so
-    dataset scope survives the lowering (fix pass F3). A conformed business
+    dataset scope survives the lowering. A conformed business
     time key groups by its truncation of the native member (issue #29); the
     half-open fetch range (lookback already included) predicates the native
     member before aggregation."""
@@ -1071,7 +1071,7 @@ def _joined_branch_sql(
         native = lower(exp.column(key.members[dataset]), home, f"dimension '{key.dimension}'")
         expression = key.group_expression(native)
         group_exprs.append(expression)
-        # F4: project under the branch's OUTPUT column — the alignment layer
+        # project under the branch's OUTPUT column — the alignment layer
         # (keys CTE, LEFT JOIN) references key.output(dataset) for BOTH branch
         # kinds, and a conformed key's native member may differ from the
         # canonical name (a time key's truncation differs from the raw member).
@@ -1553,7 +1553,7 @@ def _run_live_audits(
         detail = f"{len(participating)} participating relationship(s) rechecked on this request"
     else:
         outcome, detail = "not-run", "no relationship traversal participates in this request"
-    # F2: the legacy per-column guard belongs to AUTHORED sources — an
+    # the legacy per-column guard belongs to AUTHORED sources — an
     # embedded or pre-joined table inside a declared source cannot bypass
     # it. The planner's GENERATED relationship joins are proven by the exact
     # tuple audit above, which accepts composite keys whose components
@@ -2233,7 +2233,7 @@ def _allocate_helper(preferred: str, taken: set[str]) -> str:
     with one (nor with an already-allocated helper). Comparison is on the
     UPPERCASED forms — DuckDB resolves identifiers case-insensitively, so a
     physical ``__ARIADNE_RECORD_RN`` collides with the lowercase helper just
-    as much as an exactly-matched name (fix pass 2); ``taken`` carries
+    as much as an exactly-matched name; ``taken`` carries
     uppercase forms and receives the allocated name's uppercase."""
     name = preferred
     counter = 2
@@ -2364,7 +2364,7 @@ def _record_instant(value: str, zone: ZoneInfo, field: str) -> datetime:
 
 @lru_cache(maxsize=64)
 def _zone_offsets(zone: ZoneInfo) -> tuple[int, ...]:
-    """The zone's distinct UTC offsets in seconds (fix pass 1, finding 5):
+    """The zone's distinct UTC offsets in seconds:
     the pre-transition LMT, every offset in effect across a dense grid of
     the tz database's transition span, and the recurring tail rule's
     alternation. These embedded computed constants are the guarded fold/gap
@@ -2480,7 +2480,7 @@ def _parse_record_filters(
     share the established parsing and ceilings; ``is_null``/``is_not_null``
     carry no value; ``regex`` is one bounded literal whose PATTERN VALIDITY
     is the execution engine's RE2 judgement, probed on the request's
-    connection by :func:`plan_records` (fix pass 1, finding 4). Returns
+    connection by :func:`plan_records`. Returns
     (non-temporal, temporal) — the temporal comparisons on the declared
     timestamp field are applied after its interpretation."""
     if raw is None:
@@ -2973,7 +2973,7 @@ def plan_records(
         .order_by(exp.Ordered(this=col(rn_helper), nulls_first=False))
     )
     if ts_helper is not None:
-        # fix pass 1, finding 3: the declared interpretation stays evaluated
+        # the declared interpretation stays evaluated
         # on every ELIGIBLE row even when nothing else consumes the normalized
         # instant — it rides as a trailing execution-only column (stripped
         # before assembly) so no projection pruning can silence a malformed,

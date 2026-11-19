@@ -88,7 +88,7 @@ ADMISSION_ROUTE = "git-review-admission"
 # §5: a compile-only or failed report is not sufficient admission evidence).
 # ``conformance`` stays disclosed as not-run; the live relationship audit is
 # additionally required whenever the candidate carries a multi-fact graph.
-# C1 (issue #77, spec 0028 §6): ``contracts`` joins the required set — a
+# ``contracts`` joins the required set — a
 # not_applicable outcome (with its reason) satisfies it for contract-free
 # candidates, and the contracted-model gate below additionally requires the
 # complete passing live evidence.
@@ -330,7 +330,7 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
     checks = (evidence.get("report") or {}).get("checks") or []
     by_name = {check.get("name"): check for check in checks}
     outcomes = {name: check.get("outcome") for name, check in by_name.items()}
-    # K4 (issue #44, spec 0010 §9): a check is sufficient admission evidence
+    # a check is sufficient admission evidence
     # when it PASSED or is explicitly not_applicable — and only with its
     # reason: a bare not_applicable outcome is an unexplained partial report,
     # never a complete one.
@@ -388,7 +388,7 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
     # its digest: an evidence record whose stored entries differ from what the
     # commit actually resolves to (a tampered path keeping a valid digest)
     # never activates, and the runtime opens only the VERIFIED resolved
-    # entries (issue #37 fix pass).
+    # entries.
     resolved, source_digest = authoring_sources.candidate_sources(project, revision)
     if source_digest != evidence.get("source_digest"):
         raise ValueError(
@@ -433,7 +433,7 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
             f"re-approve the exact identity with ariadne-authoring approve-sources; "
             "nothing was activated"
         )
-    # C1 (issue #77, spec 0028 §6): the contracted-model admission gate —
+    # the contracted-model admission gate —
     # every binding of the exact validated revision needs a COMPLETE,
     # applicable, unexpired PASSING observation of all its declared
     # schema/quality requirements. Static-only or missing evidence (not_run),
@@ -1014,7 +1014,7 @@ def admit_revision(
                     "re-review before admission; the confirmation binds the currently "
                     "expected served baseline, nothing was activated"
                 )
-            # K4 (issue #44): resolve the operator's mapping selections against
+            # resolve the operator's mapping selections against
             # the EXACT reviewed revision under the locks — a hypothesis or an
             # unknown reference/mapping refuses BEFORE anything activates, and
             # unchanged prior confirmations retain only with unchanged verified
@@ -1031,7 +1031,7 @@ def admit_revision(
                 baseline,
                 by=confirmed_by,
                 at=now,
-                # K4 fix pass (finding 3): retention re-checks the operator's
+                # retention re-checks the operator's
                 # evidence age budget at THIS admission — the receipt-attachment
                 # gate runs at validation, so a stored validation of an unchanged
                 # candidate never keeps a confirmation alive past its evidence's
@@ -1092,12 +1092,12 @@ def admit_revision(
                     "commit": revision,
                     "review_digest": reviewed_digest,
                 },
-                # K4 (issue #44): the operational mapping-confirmation evidence
+                # the operational mapping-confirmation evidence
                 # of this exact admission — fresh operator selections plus the
                 # prior human evidence unchanged assertions retained. Empty
                 # means no mapping is confirmed by this admission.
                 "confirmed_mappings": confirmed_mappings,
-                # C1 (issue #77, spec 0028 §7): the bounded, credential-free
+                # the bounded, credential-free
                 # contract snapshot view discovery/list_datasets annotate from
                 # — identities, outcomes and as-of times only; contract text,
                 # queries and server addresses never enter the descriptor.
@@ -1202,7 +1202,7 @@ def _interrupted_core_transition(project: Path, record: dict, new: str) -> bool:
     """True when ``new`` sits on an UNSEEN core-authored commit: along the
     first-parent line, the commit directly on top of the recorded candidate is
     core-authored (the ``ariadne: `` prefix of the edit/finalize seams) and NOT
-    part of the admitted history (issue #37 fix pass, spec §4). That is the
+    part of the admitted history. That is the
     signature an interrupted core transition leaves — the commit landed, the
     record store failed, and the coherence gate blocks every further mutation,
     so at most one unseen core commit can exist. A human rebase/merge never
@@ -1481,7 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
     one-JSON-value/one-JSON-error-object contract of the other CLIs). Without
     ``--confirm`` it displays the matching review/report and exits; ONLY
     ``--confirm`` records the operator's explicit confirmation and activates.
-    K4 (issue #44): repeated ``--confirm-mapping <reference-slug>:<mapping-id>``
+    repeated ``--confirm-mapping <reference-slug>:<mapping-id>``
     selections name the ASSERTED mappings of the exact reviewed revision whose
     human confirmation the operator records with ``--confirm`` — the display
     shows each selection's exact assertion content first. No MCP/native Agent

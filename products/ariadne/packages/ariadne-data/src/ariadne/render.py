@@ -419,7 +419,7 @@ def output_guard(
         else:
             # UTF-8 byte length of text/enum: encode() first (CAST AS BLOB
             # rejects non-ASCII); ENUM labels arrive as strings and are
-            # guarded through the same VARCHAR text form (fix pass 1, finding 3)
+            # guarded through the same VARCHAR text form
             text_value = (
                 exp.Cast(this=column.copy(), to=exp.DataType(this=exp.DataType.Type.VARCHAR))
                 if base == "ENUM"

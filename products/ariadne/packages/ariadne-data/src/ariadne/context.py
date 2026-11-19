@@ -40,7 +40,7 @@ from typing import cast
 
 import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-# K2 (issue #42): the canonical catalog-resource parser behind exact field
+# the canonical catalog-resource parser behind exact field
 # bindings (the shared source registry owns resource identity; this module
 # imports no workflow module — sources is the shared registry layer).
 from ariadne.sources import parse_resource
@@ -825,13 +825,13 @@ def build_native_table_page(
     existing_ariadne = existing_ariadne if isinstance(existing_ariadne, dict) else {}
     old_schema = existing_ariadne.get("schema")
     old_schema = old_schema if isinstance(old_schema, list) else None
-    # F5 (spec0010 §4): the physical row fields regenerate from the INSPECTED
+    # the physical row fields regenerate from the INSPECTED
     # columns on every refresh — a prior same-name/type row never launders
     # stale declared nullability/default/comment; curated meaning lives in the
     # authored description/body and the preserved native extras.
     authored: list[dict] = [dict(column) for column in columns]
     flags = _schema_flags(old_schema, authored)
-    # F4 (spec0024 §3): the producer-parsed native selection (existing_meta is
+    # the producer-parsed native selection (existing_meta is
     # the producer's public frontmatter view — never a Core YAML parse of KB
     # bytes, never _authored_selection over raw page text) is fulfilled by the
     # REAL measured profile through the existing validators; a malformed
@@ -1053,7 +1053,7 @@ _RESOLVE_ENVELOPE_RESERVE = 1024
 
 _EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
 _REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
-# K3 (issue #43, spec 0010 §7): the structured inspection candidate IS part of
+# the structured inspection candidate IS part of
 # a mapping declaration now — validated by the shared candidate schema below
 # (``validate_inspection_candidate``), still alongside the refusal of every
 # author-fabricated approval/measurement claim.
@@ -1193,7 +1193,7 @@ def validate_inspection_candidate(candidate: object) -> dict:
         errors = _binding_errors(where, [binding])
         if errors:
             raise ValueError("; ".join(errors))
-        # K3 fix pass (finding 1): a scope predicate narrows a PARTICIPATING
+        # a scope predicate narrows a PARTICIPATING
         # measured asset — attachment is checked below, after the family
         # branch resolved every participating (side/lookup) asset.
         if predicate["op"] not in CANDIDATE_SCOPE_OPS:
@@ -1235,7 +1235,7 @@ def validate_inspection_candidate(candidate: object) -> dict:
             errors = _binding_errors(f"{where} {side}", [pair[side]])
             if errors:
                 raise ValueError("; ".join(errors))
-            # K3 fix pass (finding 1): a pairing binding names a column of ITS
+            # a pairing binding names a column of ITS
             # side's measured asset — a pairing identity naming another asset
             # while the measurement reads the side's columns is a refusal, so a
             # receipt never carries a pairing identity for columns it did not
@@ -1300,7 +1300,7 @@ def validate_inspection_candidate(candidate: object) -> dict:
             )
         binding_count += lookup_bindings["count"]
         assets.add(lookup["asset"])
-    # K3 fix pass (finding 1): scope predicates attach to PARTICIPATING
+    # scope predicates attach to PARTICIPATING
     # measured assets only — scope on an otherwise unmeasured asset would be
     # retained in the receipt's declaration while never narrowing any read.
     unattached = sorted({predicate["resource"] for predicate in scope} - assets)
@@ -1591,7 +1591,7 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
                 f"{where} receipt_ids must be a list of evidence ids (verification "
                 "is core-owned; allowlisting an id is not proof)"
             )
-        # K3 (issue #43): the structured candidate is part of the declaration —
+        # the structured candidate is part of the declaration —
         # validated by the shared candidate schema; its family must agree with
         # the mapping's declared family.
         if "candidate" in mapping:
@@ -1605,7 +1605,7 @@ def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
                         f"{where} declares family {mapping.get('family')!r} but its "
                         f"candidate measures the {normalized['family']!r} family"
                     )
-    # K3 (issue #43): the core-attached verified receipt summaries. The key
+    # the core-attached verified receipt summaries. The key
     # is system-owned (the edit seam refuses an authored change); this shape
     # check keeps a legacy/ingested page honest — authenticity is verified by
     # the project-bound validation against the evidence records, never here.
@@ -1697,7 +1697,7 @@ def confirmation_binding_digest(meta: dict, mapping: dict) -> str:
 
 def evidence_counterevidence(summary: dict) -> str | None:
     """The named counterevidence ONE verified receipt summary carries against
-    its mapping's claim (K4 fix pass, finding 1, spec 0010 §§8–9): honest
+    its mapping's claim: honest
     mismatches, an ambiguous pairing basis or an inconclusive outcome — None
     when the summary supports the claim. A hypothesis may carry it openly; an
     ASSERTED claim contradicted by its own cited evidence is unsupported."""
@@ -1819,7 +1819,7 @@ def _mapping_views(
     unchanged verified evidence dependencies) exists — admission of the page
     alone confirms nothing, a hypothesis is never confirmable, and a page
     flag is never authority (spec 0010 §5, K4/issue #44). Expired evidence
-    withholds stale confirmed GUIDANCE (K4 fix pass, finding 3, spec §§6/§8):
+    withholds stale confirmed GUIDANCE:
     a matching confirmation whose verified evidence aged past the operator
     budget surfaces as ``needs-revalidation`` with the human confirmation
     disclosed as history — never silently as current confirmed guidance. The
@@ -2606,7 +2606,7 @@ def _quality_profile_errors(rel: str, meta: dict) -> list[str]:
         )
     sources = meta.get("sources")
     if not isinstance(sources, list):
-        # D1 (C6 owner-a4): a non-list native sources shape is a NAMED
+        # a non-list native sources shape is a NAMED
         # pre-interpretation refusal — never a TypeError iteration crash on
         # the producer-parsed scalar and never a misleading citation error
         return errors + [
@@ -2915,7 +2915,7 @@ def _report_view(
     is mechanical correspondence, never a guess: a KNOWN period contradiction
     — the report's own evidence period provably disjoint from the requested
     query period, and only when the report's declared period FIELD is one the
-    request's range actually predicates (issue #54 W1 fix3) — makes the
+    request's range actually predicates — makes the
     report inapplicable to the requested use; a subset scope without
     established correspondence and a source version the runtime cannot
     cross-check (absent, or supplied with no runtime dataset-version fact to
@@ -2954,7 +2954,7 @@ def _report_view(
     if reported_at > now or (
         observed_at is not None and _coerce_validated_instant(observed_at) > now
     ):
-        # plan §2 (W1 fix4): a report/observation later than the assessment
+        # plan §2: a report/observation later than the assessment
         # instant has unknown age — the supplied timestamps stay visible,
         # never an as-of disclosure
         limitations.append("report_time_in_future")
@@ -3026,7 +3026,7 @@ def _data_signals_state(
                 info["elided"] = False
             if invalid:
                 info["invalid"] = True  # later-unreadable declared evidence
-    while True:  # deterministic convergence to the 64 KiB ceiling (W1 fix2)
+    while True:  # deterministic convergence to the 64 KiB ceiling
         metrics: list[dict] = []
         warnings: list[dict] = []
         for name in metric_names:
@@ -3061,7 +3061,7 @@ def _data_signals_state(
                 )
         truncated = bool(omitted_metrics or omitted_assets or omitted_pages or omitted_reports)
         for resource in asset_order:
-            if resource not in state:  # elided by the byte ceiling (W1 fix2)
+            if resource not in state:  # elided by the byte ceiling
                 continue
             info = state[resource]
             entry = info["entry"]
@@ -3137,7 +3137,7 @@ def _data_signals_state(
         size = len(json.dumps(view, ensure_ascii=False).encode("utf-8"))
         if size <= DATA_SIGNALS_MAX_BYTES:
             return view
-        # deterministic convergence to the ceiling (W1 fix2): elide ONE
+        # deterministic convergence to the ceiling: elide ONE
         # trailing disclosure unit per pass — the last remaining report first,
         # then trailing metric entries, then trailing asset entries — and
         # re-measure. Every elision increments an ``omitted`` counter, so

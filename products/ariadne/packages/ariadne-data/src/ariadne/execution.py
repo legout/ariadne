@@ -110,7 +110,7 @@ class DeadlineBudget:
             raise
         finally:
             timer.cancel()  # the phase ended: no background read keeps running
-        # K3 fix pass (finding 9): a SUCCESSFUL phase that finished beyond the
+        # a SUCCESSFUL phase that finished beyond the
         # budget is exhaustion too — its result escaped the deadline and is
         # never returned as a completed measurement.
         if self.expired():

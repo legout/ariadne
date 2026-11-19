@@ -124,7 +124,7 @@ _FIXED_SCALAR_TYPES = frozenset(
 )
 # ENUM is deliberately NOT fixed: Python receives the enum's label as a
 # str whose length is bounded only by the label, so the in-DuckDB raw guard
-# must apply (via CAST to VARCHAR — fix pass 1, finding 3).
+# must apply.
 _VARIABLE_SCALAR_TYPES = frozenset(
     {"VARCHAR", "CHAR", "BPCHAR", "TEXT", "STRING", "BLOB", "VARBINARY"}
 )
@@ -135,7 +135,7 @@ _VARIABLE_SCALAR_TYPES = frozenset(
 # representation is bounded by construction.
 _MAX_IDENTIFIER_CHARS = 64
 _MAX_IDENTIFIER_COLUMNS = 8
-# The whitelist (fix pass 4): the ONLY characters a bounded identifier form
+# The whitelist: the ONLY characters a bounded identifier form
 # may carry — printable ASCII excluding the backslash and the double quote,
 # i.e. exactly the characters that JSON-serialize to ONE byte each under the
 # canonical codec. Every other character (controls, DEL, non-ASCII, and the
@@ -315,7 +315,7 @@ def result_json_bytes(value: Any) -> int:
 def classify_output_type(type_name: str) -> str:
     """``fixed`` / ``variable`` / ``unsupported`` for one DuckDB output type.
     Array/nested/struct markers are detected on the FULL type string BEFORE
-    any parameter stripping (fix pass 1, finding 3): ``DECIMAL(12,2)[]`` is
+    any parameter stripping: ``DECIMAL(12,2)[]`` is
     an array, not a fixed decimal — splitting at ``(`` first would classify
     it fixed and transfer an unrestricted Python list. Variable-size
     text/blob/enum columns get the in-DuckDB raw guard (ENUM labels arrive
@@ -421,7 +421,7 @@ def load_host_query_limits(root: str | Path) -> dict:
 
 def refusal_forms() -> list[dict]:
     """Representative refusal bodies for EVERY stable code the operations can
-    emit (fix pass 1, finding 2a): each is the worst case under the bounded-by-
+    emit: each is the worst case under the bounded-by-
     construction rules — maximal fixed message, truncated-identifier samples
     at the cap, worst-case compact numbers — so a budget that carries these
     carries every refusal the runtime can produce."""
@@ -444,7 +444,7 @@ def assert_refusal_representable(limits: dict) -> None:
     """A byte budget that cannot carry even the compact refusals is rejected
     before use (spec 0014 §5: refusal representations must fit their
     effective bounds). Every emittable refusal form — not just one — must
-    fit the core budget (fix pass 1, finding 2a)."""
+    fit the core budget."""
     for form in refusal_forms():
         size = result_json_bytes(form)
         if size > limits["response_bytes"]:
@@ -457,7 +457,7 @@ def assert_refusal_representable(limits: dict) -> None:
 
 def oversized_error_refusal() -> QueryResultError:
     """The bounded explicit refusal that REPLACES an oversized generic error
-    representation (spec 0014 §5, fix pass 1 finding 2b/2c): fitting errors
+    representation: fitting errors
     keep their verbatim codes/messages; an exception dump too large for its
     transport is never sent as-is."""
     return QueryResultError(

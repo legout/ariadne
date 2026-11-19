@@ -64,12 +64,12 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     build_native_dataset_page,
     build_native_table_page,
     candidate_digest,
-    confirmation_binding_digest,  # K4 fix pass: the effective identity a confirmation binds
-    evidence_counterevidence,  # K4 fix pass: counterevidence named at validation/review
+    confirmation_binding_digest,  # the effective identity a confirmation binds
+    evidence_counterevidence,  # counterevidence named at validation/review
     generated_page_filename,
-    mapping_assertion_digest,  # K4 (issue #44): the declaration identity of a mapping
-    resolve_term,  # K2 (issue #42): the shared read-only term resolver
-    resolve_term_entries,  # C6 fix: the candidate feeds the shared core through native entries
+    mapping_assertion_digest,  # the declaration identity of a mapping
+    resolve_term,  # the shared read-only term resolver
+    resolve_term_entries,  # the candidate feeds the shared core through native entries
     validate_inspection_candidate,
 )
 from ariadne.contract_inspection import _quote
@@ -518,7 +518,7 @@ def _verified_citations(tree: Path, source_names: set[str]) -> tuple[list[dict],
     errors: list[str] = []
     knowledge = tree / "knowledge"
     if (tree / "context_integration.yaml").is_file() and knowledge.is_dir():
-        # F2 (fix pass, spec0029 §1.5): EVERY captured KB Reference — hidden
+        # EVERY captured KB Reference — hidden
         # or unreferenced, with or without mappings — enters the same
         # citation gate. The producer's public parse feeds the lossless
         # view; Core never re-parses KB bytes, a legacy context_layer copy
@@ -806,7 +806,7 @@ def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> lis
     if knowledge.is_dir() and approval_digest is not None:
         from lumio_wiki import parse_frontmatter
 
-        # D1 (#83 delta review): enumerate EVERY captured knowledge page by its
+        # enumerate EVERY captured knowledge page by its
         # producer-parsed native profile KIND — a Table profile's endpoint
         # binding is an envelope fact, never a function of its category
         # directory (hidden and unreferenced placements included)
@@ -924,7 +924,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         # Finalize BEFORE validation (spec §4): deterministic generated content
         # (no wall-clock restamp), committed as the exact final candidate.
         proposals.refuse_untracked_scope(project, record)
-        # K3 (issue #43): verify every structured mapping's cited receipts
+        # verify every structured mapping's cited receipts
         # against the project's evidence records and the current dependency
         # identities, and attach the bounded verified summaries to the
         # Reference pages (deterministic core-authored page edits, committed
@@ -938,7 +938,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             source_digest=source_digest,
             approval=approval,
         )
-        # C6 (spec0035 §6): the classic context_layer finalization is
+        # the classic context_layer finalization is
         # retired. Every candidate finalizes through the ONE native
         # derivation; an old-capability candidate (support_revision < 2 or
         # no authored selector) whose governed metric set needs generated
@@ -1021,7 +1021,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             page_errors = _graph_citation_errors(tree) + _stale_schema_binding_errors(
                 tree, approval.get("approval_digest") if approval else None
             )
-            # K4 (issue #44): conflicting asserted claims refuse validation
+            # conflicting asserted claims refuse validation
             # alongside the receipt-verification gate
             claim_errors = _asserted_claim_errors(tree)
             example_errors = answer_examples.validate_candidate_records(project, record, tree)
@@ -1031,7 +1031,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             errors.extend(citation_errors)
             errors.extend(receipt_errors)
             errors.extend(claim_errors)
-            # C1 (issue #77, spec 0028 §§4–6): the contract leg — the static
+            # the contract leg — the static
             # document/binding checks plus, for resolved bindings under the
             # operator-approved source identity, the live observation of every
             # bound dataset under the operator's existing inspection ceilings
@@ -1139,7 +1139,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                     or ("standalone project; no integrated selector" if _captured is None else ""),
                 ),
             )
-            # K4 (issue #44): an explicitly not_applicable check was NOT
+            # an explicitly not_applicable check was NOT
             # performed — the applicability decision rides the report (each
             # not_applicable outcome carries its reason), never the performed
             # set a current validator identity binds.
@@ -1215,7 +1215,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "performed_checks": performed,
             "validator_identity": validator_identity(performed),
             **build_context,
-            # C1 (issue #77, spec 0028 §6): the contract observations bound to
+            # the contract observations bound to
             # this validation — producer identity/version, bindings, live
             # outcomes with their dependency digests and observation times.
             # Bound into the evidence so pre-contract or weaker proof can
@@ -1226,7 +1226,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
         }
         # The proposal record's persistent repair/validation state and the
         # verified citation identities (plan §2) — never reset by a new commit.
-        # C1: the retained per-binding contract observations (for reuse with
+        # the retained per-binding contract observations (for reuse with
         # their ORIGINAL time while dependencies and age allow, spec 0028 §6).
         record["repair"] = repair
         record["validation"] = {"commit": final, "ok": ok, "key": key, "attempts": attempts}
@@ -1404,7 +1404,7 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
         citation = observations.get("citation") if isinstance(observations, dict) else None
         if isinstance(citation, str):
             resources.append(citation)
-    # D2 (#83 delta review): native source entries exist in BOTH supported
+    # native source entries exist in BOTH supported
     # forms — structured mappings and bare scalar identities; both carry the
     # same canonical-resource provenance through the approval gate (malformed
     # or unsupported forms stay the producer page gate's own error)
@@ -1445,7 +1445,7 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
     native = profile.get("native")
     native = native if isinstance(native, dict) else {}
     relative: list[str] = []
-    # D2 (#83 delta review): the RELATIVE containment case of the same
+    # the RELATIVE containment case of the same
     # normalization — scalar and structured entries carry the same
     # bundle-path provenance semantics
     for entry in native.get("sources") or []:
@@ -1565,7 +1565,7 @@ def _mapping_assertions(tree: Path) -> list[dict]:
                 for summary in summaries.get(mapping.get("id")) or []
                 if isinstance(summary, dict)
             ]
-            # K4 fix pass (finding 1, spec 0010 §§8–9): an asserted mapping
+            # an asserted mapping
             # contradicted by its own verified receipts (honest mismatches, an
             # ambiguous pairing basis or an inconclusive outcome) is
             # UNSUPPORTED — it is never selectable for confirmation. A
@@ -1695,7 +1695,7 @@ def _review_candidate(
                     "the candidate's artifact bytes differ from the validated digest"
                 )
         inventory = _change_inventory(project, record)
-        # K4 (issue #44): the candidate's structured mapping assertions — the
+        # the candidate's structured mapping assertions — the
         # exact identity/digest/dependencies/eligibility surface a human
         # selects from at admission. Reading it is never confirmation.
         mapping_assertions = _mapping_assertions(tree)
@@ -2125,7 +2125,7 @@ def refresh_schema(
             f"refresh expected {expected_revision} — re-read the candidate and retry "
             "with the current revision; nothing was written"
         )
-    # C6 (spec0035 §6): the classic context_layer page-build refresh is
+    # the classic context_layer page-build refresh is
     # retired — native technical profile pages need the revision-2 capability
     # opt-in. An old-capability candidate (support_revision < 2 or no
     # authored selector) refuses THIS refresh operation BEFORE any source
@@ -2544,7 +2544,7 @@ def _measure(
 
     unavailable: list[str] = []
 
-    # K3 fix pass (finding 2): the union of measured columns per participating
+    # the union of measured columns per participating
     # asset — exactly one bounded sample is taken per asset, in this
     # deterministic binding order, and every side/lookup reads that sample.
     asset_columns: dict[str, list[str]] = {}
@@ -2644,7 +2644,7 @@ def _measure(
     right_tuples = [tuple(row[c] for c in right_columns) for row in tested_right]
 
     def lookup_side_measurement(table: dict, columns: list[str]) -> dict:
-        """The lookup asset's own honest denominators (K3 fix pass, finding 4):
+        """The lookup asset's own honest denominators:
         complete-tuple eligible/null counts, the sampled tested count and the
         sampled null rows — a truncated lookup sample can never masquerade as
         a fully measured lookup."""
@@ -2691,7 +2691,7 @@ def _measure(
             "left": {"values": 0, "max_multiplicity": 1},
             "right": {"values": 0, "max_multiplicity": 1},
         },
-        # K3 fix pass (finding 7): every REQUESTED binding's bounded aggregate
+        # every REQUESTED binding's bounded aggregate
         # shape summary, from the existing per-asset samples
         "shapes": [
             {"resource": resource, "column": column, **_shape_summary(samples[resource], column)}
@@ -2735,7 +2735,7 @@ def _measure(
             if values is None:
                 # a fact key beyond the SAMPLED lookup rows is an unknown
                 # lookup, not a missing key — unless the lookup was fully
-                # measured (finding 4)
+                # measured
                 if fully_measured:
                     measurement["missing_key_count"] += 1
                     outcome = "missing"
@@ -2848,7 +2848,7 @@ def _measure(
         }
         measurement["mismatch_count"] = len(left_compare) - len(matched_left)
         # independently paired comparison when pairing keys are supplied and
-        # actually pair sampled records. K3 fix pass (finding 3): EVERY right
+        # actually pair sampled records. K3 fix pass: EVERY right
         # row is retained per pairing key — a key carrying multiple right rows
         # is disclosed as an ambiguous pairing and never silently collapsed to
         # the last row's value, so the basis never claims unique independent
@@ -2939,7 +2939,7 @@ def _measure(
         measurement["counts"]["tested_left"] >= measurement["counts"]["eligible_left"]
         and measurement["counts"]["tested_right"] >= measurement["counts"]["eligible_right"]
     )
-    # K3 fix pass (finding 4): a truncated lookup sample forbids the 'full'
+    # a truncated lookup sample forbids the 'full'
     # designation even when every fact row was tested — and the truncation is
     # disclosed, because keys beyond the sample are unknown lookups.
     lookup_full = lookup_counts is None or (
@@ -3035,7 +3035,7 @@ def _cited_policy_dependencies(
                 resource = sources.get(source_id)
                 if not isinstance(resource, str) or not resource or resource in entries:
                     continue
-                # F2 (fix pass, spec0029 §1.5): an integrated Reference's
+                # an integrated Reference's
                 # cited knowledge Policy binds to THAT KB page — the digest
                 # resolves inside the knowledge subtree, never a same-path
                 # legacy context_layer page; a missing dependency stays an
@@ -3123,7 +3123,7 @@ def inspect_mapping(
         ]:
             if binding["resource"] not in tables:
                 tables[binding["resource"]] = _participant(binding["resource"], catalog)
-            # K3 fix pass (finding 1): EVERY bound column (sides, scope,
+            # EVERY bound column (sides, scope,
             # pairing, lookup fields) exists on its catalog asset BEFORE any
             # statement runs — a missing column is an up-front refusal, never
             # a mid-measurement "unavailable" disclosure.
@@ -3190,7 +3190,7 @@ def inspect_mapping(
         "dependencies": {
             "assets": sorted(assets, key=lambda asset: asset["resource"]),
             "lookup": normalized.get("prefix_lookup") or normalized.get("lookup"),
-            # K3 fix pass (finding 6, spec 0010 §8): the cited Policy/OSI
+            # the cited Policy/OSI
             # dependencies of the Reference pages that declare THIS candidate
             # in the current proposal candidate — the receipt binds their
             # content digests so a changed cited Policy page invalidates it.
@@ -3222,7 +3222,7 @@ def inspect_mapping(
         "revision": current,
         "receipt_id": receipt["receipt_id"],
         "receipt": receipt,
-        # K3 fix pass (finding 8): the COMPLETE final envelope (evidence path
+        # the COMPLETE final envelope (evidence path
         # included) is what the response ceiling measures — and the receipt is
         # retained only after the complete envelope fits.
         "evidence": str(_receipt_path(project, proposal, receipt["receipt_id"])),
@@ -3293,7 +3293,7 @@ def _verify_receipt(
     a retargeted representation never keeps a verified summary), the resolved
     SOURCE identity it read, the measured ASSET/LOOKUP columns, the lookup
     asset's full schema digest, the bound cited Policy/OSI dependency digests
-    (finding 6) and the operator's evidence age budget (finding 6: age bounds
+     and the operator's evidence age budget (finding 6: age bounds
     the RECEIPT's validity for attachment; unversioned data stays as_of).
     Returns (summary, None) or (None, error) — an allowlisted id or an
     author-authored count is never proof. Receipt validity is
@@ -3549,7 +3549,7 @@ def _finalize_mapping_evidence(
             owned.close()
     errors: list[str] = []
     rewrites: dict[str, str] = {}
-    # K3 fix pass (finding 6): the operator's evidence age budget (host
+    # the operator's evidence age budget (host
     # config only) bounds how old a receipt may be and still attach; the
     # cited Policy/OSI digests re-verify against the proposal worktree.
     max_age_hours = project_inspection_limits(project)["receipt_max_age_hours"]
@@ -3576,7 +3576,7 @@ def _finalize_mapping_evidence(
                     f"candidate declaration is not measurable: {exc}"
                 )
                 continue
-            # K3 fix pass (finding 5): the measured candidate must correspond
+            # the measured candidate must correspond
             # to the mapping's ENDPOINT representations (fields and required
             # scope) BEFORE any evidence attaches — an endpoint that fails to
             # resolve is the page contract's own error, not a correspondence
@@ -3612,7 +3612,7 @@ def _finalize_mapping_evidence(
                     continue
                 assert summary is not None
                 summaries.append(summary)
-                # K4 fix pass (finding 1, spec 0010 §§8–9): an ASSERTED claim
+                # an ASSERTED claim
                 # contradicted by its own verified receipts (honest mismatches,
                 # an ambiguous pairing basis or an inconclusive outcome) is
                 # unsupported and fails the mapping-evidence gate — the same

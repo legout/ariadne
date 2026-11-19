@@ -1116,7 +1116,7 @@ def build_connection(
             for src in requested
         ]
     except Exception as exc:
-        # K3 fix pass (finding 9): a failing setup CLOSES the connection it
+        # a failing setup CLOSES the connection it
         # opened — no leaked session/read survives the refused setup (the
         # connection owner is never constructed when setup raises).
         try:

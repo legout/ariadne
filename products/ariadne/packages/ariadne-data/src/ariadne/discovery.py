@@ -33,7 +33,7 @@ ROUTING_HINT = (
     "call query_records(request) with {dataset, fields, order, limit?} — never raw SQL."
 )
 
-# K4 (issue #44, spec 0010 §6/§9): the SPECIFIC missing-catalog error every
+# the SPECIFIC missing-catalog error every
 # metric operation keeps on a human-admitted CONTEXT-ONLY snapshot (schemas/
 # References, no metrics): discovery and terminology resolution serve the
 # admitted context, the metric surface refuses explicitly, and no absent
@@ -97,7 +97,7 @@ class _DiscoverySession:
         self._catalog_error: str | None = None
         self.context_dir = Path(context_dir)
         models = Path(semantic_dir) / "models"
-        # K4 (issue #44, spec 0010 §6): a MANAGED context-only admitted snapshot
+        # a MANAGED context-only admitted snapshot
         # (no semantic models — schemas/References only) constructs for
         # discovery and term resolution; every metric operation then refuses
         # with the SPECIFIC missing-catalog error.
@@ -417,7 +417,7 @@ class _DiscoverySession:
             except PlannerError:
                 raise  # admission/identity failures always refuse the whole operation
             except query_results.QueryResultError:
-                # A2 (spec0029 §1.3): a required-output budget refusal never
+                # a required-output budget refusal never
                 # becomes one group's unavailability — it refuses the whole
                 # operation on every public surface.
                 raise
@@ -428,7 +428,7 @@ class _DiscoverySession:
             assert self._managed is not None
             result["bound_release"] = self._managed["bound_release"]["digest"]
             result["support"] = copy.deepcopy(self._managed["bound_release"]["support"])
-            # A2 (spec0029 §1.3): the embedded SDK pages make the assembled
+            # the embedded SDK pages make the assembled
             # report required output too — the integrated Core response bound
             # applies to the FINAL discover result, not each group alone.
             self._refuse_oversized_response(result)
@@ -587,7 +587,7 @@ class _DiscoverySession:
             )
             self._refuse_oversized_response(result)
             return result
-        # C6 (spec0035 §6): the classic OKF snapshot search is retired — the
+        # the classic OKF snapshot search is retired — the
         # shared open gates refuse retired formats before any session exists,
         # so a session without the pinned native release refuses honestly.
         raise ValueError(
@@ -614,7 +614,7 @@ class _DiscoverySession:
         if self._managed is not None:
             self._recheck_pinned()
         if self._context_snapshot is not None:
-            # T2 (spec0029 §1.5): integrated term resolution is source-free —
+            # integrated term resolution is source-free —
             # the pinned SDK's captured structured References feed the ONE
             # shared resolver; confirmations and the operator evidence-age
             # budget ride it exactly like the standalone route.
@@ -634,14 +634,14 @@ class _DiscoverySession:
                     else None
                 ),
             )
-            # F4 (fix pass, spec0029 §1.5 + spec0014 §5): the COMPLETE final
+            # the COMPLETE final
             # response — admission provenance included — is what the host
             # ceiling guards; the SDK enrichment already rides the matches
             # before the shared parts are computed
             result["admission"] = self._admission_view(self._managed)
             self._refuse_oversized_response(result)
             return result
-        # C6 (spec0035 §6): the classic OKF snapshot term resolution is
+        # the classic OKF snapshot term resolution is
         # retired — term resolution rides the pinned native release only.
         raise ValueError(
             "no admitted native Context snapshot is available for this "
@@ -670,7 +670,7 @@ class _DiscoverySession:
             )
             self._refuse_oversized_response(result)
             return result
-        # C6 (spec0035 §6): the classic OKF snapshot read is retired.
+        # the classic OKF snapshot read is retired.
         raise ValueError(
             "no admitted native Context snapshot is available for this "
             "project; author and admit a reviewed candidate revision first"
@@ -694,7 +694,7 @@ class _DiscoverySession:
             result = lumio_context.read_context_page(self._managed["bound_release"], path)
             self._refuse_oversized_response(result)
             return result
-        # C6 (spec0035 §6): the classic OKF page read is retired.
+        # the classic OKF page read is retired.
         raise ValueError(
             "no admitted native Context snapshot is available for this "
             "project; author and admit a reviewed candidate revision first"

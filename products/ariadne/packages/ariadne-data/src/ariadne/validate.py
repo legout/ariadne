@@ -32,7 +32,7 @@ Assertion 1 — the declared ``primary_key`` is unique over the compiled dataset
 source; Assertion 2 — parent aggregate invariance: for dataset sources containing
 JOINs, additive parent-table columns must sum identically over the raw parent table
 and the joined source (fan-out inflation -> fail, remediation names the ADR-0006
-rubric patterns). mvp-5 round 2 (owner decision: structural guard reuse): the
+rubric patterns). mvp-5 round 2: the
 audit's AUTHORITATIVE gate is the query runtime's shared structural guard
 (:func:`ariadne.grain.check_grain_preserving`) applied to every authored dataset
 source — any join ANYWHERE in the tree (CTEs included) whose ON key is not unique
@@ -840,7 +840,7 @@ def validate(
     staging = Path(staging_dir)
     models_dir = _models_dir(staging)
     contract_check, contract_errors, _contract_evidence = _contract_check(staging)
-    # K4 (issue #44, spec 0010 §9): a candidate with NO semantic declarations
+    # a candidate with NO semantic declarations
     # at all (no semantic_layer — the onboarding/schema/Reference-only form) is
     # CONTEXT-ONLY. The semantic checks are explicitly not_applicable WITH
     # reasons (never a silent skip, never a bare "not-run"): an inherited
@@ -917,7 +917,7 @@ def validate(
         if skipped_derived and not compile_errors:
             # the passed outcome is scoped to the compiled definitions only —
             # skipped cross-fact derived metrics are named here, never a bare
-            # complete-success signal (recheck finding 1)
+            # complete-success signal
             names = ", ".join(sorted(skipped_derived))
             compile_detail = (
                 f"{len(skipped_derived)} cross-fact derived metric(s) not compiled "

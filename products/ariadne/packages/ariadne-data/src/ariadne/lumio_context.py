@@ -13,12 +13,12 @@ import yaml
 
 SUPPORT = {
     "storage": "local-immutable",
-    # T2 (spec0029 §1.5, 2026-10-20): the `reference` profile joins the
+    # the `reference` profile joins the
     # supported integrated kinds — ONLY after complete native validation of
     # every Reference annotation across the captured candidate. Dataset/
     # table/computation/skill profiles and unrelated extensions still refuse.
     "profiles": ["metric", "policy", "reference"],
-    # Q2 (spec0029 §1.2, 2026-10-20): query_metrics and list_datasets join
+    # query_metrics and list_datasets join
     # the supported integrated operations. A2 (spec0029 §1.3) adds the three
     # scoped SDK navigation operations; T2 (spec0029 §1.5) adds resolve_term
     # over the pinned structured References — every other r2 refusal stands.
@@ -519,7 +519,7 @@ def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, s
         if core_ref is None or not isinstance(core_ref.id, str):
             return []  # the producer page gate owns a missing/malformed core_ref
         expected_kind = "table" if profile.kind == "table" else "collection"
-        # D4 (#83 delta review): the typed reference DISCRIMINATOR is checked
+        # the typed reference DISCRIMINATOR is checked
         # BEFORE the id resolves — a physical profile anchors a resource
         # reference; the authored discriminator is rejected as authored, never
         # coerced or relabeled
@@ -573,7 +573,7 @@ def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, s
     elif profile.kind == "computation":
         if core_ref is None or not isinstance(core_ref.id, str):
             return []  # the producer page gate owns a missing/malformed core_ref
-        # D4: the discriminator check precedes sanctioned-ID resolution here
+        # the discriminator check precedes sanctioned-ID resolution here
         # too — a Computation anchors a semantic reference
         if core_ref.kind != "semantic":
             return [
@@ -621,7 +621,7 @@ def candidate(root, kb_root, revision):
         if profile.kind not in table["profiles"]:
             errors.append(f"{where}: unsupported Ariadne profile kind '{profile.kind}'")
         elif profile.kind == "reference":
-            # T2 (spec0029 §1.5): the structured declaration (native.ariadne)
+            # the structured declaration (native.ariadne)
             # and the Core-attached disclosure slot (native.ariadne_evidence)
             # ARE the Reference contract; every other technical extension —
             # and any authored evidence value as authority — still refuses.
@@ -663,7 +663,7 @@ def candidate(root, kb_root, revision):
         # captured technical profile, hidden or unreferenced included.
         elif profile.kind in ("dataset", "table", "computation"):
             errors.extend(_technical_identity_errors(where, profile, sanctioned))
-            # R1 (C6 fix, spec0009 §9): the retained Core meaning/edit gate over
+            # the retained Core meaning/edit gate over
             # the captured PRODUCER-PARSED flat native metadata — an externally
             # edited candidate cannot carry a table ariadne_quality profile the
             # Core authoring gate would refuse (the public batch writer runs the
@@ -1057,7 +1057,7 @@ def prepare_release(
             "retention": "required" if source_context.retention_required else "disabled",
         }
     )
-    # A2 (spec0029 §1.3): the Bound Release advertises the scoped navigation
+    # the Bound Release advertises the scoped navigation
     # operations, so admitting one requires an SDK that actually provides
     # them — an older installed SDK refuses admission instead of being
     # advertised with capabilities it lacks. An S3 destination additionally
@@ -1492,7 +1492,7 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
     signals = [context._page_view(p.path, disclose_native(p.native), now) for p in consumed]
     computation = None
     if int((manifest.get("selector") or {}).get("support_revision", 1) or 1) >= 2:
-        # C2 (spec0035 §5): the supported revision-2 route resolves the
+        # the supported revision-2 route resolves the
         # computation signal ONLY from the exact authorized producer view —
         # the scope-filtered public ContextSnapshot — matched by its exact
         # core_ref semantic identity through the producer's public parse.
@@ -2063,7 +2063,7 @@ def resolve_term(
     confirmations=None,
     evidence_max_age_hours: float | None = None,
 ):
-    """T2 (spec0029 §1.5): resolve one shared business term or exact field
+    """resolve one shared business term or exact field
     lookup against the pinned Bound Release's captured structured References
     through the ONE shared native resolver (the structured-entry seam in
     :func:`ariadne.context.resolve_term_entries` — there is no second matcher
@@ -2088,7 +2088,7 @@ def resolve_term(
         extension = native.get("ariadne")
         if not isinstance(extension, dict) or not isinstance(extension.get("mappings"), list):
             continue  # ordinary pages stay documentation, never References
-        # F3 (fix pass): the COMPLETE producer-validated native mapping is
+        # the COMPLETE producer-validated native mapping is
         # the resolver input — title/description/aliases/sources/status/
         # stale_after keep their authored values through the EXISTING output
         # fields; only provenance/draft are serving-layer facts

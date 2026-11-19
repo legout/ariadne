@@ -70,7 +70,7 @@ from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[report
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     admission,  # issue #37/G5: pinned-snapshot resolution for open_project
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
-    proposals,  # AC10: the shared retired-format refusal in the project-open path
+    proposals,  # the shared retired-format refusal in the project-open path
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
 )
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
@@ -166,7 +166,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         ADAPTER supplies; the core only calls it — it never imports MCP), and
         ``deadline_budget`` the ONE remaining-seconds budget a REQUEST-LIFETIME
         construction (CLI invocation / lazy MCP factory) shares between source
-        setup and its first operation (fix pass 1, finding 1) — long-lived
+        setup and its first operation — long-lived
         eager runtimes omit it and every operation starts a fresh budget."""
         self._load_catalog(semantic_dir, context_dir, admission_record)
         models = Path(semantic_dir) / "models"
@@ -333,7 +333,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         return DeadlineBudget(self._limits["execution_seconds"])
 
     def _discard_request_budget(self) -> None:
-        """Request-budget hygiene (fix pass 2, finding 1b). Invariant: a
+        """Request-budget hygiene. Invariant: a
         request-lifetime budget belongs to exactly ONE request — the one whose
         construction it bounded. Non-result operations discard any stored
         request budget at entry, so the request that lazily constructed this
@@ -387,7 +387,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         if self._context_snapshot is not None:
             budget = self._claim_operation_budget()
             self._recheck_pinned()
-        if self._context_only:  # K4: the specific missing-catalog refusal
+        if self._context_only:  # the specific missing-catalog refusal
             if self._managed is not None:
                 self._recheck_pinned()
             if self._context_snapshot is not None:
@@ -409,7 +409,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # hand-edited snapshot or a withdrawn approval is a staleness refusal.
             self._recheck_pinned()
         if self._context_snapshot is None:
-            # C6 (spec0035 §6): the classic OKF context envelope is retired —
+            # the classic OKF context envelope is retired —
             # every governed answer resolves its required Context through the
             # pinned native release (the shared open gates refuse retired
             # formats before any session exists).
@@ -500,7 +500,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         result["result"] = query_results.completeness(len(bounded.rows))
         query_results.account_rows(self._limits, result, bounded.rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
-        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+        if budget.expired():  # the last check before return
             raise query_results.deadline_refusal(budget.seconds)
         return result
 
@@ -609,7 +609,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             )
         if self._graph is None:
             raise PlannerError(
-                # K4 (issue #44): a context-only admitted snapshot names the
+                # a context-only admitted snapshot names the
                 # missing CATALOG (a specific refusal), never a broken
                 # admission — the snapshot is validly admitted, it carries
                 # no semantic models.
@@ -621,7 +621,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         return self._graph, self._managed
 
     def _sdk_metric_contexts(self, request: dict) -> dict[str, dict]:
-        """Q2 (spec0029 §1.2): on an integrated Bound Release, resolve every
+        """on an integrated Bound Release, resolve every
         requested metric's exact SDK Context Binding and complete required
         Policy Closure from the one pinned published version, then prove the
         COMBINED mandatory context fits the complete-response budget — all
@@ -633,7 +633,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         (the planner's structured request validation still owns that
         refusal, before its own live audits)."""
         if self._context_snapshot is None:
-            # C6 (spec0035 §6): the standalone OKF context route is retired —
+            # the standalone OKF context route is retired —
             # the shared open gates refuse retired formats before any session
             # exists, so a governed request without the pinned native release
             # refuses honestly instead of falling back.
@@ -727,7 +727,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             return None
         dataset = request.get("dataset")
         fields = request.get("fields")
-        # F3: type checks precede any hashing or graph membership — the
+        # type checks precede any hashing or graph membership — the
         # native planner's structured request_invalid/unknown_dataset
         # refusals own every malformed shape (this seam only defers)
         if not isinstance(dataset, str) or dataset not in graph.datasets:
@@ -884,7 +884,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         branch_datasets = {branch.dataset for branch in plan.branches}
         from ariadne import lumio_context
 
-        # D3 (#83 delta review): one physical Resource may back MANY semantic
+        # one physical Resource may back MANY semantic
         # datasets — proof resolves through the dependency's datasets that
         # actually PARTICIPATE in this plan's consumed lineage, never a
         # global last-wins (or arbitrary first) catalog alias
@@ -973,7 +973,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         validated revision."""
         self._refuse_unsupported("query_metrics")
         graph, admission = self._admitted()
-        # Q2 (spec0029 §1.2): on an integrated Bound Release, every requested
+        # on an integrated Bound Release, every requested
         # metric's exact SDK binding and complete Policy Closure resolve as ONE
         # unit, and the COMBINED mandatory context must fit the complete-response
         # budget — BEFORE planning, the live relationship audits, bind or SELECT.
@@ -1046,14 +1046,14 @@ class _QueryRuntimeSession(_DiscoverySession):
         result["result"] = query_results.completeness(len(bounded.rows))
         query_results.account_rows(self._limits, result, bounded.rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
-        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+        if budget.expired():  # the last check before return
             raise query_results.deadline_refusal(budget.seconds)
         return result
 
     @staticmethod
     def _conformed_time_fields(graph: SemanticGraph, time_dimension: str | None) -> set[str]:
         """The native member field names of the request's conformed primary
-        business time (issue #54 W1 fix3): the fields the time range
+        business time: the fields the time range
         predicates on each fact — the cheap mechanical correspondence for a
         report's declared evidence-period field. No time request (or no such
         edge) yields an empty set: period correspondence stays unknown, never
@@ -1084,7 +1084,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         if self._context_snapshot is not None:
             resources = self._detail_static_resources(graph, request)
             if resources is not None:
-                # F2: detail.path_proof's actual target is the request's own
+                # detail.path_proof's actual target is the request's own
                 # statically resolved root + proven lookup path
                 detail_context = self._input_context_preflight(
                     "query_detail", resources, check_targets={"detail.path_proof": set(resources)}
@@ -1125,7 +1125,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         result["result"] = query_results.completeness(len(bounded.rows))
         query_results.account_rows(self._limits, result, bounded.rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
-        if budget.expired():  # the last check before return (fix pass 1, finding 1)
+        if budget.expired():  # the last check before return
             raise query_results.deadline_refusal(budget.seconds)
         return result
 
@@ -1682,7 +1682,7 @@ def _plan_requested_period(
     fetch_bounds: tuple[date | None, date | None] | None,
 ) -> tuple[datetime | None, datetime | None] | None:
     """The CONSUMED query period of an executed multi-fact plan as aware
-    instants (issue #54 W1 fix3): the planner's fetch bounds — the half-open
+    instants: the planner's fetch bounds — the half-open
     NATIVE fetch range that already includes any window lookback extension
     and precedes the display trim — mapped at UTC midnight like every other
     runtime period fact. ``None`` (no time request) or fully unbounded

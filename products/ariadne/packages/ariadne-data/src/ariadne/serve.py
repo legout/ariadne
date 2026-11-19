@@ -262,7 +262,7 @@ _QUERY_RECORDS_INPUT_SCHEMA: dict = {
 # preflight and structured tool refusal. The CORE never imports MCP; these
 # helpers do, and only when the optional transport is in use.
 
-# The framing id reserve (fix pass 1, finding 7): the measure frames every
+# The framing id reserve: the measure frames every
 # envelope with a QUOTED UUID-LENGTH STRING id (38 serialized bytes) instead
 # of the 1-byte ``id=1`` — a bounded worst-case id representation. Any client
 # id whose serialized form is at most a UUID string (every integer id up to
@@ -355,7 +355,7 @@ def _refusal_envelope_bytes(refusal: dict) -> int:
 
 def _mcp_error_envelope_bytes(tool_name: str, exc: BaseException) -> int:
     """Wire bytes of the tool-error result the installed SDK ACTUALLY emits
-    for a raised exception (fix pass 2, finding 2c): for a ``ToolError`` mcp
+    for a raised exception: for a ``ToolError`` mcp
     2.2.0's result handler returns ``CallToolResult(content=[TextContent(
     text=str(exc))], is_error=True)`` — NOT a JSONRPCError — and the tool
     wrapper's message is ``Error executing tool {name}: {exc}``, serialized
@@ -512,7 +512,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         def _tool_mcp_budget() -> float:
             """The effective MCP envelope ceiling for bounding GENERIC tool
-            errors (fix pass 1, finding 2c): the live runtime's host limits
+            errors: the live runtime's host limits
             when reachable — even mid-construction failure — else the built-in."""
             try:
                 return _runtime()._limits["mcp_response_bytes"]
@@ -532,7 +532,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.discover(query, limit=limit)
-            # A2 (spec0029 §1.3): the assembled report (with its embedded SDK
+            # the assembled report (with its embedded SDK
             # pages) is a typed navigation result too — measured on its real
             # SDK conversion, refusing whole when it cannot fit.
             return _typed_navigation_result(app._tool_manager._tools["discover"], result, project)
@@ -551,7 +551,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @_tool_errors
         async def search_context(query: str) -> list[dict]:
             """Search only Context pages from the admitted Git snapshot."""
-            # A2 (spec0029 §1.3): source-free discovery, never the query
+            # source-free discovery, never the query
             # runtime; the typed result is measured on its real conversion.
             _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
@@ -608,7 +608,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return await runtime.get_metric(name, dimensions, range)
             except QueryResultError as exc:  # spec 0014 §5: isError + refusal
                 return _refusal(exc)
-            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+            except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
                     "get_metric",
                     exc,
@@ -661,7 +661,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return await runtime.define_metric(definition)
             except QueryResultError as exc:  # refusal saves no authored artifact
                 return _refusal(exc)
-            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+            except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
                     "define_metric",
                     exc,
@@ -698,7 +698,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return await runtime.query_metrics(request)
             except QueryResultError as exc:  # spec 0014 §5: isError + refusal
                 return _refusal(exc)
-            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+            except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
                     "query_metrics",
                     exc,
@@ -728,7 +728,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return await runtime.query_detail(request)
             except QueryResultError as exc:  # spec 0014 §5: isError + refusal
                 return _refusal(exc)
-            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+            except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
                     "query_detail",
                     exc,
@@ -771,7 +771,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 return await runtime.query_records(request)
             except QueryResultError as exc:  # spec 0014 §5: isError + refusal
                 return _refusal(exc)
-            except Exception as exc:  # fix pass 1, finding 2c: fitting errors keep
+            except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
                     "query_records",
                     exc,
@@ -825,7 +825,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 expected_revision: the exact current candidate revision; required with proposal.
             """
             discovery = DiscoveryRuntime.open_project(project)
-            # F1 (spec0035 C4): source-free authoring — the source builder is
+            # source-free authoring — the source builder is
             # never constructed for an Example save.
             return discovery.save_example(
                 submission, proposal=proposal, expected_revision=expected_revision
@@ -902,7 +902,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 part: which bounded part of the matches (default 1; the response
                     carries total_matches/parts/truncated for continuation).
             """
-            # T2/F5 (fix pass, spec0029 §1.5): INTEGRATED term resolution is
+            # INTEGRATED term resolution is
             # source-free — the pinned discovery session serves it through
             # the typed-result refusal-budget seam; the query runtime (and
             # any source connection) is never constructed for it, and the

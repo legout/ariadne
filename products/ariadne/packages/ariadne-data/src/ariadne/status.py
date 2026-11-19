@@ -41,7 +41,7 @@ def _git_identity_ok(root: Path) -> bool:
 
 
 def _git_head_revision(root: Path, repo_root: str | None) -> str | None:
-    """G2 (spec0029 §1.4): the full exact HEAD of THIS checkout, read from Git
+    """the full exact HEAD of THIS checkout, read from Git
     only — or None when it is unknown (no repository, unborn HEAD), never an
     invented revision. It is transport state, disclosed separately from the
     verified admitted Content Commit."""
@@ -241,7 +241,7 @@ def _example_counts(snapshot: Path | None, record: dict | None) -> dict:
     for page in release.pages:
         # ContextPageView.native is a deep-immutable producer view (never a
         # plain dict) and the producer kind lives on ``page.kind`` — count the
-        # scoped pinned answer_example pages directly (R2, C6 fix).
+        # scoped pinned answer_example pages directly.
         if page.kind == "answer_example":
             total += 1
     return {"total": total, "by_status": ({"admitted": total} if total else {})}
@@ -273,7 +273,7 @@ def _skill_targets(selection: set[tuple[str, str | None]] | None = None) -> list
 
 
 def _bound_release_view(record: dict) -> dict | None:
-    """G2 (spec0029 §1.4): the verified admission's Bound Release digest, its
+    """the verified admission's Bound Release digest, its
     exact immutable local Published Version and its declared supported
     operations — from the verified descriptor only, never the working tree,
     with no destination, registry or source data disclosed. A record without a
@@ -499,7 +499,7 @@ def _render(report: dict) -> str:
                 if git["commit_identity"]
                 else "missing",
             ),
-            # G2: transport state, separate from the admitted Content Commit
+            # transport state, separate from the admitted Content Commit
             _row("local HEAD:", git["head_revision"] or "unknown"),
             _row("admission:", report["project"]["admission"]["state"]),
         ]

@@ -94,7 +94,7 @@ def _managed(project: Path, proposal: str | None, stdin: Any, interactive: bool)
         print("Eligible assertion (selection is inert; default skip):")
         print(json.dumps(entry, indent=2))
         print("Required scope/representations — exact reviewed Reference page:")
-        # C6 (owner disposition): the reviewed Reference body is printed via
+        # the reviewed Reference body is printed via
         # the CANONICAL payload resource identity — the assertion's page is
         # KB-relative (spec0029 §1.5), so its tracked resource is
         # ``knowledge/<page>``; the retired ``context_layer/<page>`` form is

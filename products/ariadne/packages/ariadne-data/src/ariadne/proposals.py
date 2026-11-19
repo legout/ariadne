@@ -104,7 +104,7 @@ _HUMAN_RESOLUTION = (
 # onboarding initial revision) carries this fixed message prefix. The proposal
 # record — written AFTER the commit — is the only authority that a core
 # transition COMPLETED: a core-authored commit the record never saw is the
-# signature of an interrupted transition (issue #37 fix pass).
+# signature of an interrupted transition.
 _CORE_COMMIT_PREFIX = "ariadne: "
 
 
@@ -447,7 +447,7 @@ _SYSTEM_CLAIM_KEYS = frozenset(
         "attested",
         "validated",
         "ariadne",
-        "ariadne_evidence",  # K3 (issue #43): core-attached verified receipt summaries
+        "ariadne_evidence",  # core-attached verified receipt summaries
         "resource",
     }
 )
@@ -660,7 +660,7 @@ def _in_user_scope(rel: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
         return True  # spec 0028 §3: producer contract documents (flat)
-    # C6 (spec0035 §6): the retired standalone context_layer/ scope is gone —
+    # the retired standalone context_layer/ scope is gone —
     # user-editable Context pages live only in the native knowledge/ subtree
     # (knowledge_path, already accepted above).
     return False
@@ -767,7 +767,7 @@ def _scope_files(project: Path) -> list[str]:
         else []
     ):
         rels.append(rel.relative_to(project).as_posix())
-    # C6 (spec0035 §6): the retired standalone context_layer/ and
+    # the retired standalone context_layer/ and
     # answer_examples/ initial-revision walks are gone — the native contract's
     # initial artifact revision commits the registry, Seed Notes, OSI models,
     # graph, contracts and the native knowledge/ subtree only (a legacy
@@ -960,11 +960,11 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     and a repository with no commits yet gets its human-created initial
     artifact revision first (allowed scope only). The record persists the
     expected admitted baseline at start time — the binding admission compares
-    it (issue #37 fix pass). Returns the proposal ID with its base and candidate
+    it. Returns the proposal ID with its base and candidate
     revisions (equal until the first edit)."""
     project = Path(project).resolve()
     _require_repo(project)
-    refuse_unsupported_project(project)  # AC10: before any state exists
+    refuse_unsupported_project(project)  # before any state exists
     _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
     _require_git_identity(project)
     with _file_lock(project / LOCKS_REL / "project.lock"):
@@ -1334,7 +1334,7 @@ def _edit_page_batch_locked(
                 f"page {rel!r} carries no non-empty canonical title — the "
                 "native writer addresses every page by its declared title"
             )
-        # R1 (C6 fix, spec0009 §9 quality amendment): the retained Core
+        # the retained Core
         # authoring gate over the PRODUCER-PARSED flat native metadata — a
         # table page carrying ariadne_quality passes K's structural check
         # inside the batch writer AND Core's meaning/edit validation here,

@@ -326,14 +326,14 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         print(json.dumps(asyncio.run(discovery.list_metrics()), default=_json_default))
         return 0
     if args.command == "search-context":
-        # A2 (spec0029 §1.3): context navigation is source-free discovery —
+        # context navigation is source-free discovery —
         # the query runtime (the only public path that opens a source
         # connection) is never constructed for it.
         result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
         print(json.dumps(result, default=_json_default))
         return 0
     if args.command == "resolve-term" and discovery._context_snapshot is not None:
-        # T2/F5 (fix pass, spec0029 §1.5): INTEGRATED term resolution is
+        # INTEGRATED term resolution is
         # source-free — the pinned discovery session serves it; the query
         # runtime (and any source connection) is never constructed for it.
         # The standalone route keeps its exact native runtime path below.
@@ -342,7 +342,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         print(json.dumps(result, default=_json_default))
         return 0
     if args.command in ("save-example", "search-examples"):
-        # F1 (spec0035 C4): source-free Example authoring/discovery — the
+        # source-free Example authoring/discovery — the
         # query runtime (the only public path that opens a source connection)
         # is never constructed for Example save/search; the explicit candidate
         # preview already returned above without any runtime.

@@ -26,7 +26,7 @@ SEED_NOTES_REL = Path("data") / "seed_notes.md"  # optional already-approved See
 EVIDENCE_PART_CHARS = 20_000  # one bounded page of converted text per response
 MAX_DOCUMENTS_PER_CALL = 16  # explicit aggregate bound: 16 parts ≤ 320k chars (spec §3)
 
-# K3 (issue #43, spec 0010 §7, plan §2 "finite limits"): the operator-owned
+# the operator-owned
 # inspection ceilings. These are the BUILT-IN defaults; the human-managed
 # project config may only TIGHTEN them (lower a numeric ceiling), and a
 # request may only lower them further — never raise. ``raw_examples`` is the
@@ -37,7 +37,7 @@ DEFAULT_INSPECTION_LIMITS = {
     "execution_seconds": 20.0,  # total inspection execution across all sources
     "response_bytes": 64 * 1024,  # serialized response ceiling
     "raw_examples": False,
-    # K3 fix pass (finding 6, spec 0010 §8): the operator's evidence AGE
+    # the operator's evidence AGE
     # budget — how old a retained receipt may be and still attach its
     # verified summary. Age bounds the RECEIPT's validity for attachment;
     # unversioned data stays as_of and dependency changes invalidate
@@ -268,7 +268,7 @@ def _input_root(project: str | Path) -> Path:
 
 def _project_documents_config(project: Path) -> tuple[list[Path], list[str]]:
     """(allowed local input roots, EXACT approved object-store URIs) from the
-    HUMAN-MANAGED project config (``ariadne.yaml``; owner decision 2026-09-24)
+    HUMAN-MANAGED project config
     — a client request never adds a root or URI. Defaults keep the scaffolded
     ``data/docs`` root and an empty approval list.
 
