@@ -1,6 +1,6 @@
 """The grain-preservation guard, shared by the Query runtime and the validate audit.
 
-Spec rev 5 §13: agent-authored sources whose joins fan out the fact grain are
+agent-authored sources whose joins fan out the fact grain are
 rejected (upstream finding Datus-ai/Datus-agent#1426: the compiler aggregates
 at joined-row grain and does NOT prevent this). ONE implementation, two entry
 points (mvp-5 round 2 owner decision — structural guard reuse over further
@@ -83,7 +83,7 @@ def relationship_target_audit(
     con: DuckDBPyConnection, source: str, keys: tuple[str, ...]
 ) -> TargetKeyAudit:
     """Exact composite target-key uniqueness + NULL-component audit over a
-    relationship target source, one scan (issue #27). Returns facts; callers
+    relationship target source, one scan. Returns facts; callers
     own error reporting. Unlike :func:`check_grain_preserving` (per-column,
     stricter, for legacy authored sources), this is exact tuple uniqueness —
     the many_to_one/one_to_one guarantee the planner's in-branch lookup joins
@@ -114,7 +114,7 @@ def relationship_target_audit(
         )
     # nosemgrep — never raw field text: every key above is compiler-rendered
     # with correct identifier quoting, the assembled statement is proven single
-    # above, and the source is the staged authored declaration (spec §6).
+    # above, and the source is the staged authored declaration.
     # pi-lens-ignore: python-sql-injection — compiler-rendered identifiers, proven single statement
     fetched = con.execute(sql).fetchone()  # nosemgrep — read-only attach, compiler-rendered keys
     rows, distinct_complete, null_rows = fetched or (0, 0, 0)
@@ -124,7 +124,7 @@ def relationship_target_audit(
 
 
 def check_grain_preserving(con: DuckDBPyConnection, source: str) -> None:
-    """Reject sources whose joins fan out the fact grain (spec rev 5 §13).
+    """Reject sources whose joins fan out the fact grain.
 
     Rule: for every join in the source, each ON key must be unique on the JOINED
     side — joins run many-to-one from the fact table. The compiler does not
@@ -180,7 +180,7 @@ def check_grain_preserving(con: DuckDBPyConnection, source: str) -> None:
             try:
                 # nosemgrep — never raw source text: sqlglot re-renders its own parse
                 # tree (multi-statement input cannot reach here — parse_one rejects
-                # it), and the check runs on the read-only attach (spec §6).
+                # it), and the check runs on the read-only attach.
                 row = con.execute(check).fetchone()  # nosemgrep — read-only attach, no side effects
             except Exception as exc:  # unresolvable standalone — cannot prove, reject
                 raise ValueError(GRAIN_GUIDANCE) from exc

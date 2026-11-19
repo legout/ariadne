@@ -4,7 +4,7 @@
 
 Source approval and artifact admission are distinct decisions, and admission
 itself is a HUMAN-ONLY local decision over an EXACT reviewed and validated
-candidate revision (spec §5):
+candidate revision:
 
 - :func:`admission_review` displays the matching review/report for a proposed
   ``--proposal/--revision/--reviewed-digest`` triple and REFUSES a digest that
@@ -22,7 +22,7 @@ candidate revision (spec §5):
   complete. A failed snapshot/record activation leaves the previous descriptor
   and answers intact, and admission never mutates the reviewed bytes (no
   frontmatter decoration, no index/log regeneration).
-- K4 (issue #44, plan §2 "Admission and automatic capture"): repeated
+- K4 (plan §2 "Admission and automatic capture"): repeated
   ``--confirm-mapping <reference-slug>:<mapping-id>`` selections confirm
   EXACTLY the named asserted mappings of the exact reviewed revision — the
   display resolves each selection and shows its exact assertion content, a
@@ -78,14 +78,14 @@ from ariadne.sources import Registry
 from ariadne.validate import candidate_scope_digest, validator_identity
 
 # Operator-owned pinned-snapshot state, ignored via the repo-LOCAL exclude file
-# proposals maintains (plan §2): ONE immutable snapshot per admitted commit and
+# proposals maintains: ONE immutable snapshot per admitted commit and
 # ONE atomic current-admission descriptor.
 SNAPSHOTS_REL = proposals.ARIADNE_STATE_DIR / "snapshots"
 CURRENT_REL = proposals.ARIADNE_STATE_DIR / "current.json"
 ADMISSION_ROUTE = "git-review-admission"
 
 # The checks a FULL, matching validation must show PASSED for admission (spec
-# §5: a compile-only or failed report is not sufficient admission evidence).
+# a compile-only or failed report is not sufficient admission evidence).
 # ``conformance`` stays disclosed as not-run; the live relationship audit is
 # additionally required whenever the candidate carries a multi-fact graph.
 # ``contracts`` joins the required set — a
@@ -299,7 +299,7 @@ def _restore_previous_descriptor(project: Path, previous: bytes | None) -> bool:
 
 def _verified_evidence(project: Path, proposal: str, revision: str, review: dict) -> dict:
     """The stored validation evidence of the EXACT revision, verified as full,
-    matching admission evidence (spec §5, AC4): a passing report for this very
+    matching admission evidence: a passing report for this very
     commit with every required check PASSED (plus the relationship audit for a
     graph candidate), a validator identity matching the CURRENT checker
     configuration, the still-approved resolved source identity the validation
@@ -550,7 +550,7 @@ def _parse_selection(selection: str) -> tuple[str, str]:
 
 def _resolve_selections(assertions: list[dict], selections: list[str]) -> list[dict]:
     """Resolve every operator mapping selection against the EXACT reviewed
-    revision's structured mapping assertions (plan §2): the selection names a
+    revision's structured mapping assertions: the selection names a
     reference (its page slug, or the full context-relative page path) and a
     mapping ID; only an ASSERTED mapping of the reviewed revision is
     selectable — a hypothesis is investigative knowledge and never a
@@ -786,7 +786,7 @@ def admission_review(
     """HUMAN-ONLY display step of ``ariadne-admit``: the matching review/report
     of the exact CURRENT candidate revision, refusing a revision or digest that
     does not match. Displaying is NEVER sign-off — the response names the
-    explicit ``--confirm`` step that alone activates. K4 (issue #44): with
+    explicit ``--confirm`` step that alone activates. K4: with
     ``--confirm-mapping`` selections the display resolves each selection
     against the EXACT reviewed revision's mapping assertions and shows the
     selected assertions' exact content (declaration, digest, dependencies,
@@ -904,7 +904,7 @@ def admit_revision(
     snapshot, publishes ``current.json`` atomically, then marks this admission
     as the proposal's expected baseline.
 
-    K4 (issue #44, plan §2 "Admission and automatic capture"):
+    K4 (plan §2 "Admission and automatic capture"):
     ``--confirm-mapping`` selections confirm EXACTLY the named asserted
     mappings of the exact reviewed revision — a hypothesis selection refuses,
     and the operational evidence (selections + assertion/evidence digests) is
@@ -929,7 +929,7 @@ def admit_revision(
             record, revision = _check_reviewed_revision(project, proposal, revision)
             proposals._check_coherent(project, record)
             # The exact review digest under the lock: the review binds revision,
-            # change inventory, artifact bytes and citations (spec §4/§5).
+            # change inventory, artifact bytes and citations.
             review = authoring._review_candidate(project, proposal, record=record)
             if review["review_digest"] != reviewed_digest:
                 raise ValueError(
@@ -1461,8 +1461,8 @@ def approved_registry(record: dict) -> Registry:
     """The operator-APPROVED resolved identity of an admitted record as the
     runtime's source registry: DuckDB opens exactly these resolved locations
     — the pinned snapshot's registry spelling and any snapshot-relative path
-    never reach the connection (spec §5, plan §2). The record's FROZEN
-    effective storage bindings (spec 0025 §4) ride the registry so the
+    never reach the connection. The record's FROZEN
+    effective storage bindings ride the registry so the
     connection opens exactly the admitted endpoints."""
     entries = record.get("sources") or []
     if not entries:

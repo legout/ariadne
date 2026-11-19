@@ -11,12 +11,12 @@ authored content, with no separate review store. Authoring behavior lives in
 :class:`ariadne.authoring.AuthoringProject`; this adapter adds thin
 ``authoring_``-prefixed wrappers.
 
-The three registrations (spec §6, AC7):
+The three registrations:
 
 - **analyst** — the Query operations under their established names:
   ``list_metrics``, ``search_context``, ``get_metric``, ``list_datasets``,
-  ``define_metric`` (ad-hoc), ``query_metrics``/``query_detail`` (issue #30),
-  ``save_example``/``search_examples`` (issue #21), ``resolve_term``
+  ``define_metric`` (ad-hoc), ``query_metrics``/``query_detail``,
+  ``save_example``/``search_examples``, ``resolve_term``
   (issue #42: shared terminology resolution over the pinned admitted
   context; issue #44/K4 reports claim/confirmation status and AS-OF evidence
   freshness, and serves a context-only admitted snapshot — no metrics yet —
@@ -30,7 +30,7 @@ The three registrations (spec §6, AC7):
   ``authoring_inputs``, ``authoring_validate_proposal``,
   ``authoring_refresh_schema`` (issue #41:
   the explicit physical schema refresh), ``authoring_resolve_term`` (issue
-  #42: read-only candidate term resolution), ``authoring_review_proposal``.
+  read-only candidate term resolution), ``authoring_review_proposal``.
   No query operation; the registration starts without a governed catalog
   (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
@@ -58,7 +58,7 @@ requires the server-held ``ARIADNE_HTTP_TOKEN`` bearer token. Without ``--http``
 nothing listens. Deployment and private HTTPS termination retain separate
 approval; a container bind must not be published directly to the host.
 
-Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
+Routing contract: fresh consuming agents discover the ad-hoc
 path through the facade itself — the tool descriptions carry the same routing
 language ``list_metrics`` and the unknown-metric error use (the MCP registry is
 the agent's map).
@@ -106,11 +106,11 @@ FacadeSource = (
     QueryRuntime | _QueryRuntimeSession | DeferredQueryRuntime | Callable[[], _QueryRuntimeSession]
 )
 
-# The three registrations (spec §6): Query under its established names, the
+# The three registrations: Query under its established names, the
 # authoring contract under one stable prefix, and their union.
 TOOLSETS = ("analyst", "authoring", "combined")
 
-# The opt-in local-only HTTP transport (issue #18): the operator's bearer
+# The opt-in local-only HTTP transport: the operator's bearer
 # token lives in the SERVER environment only — never in ariadne.yaml, a tool
 # response or a log. Stdio never reads it.
 HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
@@ -118,7 +118,7 @@ HTTP_TOKEN_ENV = "ARIADNE_HTTP_TOKEN"
 # Loopback remains the default; only explicit container mode permits 0.0.0.0.
 HTTP_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
-# Issue #57/S2 (spec 0014 §3/§7 V4-12): the explicit nested input schema of the
+# the explicit nested input schema of the
 # query_records tool — discovery-grade JSON Schema for the record request
 # contract (dataset/fields/filters/timestamp/order/limit with defaults,
 # supported operators and the overflow policy), so Analyst/Combined clients
@@ -258,7 +258,7 @@ _QUERY_RECORDS_INPUT_SCHEMA: dict = {
 }
 
 
-# ---- issue #56/S1 (spec 0014 §4–§5): the MCP adapter's actual-representation
+# ---- issue #56/S1: the MCP adapter's actual-representation
 # preflight and structured tool refusal. The CORE never imports MCP; these
 # helpers do, and only when the optional transport is in use.
 
@@ -324,7 +324,7 @@ def _mcp_result_bytes(result: dict) -> int:
 
 
 def _mcp_refusal_result(exc: QueryResultError):
-    """The structured MCP tool refusal (spec 0014 §5): ``isError: true`` with
+    """The structured MCP tool refusal: ``isError: true`` with
     the bounded refusal as BOTH escaped text and structured content — never a
     successful partial tool answer. MCPServer passes a returned
     ``CallToolResult`` through ``convert_result`` untouched (mcp 2.2.0), and
@@ -376,7 +376,7 @@ def _mcp_error_envelope_bytes(tool_name: str, exc: BaseException) -> int:
 
 
 def _bounded_tool_error(tool_name: str, exc: BaseException, mcp_budget: float):
-    """Fix pass 1, finding 2c (spec 0014 §5): a FITTING generic error keeps
+    """Fix pass 1, finding 2c: a FITTING generic error keeps
     the SDK's verbatim error path (return None to re-raise); an oversized
     error representation is replaced by the bounded explicit refusal."""
     if _mcp_error_envelope_bytes(tool_name, exc) <= mcp_budget:
@@ -428,7 +428,7 @@ def _refuse_unrepresentable_mcp_ceiling(project):
 
 def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str = "combined"):
     """Wire one tool registration of the shared core onto one MCP stdio
-        server (spec §6): ``analyst`` registers the Query operations, ``authoring``
+        server: ``analyst`` registers the Query operations, ``authoring``
         the ``authoring_``-prefixed Git authoring contract, ``combined`` (the
     default, the historic facade) their union — and never source approval,
     admission or reconciliation.
@@ -441,7 +441,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     if toolset not in TOOLSETS:
         raise ValueError(f"unknown toolset {toolset!r}; this build serves {TOOLSETS}")
     from mcp.server.mcpserver import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
-        MCPServer,  # mcp 2.x (spec 0026 §3): FastMCP became mcp.server.mcpserver.MCPServer
+        MCPServer,  # mcp 2.x: FastMCP became mcp.server.mcpserver.MCPServer
     )
     from mcp.server.mcpserver.exceptions import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         ToolError,
@@ -519,7 +519,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             except Exception:
                 return query_results.DEFAULT_QUERY_LIMITS["mcp_response_bytes"]
 
-        # --- the five query/ad-hoc tools (spec 2026-09-23-0001, unchanged) ---
+        # --- the five query/ad-hoc tools (unchanged) ---
 
         @app.tool()
         @_tool_errors
@@ -606,7 +606,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             try:
                 runtime = _runtime()
                 return await runtime.get_metric(name, dimensions, range)
-            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+            except QueryResultError as exc:  # isError + refusal
                 return _refusal(exc)
             except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
@@ -696,7 +696,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             try:
                 runtime = _runtime()
                 return await runtime.query_metrics(request)
-            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+            except QueryResultError as exc:  # isError + refusal
                 return _refusal(exc)
             except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
@@ -726,7 +726,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             try:
                 runtime = _runtime()
                 return await runtime.query_detail(request)
-            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+            except QueryResultError as exc:  # isError + refusal
                 return _refusal(exc)
             except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
@@ -740,7 +740,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         async def _query_records(request: dict) -> dict | CallToolResult:
             """Select a bounded top-N of records from ONE known catalog table —
-            an Ad-hoc Record Query (spec 0014 §3): no aggregation, no admitted
+            an Ad-hoc Record Query: no aggregation, no admitted
             graph, no staging, and every answer reports governed: false with
             truthful bounded provenance. Use query_metrics for governed metric
             aggregation over the admitted graph, query_detail for an admitted
@@ -764,12 +764,12 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     positive integer, at most 1,000 and the host row ceiling).
                     Overflow policy: row/cell/byte/deadline guards refuse the
                     whole answer all-or-nothing rather than returning a partial
-                    prefix (spec 0014 §§4–5); narrow the request to fit.
+                    prefix; narrow the request to fit.
             """
             try:
                 runtime = _runtime()
                 return await runtime.query_records(request)
-            except QueryResultError as exc:  # spec 0014 §5: isError + refusal
+            except QueryResultError as exc:  # isError + refusal
                 return _refusal(exc)
             except Exception as exc:  # fitting errors keep
                 bounded = _bounded_tool_error(  # the SDK's verbatim error path; an
@@ -781,18 +781,18 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     return bounded
                 raise
 
-        # Explicit discoverable nested request schema (spec 0014 §7 V4-12): the
+        # Explicit discoverable nested request schema: the
         # docstring gives prose; this JSON Schema is what clients enumerate —
         # discovery-only. The tool keeps a plain dict parameter so transport
         # typing never coerces invalid numeric/boolean values or drops unknown
-        # keys before the core's strict validation (spec 0014 §3).
+        # keys before the core's strict validation.
         record_tool = Tool.from_function(
             _tool_errors(_query_records), name="query_records", structured_output=False
         )
         record_tool.parameters = _QUERY_RECORDS_INPUT_SCHEMA
         app._tool_manager._tools["query_records"] = record_tool  # mcp 2.2.0 manager seam
 
-        # --- the two answer-example tools (issue #21, spec 2026-09-29-0007) ---
+        # --- the two answer-example tools ---
         # Thin adapters over the runtime's transport-neutral save/search (issue
         # #19): the local JSON CLI rides the exact same runtime methods, so a
         # draft saved over one transport is immediately searchable over the other;
@@ -1008,7 +1008,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             storages: dict | None = None,
         ) -> dict:
             """Append typed source-registry entries — plus optional named S3
-            storage profile definitions (spec 0025 §5) — to the candidate's
+            storage profile definitions — to the candidate's
             registry: inert DATA, nothing is opened; the candidate cannot
             grant itself approval. Returns {proposal, revision, changed,
             source_digest, sources} naming the precise resolved locations; the
@@ -1197,7 +1197,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
     return app
 
 
-# ----------------------- opt-in HTTP transport (issue #18) ----------------
+# ----------------------- opt-in HTTP transport ----------------
 
 
 class BearerTokenGate:
@@ -1262,13 +1262,13 @@ def build_http_app(
     allowed_hosts: list[str] | None = None,
     allowed_origins: list[str] | None = None,
 ):
-    """The opt-in HTTP adapter (issue #18): the SAME MCPServer app ``build_app``
+    """The opt-in HTTP adapter: the SAME MCPServer app ``build_app``
     returned, served through the SDK's ``streamable_http_app()`` and wrapped in
     :class:`BearerTokenGate` — identical toolsets and contracts to stdio, one
     server-configured project, no second business logic.
 
     mcp 2.2.0 moved the transport seams out of mutable ``Settings`` into
-    ``streamable_http_app()`` arguments (spec 0026 §4): the body limit and the
+    ``streamable_http_app()`` arguments: the body limit and the
     DNS-rebinding protection — loopback defaults plus the launch's explicit
     Host/Origin additions, never a disabled safeguard — are passed here."""
     # Keep the existing framing/security ceiling independently of any artifact
@@ -1356,7 +1356,7 @@ def _serve_http(
 
 
 def _mcp_missing(exc: BaseException) -> bool:
-    """True only when the MCP SDK itself is absent (spec §7): the failing
+    """True only when the MCP SDK itself is absent: the failing
     import names the mcp package and ``import mcp`` genuinely fails. An
     internal mcp import failure or a missing mcp dependency surfaces itself —
     the hint never masks it."""
@@ -1505,7 +1505,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         raise
-    if args.http:  # the OPT-IN local-only route (issue #18); stdio needs no token
+    if args.http:  # the OPT-IN local-only route; stdio needs no token
         return _serve_http(
             app,
             host=args.http_host,

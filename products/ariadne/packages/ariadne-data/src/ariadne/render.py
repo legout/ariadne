@@ -1,4 +1,4 @@
-"""Own sqlglot compiler for the self-defined OSI envelope (ADR-0008, spec rev 7).
+"""Own sqlglot compiler for the self-defined OSI envelope.
 
 Renders one model of the ``version: 0.2.0.dev0`` envelope — ``datasets`` (source,
 primary_key, fields with expression + dimension/is_time) and ``metrics``
@@ -178,7 +178,7 @@ def _source_subquery(source: str, context: str) -> exp.Subquery:
     validate's audit wrapper: bare table refs get a SELECT, SELECT/WITH pass
     through parenthesized). Exactly ONE statement is accepted — a crafted source
     smuggling DDL past the parser is rejected here, before any execution
-    (no-unvalidated-execution invariant, spec §6)."""
+    (no-unvalidated-execution invariant)."""
     if re.match(r"(?is)\s*(select|with)\b", source):
         statements = sqlglot.parse(source)
     else:
@@ -390,7 +390,7 @@ def output_guard(
     max_rows: int,
 ) -> str:
     """The compiler-owned OUTPUT guard over one already completed logical
-    query (spec 0014 §4 guards 1–2, plan 0014 §2): one outer SELECT around
+    query (spec 0014 §4 guards 1–2): one outer SELECT around
     the logical aggregate/window/detail statement — never inside its inputs,
     lookback or fact branches — that (a) caps materialized rows at the row
     ceiling plus exactly one overflow indicator row via LIMIT, and (b) for

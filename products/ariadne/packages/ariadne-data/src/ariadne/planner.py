@@ -32,9 +32,9 @@ bounded plan metadata:
 Refusals are structured: :class:`PlannerError` carries a stable ``code`` plus
 candidate names; message prose is not API (spec rev 1, "Failure and
 compatibility behavior"). There is no unchecked-SQL fallback: the planner only
-assembles sqlglot ASTs it derived itself. Served operations are task 5 (#30).
+assembles sqlglot ASTs it derived itself. Served operations are task 5.
 
-Task 4 (issue #29) adds conformed business time and the post-aggregate stage:
+Task 4 adds conformed business time and the post-aggregate stage:
 
 - a declared **conformed primary business time** (time-field members carrying
   declared native grains) maps the half-open ``[start, end)`` request range
@@ -54,7 +54,7 @@ Task 4 (issue #29) adds conformed business time and the post-aggregate stage:
   or all of them for a cumulative frame) is fetched BEFORE the displayed
   range trims; ranking orders the displayed rows, so it runs after the trim.
 
-Task 3 (issue #28) adds the scoped request surface on the same contract:
+Task 3 adds the scoped request surface on the same contract:
 
 - **row filters and named segments** are parsed predicates over DECLARED fields
   (``{"field", "op", "value"}``, never SQL text), routed to each ELIGIBLE fact
@@ -152,7 +152,7 @@ _TIME_FRAME_KINDS = frozenset({"rolling", "cumulative", "prior_period", "value_w
 
 class PlannerError(ValueError):
     """Structured planning refusal; ``code`` is a stable API field, message
-    prose is not (spec rev 1, "Failure and compatibility behavior")."""
+    prose is not ("Failure and compatibility behavior")."""
 
     def __init__(self, code: str, message: str, candidates: tuple[str, ...] = ()):
         super().__init__(message)
@@ -176,7 +176,7 @@ class BranchPlan:
 
 @dataclass(frozen=True)
 class AuditRecord:
-    """One performed live check and its outcome (plan evidence, issue #27)."""
+    """One performed live check and its outcome (plan evidence)."""
 
     name: str
     outcome: str
@@ -485,7 +485,7 @@ def _parse_order_limit(request: dict) -> tuple[list[tuple[str, bool]], int | Non
 
 @dataclass(frozen=True)
 class _TimeRequest:
-    """One declared conformed primary business time request (issue #29): the
+    """One declared conformed primary business time request: the
     conformed dimension, the requested grouping grain and the half-open
     ``[start, end)`` display range (spec rev 1 "Query and result contract")."""
 
@@ -644,7 +644,7 @@ def _parse_request(request: Any) -> tuple[list[str], list[str]]:
 def _resolve_owner(graph: SemanticGraph, name: str, memo: dict[str, str | None]) -> str | None:
     """The dataset a metric compiles against: base metrics carry it on the
     node; a derived metric compiles against the single dataset owning its whole
-    dependency closure, else ``None`` (cross-fact — post-alignment, #29)."""
+    dependency closure, else ``None`` (cross-fact — post-alignment)."""
     node = graph.metrics[name]
     if not node.derived:
         return node.owner
@@ -701,7 +701,7 @@ class _DimKey:
     grain: branches group by ``DATE_TRUNC(grain, member)`` and project it under
     a per-branch output column distinct from the native field (``outputs``),
     while ``members`` keeps naming the native business time field for lineage
-    and the range predicate (issue #29)."""
+    and the range predicate."""
 
     dimension: str
     members: dict[str, str]  # branch dataset -> native field
@@ -799,7 +799,7 @@ def _resolve_field_key(
 
 @dataclass(frozen=True)
 class _PostMetric:
-    """One post-aggregate metric computation (issue #29): the metric's declared
+    """One post-aggregate metric computation: the metric's declared
     expression resolved over the ALIGNED output columns (cross-fact derived
     metrics and windowed derived metrics land here — never inside a branch),
     plus its declared window form when it has one. A windowed BASE aggregate
@@ -982,7 +982,7 @@ def _joined_branch_sql(
     population). Every field resolves against the dataset that declares it
     and each source-column reference carries that dataset's branch alias, so
     dataset scope survives the lowering. A conformed business
-    time key groups by its truncation of the native member (issue #29); the
+    time key groups by its truncation of the native member; the
     half-open fetch range (lookback already included) predicates the native
     member before aggregation."""
     node = graph.datasets[dataset]
@@ -1238,7 +1238,7 @@ def _branch_sql(
 
 def _is_bare_count(expression: str) -> bool:
     """A top-level COUNT aggregate — the one measure whose absence reads 0
-    instead of NULL (spec rev 1, "Query and result contract")."""
+    instead of NULL ("Query and result contract")."""
     try:
         tree = _parse(expression, "metric")
     except RenderError:
@@ -1248,7 +1248,7 @@ def _is_bare_count(expression: str) -> bool:
 
 @dataclass(frozen=True)
 class _PostStage:
-    """The declared post-alignment computation (issue #29): cross-fact derived
+    """The declared post-alignment computation: cross-fact derived
     metrics and windowed metrics in dependency level order, the aligned output
     projection with explicit fills, and the display trim over the conformed
     time column. Derived arithmetic and rolling, cumulative, prior-period,
@@ -1361,7 +1361,7 @@ def _final_sql(
     group keys (UNION dedupes, NULL-inclusive), and an outer SELECT aligning
     aggregate outputs with null-safe equality. No-dimension plans cross-join
     the single-row aggregates instead. Above the aligned output the declared
-    post-aggregate stage runs in order (issue #29): derived metrics level by
+    post-aggregate stage runs in order: derived metrics level by
     level (division guarded against zero/missing denominators), time-frame
     windows, the display trim, ranking windows, then the output projection
     with explicit fills. Aggregate/RESULT filters, declared ordering and the
@@ -1607,7 +1607,7 @@ def plan_query(
         )
 
     memo: dict[str, str | None] = {}
-    # Stage classification (issue #29): a metric aggregates INSIDE its fact
+    # Stage classification: a metric aggregates INSIDE its fact
     # branch unless it is a cross-fact derived metric (no single owning
     # dataset — it resolves after the branches merge) or a windowed DERIVED
     # metric (its declared window moves the computation to the post-aggregate
@@ -1923,7 +1923,7 @@ def plan_query(
     )
 
 
-# --- Detail planner (issue #28) -----------------------------------------------
+# --- Detail planner -----------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1954,7 +1954,7 @@ def _child_side_chain(graph: SemanticGraph, root: str, home: str) -> tuple[str, 
     """The relationship chain ``root -> home`` traversed BACKWARDS along edge
     directions — root on the unique-target side reaching its CHILD datasets.
     That is the fan-out side: a detail traversal onto it would multiply the
-    root grain, so the planner names it and refuses (spec rev 1, acceptance 5).
+    root grain, so the planner names it and refuses (acceptance 5).
     """
     if root == home:
         return ()
@@ -1978,7 +1978,7 @@ def plan_detail(
     request: dict,
     connection: Any = None,
 ) -> DetailPlan:
-    """Compile ONE guarded detail SELECT (issue #28): a fixed, declared root
+    """Compile ONE guarded detail SELECT: a fixed, declared root
     dataset whose fields project directly, and other fields only through
     proven ``many_to_one``/``one_to_one`` multi-hop lookup paths — LEFT joins
     onto unique targets, so the output keeps exactly ONE row per root key: no
@@ -2017,7 +2017,7 @@ def plan_detail(
     collected: dict[str, RelationshipEdge] = {}
     for field in fields:
         # the root is FIXED: its own field is the unambiguous root-grain
-        # projection — no cross-dataset equivalence is inferred (spec rev 1 §3)
+        # projection — no cross-dataset equivalence is inferred
         if field in graph.datasets[dataset].fields:
             resolved.append(DetailField(name=field, dataset=dataset, path=()))
             continue
@@ -2132,7 +2132,7 @@ def plan_detail(
         # mf-t3 review F2 (+ recheck micro-fix): a declared field whose RESOLVED
         # expression aggregates (or otherwise expands rows) would turn the detail
         # projection into an aggregate SELECT — one row instead of one row per
-        # root key. Refused before audits/execution (spec rev 1, acceptance 5).
+        # root key. Refused before audits/execution (acceptance 5).
         # Non-aggregating analytic functions (LAG/LEAD/rank family) preserve the
         # row count and stay projectable — sqlglot types them as AggFunc
         # subclasses, so the guard classifies each node instead of blanket-
@@ -2200,7 +2200,7 @@ def plan_detail(
     )
 
 
-# ------------------------- the bounded record plan (spec 0014 §3, issue #57/S2)
+# ------------------------- the bounded record plan
 
 _RECORD_REQUEST_KEYS = frozenset({"dataset", "fields", "filters", "timestamp", "order", "limit"})
 _RECORD_FILTER_KEYS = frozenset({"field", "op", "value"})
@@ -2213,7 +2213,7 @@ _RECORD_OPS = frozenset({*_COMPARISONS, "in", "is_null", "is_not_null", "regex"}
 _RECORD_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 _RECORD_TIMESTAMP_SHAPE = "\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}"
 _RECORD_TEXT_TYPES = frozenset({"VARCHAR", "CHAR", "BPCHAR", "TEXT", "STRING"})
-MAX_RECORD_LIMIT = 1000  # spec 0014 §3: the requested top-N hard ceiling
+MAX_RECORD_LIMIT = 1000  # the requested top-N hard ceiling
 DEFAULT_RECORD_LIMIT = 10
 # preferred execution-only helper names: every helper identity a plan uses
 # is ALLOCATED against the dataset's known physical column names (suffix
@@ -2253,7 +2253,7 @@ TIMESTAMP_REFUSAL_CODE = "timestamp_interpretation"
 
 @dataclass(frozen=True)
 class RecordPlan:
-    """One bounded record selection plan (spec 0014 §3): the LOGICAL top-N
+    """One bounded record selection plan: the LOGICAL top-N
     SELECT (the caller-visible provenance) plus the ACTUAL executed statement
     (the same selection wrapped in the execution-only same-execution lookahead
     indicator), the resolved catalog identity, the applied request echo and
@@ -2286,7 +2286,7 @@ def _record_column(entry: dict, name: str) -> dict | None:
 
 
 def _resolve_record_dataset(catalog: list, dataset: Any) -> dict:
-    """Resolve one exact known catalog dataset/resource (spec 0014 §3):
+    """Resolve one exact known catalog dataset/resource:
     the qualified catalog identity, the ``<source>.<table>`` display name, the
     bare table name and the canonical resource URI are the accepted forms;
     caller text never reaches a FROM clause — only a built catalog entry does.
@@ -2739,7 +2739,7 @@ def normalize_record_request(
     for field, op, value in non_temporal:
         # Q1-F3 (owner-approved IN-list unit, spec0032 §7/§10.5 stage 1,
         # native static precedence preserved): an IN predicate takes a
-        # literal list of SCALAR values (spec0014 §3). None/dict elements
+        # literal list of SCALAR values. None/dict elements
         # already refuse at filter-parse time; the nested-list element
         # formerly surfaced only in SQL predicate construction (after
         # order/limit, after Context) — this PURE scalar check owns it AFTER

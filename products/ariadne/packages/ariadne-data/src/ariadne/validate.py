@@ -1,14 +1,14 @@
-"""Deterministic validation of explicit OSI artifact directories (ticket #4; ADR-0008 since rev 7).
+"""Deterministic validation of explicit OSI artifact directories (ADR-0008 since rev 7).
 
 ``validate()`` checks every model under the supplied artifact directory's
 ``semantic_layer/models/`` through the own sqlglot compiler
-(:mod:`ariadne.render`, ADR-0008): an envelope schema check (required fields:
+(:mod:`ariadne.render`): an envelope schema check (required fields:
 version, model name, dataset name/source/fields, metric name/expression), then
 a full ``render()`` of every model — a malformed envelope or unrenderable
 construct fails with the compiler's verbatim reason. There is no datus import
 anywhere in the pipeline.
 
-Multi-fact (issue #26, spec rev 1): every artifact tree first normalizes through
+Multi-fact: every artifact tree first normalizes through
 :func:`ariadne.semantic_graph.load_graph` — both OSI layouts (one domain
 multi-dataset file, or per-source files plus ``semantic_layer/graph.yml``)
 become one validated graph, and graph failures (duplicate metrics, ambiguous
@@ -90,18 +90,18 @@ _GRAIN_ADR = "project/adr/0006-grain-governance-multi-cardinality-joins.md"
 _ADR_TOLERANCE = 1e-9
 
 # The validator's own identity in the digest-bound report: bump when the checks
-# performed change (spec rev 1, "Validation, admission, and labels").
-# 4: the K4 applicability contract (issue #44, spec 0010 §9) — semantic
+# performed change ("Validation, admission, and labels").
+# 4: the K4 applicability contract — semantic
 # checks carry explicit not_applicable outcomes with reasons on a
 # context-only candidate.
-# 7: the ODCS contract checks (issue #77/C1, spec 0028 §§2–6) — static
+# 7: the ODCS contract checks — static
 # document/binding checks in validate() with the live observation seam in
 # Git Authoring validation; pre-contract evidence cannot attest the gate.
 VALIDATOR_VERSION = "ariadne-validate/7"
 
 
 def validator_identity(performed_checks: list[str] | tuple[str, ...]) -> dict:
-    """The validator identity a Git-proposal validation record binds (plan §2):
+    """The validator identity a Git-proposal validation record binds:
     the core distribution version, the validation/compiler/execution
     implementations and a digest over that check configuration — so a report
     from an older checker configuration can never pose as current evidence."""
@@ -484,7 +484,7 @@ def _assertion_2(
 def _grain_audit(staging_dir: str | Path, con: duckdb.DuckDBPyConnection) -> list[str]:
     """ADR-0006 §5 pre-flight protocol over the artifact models: Assertion 1 (grain
     uniqueness) then Assertion 2 (parent aggregate invariance), executed on the
-    shared audit connection (spec §6)."""
+    shared audit connection."""
     datasets = _datasets(staging_dir)
     if not datasets:
         return []
@@ -493,7 +493,7 @@ def _grain_audit(staging_dir: str | Path, con: duckdb.DuckDBPyConnection) -> lis
         errors.extend(_structural_join_errors(con, model, dataset, source))
         if not pk:  # ADR-0006 rule of single declared grain: a model with no
             # declared primary_key has no verifiable grain — it must FAIL the
-            # audit, never pass silently (spec rev 6 §8.14).
+            # audit, never pass silently.
             errors.append(
                 f"grain audit failed for model '{model}' dataset '{dataset}' "
                 f"(ADR-0006 rule of single declared grain): no declared grain — "
@@ -513,7 +513,7 @@ def _grain_audit(staging_dir: str | Path, con: duckdb.DuckDBPyConnection) -> lis
 def _consumed_files(staging_dir: Path) -> list[tuple[str, Path, bytes]]:
     """Every byte the validator consumes: the model YAMLs, the optional
     ``graph.yml`` and the cited-context corpus (``context_layer/``) — the report
-    digest binds all of them (spec rev 1, "digest-bound validation report").
+    digest binds all of them ("digest-bound validation report").
     Bytes are captured at first read so the digest can only ever attest the
     bytes validation started from; drift is detected before the report."""
 
@@ -529,7 +529,7 @@ def _consumed_files(staging_dir: Path) -> list[tuple[str, Path, bytes]]:
         files.append(_read("semantic_layer/graph.yml", graph))
     contracts_dir = staging_dir / "contracts"
     if contracts_dir.is_dir():
-        # spec 0028 §3: the producer contract documents are consumed and
+        # the producer contract documents are consumed and
         # digested by validation — both suffixes of the authored grammar
         for path in sorted(p for p in contracts_dir.iterdir() if p.suffix in (".yaml", ".yml")):
             files.append(_read(f"contracts/{path.name}", path))
@@ -593,7 +593,7 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
             files.append((f"semantic_layer/models/{path.name}", path, path.read_bytes()))
     contracts_dir = staging / "contracts"
     if contracts_dir.is_dir():
-        # spec 0028 §3: contract documents/bindings are candidate bytes the
+        # contract documents/bindings are candidate bytes the
         # COMPLETE artifact digest binds, like every other authored artifact
         for path in sorted(p for p in contracts_dir.iterdir() if p.suffix in (".yaml", ".yml")):
             files.append((f"contracts/{path.name}", path, path.read_bytes()))
@@ -609,7 +609,7 @@ def candidate_scope_files(staging: str | Path) -> list[tuple[str, Path, bytes]]:
 
 
 def candidate_scope_digest(staging: str | Path) -> str:
-    """The COMPLETE artifact digest of a candidate tree (issue #36/G4): same
+    """The COMPLETE artifact digest of a candidate tree: same
     hashing scheme as the validation report, over :func:`candidate_scope_files`."""
     return _digest_files(candidate_scope_files(staging))
 
@@ -644,12 +644,12 @@ def _registry_identity(
 
 
 def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[str], list[str]]:
-    """Per-owner compilation through the single-dataset ``render()`` (ADR-0008):
+    """Per-owner compilation through the single-dataset ``render()``:
     each dataset renders with the base metrics it owns plus the derived metrics
     whose whole dependency closure stays inside that one dataset — a
     domain-layout model compiles exactly like legacy single-dataset files.
     Cross-fact derived metrics (closure spanning datasets) are dependency-checked
-    at load; compiling them is the planner's job (#27) and they are counted,
+    at load; compiling them is the planner's job and they are counted,
     never silently skipped."""
     rendered: list[tuple[str, str]] = []
     errors: list[str] = []
@@ -707,7 +707,7 @@ def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[st
             errors.extend(_schema_errors(sub))
             try:
                 rendered.append((model_name, render(sub)))
-            except RenderError as exc:  # the compiler's verbatim reason (spec §7)
+            except RenderError as exc:  # the compiler's verbatim reason
                 errors.append(f"{label} failed to compile: {exc}")
             except Exception as exc:
                 errors.append(f"{label} failed to compile: {type(exc).__name__}: {exc}")
@@ -831,10 +831,10 @@ def validate(
     *,
     registry: Registry | None = None,
 ) -> ValidationResult:
-    """Normalize (issue #26), schema-check and render OSI artifact models
+    """Normalize, schema-check and render OSI artifact models
     (ADR-0008); with an explicit source binding, additionally EXPLAIN-bind the
     rendered SQL and run the ADR-0006 §5 grain audit. Git Authoring supplies
-    the operator-approved registry (spec 0025 §4). The result carries a
+    the operator-approved registry. The result carries a
     digest-bound :class:`ValidationReport`; graph failures are structural and
     precede any SELECT compilation."""
     staging = Path(staging_dir)
@@ -849,7 +849,7 @@ def validate(
     # structural refusal (mf F8: declared intent, no inventory), and a lone
     # graph.yml without models stays the failure it always was. The static
     # contract checks run here TOO: a malformed inherited contract must not
-    # disappear behind not_applicable (spec 0028 §6).
+    # disappear behind not_applicable.
     context_only = (
         not models_dir.is_dir() and not (staging / "semantic_layer" / "graph.yml").is_file()
     )
@@ -973,7 +973,7 @@ def validate(
         unverified = [edge.name for edge in graph.conformed_dimensions if not edge.type_verified]
         if unverified:
             # absent type evidence is disclosed, never treated as established
-            # compatibility (spec rev 1 §3)
+            # compatibility
             conformance_detail = (
                 "value-type compatibility unverified for conformed dimension(s) "
                 f"{unverified}: members carry no type evidence (bare source columns)"

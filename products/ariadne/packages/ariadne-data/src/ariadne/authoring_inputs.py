@@ -1,4 +1,4 @@
-"""Bounded document evidence for Git authoring (issue #35/G3; spec 0027 §5).
+"""Bounded document evidence for Git authoring.
 
 Document reads stay inside the human-managed ``documents.roots`` and exact
 ``documents.object_store`` permissions. Original bytes remain operator-owned
@@ -24,7 +24,7 @@ from ariadne.sources import _URI_SCHEME_RE, _resolve_against
 INPUT_ROOT_REL = Path("data") / "docs"  # operator-configured input area (init scaffold)
 SEED_NOTES_REL = Path("data") / "seed_notes.md"  # optional already-approved Seed Notes
 EVIDENCE_PART_CHARS = 20_000  # one bounded page of converted text per response
-MAX_DOCUMENTS_PER_CALL = 16  # explicit aggregate bound: 16 parts ≤ 320k chars (spec §3)
+MAX_DOCUMENTS_PER_CALL = 16  # explicit aggregate bound: 16 parts ≤ 320k chars
 
 # the operator-owned
 # inspection ceilings. These are the BUILT-IN defaults; the human-managed
@@ -203,7 +203,7 @@ def effective_inspection_limits(ceilings: dict, request_limits: object) -> dict:
 
 
 def _finite_positive_int(value: object, where: str) -> None:
-    """One row/byte ceiling must be a strict positive INTEGER (spec0035 §8):
+    """One row/byte ceiling must be a strict positive INTEGER:
     a bool, float, or non-positive/non-finite value is an explicit refusal."""
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{where} must be a positive integer, got {value!r}")
@@ -273,7 +273,7 @@ def _project_documents_config(project: Path) -> tuple[list[Path], list[str]]:
     ``data/docs`` root and an empty approval list.
 
     In the Git authoring route this is read from the HOST project root's
-    working tree only (issue #35/G3): a candidate's committed ``documents:``
+    working tree only: a candidate's committed ``documents:``
     section is inert data and can never widen these permissions."""
     registry_path = project / "ariadne.yaml"
     if not registry_path.is_file():
@@ -354,7 +354,7 @@ def bytes_evidence(
     """One bounded evidence record over stable in-memory bytes: the digest AND
     the text come from the SAME snapshot (the Seed Notes discipline), so a file
     replaced mid-call can never split identity from content. Shared by the
-    Git proposal input workflow (issue #35/G3)."""
+    Git proposal input workflow."""
     return _evidence_record(
         resource,
         title,
@@ -405,7 +405,7 @@ def _fetch_object_bytes(uri: str) -> bytes:
 def _document_bytes(reference: str, project: Path) -> tuple[str, str, bytes]:
     """Locate ONE document reference inside the operator's boundary and return
     its stable identity ``(resource, title, current snapshot bytes)``: the
-    shared seam of converted evidence (spec §2–3) and submit-time citation
+    shared seam of converted evidence and submit-time citation
     verification. A URI reference must be an EXACT approved object-store URI
     (``documents.object_store``, S3 only — fetched for this read with
     server-held credentials); a local reference must resolve inside an allowed input root
@@ -443,7 +443,7 @@ def document_evidence(
     part: int = 1,
     part_chars: int = EVIDENCE_PART_CHARS,
 ) -> dict:
-    """Convert one input-area document into source-linked evidence (spec §2–3)
+    """Convert one input-area document into source-linked evidence
     with NO model: the exact resource, its sha256 digest over the original
     bytes, and one bounded part of the converted text — all from ONE stable
     snapshot, so a file replaced mid-call can never split digest from text.

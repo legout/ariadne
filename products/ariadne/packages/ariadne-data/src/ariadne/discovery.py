@@ -1,7 +1,7 @@
 """Shared artifact-only discovery: metadata, admission and native read seams.
 
 QueryRuntime reuses this path; only its execution construction renders models
-and opens sources (spec 0018 / ADR-0021).
+and opens sources.
 """
 
 import copy
@@ -22,7 +22,7 @@ from ariadne.semantic_graph import SemanticGraph, load_graph
 from ariadne.sources import Registry, implicit_registry, load_registry
 from ariadne.validate import candidate_scope_digest
 
-# Spec rev 4 §8.12: the explicit route for questions no governed metric answers.
+# the explicit route for questions no governed metric answers.
 # Shared by list_metrics' trailing hint and the unknown-metric error so both
 # name the same two operations.
 ROUTING_HINT = (
@@ -171,7 +171,7 @@ class _DiscoverySession:
             self._admission_reason = "a valid Git admission is required for public discovery"
 
     def _refuse_unsupported(self, operation):
-        # spec0032 §10.3: the capability gate consults THIS admission's
+        # the capability gate consults THIS admission's
         # recorded frozen support table (the digest-verified Bound Release
         # manifest), never the currently newest global set — legacy and
         # expanded admissions under the same build keep their respective
@@ -201,7 +201,7 @@ class _DiscoverySession:
         )
 
     def _recheck_pinned(self) -> None:
-        """Issue #37/G5: re-verify the session's bound snapshot bytes and
+        """re-verify the session's bound snapshot bytes and
         source identity on every governed answer — a hand-edited snapshot file
         or a withdrawn source approval is a staleness refusal; the runtime
         never serves mutated pinned bytes."""
@@ -232,7 +232,7 @@ class _DiscoverySession:
 
     def _admission_view(self, record: dict) -> dict:
         """The response's local admission provenance. The managed Git route
-        (issue #37/G5) reports the pinned revision/route evidence: route,
+         reports the pinned revision/route evidence: route,
         pinned commit, proposal, the human-confirmed review digest, the bound
         artifact digest and the recorded validation scope."""
         if record is self._managed:
@@ -363,7 +363,7 @@ class _DiscoverySession:
         return group
 
     async def discover(self, query: str, limit: int = 5) -> dict:
-        """Compose native reads without execution or cross-kind ranking (spec 0018)."""
+        """Compose native reads without execution or cross-kind ranking."""
         if self._managed is not None:
             self._recheck_pinned()  # global refusal, never a group availability label
         groups = {}
@@ -436,7 +436,7 @@ class _DiscoverySession:
 
     async def list_metrics(self) -> list[dict | str]:
         """Governed metrics with descriptions and available dimensions; the list
-        ends with the explicit routing hint to the ad-hoc path (spec rev 4 §8.12).
+        ends with the explicit routing hint to the ad-hoc path.
         Serves pinned snapshot bytes (the envelope metadata), so the managed
         route re-checks them first — mid-session tampering refuses here too
         (issue #37 fix pass). A context-only admitted snapshot keeps the
@@ -490,7 +490,7 @@ class _DiscoverySession:
     ) -> dict:
         """Save one explicit Example as an unadmitted native candidate —
         source-free: the managed save rides this discovery session and the
-        source builder is never constructed for authoring (spec0035 C4)."""
+        source builder is never constructed for authoring."""
         self._refuse_unsupported("save_example")
         if self._managed is None or self._project is None:
             raise ValueError("Git Example authoring requires a managed --project")
@@ -652,7 +652,7 @@ class _DiscoverySession:
         """List admitted Context metadata without opening a source.
 
         Integrated projects list the pinned scoped SDK facade's visible
-        pages (A2, spec0029 §1.3); profiled entries reuse this session's
+        pages; profiled entries reuse this session's
         already-verified native metadata for the advisory view, and no page
         body is read per row."""
         self._refuse_unsupported("list_context_pages")
@@ -680,7 +680,7 @@ class _DiscoverySession:
         """Read one exact page from the admitted Context snapshot.
 
         Integrated projects read the pinned scoped SDK facade's complete
-        canonical page (A2, spec0029 §1.3); hidden and unknown paths refuse
+        canonical page; hidden and unknown paths refuse
         identically."""
         self._refuse_unsupported("read_context_page")
         if self._source_free:
@@ -712,7 +712,7 @@ class DiscoveryRuntime:
     @classmethod
     def open_project(cls, project: str | Path) -> _DiscoverySession:
         root = Path(project).resolve()
-        # AC10/spec0035 §6: the shared retired-format gate applies to the
+        # the shared retired-format gate applies to the
         # ordinary CLI/discovery open path too — admitted and unadmitted
         # branches alike refuse before any state is read or created.
         proposals.refuse_unsupported_project(root)

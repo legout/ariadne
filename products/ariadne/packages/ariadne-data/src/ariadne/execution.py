@@ -1,8 +1,8 @@
 """DuckDB Execution: the shared connection owner for Query, profiling and
-validation (spec 2026-10-02-0009 §2 "Module ownership", ADR-0016).
+validation (spec 2026-10-02-0009 §2 "Module ownership").
 
 :class:`DuckDBExecution` owns the long-lived DuckDB session built by the shared
-source-registry builder (:mod:`ariadne.sources`, ADR-0010), its catalog, the
+source-registry builder (:mod:`ariadne.sources`), its catalog, the
 EXPLAIN bind operation, the compiled-query statement guard and result
 collection, and close. Query (:mod:`ariadne.query`), the profiler
 (:mod:`ariadne.profiler`) and the validation audit (:mod:`ariadne.validate`)
@@ -11,12 +11,12 @@ trusted callers may use ``con`` directly for their existing trusted operations
 (audit SELECTs, information_schema reads), but no external tool ever receives
 the connection (spec §6: Execution is not an ``execute_sql`` tool).
 
-The no-unvalidated-execution invariant (spec 2026-09-23-0001 §6) is unchanged:
+The no-unvalidated-execution invariant is unchanged:
 :func:`assert_single_statement` and :meth:`DuckDBExecution.bind` only ever
 receive SQL returned by a compile step (:mod:`ariadne.render` or the multi-fact
 planner) — there is no code path from tool arguments to ``duckdb.execute`` that
 bypasses the compiler, and no second compiler exists here. This module imports
-no workflow module (spec §2).
+no workflow module.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
     build_connection,  # noqa: F401 — re-export: the historical patch seam stays importable
 )
 
-# The deadline seam's clock (K3 issue #43): a module attribute so a caller's
+# The deadline seam's clock: a module attribute so a caller's
 # tests can control timeout behavior DETERMINISTICALLY (a patched clock, never
 # a wall-clock race or a hosted service).
 _deadline_clock = time.monotonic
@@ -137,7 +137,7 @@ def assert_single_statement(sql: str) -> None:
 
 
 class BoundedCollection:
-    """One compiled query's bounded collection result (spec 0014 §4):
+    """One compiled query's bounded collection result:
     the logical output columns, the collected rows as scalar-encoded dicts,
     and the overflow facts — ``row_overflow`` is True exactly when the row
     ceiling plus its one indicator row was reached; ``cell_overflow`` names
@@ -156,16 +156,16 @@ class BoundedCollection:
 
 class DuckDBExecution:
     """The concrete DuckDB execution owner: connection, catalog, bind, result
-    collection and close — moved intact from the query runtime (issue #33);
+    collection and close — moved intact from the query runtime;
     every guarded operation is the historical one, in the historical order."""
 
     def __init__(self, registry: Registry, *, budget=None, selected_assets=None) -> None:
-        """The one DuckDB session over the registry sources (ADR-0010):
+        """The one DuckDB session over the registry sources:
         :func:`ariadne.sources.build_connection` executes its deterministic
         statement plan verbatim and returns the connection plus the per-source
         catalog (cheap enumeration only — no profiling here). The call resolves
         through the :mod:`ariadne.sources` module, so the builder stays ONE
-        shared chokepoint every caller (and test canary) sees (issue #35/G3).
+        shared chokepoint every caller (and test canary) sees.
         With a K3 :class:`DeadlineBudget`, the source SETUP (extension loads,
         attaches, catalog reads) runs under the same interrupt watchdog as the
         guarded statements — an over-budget setup stops and reports the
@@ -200,8 +200,8 @@ class DuckDBExecution:
     def bind(self, sql: str) -> None:
         """EXPLAIN the compiled SQL: the plan is bound without executing it, so
         a column missing from the source surfaces here — the binder's text,
-        verbatim, nothing executed (spec §8.9). sql is always a compile step's
-        output (render() or planner), never caller text (spec §6)."""
+        verbatim, nothing executed. sql is always a compile step's
+        output (render() or planner), never caller text."""
         try:
             # nosemgrep — compiled output only (spec §6): render()/planner SQL.
             self.con.execute(f"EXPLAIN {sql}")
@@ -210,10 +210,10 @@ class DuckDBExecution:
 
     def fetch(self, sql: str) -> tuple[list[str], list[dict]]:
         """Collect one compiled query's result: sql is the compile step's
-        output and nothing else (spec §6) — returns (columns, row dicts).
+        output and nothing else — returns (columns, row dicts).
         The historical unbounded collection, kept for the trusted internal
         callers (profiling/validation); the four Query result operations use
-        :meth:`fetch_bounded` (spec 0014 §4)."""
+        :meth:`fetch_bounded`."""
         relation = self.con.sql(sql)
         columns = list(relation.columns)
         rows = [dict(zip(columns, row)) for row in relation.fetchall()]
@@ -262,7 +262,7 @@ class DuckDBExecution:
         raw: list[tuple] = []
         with budget.guard(self.con):
             # nosemgrep — the compiler-built output guard over compile-step
-            # output only (spec §6): render()/planner SQL, never caller text.
+            # output only: render()/planner SQL, never caller text.
             self.con.execute(guarded)
             remaining = limits["max_rows"] + 1
             while remaining > 0:

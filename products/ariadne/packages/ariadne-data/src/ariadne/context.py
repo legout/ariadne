@@ -16,7 +16,7 @@ computation-page reads for historical revision-1 native releases remain):
   rejected; legacy References stay readable), and the shared read-only
   :func:`resolve_term` resolves terms and exact field bindings with bounded
   alternatives, unconfirmed claims and actual citations;
-- the advisory quality view (spec 0013 §4) through the pinned typed-SDK
+- the advisory quality view through the pinned typed-SDK
   entry (:func:`data_signals_pinned`) over ONE shared disclosure assembly;
 - native technical page builders (:func:`build_native_table_page`,
   :func:`build_native_dataset_page`, the native finalize derivation) and the
@@ -25,7 +25,7 @@ computation-page reads for historical revision-1 native releases remain):
 
 Ranking, full Policy bodies, candidate labels and attestation semantics remain
 unchanged. This module guides interpretation and never computes metrics or
-admits artifacts (spec §2); it imports no workflow module.
+admits artifacts; it imports no workflow module.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ from ariadne.sources import parse_resource
 # sources[] resolution (rev 10 context field) and lifecycle bookkeeping read it.
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n(.*)\Z", re.DOTALL)
 
-# Spec 2026-09-23-0002: search matching is token-aware, not substring — a query
+# search matching is token-aware, not substring — a query
 # token is a lowercase [a-z0-9]+ run, so "order" no longer counts inside
 # "orders" and incidental substring repetition cannot crowd out real matches.
 _QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -96,7 +96,7 @@ def _load(text: str) -> tuple[dict | None, str]:
     return (yaml.safe_load(match.group(1)) or {}), match.group(2)
 
 
-# ADR-0007 bundle contract, as amended by spec 0010 §3/§9 (issue #41):
+# ADR-0007 bundle contract, as amended by spec 0010 §3/§9:
 # every content type is CHECKED by its context_layer section and frontmatter
 # ``type``; presence is APPLICABLE (a section with pages must satisfy its
 # contract; absent sections are not invented categories).
@@ -388,7 +388,7 @@ def _refresh_native_computation_page(text: str, name: str, info: dict, sanctione
 
 
 def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> str:
-    """One honest generated native Computation page (spec0035 §6): the same
+    """One honest generated native Computation page: the same
     sanctioned-SQL provenance the classic finalize pass produced, as a
     producer-native Computation profile anchored by its exact core_ref
     semantic identity. The recorded SQL fence is the metric's CURRENT
@@ -443,9 +443,9 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     return f"---\n{front}\n---\n\n{body}"
 
 
-# -------------------------- K1 (issue #41): core-owned physical schema pages
+# -------------------------- K1: core-owned physical schema pages
 
-# The core-owned sections of a generated table page (spec 0010 §4): the
+# The core-owned sections of a generated table page: the
 # physical schema block, the separately labeled observations and the schema
 # change history. Authored content — the summary and the per-column meanings
 # — lives OUTSIDE these sections and is preserved by refresh for identical
@@ -487,7 +487,7 @@ def core_body_sections(text: str) -> dict[str, str]:
     """The core-owned BODY sections of one page (``Schema``, ``Observations``,
     ``Schema history``) keyed by section heading: the section chunk from its
     heading line to the next heading, trailing blank lines aside. This is the
-    generated-facts map the proposal edit seam compares (issue #41): the
+    generated-facts map the proposal edit seam compares: the
     core-owned rendered facts an inherited generated page carries may be
     carried unchanged, never changed, dropped or extended — frontmatter or
     not. Unparseable frontmatter yields no sections (the claim seam owns that
@@ -504,7 +504,7 @@ def core_body_sections(text: str) -> dict[str, str]:
 
 
 def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict:
-    """Column-level change flags of one refresh (plan §2): added/removed
+    """Column-level change flags of one refresh: added/removed
     columns and type changes — detected by exact column identity, never
     paired into a rename guess."""
     old = {entry["column"]: entry["type"] for entry in old_schema or []}
@@ -520,7 +520,7 @@ def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict
     }
 
 
-# ----------------- C1 (issue #69): selected observed filter values (spec
+# ----------------- C1: selected observed filter values (spec
 # 0024 §3). The human owns the optional ``observed_value_columns`` selection
 # on a table page — an exact column -> catalog-type mapping that binds the
 # publication to one known field representation; the core owns the measured
@@ -530,13 +530,13 @@ def _schema_flags(old_schema: list[dict] | None, new_schema: list[dict]) -> dict
 
 OBSERVED_VALUE_COLUMNS_KEY = "observed_value_columns"
 
-# The whole-value-evidence bound (spec 0024 §3): at most 8 KiB UTF-8 for the
+# The whole-value-evidence bound: at most 8 KiB UTF-8 for the
 # COMPLETE successful ``value_evidence`` mapping, measured as compact JSON
 # with non-ASCII preserved — never a clipped literal or a partially retained
 # histogram.
 VALUE_EVIDENCE_MAX_BYTES = 8 * 1024
 
-# The supported EXACT filter-value representations (spec 0024 §3): native
+# The supported EXACT filter-value representations: native
 # text/enum labels, booleans, integers and FINITE native floating-point
 # values, exactly as the profile measured them — never trimmed, case-folded,
 # stringified nulls or numericated strings. Decimal, binary, temporal and
@@ -567,7 +567,7 @@ _VALUE_EVIDENCE_TYPES = frozenset(
 
 def _duplicate_selection_declarations(front: str) -> list[str]:
     """Duplicate ``observed_value_columns`` declarations in RAW frontmatter
-    YAML (spec 0024 §3): PyYAML collapses duplicate mapping keys last-wins, so
+    YAML: PyYAML collapses duplicate mapping keys last-wins, so
     the node tree is inspected directly — a duplicated top-level key or a
     duplicated column inside the selection is a validation error, never an
     implicit last-wins selection. Duplicate declarations of unrelated keys
@@ -603,7 +603,7 @@ def _duplicate_selection_declarations(front: str) -> list[str]:
 
 def _selection_shape_errors(selection: object) -> list[str]:
     """Shape errors of the optional authored ``observed_value_columns``
-    mapping (spec 0024 §3): exact physical column name -> selected catalog
+    mapping: exact physical column name -> selected catalog
     type, both non-empty strings. An absent or EMPTY mapping is the valid
     legacy form (no published values); a malformed declaration is a
     validation error, never an implicit selection of all columns."""
@@ -666,7 +666,7 @@ def _value_sort_key(entry: dict) -> tuple:
 
 
 def _compact_json_bytes(mapping: dict) -> int:
-    """The whole-value-evidence bound measure (spec 0024 §3): compact JSON,
+    """The whole-value-evidence bound measure: compact JSON,
     UTF-8, non-ASCII preserved, non-finite numbers refused."""
     return len(
         json.dumps(mapping, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode(
@@ -676,7 +676,7 @@ def _compact_json_bytes(mapping: dict) -> int:
 
 
 def _value_evidence(*, selection: dict, columns: list[dict], profile: dict, where: str) -> dict:
-    """Measured value evidence for the SELECTED columns only (spec 0024 §3):
+    """Measured value evidence for the SELECTED columns only:
     values/counts come from the profile's existing top_values — no new lookup,
     widened sampling, changed cardinality rule or histogram reconstruction; a
     missing histogram is ``not_in_profile``, never an empty-domain claim, and
@@ -717,7 +717,7 @@ def _value_evidence(*, selection: dict, columns: list[dict], profile: dict, wher
         if any(
             isinstance(entry["value"], float) and not math.isfinite(entry["value"]) for entry in top
         ):
-            # finite native floats only (spec 0024 §3): a non-finite value is
+            # finite native floats only: a non-finite value is
             # not an exactly representable filter literal, and never a clipped one
             evidence[column] = {"state": "unavailable", "reason": "unsupported_representation"}
             continue
@@ -764,7 +764,7 @@ def _observation_facts(
     if value_evidence:
         facts["value_evidence"] = value_evidence
     if source_binding:
-        # spec 0025 §4: the effective storage approval the measurements were
+        # the effective storage approval the measurements were
         # taken under — endpoint provenance for profile-backed sources only,
         # so profile-free pages keep their exact legacy facts/bytes.
         facts["source_binding"] = source_binding
@@ -807,7 +807,7 @@ def build_native_table_page(
     and curated meaning lives in the authored description/body and preserved
     native extras. The producer-parsed native ``observed_value_columns``
     selection is fulfilled by the real measured profile through the existing
-    selection/value-evidence validators (#83 review fix F4, spec0024 §3) —
+    selection/value-evidence validators —
     preserve-or-refuse, never a silent evidence drop. The observation
     timestamp is REUSED when the schema and the measurements are unchanged
     (identical inputs produce identical bytes). The caller parses any
@@ -1018,13 +1018,13 @@ def build_native_dataset_page(
     return f"---\n{front}---{body}", flags
 
 
-# ------------- K2 (issue #42): structured References and term resolution
+# ------------- K2: structured References and term resolution
 
 # The supported ``ariadne`` extension version of a Reference page (plan §2:
 # integer 1; an unsupported or malformed version is a contract violation,
 # never a guess).
 ARIADNE_EXTENSION_VERSION = 1
-# The reference-role discriminator of the extension (spec 0010 §5): Term
+# The reference-role discriminator of the extension: Term
 # References and Identifier Mappings are roles within References, not new
 # standalone page types; ``join``/``enum`` pages carry the same structures
 # without gaining an interpreter.
@@ -1034,11 +1034,11 @@ MAPPING_CLAIMS = ("hypothesis", "asserted")
 # Concept/representation/mapping slugs follow the safe page-name discipline:
 # a plain lowercase slug — never a path, hidden, option-shaped or wildcard.
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
-# The bounded resolution contract (plan §2): at most 20 matches per part in
+# The bounded resolution contract: at most 20 matches per part in
 # stable page/representation order, explicit truncation, part continuation.
 RESOLVE_TERM_LIMIT = 20
 # …and the SAME 64 KiB serialized-response ceiling the operator's bounded
-# inspection defaults set (plan §2): every response PART stays under this
+# inspection defaults set: every response PART stays under this
 # many serialized UTF-8 bytes on top of the count limit.
 RESOLVE_TERM_MAX_BYTES = 64 * 1024
 # Disclosure caps of one oversized match entry (the never-silent-drop path):
@@ -1062,15 +1062,15 @@ _MAPPING_KEYS = frozenset(
 )
 
 
-# --------------------- K3 (issue #43): the inspection candidate schema
+# --------------------- K3: the inspection candidate schema
 
 # The candidate is a discriminated JSON object, never an executable string
-# (spec 0010 §7, plan §2 "Inspection candidate and finite limits"): the
+# (plan §2 "Inspection candidate and finite limits"): the
 # allowlists below are exhaustive — there is no SQL, function, path or freely
 # interpreted expression field, and an unknown key is refused by name.
 CANDIDATE_FAMILIES = ("equality", "prefix", "lookup")
 CANDIDATE_SCOPE_OPS = ("eq", "in", "gte", "lt")
-# Operator-owned structural ceilings of one candidate (plan §2): four
+# Operator-owned structural ceilings of one candidate: four
 # participating assets, sixteen candidate field bindings, eight scope
 # predicates, one hundred values per in-list. Requests never raise these.
 MAX_PARTICIPATING_ASSETS = 4
@@ -1089,7 +1089,7 @@ _PAIRING_KEYS = frozenset({"left", "right"})
 _PREFIX_LOOKUP_KEYS = frozenset({"asset", "key_fields", "prefix_field"})
 _LOOKUP_KEYS = frozenset({"asset", "key_fields", "value_fields"})
 # The bounded verified receipt summary the core attaches to a Reference page
-# at finalization (K3, plan §2): credential-free counts only, never raw
+# at finalization: credential-free counts only, never raw
 # examples — and never authorable (the edit seam owns the claim key).
 _EVIDENCE_SUMMARY_KEYS = frozenset(
     {
@@ -1131,7 +1131,7 @@ def _one_resource(where: str, bindings: list[dict]) -> str:
 
 
 def validate_inspection_candidate(candidate: object) -> dict:
-    """Validate the structured inspection candidate (spec 0010 §7, plan §2)
+    """Validate the structured inspection candidate
     and return its normalized deep copy — the identity a receipt's
     ``candidate_digest`` binds and a re-declared mapping must reproduce.
     Raises ``ValueError`` naming the offending field for every malformed
@@ -1379,7 +1379,7 @@ def _lookup_asset(lookup: dict, where: str) -> tuple[dict, dict]:
 
 
 def candidate_digest(candidate: object) -> str:
-    """The normalized candidate identity digest (plan §2): family, ordered
+    """The normalized candidate identity digest: family, ordered
     fields/components, scope and pairing/lookup parameters — never observed
     results or measurement time."""
     return _canonical_digest(validate_inspection_candidate(candidate))
@@ -1420,7 +1420,7 @@ def _binding_errors(where: str, bindings: object) -> list[str]:
 
 def _reference_extension_errors(rel: str, meta: dict) -> list[str]:
     """The version-1 ``ariadne`` extension contract of one Reference page
-    (spec 0010 §5, plan §2 "Structured References, authority and freshness"):
+    (plan §2 "Structured References, authority and freshness"):
     integer version 1, a valid reference role, ordered representations with
     stable slug IDs/aliases/exact bindings/required scope, and mappings whose
     endpoints resolve within the Reference, whose claim is classified and
@@ -1818,7 +1818,7 @@ def _mapping_views(
     identity digest — declaration plus endpoint correspondence — and
     unchanged verified evidence dependencies) exists — admission of the page
     alone confirms nothing, a hypothesis is never confirmable, and a page
-    flag is never authority (spec 0010 §5, K4/issue #44). Expired evidence
+    flag is never authority. Expired evidence
     withholds stale confirmed GUIDANCE:
     a matching confirmation whose verified evidence aged past the operator
     budget surfaces as ``needs-revalidation`` with the human confirmation
@@ -1883,7 +1883,7 @@ def _mapping_views(
 
 def _assessment_now() -> datetime:
     """The internal freshness assessment clock (aware UTC now); tests patch
-    this seam, it is not a public argument (spec 0011, issue #47)."""
+    this seam, it is not a public argument."""
     return datetime.now(UTC)
 
 
@@ -1921,7 +1921,7 @@ def _freshness_view(meta: dict, now: datetime) -> dict:
 
 def _jsonable(value: object) -> object:
     """Keep disclosed evidence JSON-shaped: YAML-native date/datetime values
-    become ISO strings (spec 0011 §3), other values pass through untouched —
+    become ISO strings, other values pass through untouched —
     no response adapter has to learn a new type."""
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
@@ -1961,7 +1961,7 @@ def _optional_evidence(value: object, kind: type, absent: object) -> object:
 
 
 def _lifecycle_status(meta: dict) -> str:
-    """Conservative lifecycle disclosure (spec 0011 §4): a declared status is
+    """Conservative lifecycle disclosure: a declared status is
     preserved verbatim (Ariadne draft/review states included); an absent
     status on a readable concept page uses OKF's ``stable`` default;
     malformed lifecycle metadata and pages without concept frontmatter
@@ -1974,7 +1974,7 @@ def _lifecycle_status(meta: dict) -> str:
 
 
 def _verification_tier(meta: dict) -> str:
-    """Advisory document-verification tier (spec 0011 §4) — a claim declared
+    """Advisory document-verification tier — a claim declared
     in the page, never admission: no usable confirmation (including an empty
     list) is ``unverified``; non-human confirmations only are
     ``machine-confirmed``; a declared ``human:`` actor yields
@@ -1994,7 +1994,7 @@ def _verification_tier(meta: dict) -> str:
 
 
 def _page_view(rel: str, meta: dict, now: datetime) -> dict:
-    """One assessed page's advisory view (spec 0011 §4): bundle-relative
+    """One assessed page's advisory view: bundle-relative
     identity, lifecycle, freshness, document-verification tier and the
     AVAILABLE evidence. Optional evidence stays nullable/empty and is never
     fabricated; evidence the JSON contract cannot represent degrades to its
@@ -2012,7 +2012,7 @@ def _page_view(rel: str, meta: dict, now: datetime) -> dict:
 
 
 def _context_signals(pages: list[dict]) -> dict:
-    """The additive advisory envelope (spec 0011 §§4–5): the assessed pages
+    """The additive advisory envelope: the assessed pages
     plus one warning per concrete §5 problem — a supported expiry reached,
     an explicitly deprecated page. Absent/unknown optional expiry, generation
     or verification metadata never warns; a draft stays labeled through the
@@ -2042,7 +2042,7 @@ def _match_entry(
 ) -> dict:
     """One bounded match entry: the concept/representation identity, its exact
     bindings and required scope, the claim/confirmation status and the ACTUAL
-    page/source citations (spec 0010 §6). No transform, SQL or join authority
+    page/source citations. No transform, SQL or join authority
     exists anywhere in the entry."""
     entry = {
         "page": rel,
@@ -2122,7 +2122,7 @@ def _page_matches(
     (concept before representations, representations in declared order).
     Natural-language matching is deterministic casefolded whole-alias/phrase
     equality — a substring is never a match; a field lookup compares the EXACT
-    ``{resource, column}`` identity, never a case-folded one (spec 0010 §6)."""
+    ``{resource, column}`` identity, never a case-folded one."""
     extension = meta["ariadne"]
     representations = [
         representation
@@ -2257,7 +2257,7 @@ def resolve_term(
     confirmations: list[dict] | None = None,
     evidence_max_age_hours: float | None = None,
 ) -> dict:
-    """The shared read-only terminology resolver (spec 0010 §6, plan §2) over
+    """The shared read-only terminology resolver over
     the given context ROOTS: Query passes its pinned admitted context dir,
     Authoring its explicitly selected candidate revision. Semantics, bounds
     and confirmation handling are exactly the shared core in
@@ -2313,17 +2313,17 @@ def resolve_term_entries(
     result; at most ``limit`` matches return per part in stable
     page/representation order with explicit truncation and part continuation
     (the existing bounded-read convention), every part staying under the
-    shared 64 KiB serialized-response ceiling (plan §2): a part stops before
+    shared 64 KiB serialized-response ceiling: a part stops before
     exceeding it, and an entry too large for a whole part is disclosed with
     bounded fields and an explicit elision marker — never silently dropped
     nor overflowed. No match yields an empty match list; a malformed supported
     Reference or request fails explicitly. The resolver applies no transform,
-    rewrites no SQL and authorizes no join. ``enrich`` (spec0029 §1.5)
+    rewrites no SQL and authorizes no join. ``enrich``
     optionally decorates each match — the integrated route's version-qualified
     SDK/Bound-Release provenance — BEFORE the bounded parts are computed, so
     the whole-output ceilings always bind the enriched form.
 
-    ``confirmations`` (K4, issue #44) are the ADMITTED human confirmation
+    ``confirmations`` are the ADMITTED human confirmation
     records of the served revision's admission evidence — a mapping reports
     ``confirmed`` only while the recorded selection still binds its exact
     effective identity (declaration plus endpoint correspondence) and
@@ -2409,15 +2409,15 @@ def resolve_term_entries(
 # ---------------------------------------------- deterministic index generation
 
 
-# ------------------ advisory supplied source-quality evidence (spec 0013, #53)
+# ------------------ advisory supplied source-quality evidence
 
 # The optional authored ``ariadne_quality`` profile of a physical-table page
-# (spec 0013 §§2–3, plan 0013 §2 "Authored metadata"): one bounded,
+# (plan 0013 §2 "Authored metadata"): one bounded,
 # closed-shape declaration of SUPPLIED reports — a domain owner's/upstream
 # producer's reported claims with citations, never a core-produced
 # measurement or a new registry. The shared per-type gate validates it before
 # human admission; the pinned advisory consumer reads it. Every
-# bound below is an approved public-contract limit (plan §2), not an
+# bound below is an approved public-contract limit, not an
 # adjustable mechanical budget.
 ARIADNE_QUALITY_VERSION = 1
 QUALITY_MAX_REPORTS = 8
@@ -2911,7 +2911,7 @@ def _report_view(
     the honest ``age``/``applicability`` axes with closed ``limitations``
     codes. Age is expiry of the SUPPLIED validity only — an unexpired report
     never establishes live health, and a report OR observation time later
-    than the assessment instant leaves age unknown (plan §2). Applicability
+    than the assessment instant leaves age unknown. Applicability
     is mechanical correspondence, never a guess: a KNOWN period contradiction
     — the report's own evidence period provably disjoint from the requested
     query period, and only when the report's declared period FIELD is one the
@@ -2943,7 +2943,7 @@ def _report_view(
         limitations.append("scope_mismatch")
         applicability = "inapplicable"
     # Version correspondence needs mechanically established matching from
-    # existing source/query facts (spec §3): this runtime holds no
+    # existing source/query facts: this runtime holds no
     # dataset-version fact, so a supplied source_version is an upstream CLAIM
     # — unknown correspondence whether absent or merely supplied, never a
     # matching assessment.
@@ -2954,7 +2954,7 @@ def _report_view(
     if reported_at > now or (
         observed_at is not None and _coerce_validated_instant(observed_at) > now
     ):
-        # plan §2: a report/observation later than the assessment
+        # a report/observation later than the assessment
         # instant has unknown age — the supplied timestamps stay visible,
         # never an as-of disclosure
         limitations.append("report_time_in_future")
@@ -3016,7 +3016,7 @@ def _data_signals_state(
                         "partial" if info["elided"] else ("complete" if applicable else "unknown")
                     )
             except Exception:
-                # Advisory interpretation NEVER fails the query (spec §5): a
+                # Advisory interpretation NEVER fails the query: a
                 # later-edited unreadable declaration (e.g. a citation with a
                 # non-string id) degrades to unknown evidence with the
                 # unavailability warning — the computed result is already safe.

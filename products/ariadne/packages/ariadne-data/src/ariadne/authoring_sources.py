@@ -3,7 +3,7 @@
 "Project storage and authority" + "Authoring call contract").
 
 Source approval and artifact admission are distinct decisions: a proposed or
-committed ``ariadne.yaml`` entry NEVER grants permission to connect (spec §5).
+committed ``ariadne.yaml`` entry NEVER grants permission to connect.
 The Git route keeps registry edits in the candidate — :func:`propose_sources`
 appends validated, credential-free, registry-shaped entries to the candidate's
 ``ariadne.yaml`` through the revision-checked edit seam and returns the digest
@@ -44,7 +44,7 @@ from ariadne import authoring_inputs, execution, profiler, proposals, sources
 from ariadne.sources import Registry, Source
 
 # Operator-owned approval state, ignored via the repo-LOCAL exclude file G2
-# already maintains: outside every candidate commit, never staged (plan §2).
+# already maintains: outside every candidate commit, never staged.
 SOURCE_APPROVALS_REL = proposals.ARIADNE_STATE_DIR / "source-approvals.json"
 
 # The resolved-identity digest propose_sources returns and approve-sources
@@ -63,7 +63,7 @@ def resolved_digest(entries: object) -> str:
 
 
 def approval_digest(source_digest: str, storage_bindings: dict | None) -> str:
-    """The EFFECTIVE source identity digest (spec 0025 §4): the declared
+    """The EFFECTIVE source identity digest: the declared
     identity together with the used profiles' resolved non-secret bindings.
     A registry without named profiles equals its existing source digest, so
     old grants keep their exact key."""
@@ -79,7 +79,7 @@ def approval_digest(source_digest: str, storage_bindings: dict | None) -> str:
 
 def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
     """Resolve the CURRENT effective non-secret bindings of a resolved
-    identity from the environment (spec 0025 §4): endpoint/region variable
+    identity from the environment: endpoint/region variable
     values for used profiles, and the effective destination for postgres
     sources (the narrow repair, spec0035 §8 disposition) — no key/token
     reads, no network. S3 profile bindings keep their profile-name keys and
@@ -254,18 +254,18 @@ def propose_sources(
     storages: dict | None = None,
 ) -> dict:
     """Append validated typed source entries — plus optional named storage
-    profile definitions (spec 0025 §5) — to the candidate's registry
+    profile definitions — to the candidate's registry
     (``ariadne.yaml``) through the revision-checked edit seam and return the
     digest of the candidate's full RESOLVED identity plus its precise resolved
     locations — never opening anything (plan §2 ``propose_sources``). Entries
     and profiles are credential-free data validated by the shared registry
-    rules (ADR-0010, spec 0025 §2) — the WHOLE merged candidate is validated
+    rules — the WHOLE merged candidate is validated
     before anything is committed. A name already in the candidate registry is
     refused (append, never overwrite). New profiles append; an identical
     existing profile is reused; a conflicting replacement refuses, leaving
     the candidate untouched. An existing candidate profile may be referenced
     without resending it. No environment value, source opening or approval
-    occurs during proposal creation (spec 0025 §5).
+    occurs during proposal creation.
     ``approve_sources``/``inputs`` re-derive this digest from the committed
     blob, so any later registry change is an identity mismatch."""
     project = Path(project).resolve()
@@ -320,7 +320,7 @@ def propose_sources(
         doc["storages"] = merged_storages
     # The WHOLE merged candidate — existing entries plus the new ones plus
     # the merged storages block — validates BEFORE the revision-checked edit
-    # commits anything (spec 0025 §5).
+    # commits anything.
     sources.validate_registry_doc(doc, f"source proposal of proposal {proposal}", project)
     edited = proposals.edit_proposal(
         project,
@@ -556,7 +556,7 @@ def inputs(
     ``documents:`` section is never consulted) and the candidate's Seed Notes
     evidence from the recorded candidate revision. Bounded by the shared
     input-evidence limits; the profiling run itself is bounded by the
-    HOST-owned profiling ceilings (spec0035 §8): one total finite time budget
+    HOST-owned profiling ceilings: one total finite time budget
     across setup/sampling/statistics/FK and a complete-profile payload
     ceiling, with a request sample_rows never above the host ceiling.
     Digests are stable across calls (same bytes, same digest)."""
@@ -580,7 +580,7 @@ def inputs(
     if resolved is not None:
         assert digest is not None
         approval = _effective_grant(project, resolved, digest, proposal, revision)
-        # spec0035 §8: the HOST-owned profiling ceilings govern every
+        # the HOST-owned profiling ceilings govern every
         # agent-facing profiling run. Approval still precedes everything; the
         # request-ceiling check refuses BEFORE any source access, and the run
         # draws one total finite time budget under the complete-payload bound.

@@ -164,7 +164,7 @@ def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
 
 def _graph_citation_errors(tree: Path) -> list[str]:
     """Require each multi-fact metric to prove its governing Policies through
-    the producer-native closure (spec0035 §6, C6 cutover): the classic
+    the producer-native closure (C6 cutover): the classic
     context_layer page gate is retired — revision-2 candidates prove the
     obligation via :func:`_native_graph_policy_errors`. Old-capability
     candidates (support_revision < 2 or no authored selector) with governed
@@ -258,7 +258,7 @@ class AuthoringProject:
 
     This slice (G2) owns proposal lifecycle and complete artifact edits;
     ``validate_proposal``/``review_proposal`` are G4. Source proposals,
-    operator approval and measured inputs are G3 (issue #35), routed through
+    operator approval and measured inputs are G3, routed through
     :mod:`ariadne.authoring_sources` (``propose_sources``/``approve_sources``/
     ``inputs``) and :mod:`ariadne.authoring_inputs` (``document_evidence``).
     """
@@ -310,7 +310,7 @@ class AuthoringProject:
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
-        """Apply ONE complete native knowledge-page batch (AC4, spec0035 §2):
+        """Apply ONE complete native knowledge-page batch:
         every page is a ``{path, content}`` object addressed by its
         ``knowledge/`` identity; the whole batch validates as one candidate
         through the public native writer inside the proposal lock/revision
@@ -321,7 +321,7 @@ class AuthoringProject:
         ``{proposal, revision, changed, paths, count}``."""
         return proposals.edit_page_batch(self.project, proposal, expected_revision, pages)
 
-    # ------------------- G3 (issue #35): sources, approval, measured inputs
+    # ------------------- G3: sources, approval, measured inputs
 
     def propose_sources(
         self,
@@ -331,7 +331,7 @@ class AuthoringProject:
         storages: dict | None = None,
     ) -> dict:
         """Append validated typed source entries — plus optional named storage
-        profile definitions (spec 0025 §5) — to the candidate's registry
+        profile definitions — to the candidate's registry
         (``ariadne.yaml``) through the revision-checked edit seam and return
         ``{proposal, revision, changed, source_digest, sources}`` — the digest
         of the candidate's full RESOLVED identity (paths resolved against the
@@ -375,7 +375,7 @@ class AuthoringProject:
             expected_revision=expected_revision,
         )
 
-    # ----------------------- G4 (issue #36): validate and review the candidate
+    # ----------------------- G4: validate and review the candidate
 
     def validate_proposal(self, proposal: str, expected_revision: str) -> dict:
         """Validate the proposal's effective candidate at its EXACT final
@@ -395,7 +395,7 @@ class AuthoringProject:
         a review digest binding the exact reviewed identity."""
         return review_proposal(self.project, proposal, part=part)
 
-    # ------------- K1 (issue #41): explicit physical schema refresh
+    # ------------- K1: explicit physical schema refresh
 
     def refresh_schema(
         self, proposal: str, expected_revision: str, assets: list[dict] | tuple[dict, ...]
@@ -418,7 +418,7 @@ class AuthoringProject:
     def resolve_term(self, proposal: str, request: str | dict, *, part: int = 1) -> dict:
         """Resolve one shared business term or exact ``{resource, column}``
         field lookup against an EXPLICITLY selected proposal's current
-        candidate revision (plan §2 ``resolve_term`` row, spec 0010 §6):
+        candidate revision (plan §2 ``resolve_term`` row):
         read-only — the entries come from the producer's PUBLIC candidate
         parse of the exact committed revision (never a mutable worktree and
         never a Core-side KB YAML parse, spec0035 §2/ADR0029), and the
@@ -454,7 +454,7 @@ class AuthoringProject:
         )
         return result
 
-    # --------------- K3 (issue #43): bounded mapping inspection + receipts
+    # --------------- K3: bounded mapping inspection + receipts
 
     def inspect_mapping(
         self, proposal: str, expected_revision: str, candidate: object, limits: object = None
@@ -477,7 +477,7 @@ class AuthoringProject:
         return inspect_mapping(self.project, proposal, expected_revision, candidate, limits=limits)
 
 
-# ------------------------------------- slice 5 (issue #36/G4): validation/review
+# ------------------------------------- slice 5: validation/review
 
 # The finalize commit's fixed message (the only commits validation itself
 # creates): deterministic generated artifacts only, never a review decoration.
@@ -531,7 +531,7 @@ def _verified_citations(tree: Path, source_names: set[str]) -> tuple[list[dict],
             page_text = page.read_text(encoding="utf-8")
             parsed = _kb_reference_from_text(page_text, rel_kb)
             if parsed is None:
-                # #83 (spec0032 §3/§5): EVERY captured technical profile —
+                # EVERY captured technical profile —
                 # hidden or unreferenced — enters the same citation gate for
                 # its identity-bearing catalog resources: the whole captured
                 # KB is validated at admission, and a technical page binding
@@ -558,7 +558,7 @@ def _verified_citations(tree: Path, source_names: set[str]) -> tuple[list[dict],
                         "kind": "catalog_asset",
                         "source": parts[0],
                     }
-                # #83 review fix F2: the RELATIVE native provenance citations
+                # the RELATIVE native provenance citations
                 # (bundle paths) resolve inside the integrated candidate's
                 # knowledge subtree or refuse — a same-path legacy
                 # context_layer page is never a fallback, and containment is
@@ -781,7 +781,7 @@ def _contract_evidence_eligible(
     project: Path, tree: Path, stored: dict, approval: dict | None
 ) -> bool:
     """Whether the stored validation's contract evidence is still ELIGIBLE as
-    the unchanged candidate's reusable passing validation (spec 0028 §6): an
+    the unchanged candidate's reusable passing validation: an
     expired observation must not return as a reusable pass — the full
     validation re-observes it under the current age budget instead."""
     contracts = stored.get("contracts") or {}
@@ -838,7 +838,7 @@ def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> lis
 
 def validate_proposal(project: str | Path, proposal: str, expected_revision: str) -> dict:
     """Validate the proposal's effective candidate at its EXACT final revision
-    (plan §2 ``validate_proposal``, spec §4): finalize the deterministic
+    (plan §2 ``validate_proposal``): finalize the deterministic
     generated artifacts, commit any generated changes, materialize the final
     commit's candidate scope, and run the complete existing check stack over
     it — :func:`ariadne.validate` schema/compile/bind/grain/relationship
@@ -921,7 +921,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
                 "this needs human resolution; no agent validation resets the repair "
                 "state (spec §4); nothing was written"
             )
-        # Finalize BEFORE validation (spec §4): deterministic generated content
+        # Finalize BEFORE validation: deterministic generated content
         # (no wall-clock restamp), committed as the exact final candidate.
         proposals.refuse_untracked_scope(project, record)
         # verify every structured mapping's cited receipts
@@ -1039,7 +1039,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             # K3 ceilings, explicitly extended to contract inspection).
             # Still-applicable retained observations are reused with their
             # ORIGINAL observation time; expired or dependency-mismatched
-            # evidence is re-observed, never restamped (spec 0028 §6).
+            # evidence is re-observed, never restamped.
             contract_limits = project_inspection_limits(project)
             contract_evidence, contract_errors = contract_inspection.observe_contracts(
                 project,
@@ -1225,7 +1225,7 @@ def validate_proposal(project: str | Path, proposal: str, expected_revision: str
             "validated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         # The proposal record's persistent repair/validation state and the
-        # verified citation identities (plan §2) — never reset by a new commit.
+        # verified citation identities — never reset by a new commit.
         # the retained per-binding contract observations (for reuse with
         # their ORIGINAL time while dependencies and age allow, spec 0028 §6).
         record["repair"] = repair
@@ -1338,11 +1338,11 @@ def review_proposal(project: str | Path, proposal: str, *, part: int = 1) -> dic
         return _review_candidate(project, proposal, part=part, record=record)
 
 
-# ------------------------------------ K4 (issue #44): asserted mappings surface
+# ------------------------------------ K4: asserted mappings surface
 
 
 def _kb_reference_view(full_meta: object) -> dict | None:
-    """Adapt one integrated KB Reference page (spec0029 §1.5) to the shared
+    """Adapt one integrated KB Reference page to the shared
     structured Reference input: the COMPLETE producer-validated native
     mapping rides through — title, description, aliases, sources, status,
     stale_after and every authored advisory field keep their native
@@ -1485,7 +1485,7 @@ def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
 def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
     """Every structured Reference page of one materialized candidate tree:
     (KB-relative page path, frontmatter meta, the ariadne extension).
-    Integrated candidates (spec0029 §1.5) carry their ONE maintained curated
+    Integrated candidates carry their ONE maintained curated
     source in the knowledge/ subtree. C6: the classic context_layer reference
     walk is retired with the classic write routes — only the native subtree
     is read, and a legacy context_layer copy is never a fallback source."""
@@ -1503,12 +1503,12 @@ def _reference_mapping_pages(tree: Path) -> list[tuple[str, dict, dict]]:
 
 
 def _asserted_claim_errors(tree: Path) -> list[str]:
-    """Conflicting asserted claims refuse validation (spec 0010 §5/§9, K4):
+    """Conflicting asserted claims refuse validation:
     two ASSERTED mappings of one Reference over the same relationship — the
     same endpoints and family — with different assertion digests are two
     disagreeing confirmed-usage candidates, not alternatives a human confirms
     one by one. Different or conflicting declarations stay separate labeled
-    HYPOTHESES (plan §2); only an unambiguous asserted claim reaches human
+    HYPOTHESES; only an unambiguous asserted claim reaches human
     confirmation."""
     errors: list[str] = []
     for rel, _meta, extension in _reference_mapping_pages(tree):
@@ -1539,7 +1539,7 @@ def _mapping_assertions(tree: Path) -> list[dict]:
     declaration, assertion digest, dependencies/evidence and confirmation
     eligibility — the exact surface a human selects from with
     ``--confirm-mapping <reference-slug>:<mapping-id>``. Reading this list is
-    NEVER confirmation (spec 0010 §5): a hypothesis is listed for the review
+    NEVER confirmation: a hypothesis is listed for the review
     but never selectable, and only an asserted mapping is confirmable — never
     one whose verified receipts show counterevidence (K4 fix pass, finding 1:
     an asserted claim contradicted by its own cited evidence is
@@ -1625,7 +1625,7 @@ def _mapping_assertions(tree: Path) -> list[dict]:
 def _review_candidate(
     project: Path, proposal: str, *, part: int = 1, record: dict | None = None
 ) -> dict:
-    """The lock-free review core (issue #37/G5): exactly the envelope
+    """The lock-free review core: exactly the envelope
     :func:`review_proposal` returns, computed for one loaded record — the
     caller holds the proposal lock (the public review takes it; admission
     already holds the project+proposal locks when it re-derives the review
@@ -1671,7 +1671,7 @@ def _review_candidate(
             if report.get("source_digest") != source_digest:
                 stale_reasons.append("the resolved source identity changed since validation")
             if approval["state"] == "unresolved":
-                # spec 0025 §4: a required endpoint/region value is unset — the
+                # a required endpoint/region value is unset — the
                 # effective binding cannot be resolved offline, so prior
                 # validation is never presented as current (and review never
                 # crashes on the missing digest key)
@@ -1774,7 +1774,7 @@ def _review_candidate(
         }
 
 
-# ------------------------ K1 (issue #41): the explicit schema refresh seam
+# ------------------------ K1: the explicit schema refresh seam
 
 # One catalog asset of a refresh request: the COMPLETE identity tuple
 # {source, catalog, schema, table} with exact case-sensitive identifiers
@@ -1823,7 +1823,7 @@ def _declared_columns(con, catalog: list[dict]) -> dict[tuple[str, str, str], di
             declared.setdefault((catalog_name, schema, table), {})[column] = {
                 # the DECLARED nullability, verbatim: YES -> nullable, NO ->
                 # NOT NULL; anything else the source does not declare stays
-                # unknown (None), never a manufactured constraint (spec 0010 §4)
+                # unknown (None), never a manufactured constraint
                 "nullable": (
                     True if is_nullable == "YES" else False if is_nullable == "NO" else None
                 ),
@@ -2159,7 +2159,7 @@ def refresh_schema(
     approval = authoring_sources._effective_grant(project, resolved, digest, proposal, current)
     storage_bindings = approval.get("storage_bindings") or {}
     binding_digest = approval.get("approval_digest") if storage_bindings else None
-    # spec0035 §8: refresh's profiling work draws the HOST-owned profiling
+    # refresh's profiling work draws the HOST-owned profiling
     # ceilings — one total finite budget across setup/statistics/FK and a
     # complete-profile payload bound — so an expired budget or oversize
     # profile refuses BEFORE any refreshed fact is written. The later page
@@ -2174,7 +2174,7 @@ def refresh_schema(
     )
     try:
         con, catalog = owned.con, owned.catalog
-        # spec0035 §8: declared catalog metadata SQL is measurement work —
+        # declared catalog metadata SQL is measurement work —
         # it runs under the SAME shared profiling budget guard (never a new
         # or reset deadline), so an attached catalog's information_schema
         # read cannot outlive the operator's time ceiling unwatched
@@ -2205,7 +2205,7 @@ def refresh_schema(
                 profiles[table["resource"]] = table
     finally:
         owned.close()
-    # spec0035 §8: the COMPLETE measured profile value must fit the operator
+    # the COMPLETE measured profile value must fit the operator
     # payload ceiling before any page edit — no generated fact is persisted
     # from over-bound or expired measurements.
     profiling_payload.check_complete(profiles)
@@ -2225,7 +2225,7 @@ def refresh_schema(
             f"{missing[0]} — available assets: {', '.join(available) or 'none'}; "
             "nothing was written"
         )
-    # #83 (spec0032 §§5–6): the ONE refresh route regenerates the core-owned
+    # the ONE refresh route regenerates the core-owned
     # schema facts as PRODUCER-NATIVE technical profile pages of the
     # knowledge/ subtree (C6: the classic context_layer page-build route is
     # retired; old-capability candidates refused above, before any access).
@@ -2242,7 +2242,7 @@ def refresh_schema(
     )
 
 
-# ------------------- K3 (issue #43): bounded mapping inspection + receipts
+# ------------------- K3: bounded mapping inspection + receipts
 
 # The core-controlled measured-evidence area (plan §2: receipts are retained
 # in the project's evidence area with atomic persistence — operator-owned
@@ -2279,7 +2279,7 @@ def store_receipt(project: Path, proposal: str, receipt: dict) -> Path:
 def load_receipt(project: Path, proposal: str, receipt_id: str) -> dict:
     """Load and INTEGRITY-CHECK one retained receipt: a missing, unreadable,
     tampered or malformed record is an explicit error — never a silent pass
-    (an allowlisted id or count proves nothing, spec 0010 §7)."""
+    (an allowlisted id or count proves nothing)."""
     path = _receipt_path(project, proposal, receipt_id)
     entry = proposals._lstat(path)
     if entry is None:
@@ -2342,7 +2342,7 @@ def inspection_sample_statement(
     table: dict, columns: list[str], scope: list[dict], limit: int
 ) -> tuple[str, list]:
     """The bounded, deterministic materialized-sample statement of one
-    participating asset (plan §2): exactly the candidate's bound columns are
+    participating asset: exactly the candidate's bound columns are
     projected (no all-column scan), identifiers are quoted catalog-validated
     names, scope values ride as parameters, and the sample is ordered by the
     bound columns so repeated inspections of unchanged inputs measure the
@@ -2419,7 +2419,7 @@ def _column_type(table: dict, column: str) -> str:
 
 
 def _check_family_types(candidate: dict, tables: dict) -> None:
-    """The lossy-coercion refusal (plan §2): equality compares compatible
+    """The lossy-coercion refusal: equality compares compatible
     types position-by-position; prefix components and the target are
     string-typed; lookup keys/values compare compatibly with the fact side.
     A string beside a numeric column is NEVER silently coerced."""
@@ -2467,7 +2467,7 @@ def _check_family_types(candidate: dict, tables: dict) -> None:
 def _collision_view(values: list[tuple]) -> dict:
     """Duplicate tuple values among the tested rows: how many values repeat
     and the highest multiplicity — the fan-out evidence that a bare join on
-    the compared value would multiply rows (AC5)."""
+    the compared value would multiply rows."""
     counts = Counter(values)
     repeated = [count for count in counts.values() if count > 1]
     return {
@@ -3286,7 +3286,7 @@ def _verify_receipt(
     storage_bindings: dict | None = None,
 ) -> tuple[dict | None, str | None]:
     """Verify ONE cited receipt against the project's evidence records and the
-    current dependency identities (spec 0010 §§7–8): existence, integrity, the
+    current dependency identities: existence, integrity, the
     normalized DECLARATION the receipt measured, the ENDPOINT correspondence
     of the mapping's representations (K3 fix pass, finding 5: the measured
     left/right bindings and scope must correspond to the declared endpoints —
@@ -3465,7 +3465,7 @@ EVIDENCE_COMMIT_MESSAGE = "ariadne: attach verified mapping evidence"
 
 def _kb_evidence_page(page: dict, desired: dict | None) -> str:
     """Rewrite one integrated KB Reference page's Core-attached evidence slot
-    through the producer's public frontmatter parse (spec0029 §1.5): the
+    through the producer's public frontmatter parse: the
     curated body bytes and every other frontmatter key are preserved, only
     ``ariadne_profile.native.ariadne_evidence`` changes. The resulting page
     is applied by the caller through the producer's checked worktree write —
@@ -3523,7 +3523,7 @@ def _finalize_mapping_evidence(
     source_digest: str | None,
     approval: dict | None,
 ) -> tuple[str, list[str]]:
-    """The K3 finalization step (plan §2): verify every structured mapping's
+    """The K3 finalization step: verify every structured mapping's
     cited receipts against the project's evidence records and the current
     dependency identities, attach the bounded verified summaries to the
     Reference pages as the core-owned ``ariadne_evidence`` frontmatter block,
@@ -3652,7 +3652,7 @@ def _finalize_mapping_evidence(
             # the KB evidence attach goes through the producer's public parse
             # and checked worktree write contract: the curated body, profile
             # and Entity are preserved, only the Core-attached
-            # ariadne_evidence slot changes (spec0029 §1.5)
+            # ariadne_evidence slot changes
             from lumio_wiki.git_authoring import (  # pyright: ignore[reportMissingImports] — optional SDK
                 revise_pages_in_worktree,
             )

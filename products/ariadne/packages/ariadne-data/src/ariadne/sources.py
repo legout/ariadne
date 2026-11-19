@@ -54,10 +54,10 @@ import yaml
 # Slug: lowercase, starts with a letter; used verbatim as catalog/schema name.
 NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# An environment-VARIABLE NAME (a storage-profile reference, spec 0025 §2):
+# An environment-VARIABLE NAME (a storage-profile reference):
 # identifiers only — never a substitution, connection string or assignment.
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# One literal S3 scope prefix (spec 0025 §2): ``s3://bucket/`` or a
+# One literal S3 scope prefix: ``s3://bucket/`` or a
 # directory-prefix URI, always slash-terminated; no globs, credentials,
 # query, fragment or empty/dot segments ("."/".." are refused separately).
 S3_SCOPE_RE = re.compile(r"s3://[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)*/\Z")
@@ -65,7 +65,7 @@ S3_SCOPE_RE = re.compile(r"s3://[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9._-]+)*/
 # Strict entry schema: no freestyle keys — a typo'd or smuggled key (dsn:,
 # connection_string:, ...) must fail loudly instead of passing silently.
 SOURCE_KEYS = frozenset({"name", "type", "path", "connection_env", "table", "read_only", "storage"})
-# Storage-profile fields (spec 0025 §2): strict, credential-free declarations.
+# Storage-profile fields: strict, credential-free declarations.
 PROFILE_KEYS = frozenset(
     {
         "type",
@@ -79,7 +79,7 @@ PROFILE_KEYS = frozenset(
     }
 )
 PROFILE_REQUIRED_ENV = ("access_key_id_env", "secret_access_key_env", "endpoint_url_env")
-# A connection string is a credential (ADR-0010): rejected under ANY key.
+# A connection string is a credential: rejected under ANY key.
 DSN_RE = re.compile(r"postgres(?:ql)?://")
 # URI-scheme prefix (ducklake:, https://, s3://, ...): never cwd-relative.
 _URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
@@ -122,7 +122,7 @@ class Source:
     connection_env: str | None = None
     table: str | None = None
     read_only: bool = True
-    storage: str | None = None  # a named storage-profile reference (spec 0025)
+    storage: str | None = None  # a named storage-profile reference
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ class StorageBinding:
     scopes: tuple[str, ...]
 
     def record(self) -> dict:
-        """The credential-free ``storage_bindings`` entry (spec 0025 §4)."""
+        """The credential-free ``storage_bindings`` entry."""
         return {
             "endpoint": self.endpoint,
             "region": self.region,
@@ -221,11 +221,11 @@ class Registry:
 
     ``path`` is ``None`` for the implicit ``--db`` shorthand (single sqlite
     attach under the authoring contract's catalog name ``demo``).
-    ``storages`` carries the validated named profile declarations (spec 0025);
+    ``storages`` carries the validated named profile declarations;
     ``bindings`` optionally FREEZES the resolved non-secret effective identity
     of the used profiles (an approval's pinned binding) so the connection
     opens exactly the checked endpoint instead of re-resolving the
-    environment after the check (spec 0025 §4)."""
+    environment after the check."""
 
     sources: list[Source]
     path: str | None = None
@@ -273,7 +273,7 @@ def validate_entries(
 ) -> list[Source]:
     """Validate one raw ``sources:`` list with the load_registry rules
     (ADR-0010: slugs, known types, inline-credential rejection, duplicates;
-    spec 0025 §2: optional ``storage:`` references into ``storages``) and
+    optional ``storage:`` references into ``storages``) and
     resolve relative paths against ``base`` — the shared entry validation
     behind :func:`load_registry` and the Git authoring source proposals
     (issue #35/G3, which resolve against the configured data-project root
@@ -298,7 +298,7 @@ def validate_entries(
 
 def validate_storages(raw: object, where: str | Path) -> dict[str, StorageProfile]:
     """Validate one raw ``storages:`` mapping of named S3 storage-profile
-    declarations (spec 0025 §2): strict keys, environment-variable NAMES,
+    declarations: strict keys, environment-variable NAMES,
     literal slash-terminated scopes — no values are read and nothing opens.
     Returns the validated profiles keyed by name."""
     if raw is None or raw == {}:
@@ -391,10 +391,10 @@ def validate_registry_doc(
 
 
 def load_registry(path: str | Path = DEFAULT_PATH) -> Registry:
-    """Parse and validate a source registry (ADR-0010). Raises ``ValueError``
+    """Parse and validate a source registry. Raises ``ValueError``
     naming the offending entry for: a non-slug name, an unknown type, a missing
     ``path`` (file/attach types) or ``connection_env`` (postgres), an inline
-    connection string or credentialed URL (ADR-0010), a glob without an
+    connection string or credentialed URL, a glob without an
     explicit ``table:``, or duplicate source names."""
     registry_path = Path(path)
     try:
@@ -434,7 +434,7 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
         raise ValueError(
             f"{where}: unknown type {source_type!r}; expected one of {list(SOURCE_TYPES)}"
         )
-    if "connection" in entry:  # ADR-0010: credentials never live in the registry
+    if "connection" in entry:  # credentials never live in the registry
         raise ValueError(
             f"{where}: inline connection strings are rejected (ADR-0010): "
             "reference an environment variable with connection_env: <NAME>"
@@ -503,7 +503,7 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
 
 
 def _storage_reference(where: str, entry: dict) -> str | None:
-    """The optional ``storage:`` reference (spec 0025 §2): a profile NAME —
+    """The optional ``storage:`` reference: a profile NAME —
     resolution and per-type eligibility are the whole-registry check's job."""
     value = entry.get("storage")
     if value is None:
@@ -590,7 +590,7 @@ def _validate_storage_usage(
 
 
 def canonical_endpoint(raw: str, profile: str = "") -> tuple[str, str, bool]:
-    """Validate and canonicalize one endpoint URL (spec 0025 §3): absolute
+    """Validate and canonicalize one endpoint URL: absolute
     ``http://``/``https://`` with a host and optional valid port, empty/root
     path only — userinfo, query, fragment and non-root base paths refuse.
     Returns ``(canonical_url, host_port, use_ssl)`` with the scheme/host
@@ -626,7 +626,7 @@ def canonical_endpoint(raw: str, profile: str = "") -> tuple[str, str, bool]:
 
 def resolve_binding(profile: StorageProfile) -> StorageBinding:
     """Resolve one used profile's NON-SECRET effective identity from the
-    executing process (spec 0025 §§3–4): the endpoint URL and optional region
+    executing process: the endpoint URL and optional region
     variable values only — never a key/token read, never a network call. A
     declared-but-unset region variable refuses; an omitted one uses the
     explicit ``us-east-1`` without inheriting another profile or a global."""
@@ -858,7 +858,7 @@ def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict
     destination keeps this record — and therefore the approval identity —
     unchanged; any target-selection change (host, hostaddr, ordered multi-host
     order, port, dbname, user) produces a different record and needs its own
-    source approval (spec 0025 §4)."""
+    source approval."""
     if os.environ.get("PGSERVICE"):
         # an active PGSERVICE selects settings through the service file even
         # when the connection string never names service= — the target cannot
@@ -919,7 +919,7 @@ def postgres_binding(source: str, dsn: str, variable: str | None = None) -> dict
 
 def used_profiles(registry: Registry) -> dict[str, StorageProfile]:
     """The profiles actually referenced by the registry's sources (spec 0025
-    §2: unused definitions are never resolved or installed)."""
+    unused definitions are never resolved or installed)."""
     storages = registry.storages or {}
     used: dict[str, StorageProfile] = {}
     for src in registry.sources:
@@ -941,13 +941,13 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
     order), then the per-source ATTACH/CREATE SCHEMA/CREATE VIEW DDL. This is
     the statement-construction test surface (ADR-0010 tiering): the builder
     adds nothing beyond executing these strings in order. Storage-profile
-    secrets (spec 0025 §3) are deliberately NOT part of this plan: they are
+    secrets are deliberately NOT part of this plan: they are
     created by :func:`build_connection` only, so public plans stay
     credential-free extension/source-DDL text."""
     loads: list[str] = []
     statements: list[str] = []
     if used_profiles(registry):
-        # spec 0025 §3: a used profile means S3 object access (scopes are
+        # a used profile means S3 object access (scopes are
         # s3:// — including remote backing files behind a LOCAL metadata or
         # catalog path), so httpfs loads before any source binding.
         _want(loads, "httpfs")
@@ -958,9 +958,9 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
                 f"ATTACH '{_noquotes(_path(src))}' AS {src.name} (TYPE SQLITE{suffix})"
             )
         elif src.type == "duckdb":
-            # Native attach (spec 0022): no scanner, and remote catalogs are
+            # Native attach: no scanner, and remote catalogs are
             # READ_ONLY only — a writable remote build refuses before any
-            # connection is opened, never a fallback (spec 0022 §2).
+            # connection is opened, never a fallback.
             if _is_remote(src.path) and not (src.read_only and read_only):
                 raise ValueError(
                     f"source {src.name!r}: remote duckdb catalogs attach READ_ONLY "
@@ -1042,7 +1042,7 @@ def build_connection(
     deadline: float | None = None,
     selected_assets: list[dict] | None = None,
 ) -> tuple[duckdb.DuckDBPyConnection, list[dict]]:
-    """The one DuckDB session for all commands (ADR-0010): executes
+    """The one DuckDB session for all commands: executes
     :func:`plan` verbatim and returns ``(connection, catalog)``. The catalog
     lists, per source, its tables with columns where cheaply enumerable —
     ``information_schema`` for attaches, the same catalog for file views.
@@ -1092,7 +1092,7 @@ def build_connection(
         for extension in loads:
             # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query  # noqa: E501
             con.execute(f"LOAD {extension}")
-        # spec 0025 §3: temporary explicit-provider secrets for the USED
+        # temporary explicit-provider secrets for the USED
         # profiles are created in this shared builder — before any source
         # ATTACH/view binding, once per profile, never in public plans. The
         # redaction list is filled IN PLACE, before any secret SQL executes,
@@ -1169,7 +1169,7 @@ def _install_storage_secrets(
 ) -> list[str]:
     """Create one temporary ``TYPE S3, PROVIDER CONFIG`` secret per USED
     storage profile, inside this shared connection, before any source
-    binding (spec 0025 §3). Endpoint/region come from the registry's FROZEN
+    binding. Endpoint/region come from the registry's FROZEN
     binding when the registry carries one (an approval's pinned effective
     identity) and from the environment otherwise; key/token values always
     come from the environment. Every secret VALUE is appended to
@@ -1221,7 +1221,7 @@ def _install_storage_secrets(
 def _refuse_shadowed_scopes(
     con: duckdb.DuckDBPyConnection, created: set[str], used: dict[str, StorageProfile]
 ) -> None:
-    """The effective-binding invariant (spec 0025 §3): after installing the
+    """The effective-binding invariant: after installing the
     named profile secrets, verify the session's actual secret selection —
     another secret (a persistent/ambient one) whose scope equals or is MORE
     SPECIFIC than one of ours would win DuckDB's longest-prefix match and
@@ -1291,7 +1291,7 @@ def _is_remote(path: str | None) -> bool:
 
 
 def _resolve_dsn(src: Source) -> str:
-    """Resolve ``connection_env`` at runtime (ADR-0010); missing -> actionable
+    """Resolve ``connection_env`` at runtime; missing -> actionable
     error naming the variable."""
     if not src.connection_env:
         raise ValueError(f"source {src.name!r}: type postgres requires connection_env")
@@ -1403,7 +1403,7 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source, *, selected_asse
     a file view's ``catalog`` is ``None``, not DuckDB's temp in-memory catalog
     name) so consumers need never parse display names.
 
-    Selection is by exact inventory identity (spec 0022 §3): an attached
+    Selection is by exact inventory identity: an attached
     source enumerates ONLY its own catalog (the attach alias), and a file-view
     source ONLY its actual in-memory catalog/schema pair — a native schema
     that merely shares another source's name never bleeds into that

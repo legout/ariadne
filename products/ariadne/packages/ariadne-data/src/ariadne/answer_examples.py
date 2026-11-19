@@ -7,7 +7,7 @@ that answered it and a bounded historical answer — a labeled reference for
 finding and checking a method, never a governed definition, a Policy or an
 answer cache. This module is the transport-neutral core the runtime (and
 the optional MCP adapter, issue #21) shares; the operator review command
-(issue #20) is deliberately not here.
+ is deliberately not here.
 
 - ``save_candidate_example`` validates one explicit submission, derives a
   bounded historical answer excerpt and full-result digest, verifies cited
@@ -44,7 +44,7 @@ from ariadne.authoring_inputs import _sha256_hex
 EXAMPLES_DIR = "answer-examples"  # the native knowledge/ category slug of one Example
 MAX_EXCERPT_BYTES = 8 * 1024  # spec: the timestamped answer excerpt bound
 MAX_RECORD_BYTES = 64 * 1024  # spec: the whole encoded record bound
-# spec 2026-10-13-0023 §2: the fixed provenance descriptor — the submitted
+# the fixed provenance descriptor — the submitted
 # result envelope's sql field, not a verified execution origin.
 SQL_PROVENANCE_SOURCE = "submitted_result.sql"
 # The only methods an example may record (spec: get_metric/define_metric
@@ -62,7 +62,7 @@ _OPERATION_ARGUMENTS = {
 # (spec: local identity is self-declared, never authenticated; review evidence
 # is written only by the operator review command, issue #20). sql_provenance
 # is likewise system-derived from the validated result envelope — a caller
-# may not supply its own (spec 0023 §2).
+# may not supply its own.
 _RESERVED_FIELDS = frozenset(
     {"id", "status", "verified", "review", "stale", "superseded", "attested", "sql_provenance"}
 )
@@ -93,7 +93,7 @@ def _validate_result(result: Any) -> None:
         raise ValueError("save-example requires the observed Ariadne 'result' envelope")
     if not isinstance(result.get("metric"), str) or not result["metric"]:
         raise ValueError("'result.metric' must be a non-empty string")
-    # spec 0023 §2: valid retained SQL text is a non-whitespace string; the
+    # valid retained SQL text is a non-whitespace string; the
     # retained text itself is never normalized.
     if not isinstance(result.get("sql"), str) or not result["sql"].strip():
         raise ValueError("'result.sql' must be a non-whitespace string (the retained SQL)")
@@ -157,7 +157,7 @@ def _normalize_submission(submission: Any) -> dict:
             raise ValueError("'project' must be a non-empty string")
         record["project"] = project
     _validate_result(submission.get("result"))
-    # spec 0023 §2: provenance is DERIVED from the validated result envelope
+    # provenance is DERIVED from the validated result envelope
     # only — exact text, no trimming/normalization; the fixed descriptor never
     # claims a verified execution origin.
     record["sql_provenance"] = {
@@ -397,7 +397,7 @@ def save_candidate_example(
 
 
 def validated_sql_provenance(meta: dict, label: str) -> dict | None:
-    """The stored sql_provenance mapping (spec 0023 §§3–4). Absent means a
+    """The stored sql_provenance mapping. Absent means a
     legacy record: no provenance was recorded, rendered as ``null``/accepted —
     never a backfilled or excluded record. PRESENT but malformed (not a
     mapping, a foreign source descriptor, whitespace-only text) is invalid
@@ -423,7 +423,7 @@ def validated_sql_provenance(meta: dict, label: str) -> dict | None:
 
 def validate_candidate_records(project: Path, record: dict, candidate_root: Path) -> list[str]:
     """Core meaning checks over the candidate's SDK-parsed answer_example
-    pages, BEFORE admission (spec0035 C4): a new or changed record carries the
+    pages, BEFORE admission: a new or changed record carries the
     per-operation required structured arguments, stays within the
     whole-encoded-page bound, keeps valid system-derived SQL provenance and
     its bounded body evidence, and cites only metric/Policy pages that exist

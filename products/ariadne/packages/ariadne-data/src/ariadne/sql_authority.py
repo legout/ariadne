@@ -1,18 +1,18 @@
-"""The ad-hoc SQL IO-authority boundary (issue #59, spec 0014 §9).
+"""The ad-hoc SQL IO-authority boundary.
 
 :class:`ariadne.query.QueryRuntime.define_metric` is the one shared seam behind
 the Python API, the local CLI, the MCP Facade and the Analyst toolset, and it
 accepts two ordinary Analyst-supplied SQL fragments: ``source`` and
-``expression``. Compile success (ADR-0005/ADR-0008), the single-statement
-guard, read-only source attaches (ADR-0010) and the shared output ceilings
-(spec 0014 §4) are statement-shape and OUTPUT controls — none of them confines
+``expression``. Compile success, the single-statement
+guard, read-only source attaches and the shared output ceilings
+ are statement-shape and OUTPUT controls — none of them confines
 what the credential-bearing DuckDB process READS. This module is that
 confinement: one transport-neutral, static, fail-closed authority predicate
 over the PARSED fragments, applied in the runtime BEFORE the grain guard, the
 render compile gate, the EXPLAIN bind or any collection runs — so a refusal
-stages nothing and no caller-derived SQL ever reaches DuckDB (issue #59 AC2).
+stages nothing and no caller-derived SQL ever reaches DuckDB.
 
-Rules (issue #59 AC1/AC3, spec 0014 §9):
+Rules:
 
 - **Physical relations.** Every physical table a fragment touches must be one
   of the ALREADY-BUILT execution catalog's enumerated tables/views, resolved
@@ -408,7 +408,7 @@ def _parse_fragment(fragment: str, *, kind: str) -> list[exp.Expr]:
     dialect that interprets it. The source wrap mirrors
     :func:`ariadne.render._source_subquery` exactly, so the validated text is
     the text the compiler parses. Anything unparseable or not exactly one
-    statement is refused here — fail closed on AST ambiguity (issue #59 AC1)."""
+    statement is refused here — fail closed on AST ambiguity."""
     text = fragment.strip()
     if kind == "source" and not _SOURCE_PREFIX_RE.match(text):
         text = f"(SELECT * FROM {text})"

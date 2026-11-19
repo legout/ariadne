@@ -1,4 +1,4 @@
-"""Database profiler: DuckDB SUMMARIZE + PK/FK heuristics over the source registry (ticket #3).
+"""Database profiler: DuckDB SUMMARIZE + PK/FK heuristics over the source registry.
 
 Reads every source of the ADR-0010 registry (``ariadne.yaml``) — or the legacy
 single SQLite file (``--db``) — read-only through the shared execution owner
@@ -123,7 +123,7 @@ class ProfilingPayloadExceeded(ValueError):
 
 class PayloadBound:
     """One operator payload ceiling over the COMPLETE serialized profile
-    value (spec0035 §8): variable-size statistics are guarded BEFORE any
+    value: variable-size statistics are guarded BEFORE any
     unrestricted transfer into Python, measured fragments are accounted
     incrementally so oversize refuses early, and one exact final measurement
     covers the complete value in its actual JSON/UTF-8 representation and
@@ -140,7 +140,7 @@ class PayloadBound:
 
     @staticmethod
     def _size(value) -> int:
-        # The ACTUAL existing serialization escaping (spec0035 §8): the
+        # The ACTUAL existing serialization escaping: the
         # authoring CLI prints the inputs result with json.dumps DEFAULTS
         # (ensure_ascii=True, authoring_cli.py) — accounting must match that
         # representation, never a smaller encoding.
@@ -262,7 +262,7 @@ def _numeric(type_name: str) -> bool:
     return type_name.split("(")[0].upper() in _NUMERIC_TYPES
 
 
-# Integer and binary-float families (K3 issue #43): exact-name equality and
+# Integer and binary-float families: exact-name equality and
 # widening WITHIN a family compare without lossy coercion; anything across
 # families (VARCHAR vs numeric, numeric vs timestamp, ...) does not.
 _INTEGER_TYPES = frozenset(
@@ -283,7 +283,7 @@ _FLOAT_TYPES = frozenset({"FLOAT", "DOUBLE", "REAL"})
 
 def types_compatible(left: str, right: str) -> bool:
     """Whether two column types may be compared as identifiers WITHOUT lossy
-    coercion (spec 0010 §7, plan §2): exact type names, or a widening within
+    coercion: exact type names, or a widening within
     the integer/binary-float family. A string column beside a numeric column
     is NEVER compatible — string identifier equivalence is not inferred from
     numeric casts."""
@@ -342,7 +342,7 @@ def _profile_table(
     accounted incrementally — oversize refuses, never clips."""
     names = [c[0] for c in cols]
     rel = _table_rel(con, ref, table, allowed)
-    # surviving-F1 bounded completion (spec0035 §8): bytes of top-values
+    # surviving-F1 bounded completion: bytes of top-values
     # already fetched for THIS table, consumed against the shared budget as
     # collected — every later column's pre-fetch check sees them. The
     # accumulator never touches `used`: the table fragment debit below
@@ -384,7 +384,7 @@ def _profile_table(
             # a guaranteed LOWER bound of the whole min/max materialization
             # and is checked against the REMAINING shared budget BEFORE the
             # fetch — an entire wide table's statistics refuse before any of
-            # them transfer (spec0035 §8), never only after collecting.
+            # them transfer, never only after collecting.
             lengths = summarize_rel.aggregate(
                 "max(length(CAST(min AS VARCHAR))) AS __profile_min_len, "
                 "max(length(CAST(max AS VARCHAR))) AS __profile_max_len, "
@@ -425,7 +425,7 @@ def _profile_table(
         }
         if 1 < distinct <= TOP_VALUES_MAX_CARDINALITY and row_count > 0:
             with _guard(budget, con):
-                if payload is not None:  # pre-transfer value-size guard (spec0035 §8)
+                if payload is not None:  # pre-transfer value-size guard
                     biggest = _column_rel(rel, name, allowed).aggregate(
                         "max(length(CAST(__profile_value AS VARCHAR))) AS __profile_vlen"
                     ).fetchall()[0][0]
@@ -535,7 +535,7 @@ def _profile_source(
     Profile dictionary keys keep the legacy unambiguous table names; a
     same-source name collision (same table name in distinct schemas) keys
     those tables by their canonical ``resource`` instead, and every table
-    value carries the explicit identity tuple plus resource (plan §2) so
+    value carries the explicit identity tuple plus resource so
     consumers never parse display names."""
     counts = Counter(table["name"] for table in entry["tables"])
     cols_by_table: dict[str, list[tuple[str, str]]] = {}
@@ -570,7 +570,7 @@ def _profile_source(
             payload=payload,
         )
         pk_by_table[key] = pk_candidates
-        # DEBIT each table's measured statistics AS COLLECTED (spec0035 §8):
+        # DEBIT each table's measured statistics AS COLLECTED:
         # first-pass statistics never accumulate across the source outside
         # the shared payload budget — the debit happens before the NEXT
         # table is measured. PK metadata stays available for the FK phase
@@ -636,7 +636,7 @@ def profile(
     """Profile every table of every source, or one exact ``(source, table)``
     selector (shapes documented in the module docstring): the legacy
     single-sqlite call via ``db_path``, the full registry via ``sources_path``
-    (ADR-0010, shared connection builder), or an already-validated
+    (shared connection builder), or an already-validated
     :class:`ariadne.sources.Registry` via ``registry`` (the Git authoring
     route's APPROVED resolved identity, issue #35/G3 — no registry file exists
     for a candidate commit). Exactly one of the three.
@@ -720,7 +720,7 @@ def profile(
     else:
         (only,) = sources  # the legacy shape: one sqlite source, historical keys
         result = {"db_path": str(db_path), "dialect": "sqlite", "tables": only["tables"]}
-    if payload is not None:  # the COMPLETE profile value must fit (spec0035 §8)
+    if payload is not None:  # the COMPLETE profile value must fit
         payload.check_complete(result)
     return result
 

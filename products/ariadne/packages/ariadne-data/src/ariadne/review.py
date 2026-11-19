@@ -96,7 +96,7 @@ def _managed(project: Path, proposal: str | None, stdin: Any, interactive: bool)
         print("Required scope/representations — exact reviewed Reference page:")
         # the reviewed Reference body is printed via
         # the CANONICAL payload resource identity — the assertion's page is
-        # KB-relative (spec0029 §1.5), so its tracked resource is
+        # KB-relative, so its tracked resource is
         # ``knowledge/<page>``; the retired ``context_layer/<page>`` form is
         # matched only for legacy in-flight candidates still under review.
         # Exact equality only — digest, confirmation and revision safeguards

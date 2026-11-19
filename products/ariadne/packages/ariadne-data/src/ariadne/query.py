@@ -19,9 +19,9 @@ compilation, execution, context, or grain logic:
     define_metric(definition)          -> ephemeral OSI model -> render -> read-only
                                           execution -> rows + SQL + governed: false +
                                           persistence: not_saved
-    query_metrics/query_detail         -> the admitted multi-fact graph (issue #30)
+    query_metrics/query_detail         -> the admitted multi-fact graph
 
-Mechanism per ADR-0008 (spec rev 7): our own sqlglot compiler
+Mechanism: our own sqlglot compiler
 (:mod:`ariadne.render`) renders the OSI envelope model to SQL and the
 execution-owned DuckDB connection (:class:`ariadne.execution.DuckDBExecution`,
 built from the operator-approved registry identity resolved by the Git project
@@ -30,7 +30,7 @@ factory) executes it. ``range`` is an optional
 (the is_time field). ``list_metrics``/``list_datasets`` read the envelope
 metadata and the attach directly — no datus anywhere in the query path.
 
-Ad-hoc (ADR-0005, spec §6): ``define_metric`` params are expanded into an
+Ad-hoc: ``define_metric`` params are expanded into an
 ephemeral OSI-core model (version 0.2.0.dev0 shape, dialects-expression fields,
 is_time dimension), rendered by :mod:`ariadne.render`, compiled and executed
 read-only. Success returns the complete bounded result, SQL provenance, echoed
@@ -40,15 +40,15 @@ explicitly requests retention, the existing Authoring ``start`` and
 revision-checked typed edits retain the definition in a Git candidate; there is
 no persistence flag or new save operation.
 
-Routing contract (spec rev 4 §8.12): fresh consuming agents discover the ad-hoc
+Routing contract: fresh consuming agents discover the ad-hoc
 path through the runtime itself — ``list_metrics`` ends with the routing hint
 and the unknown-metric error names ``list_datasets()`` + ``define_metric``.
 
-No-unvalidated-execution invariant (spec §6): the DuckDB executor only ever
+No-unvalidated-execution invariant: the DuckDB executor only ever
 receives SQL returned by the render compile step — there is no code path from
 tool arguments to ``duckdb.execute`` that bypasses the compiler.
 
-Invariants and failure behavior (spec §6/§7): ``get_metric`` accepts only named
+Invariants and failure behavior: ``get_metric`` accepts only named
 governed metrics — never raw SQL; unknown metric -> error listing the available
 metrics and naming the ad-hoc path (``list_datasets()`` + ``define_metric``);
 unrenderable served models -> fail fast at query runtime initialization.
@@ -68,7 +68,7 @@ from sqlglot import (  # pyright: ignore[reportMissingImports] — same
 from sqlglot.optimizer.scope import Scope, build_scope  # pyright: ignore[reportMissingImports]
 
 from ariadne import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
-    admission,  # issue #37/G5: pinned-snapshot resolution for open_project
+    admission,  # pinned-snapshot resolution for open_project
     context,  # issue #48 fix: the assessment clock/assembly seams stay internal
     proposals,  # the shared retired-format refusal in the project-open path
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: the analyzer binds `ariadne` to the venv's editable main checkout, which lacks this lane's new module; runtime/uvx resolve the worktree
@@ -78,7 +78,7 @@ from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
 )
 from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
 
-# Shared Execution (issue #33, ADR-0016): the DuckDB session, catalog, bind
+# Shared Execution: the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
 from ariadne.execution import (  # pyright: ignore[reportMissingImports] — drift
     DeadlineBudget,
@@ -90,8 +90,8 @@ from ariadne.execution import (  # pyright: ignore[reportMissingImports] — dri
 # round 2 convergence); check_grain_preserving is the runtime's entry into it.
 from ariadne.grain import check_grain_preserving
 
-# Issue #30: the multi-fact query path rides the validated private planner
-# (issues #27-#29) and the normalized graph (issue #26) — both internal seams;
+# the multi-fact query path rides the validated private planner
+#  and the normalized graph — both internal seams;
 # the transport-neutral query_metrics/query_detail below are their only public
 # surface, and no call reaches execution without admission, planning, binding,
 # and the per-request live audits.
@@ -107,7 +107,7 @@ from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
 )
 
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
-# this lane's render module — see ADR-0008; runtime and uvx pyright resolve it)
+# this lane's render module —; runtime and uvx pyright resolve it)
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 from ariadne.render import render  # pyright: ignore[reportMissingImports]
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
@@ -119,7 +119,7 @@ from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-m
     load_registry,
 )
 
-# Issue #59 (spec 0014 §9): the static ad-hoc IO-authority boundary — one
+# the static ad-hoc IO-authority boundary — one
 # transport-neutral core check the CLI, the Facade and the Analyst toolset all
 # inherit because they all call this runtime's define_metric.
 from ariadne.sql_authority import (  # pyright: ignore[reportMissingImports] — new-module drift
@@ -159,7 +159,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         ``sources`` remain private lower-level inputs for synthetic numerical
         tests only; no public route constructs a runtime from an artifact root.
 
-        Issue #56/S1 (spec 0014 §4–§6): ``query_limits`` is the HOST-owned
+        ``query_limits`` is the HOST-owned
         complete-output ceilings (validated tightening-only; built-ins when
         omitted — never a tool/request field), ``response_measure`` the
         selected transport's actual-representation preflight (a callable the
@@ -176,7 +176,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         except Exception as exc:
             raise RuntimeError(f"served OSI models under {models} do not compile: {exc}") from exc
 
-        # ADR-0010/0016: one shared owner produces the runtime's long-lived DuckDB
+        # one shared owner produces the runtime's long-lived DuckDB
         # session over the registry sources (addressable as <source>.<table>);
         # non-DuckDB attaches are connection-local, so this happens exactly
         # once. Compiled SQL references <catalog>.<schema>.<table>.
@@ -188,7 +188,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             if db_path is None:
                 raise ValueError("an internal query session requires an approved registry")
             source_registry = implicit_registry(db_path)
-        # Issue #56/S1 (spec 0014 §4/§6): the host-owned ceilings are loaded and
+        # the host-owned ceilings are loaded and
         # validated BEFORE source construction, and the eager setup runs under
         # one bounded setup budget (the existing K3 mechanism) — construction
         # never opens an unbounded source before the guard starts. A
@@ -210,14 +210,14 @@ class _QueryRuntimeSession(_DiscoverySession):
         if not self._qualified:
             # Bare table names in agent-authored ad-hoc sources resolve against the attach.
             self.con.execute("USE demo.main")
-        # Issue #59 (spec 0014 §9): the ad-hoc IO-authority boundary's approved
+        # the ad-hoc IO-authority boundary's approved
         # physical-relation set — the ALREADY-BUILT execution catalog plus
         # DuckDB's own current catalog/schema (the private single-database
         # test seam's USE demo.main is what makes bare table names resolve; a
         # registry route keeps its <source>.<table> form). Read once here, from trusted
         # internal reads only, so an ad-hoc refusal never needs a DuckDB call.
         self._ad_hoc_authority = AdHocAuthority.build(self.catalog, self.con)
-        # Issue #53 (spec 0013 §4): the exact-identity map of the ALREADY-BUILT
+        # the exact-identity map of the ALREADY-BUILT
         # execution catalog — qualified table name → canonical resource — built
         # lazily once and reused by every data_signals attachment. No new catalog
         # or source query ever runs for quality evidence.
@@ -231,13 +231,13 @@ class _QueryRuntimeSession(_DiscoverySession):
 
     async def list_datasets(self) -> list[dict]:
         """Every queryable table across the approved registry with its columns
-        (the agent's map, spec rev 9 §8.20). Qualified names keep entries from
+        (the agent's map). Qualified names keep entries from
         distinct sources distinguishable. K1 (issue
         #41): every entry additionally carries the EXPLICIT identity fields
         (source/catalog/schema/table plus the canonical credential-free
         ``resource``) — same-named tables in distinct schemas/collections stay
         distinct assets, and consumers use these fields rather than parsing
-        display names. C1 (issue #77, spec 0028 §7): entries whose exact asset
+        display names. C1: entries whose exact asset
         tuple matches a bound contract of the PINNED admitted snapshot carry a
         bounded snapshot-based contract annotation (producer id/version,
         binding, as-of observation) — computed once from the admission
@@ -271,7 +271,7 @@ class _QueryRuntimeSession(_DiscoverySession):
 
     def _contract_annotations(self) -> dict[tuple, dict]:
         """The pinned snapshot's contract annotations keyed by exact asset
-        tuple (spec 0028 §7): built lazily ONCE from the admission descriptor
+        tuple: built lazily ONCE from the admission descriptor
         only — the live catalog construction itself is untouched, and no
         additional source read ever runs for the annotation."""
         from ariadne import authoring_inputs, contract_inspection
@@ -345,7 +345,7 @@ class _QueryRuntimeSession(_DiscoverySession):
 
     @contextmanager
     def _phase(self, budget: DeadlineBudget):
-        """One guarded operation phase (spec 0014 §6): the shared budget arms
+        """One guarded operation phase: the shared budget arms
         the owned connection's interrupt for bind, live audits and bounded
         collection, and a budget spent at the phase boundary — including an
         interrupt the planner wrapped into its own error — becomes the
@@ -363,7 +363,7 @@ class _QueryRuntimeSession(_DiscoverySession):
 
     def _collect(self, sql: str, budget: DeadlineBudget):
         """Bounded collection of one compiled statement under the operation's
-        budget (spec 0014 §4): all-or-nothing on the overflow facts — a row
+        budget: all-or-nothing on the overflow facts — a row
         or cell overflow is the structured refusal, with observed lower
         bounds only (counting stopped at the indicator row)."""
         bounded = self._execution.fetch_bounded(sql, self._limits, budget)
@@ -404,7 +404,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 )
             raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
         if self._managed is not None and self._context_snapshot is None:
-            # Issue #37/G5: a governed answer on the managed route re-checks the
+            # a governed answer on the managed route re-checks the
             # session's pinned snapshot bytes and source identity first — a
             # hand-edited snapshot or a withdrawn approval is a staleness refusal.
             self._recheck_pinned()
@@ -431,15 +431,15 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_results.finalize_response(
             self._limits, {"context": required_context}, response_measure=self._measure
         )
-        # Compiled by our sqlglot renderer (ADR-0008) from the served OSI models —
-        # never tool input (spec §6): the executor only ever receives SQL returned
+        # Compiled by our sqlglot renderer from the served OSI models —
+        # never tool input: the executor only ever receives SQL returned
         # by the compile step. The statement guard is defense in depth on this
         # governed path too.
         sql = render(self._metrics[name]["model"], dimensions or [], range or {}, metric=name)
-        # Choke point shared with the EXPLAIN bind-check below (spec §6): exactly
+        # Choke point shared with the EXPLAIN bind-check below: exactly
         # one statement at parse level before any duckdb call.
         assert_single_statement(sql)
-        # Issue #56/S1 (spec 0014 §6): one fresh remaining-seconds budget covers
+        # one fresh remaining-seconds budget covers
         # bind, the live grain audit and bounded execution/collection; a reused
         # session never inherits a previous operation's allowance.
         if budget is None:
@@ -447,12 +447,12 @@ class _QueryRuntimeSession(_DiscoverySession):
         if budget.expired():
             raise query_results.deadline_refusal(budget.seconds)
         with self._phase(budget):
-            # Same gauntlet as the ad-hoc path (spec §8.9): the renderer compiles
+            # Same gauntlet as the ad-hoc path: the renderer compiles
             # structurally, so a column missing from the source only surfaces at
             # bind time. EXPLAIN binds the plan without executing it — while still
             # only ever feeding compiler output to duckdb.
             self._execution.bind(sql)
-            # Grain guard on the model's dataset source (spec rev 5 §13): a fan-out
+            # Grain guard on the model's dataset source: a fan-out
             # baked into a served model would aggregate at joined-row grain
             # (Datus-ai/Datus-agent#1426) — identical rejection contract to
             # define_metric. Runs against LIVE data on every call: an ETL reload
@@ -460,9 +460,9 @@ class _QueryRuntimeSession(_DiscoverySession):
             # memo — a few COUNT scans per query are cheap at this scale.
             (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
             check_grain_preserving(self.con, dataset["source"])
-            # sql is the render compile step's output and nothing else (spec §6).
+            # sql is the render compile step's output and nothing else.
             bounded = self._collect(sql, budget)
-        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+        if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
         result = {
             "metric": name,
@@ -470,15 +470,15 @@ class _QueryRuntimeSession(_DiscoverySession):
             "columns": bounded.columns,
             "rows": bounded.rows,
             "sql": sql,
-            "governed": True,  # spec rev 3 §8.10: symmetry with define_metric
+            "governed": True,  # symmetry with define_metric
             "context": required_context,
         }
         if self._managed is not None:
-            # Issue #37/G5: revision/route provenance alongside the existing
+            # revision/route provenance alongside the existing
             # caveats (spec §5: governed answers identify the admitted revision
             # and route).
             result["admission"] = self._admission_view(self._managed)
-        # Issue #53/#54 (spec 0013 §4): the additive advisory source-quality
+        # the additive advisory source-quality
         # view. Identity comes from the executed query's direct dataset
         # dependencies matched EXACTLY against the built catalog; the shared
         # reader is pure and never fails or changes the governed result above.
@@ -494,7 +494,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             requested_period=_requested_period(range, inclusive_end=True),
             period_fields=self._model_time_fields(name),
         )
-        # Issue #56/S1 (spec 0014 §5): additive completeness metadata for the
+        # additive completeness metadata for the
         # fitting answer, then the full-envelope accounting and the selected
         # transport's actual-representation preflight before it is returned.
         result["result"] = query_results.completeness(len(bounded.rows))
@@ -539,14 +539,14 @@ class _QueryRuntimeSession(_DiscoverySession):
     def _dataset_resources(self, source: object) -> list[str | None]:
         """The canonical resources of ONE dataset source's physical table
         references, matched against the built catalog by exact qualified
-        identity (spec 0013 §4). An unmatched reference stays ``None`` —
+        identity. An unmatched reference stays ``None`` —
         unknown dependency identity, never a stripped-name guess."""
         catalog = self._catalog_resource_map()
         return [None if ref is None else catalog.get(ref) for ref in _qualified_source_refs(source)]
 
     def _direct_table_dependencies(self, name: str) -> list[str | None]:
         """The canonical table resources of the metric's DIRECT dataset
-        dependencies (spec 0013 §4, issues #53/#54): every dataset source — a
+        dependencies: every dataset source — a
         qualified table name or a SELECT — is matched against the ALREADY-BUILT
         execution catalog by exact qualified identity, never an unqualified
         display-name match (same-named tables in distinct sources stay distinct
@@ -597,7 +597,7 @@ class _QueryRuntimeSession(_DiscoverySession):
     def _admitted(self) -> tuple[SemanticGraph, dict]:
         """The admitted graph + record, or the structured refusal (spec rev 1
         "Failure and compatibility behavior": a stable error code, before any
-        SELECT executes). The MANAGED Git route (issue #37/G5) pins the
+        SELECT executes). The MANAGED Git route pins the
         admission over its snapshot bytes and approved source identity; C6
         retired the db/registry artifact-session route — governed serving
         requires the Git admission, never a mutable served-tree digest."""
@@ -655,7 +655,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 f"unknown metric(s) {unknown}",
                 candidates=tuple(sorted(self._metrics)),
             )
-        now = context._assessment_now()  # one clock value for every metric (spec 0011 §2)
+        now = context._assessment_now()  # one clock value for every metric
         resolved: dict[str, dict] = {}
         for name in dict.fromkeys(names):
             meta = self._metrics[name]
@@ -679,7 +679,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         *,
         check_targets: dict[str, set[str]] | None = None,
     ) -> dict:
-        """Q1/#84 (spec0032 §§3–4, §10.2, §10.4–§10.5 stage 4): assemble the
+        """Q1/#84 (§10.4–§10.5 stage 4): assemble the
         complete ``input_context`` of one revision-3 query operation from the
         pinned, verified Bound Release — every consumed physical resource's
         full published Table view bound by exact ``core_ref`` identity, the
@@ -690,7 +690,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         Table view, an unavailable applicable Policy page or a Context that
         cannot fit refuses here, BEFORE any planner, live audit, bind or
         SELECT work — never a fallback and never a partial answer.
-        ``check_targets`` (review F2) names, per §10.2 catalog check id, the
+        ``check_targets`` (review F2) names,.2 catalog check id, the
         exact consumed-resource identities that the check ACTUALLY attests
         on this operation's unchanged live path — an executable binding whose
         declared target lies outside its check's attested inventory refuses
@@ -776,7 +776,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         )["entry"]["resource"]
 
     def _adhoc_static_resources(self, params: dict) -> tuple[list[str], list[str]]:
-        """Q1/#84 (spec0032 §§3, §10.5 stage 3; review F1/F2): EVERY physical
+        """Q1/#84 (§10.5 stage 3, review F1/F2): EVERY physical
         dependency of the ad-hoc definition — the whole normalized nested
         SOURCE tree AND the whole normalized EXPRESSION tree, including
         SEMI/ANTI right-hand tables, nested CTE/derived physical origins and
@@ -839,7 +839,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         return everything, source_only
 
     def _attest_bound_checks(self, plan, graph) -> None:
-        """#83 (spec0032 §10.2): an executable policy binding of this admission
+        """an executable policy binding of this admission
         is satisfied only by the ACTUAL executed check for the consumed
         subject — a plan audit reporting not-run establishes nothing, and
         authored generated/verified stamps on pages are never proof. F3: the
@@ -978,18 +978,18 @@ class _QueryRuntimeSession(_DiscoverySession):
         # budget — BEFORE planning, the live relationship audits, bind or SELECT.
         # An answer that cannot carry its required Context never executes.
         sdk_contexts = self._sdk_metric_contexts(request)
-        # Issue #56/S1 (spec 0014 §6): the shared budget covers the planner's
+        # the shared budget covers the planner's
         # live relationship/grain audits, the EXPLAIN bind and the bounded
         # collection — one allowance for the whole operation.
         budget = self._claim_operation_budget()
         with self._phase(budget):
             plan = plan_query(graph, request, self.con)
-            # §10.2: real executed-check proof, before result SQL
+            # real executed-check proof, before result SQL
             self._attest_bound_checks(plan, graph)
             assert_single_statement(plan.sql)
             self._execution.bind(plan.sql)
             bounded = self._collect(plan.sql, budget)
-        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+        if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
         result = {
             "metrics": list(plan.metrics),
@@ -1023,7 +1023,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             "context": {name: sdk_contexts[name] for name in plan.metrics},
             "admission": self._admission_view(admission),
         }
-        # Issue #54 (spec 0013 §4): the additive advisory source-quality view
+        # the additive advisory source-quality view
         # for MULTI-METRIC work — every retained metric associated with its own
         # identified fact/lookup dependencies through the executed plan and the
         # admitted graph (shared asset/report entries, one budget, one
@@ -1040,7 +1040,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             requested_period=_plan_requested_period(plan.fetch_bounds),
             period_fields=self._conformed_time_fields(graph, plan.time_dimension),
         )
-        # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
+        # completeness metadata + full-envelope
         # accounting + the selected transport's actual-representation preflight.
         result["result"] = query_results.completeness(len(bounded.rows))
         query_results.account_rows(self._limits, result, bounded.rows)
@@ -1074,7 +1074,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         single-statement, and EXPLAIN bind gauntlet."""
         self._refuse_unsupported("query_detail")
         graph, admission = self._admitted()
-        # Q1/#84 (spec0032 §10.5): stage 3 static dependency resolution over
+        # stage 3 static dependency resolution over
         # the admitted graph's proven edges, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical lookup tables with full published
@@ -1094,7 +1094,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             assert_single_statement(plan.sql)
             self._execution.bind(plan.sql)
             bounded = self._collect(plan.sql, budget)
-        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+        if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
         result = {
             "dataset": plan.dataset,
@@ -1117,9 +1117,9 @@ class _QueryRuntimeSession(_DiscoverySession):
             "governed": True,
             "admission": self._admission_view(admission),
         }
-        if detail_context is not None:  # additive, integrated mode only (§10.4)
+        if detail_context is not None:  # additive, integrated mode only
             result["input_context"] = detail_context
-        # Issue #56/S1 (spec 0014 §5): completeness metadata + full-envelope
+        # completeness metadata + full-envelope
         # accounting + the selected transport's actual-representation preflight.
         result["result"] = query_results.completeness(len(bounded.rows))
         query_results.account_rows(self._limits, result, bounded.rows)
@@ -1129,7 +1129,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         return result
 
     async def query_records(self, request: dict) -> dict:
-        """Bounded Ad-hoc Record Query (spec 0014 §3, issue #57/S2): a
+        """Bounded Ad-hoc Record Query: a
         requested top-N selection of records from ONE already-known catalog
         dataset — strict known fields/request keys, AND-combined typed
         predicates, one optional declared timestamp interpretation (the only
@@ -1145,11 +1145,11 @@ class _QueryRuntimeSession(_DiscoverySession):
         shared S1 output safeguards bound the answer."""
         self._refuse_unsupported("query_records")
         if self._managed is not None:
-            # spec 0014 §3: managed projects retain pinned admission +
+            # managed projects retain pinned admission +
             # approved-source rechecks; a stale pin or withdrawn approval
             # refuses here, never a legacy fallback.
             self._recheck_pinned()
-        # Q1/#84 (spec0032 §10.5): stage 3 static resolution of the ONE named
+        # stage 3 static resolution of the ONE named
         # catalog dataset's canonical resource, then the stage-4 complete
         # Context/enforcement/budget preflight — an integrated Bound Release
         # consumes its exact physical table with a full published view before
@@ -1167,13 +1167,13 @@ class _QueryRuntimeSession(_DiscoverySession):
             plan = plan_records(
                 self.catalog, request, self.con, row_ceiling=self._limits["max_rows"]
             )
-            # Choke point shared with the EXPLAIN bind (spec §6): the planner's
+            # Choke point shared with the EXPLAIN bind: the planner's
             # compiled output only, exactly one statement before any duckdb call.
             assert_single_statement(plan.executed_sql)
             self._execution.bind(plan.executed_sql)
             try:
                 # the executed statement is the planner's compiled output and
-                # nothing else (spec §6)
+                # nothing else
                 bounded = self._collect(plan.executed_sql, budget)
             except Exception as exc:
                 # the row-level timestamp interpretation refusal (spec 0014
@@ -1183,7 +1183,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 if refusal is not None:
                     raise refusal from exc
                 raise
-        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+        if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
         # the TRAILING execution-only columns of the executed statement — the
         # same-execution lookahead indicator and, when declared, the
@@ -1245,7 +1245,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "has_more_matching": has_more,
             },
         }
-        if records_context is not None:  # additive, integrated mode only (§10.4)
+        if records_context is not None:  # additive, integrated mode only
             result["input_context"] = records_context
         query_results.account_rows(self._limits, result, rows)
         query_results.finalize_response(self._limits, result, response_measure=self._measure)
@@ -1254,7 +1254,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         return result
 
     def _record_provenance(self) -> dict:
-        """The record answer's truthful provenance (spec 0014 §3): the actual
+        """The record answer's truthful provenance: the actual
         route and artifact identity when established — the managed route's
         pinned admission view — otherwise an internal synthetic-session
         disclosure; no public route establishes provenance without Git Admission."""
@@ -1284,7 +1284,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         proposal: str | None = None,
         expected_revision: str | None = None,
     ) -> dict:
-        """Source-free delegation (spec0035 C4): Example authoring rides the
+        """Source-free delegation: Example authoring rides the
         discovery session — the source builder is never constructed for it."""
         return super().save_example(
             submission, proposal=proposal, expected_revision=expected_revision
@@ -1317,9 +1317,9 @@ class _QueryRuntimeSession(_DiscoverySession):
         Failure returns the compiler's error verbatim or a bounded refusal;
         neither failure nor success writes a candidate or artifact. The existing
         complete-output safeguards still refuse any incomplete result, including
-        an MCP-envelope overflow (issue #56/S1).
+        an MCP-envelope overflow.
 
-        Issue #59 (spec 0014 §9): the static IO-authority boundary runs FIRST,
+        the static IO-authority boundary runs FIRST,
         on the whole nested ``source`` and ``expression`` trees, so an ad-hoc
         definition can only read the registered catalog relations with the
         reviewed analytics functions — no file/network/table-function read,
@@ -1332,7 +1332,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         params = _normalize_definition(definition)
         budget = self._claim_operation_budget()
         with self._phase(budget):
-            # Issue #59 (spec 0014 §9): the IO-authority boundary BEFORE the
+            # the IO-authority boundary BEFORE the
             # grain guard, compile, bind or any execution — the entire nested
             # source AND expression trees may read only the registered catalog
             # relations and call only the reviewed built-in analytics functions.
@@ -1344,7 +1344,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             assert_ad_hoc_authority(
                 params["expression"], kind="expression", authority=self._ad_hoc_authority
             )
-            # Q1/#84 (spec0032 §10.5): stage 3 continues with the static
+            # stage 3 continues with the static
             # physical-reference extraction over the whole normalized nested
             # source tree (scope-aware, never shallow name extraction), then
             # the stage-4 complete Context/enforcement/budget preflight — an
@@ -1369,7 +1369,7 @@ class _QueryRuntimeSession(_DiscoverySession):
                         "adhoc.grain_preserving": set(source_only),
                     },
                 )
-            # Grain guard BEFORE envelope expansion/compile (spec rev 5 §13): a
+            # Grain guard BEFORE envelope expansion/compile: a
             # source that fans out the fact grain is rejected outright — the
             # compiler would aggregate at joined-row grain
             # (Datus-ai/Datus-agent#1426). No authored state is written and
@@ -1387,11 +1387,11 @@ class _QueryRuntimeSession(_DiscoverySession):
             # honest for that shape — while still only ever feeding compiler
             # output to duckdb.
             self._execution.bind(sql)
-            # sql is the render compile step's output and nothing else (spec §6):
+            # sql is the render compile step's output and nothing else:
             # the definition reached execution exclusively through the compiler
             # above.
             bounded = self._collect(sql, budget)
-        if budget.expired():  # no complete answer after expiry (spec 0014 §6)
+        if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
         result = {
             "metric": params["name"],
@@ -1399,12 +1399,12 @@ class _QueryRuntimeSession(_DiscoverySession):
             "rows": bounded.rows,
             "sql": sql,
             "governed": False,
-            "context": None,  # spec rev 10: no served page exists for ad-hoc metrics
+            "context": None,  # no served page exists for ad-hoc metrics
             "definition": params,
             "persistence": {"status": "not_saved"},
             "result": query_results.completeness(len(bounded.rows)),
         }
-        # spec0032 §7/§10.4: the bound source Context is disclosed SEPARATELY
+        # the bound source Context is disclosed SEPARATELY
         # as the pinned input_context — additive, integrated mode only; the
         # ephemeral definition never gains a metric-context field or governance
         if adhoc_context is not None:
@@ -1416,14 +1416,14 @@ class _QueryRuntimeSession(_DiscoverySession):
         return result
 
     async def _compile_adhoc(self, envelope: dict, name: str, dimensions: list[str]) -> str:
-        """Render-gate compile (ADR-0008) of the ephemeral model — the only gate
+        """Render-gate compile of the ephemeral model — the only gate
         between tool args and execution. Returns the compiled SQL; raises
-        ValueError carrying the compiler's verbatim reason (spec §7). No files
+        ValueError carrying the compiler's verbatim reason. No files
         are touched: the envelope is compiled in memory."""
         try:
             return render(envelope, dimensions)
         except ValueError:
-            raise  # RenderError already carries the verbatim reason (spec §7)
+            raise  # RenderError already carries the verbatim reason
         except Exception as exc:  # defense in depth — surface it verbatim
             raise ValueError(f"{type(exc).__name__}: {exc}") from exc
 
@@ -1460,7 +1460,7 @@ class QueryRuntime:
         admission_record: dict | None = None,
     ) -> _QueryRuntimeSession:
         root = Path(project).resolve()
-        # AC10/spec0035 §6: a retired standalone-format project refuses in the
+        # a retired standalone-format project refuses in the
         # shared project-open path with fresh-setup guidance — never converted,
         # reset, or served from its retired pages.
         proposals.refuse_unsupported_project(root)
@@ -1548,7 +1548,7 @@ class DeferredQueryRuntime:
 
 def _timestamp_refusal(exc: BaseException) -> QueryResultError | None:
     """Convert the record plan's row-level timestamp interpretation marker
-    into the stable structured refusal (spec 0014 §5): the guarded SQL raises
+    into the stable structured refusal: the guarded SQL raises
     the FIXED marker through DuckDB's ``error()`` — the refusal message
     identifies the field and the declared interpretation, never the source
     value. ``None`` for any other exception (those keep their established

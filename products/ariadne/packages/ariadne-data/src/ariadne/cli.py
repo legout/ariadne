@@ -46,7 +46,7 @@ installation and its behavior is unchanged by the toolset split.
 Every public operation is bound to the current Git project (``--project DIR``,
 default ``.``). Governed queries require its exact valid human admission; no
 plain artifact-root or mutable-candidate fallback exists. Request payloads are
-parsed before the admitted runtime opens a source (spec §9).
+parsed before the admitted runtime opens a source.
 """
 
 import argparse
@@ -76,7 +76,7 @@ class UsageError(ValueError):
 class _Parser(argparse.ArgumentParser):
     """argparse that fails through UsageError instead of exiting with usage
     text, so a malformed invocation still writes exactly one JSON error object
-    to stderr (spec §4)."""
+    to stderr."""
 
     def error(self, message: str) -> NoReturn:
         raise UsageError(message)
@@ -92,7 +92,7 @@ def _json_default(value: Any) -> Any:
 
 
 def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> dict:
-    """One JSON object from --file PATH or stdin (spec §4). Parsed before the
+    """One JSON object from --file PATH or stdin. Parsed before the
     runtime is constructed, so malformed input prevents source opening or execution
     (spec §9)."""
     try:
@@ -461,14 +461,14 @@ def main(argv: list[str] | None = None, stdin: Any = None) -> int:
         args = build_parser().parse_args(argv)
         return _dispatch(args, sys.stdin if stdin is None else stdin)
     except QueryResultError as exc:
-        # Issue #56/S1 (spec 0014 §5): one bounded structured refusal on
+        # one bounded structured refusal on
         # stderr with a nonzero exit — never a successful partial on stdout.
         # The refusal body is fixed-size by construction and was validated to
         # fit the effective bounds when the host ceilings were loaded.
         print(json.dumps(exc.refusal(), default=_json_default), file=sys.stderr)
         return 1
-    except Exception as exc:  # one JSON error object, message verbatim (spec §4)
-        # Fix pass 2, finding 2a (spec 0014 §5): a FITTING error keeps its
+    except Exception as exc:  # one JSON error object, message verbatim
+        # Fix pass 2, finding 2a: a FITTING error keeps its
         # verbatim fields; an oversized error representation is replaced by
         # the bounded explicit refusal under the EFFECTIVE host budgets —
         # every appended field (stable code, planner candidates) accounted.

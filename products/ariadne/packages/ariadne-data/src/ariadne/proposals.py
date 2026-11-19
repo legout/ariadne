@@ -9,13 +9,13 @@ Query (:mod:`ariadne.query`) share ONE implementation:
   (``ariadne/proposal/<id>``), one worktree per active writer under the
   ignored operator-owned ``.ariadne/`` state dir (``worktrees/<id>/``,
   ``proposals/<id>.json`` records), revision-checked complete-artifact edits,
-  the finalize pass's generated-artifact commit (issue #36/G4), the COMPLETE
+  the finalize pass's generated-artifact commit, the COMPLETE
   candidate-scope snapshot walker behind exact-final-commit
   validation/review, and the separately stored validation evidence
   (``validation/<id>/<commit>.json`` — operator-owned, never committed) plus
   the shared pre-write content boundary (payload bounds + credential classes);
 
-Git discipline (plan §2): fixed argv through :mod:`subprocess`, never a shell,
+Git discipline: fixed argv through :mod:`subprocess`, never a shell,
 never model-supplied Git commands; IDs, commit revisions and artifact names are
 validated BEFORE dispatch so paths/refs can never become options; the
 ``--`` separator is always used; missing Git, missing operator Git identity,
@@ -25,7 +25,7 @@ records the ignored state dir); no network operation exists here. State
 transitions persist durably (tmp + fsync + atomic rename) and an interrupted
 transition — a worktree/branch that no longer matches its recorded candidate —
 blocks every further mutation for HUMAN resolution: evidence (worktree, branch,
-record) is preserved, never auto-reset (spec §4).
+record) is preserved, never auto-reset.
 """
 
 from __future__ import annotations
@@ -77,7 +77,7 @@ _AWS_ASSIGNMENT_RE = re.compile(
     r"\b(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)[ \t]*=[ \t]*\S+"
 )
 
-# The fresh-setup guidance for a retired-format project (spec0035 §6/AC10):
+# The fresh-setup guidance for a retired-format project:
 # the new release supports only the native knowledge/ contract — an old
 # standalone project refuses before any mutation and is never reset or
 # converted; its files and snapshots stay untouched.
@@ -179,7 +179,7 @@ def _require_git_identity(project: Path) -> None:
 def _ensure_state_ignored(project: Path) -> None:
     """Record ``.ariadne/`` in the repo-LOCAL exclude file (never global
     config, never a tracked .gitignore write): operator-owned state must never
-    become candidate content (plan §2)."""
+    become candidate content."""
     git_dir = _git(["rev-parse", "--absolute-git-dir"], project).stdout.strip()
     exclude = Path(git_dir) / "info" / "exclude"
     marker = f"/{ARIADNE_STATE_DIR.as_posix()}/"
@@ -458,7 +458,7 @@ def check_artifact_content(where: str, content: str) -> None:
     over-limit payload, an inline URL credential, a known secret-shape, or a
     named AWS assignment is refused BEFORE anything is written — the matched
     value is never echoed. Invalid/incomplete DRAFT content is allowed: artifact
-    validation is a later gate (spec §3), identity and credentials are not."""
+    validation is a later gate, identity and credentials are not."""
     if not isinstance(content, str):
         raise ValueError(f"{where} content must be a string")
     total = len(content.encode("utf-8"))
@@ -491,7 +491,7 @@ def _claim_map(rel: str, content: str) -> dict | None:
     """The STRUCTURED top-level claim mapping of one artifact body: the YAML
     frontmatter mapping of an OKF page, the top-level mapping of a ``.yml``
     artifact. None when the body carries no parseable mapping — invalid or
-    incomplete DRAFT content stays allowed at this seam (spec §3)."""
+    incomplete DRAFT content stays allowed at this seam."""
     try:
         if PurePosixPath(rel).suffix == ".md":
             meta, _body = _load(content)
@@ -508,11 +508,11 @@ def _refuse_forged_claims(rel: str, content: str, base_content: bytes | None) ->
     edit INTRODUCES or CHANGES versus the current candidate's bytes are
     refused BEFORE any write; claims inherited identically from the base stay
     allowed — and REMOVING claims, dropping the frontmatter entirely
-    included, is the same forgery, never a bypass. K1 (issue #41) extends the
+    included, is the same forgery, never a bypass. K1 extends the
     same boundary to the RENDERED facts of an inherited generated page: its
     core-owned body sections (the generated Schema/Observations/Schema
     history blocks) may be carried unchanged, never changed, dropped or
-    added; authored sections outside them stay editable. K2 (issue #42): the
+    added; authored sections outside them stay editable. K2: the
     ``ariadne`` block of a REFERENCE page is the AUTHORED structured
     extension (aliases, exact bindings, mappings — spec 0010 §5), not a
     core-generated claim, so reference edits may author it; its shape and its
@@ -651,7 +651,7 @@ def _in_user_scope(rel: str) -> bool:
         "semantic_layer/graph.yml",
         "contract_bindings.yaml",
     ):
-        return True  # spec 0028 §3: the fixed native binding document is a typed root
+        return True  # the fixed native binding document is a typed root
     if (
         len(parts) == 3
         and parts[:2] == ("semantic_layer", "models")
@@ -659,7 +659,7 @@ def _in_user_scope(rel: str) -> bool:
     ):
         return True
     if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
-        return True  # spec 0028 §3: producer contract documents (flat)
+        return True  # producer contract documents (flat)
     # the retired standalone context_layer/ scope is gone —
     # user-editable Context pages live only in the native knowledge/ subtree
     # (knowledge_path, already accepted above).
@@ -699,7 +699,7 @@ def _in_snapshot(rel: str) -> bool:
     ):
         return True
     if len(parts) == 2 and parts[0] == "contracts" and pure.suffix in _MODEL_SUFFIXES:
-        return True  # spec 0028 §3: producer contract documents (flat)
+        return True  # producer contract documents (flat)
     return (parts[0] == "context_layer" and pure.suffix == ".md") or (
         len(parts) == 2
         and parts[0] == "answer_examples"
@@ -711,7 +711,7 @@ def _in_snapshot(rel: str) -> bool:
 def _scope_files(project: Path) -> list[str]:
     """The concrete EXISTING files inside the allowed candidate scope — the
     human-created initial artifact revision commits exactly these, never an
-    unrelated user file and never ``git add .`` (plan §2). The
+    unrelated user file and never ``git add .``. The
     system-generated bookkeeping (``index.md``/``log.md``) is EXCLUDED: the
     finalize pass owns and regenerates it."""
     rels: list[str] = []
@@ -787,7 +787,7 @@ def _staged_changes(project: Path) -> list[str]:
 
 
 def _create_initial_revision(project: Path) -> str:
-    """The empty-project onboarding path (spec §3): a repository with no
+    """The empty-project onboarding path: a repository with no
     commits yet gets its HUMAN-CREATED initial artifact revision — the existing
     artifact files committed once, only within the allowed scope (an empty
     commit when nothing exists yet, so a proposal branch always has a base)."""
@@ -805,7 +805,7 @@ def _create_initial_revision(project: Path) -> str:
             check_artifact_content(f"initial artifact {rel!r}", raw.decode("utf-8", "replace"))
         # ``-f`` because the scaffolded project .gitignore ignores the served
         # layers: the explicitly enumerated allowed identities — never ``git
-        # add .`` — establish the human-created baseline (plan §2). Every path
+        # add .`` — establish the human-created baseline. Every path
         # is pinned as a LITERAL pathspec: a human-created filename carrying a
         # wildcard can never match other files.
         literal = [_literal(rel) for rel in paths]
@@ -839,7 +839,7 @@ def _new_proposal_id() -> str:
 
 
 def _check_coherent(project: Path, record: dict) -> None:
-    """The worktree/branch/record coherence gate (spec §4): the proposal's
+    """The worktree/branch/record coherence gate: the proposal's
     worktree must exist, sit on its recorded branch, at exactly the recorded
     candidate revision, with NOTHING uncommitted. Any disagreement marks an
     interrupted transition or human tampering — refuse for human resolution
@@ -1085,7 +1085,7 @@ def _refuse_untracked_new_artifact(project: Path, worktree: Path, rel: str, cand
     """An edit target that exists in the worktree but is NOT part of the
     recorded candidate revision is an interrupted creation's draft (the
     coherence gate tolerates untracked files) — refuse for human resolution
-    and preserve the bytes; overwriting them would destroy evidence (spec §4)."""
+    and preserve the bytes; overwriting them would destroy evidence."""
     target = worktree.joinpath(*PurePosixPath(rel).parts)
     if _lstat(target) is None:
         return  # the normal case: nothing claims the name yet
@@ -1117,7 +1117,7 @@ def edit_proposal(
     resolution and blocks further mutations.
 
     ``core_generated=True`` is the CORE-AUTHORED regeneration seam of the
-    explicit schema refresh (issue #41): the deterministic refresh may change
+    explicit schema refresh: the deterministic refresh may change
     the system-owned generated facts (``ariadne`` blocks, ``resource``) because
     it regenerates them against the operator-approved inputs — no
     caller-facing surface ever passes it."""
@@ -1147,7 +1147,7 @@ def edit_proposal(
         if not core_generated:
             _refuse_forged_claims(
                 rel, content, base_content
-            )  # spec §4: system-owned claims, content half
+            )  # system-owned claims, content half
         _require_git_identity(project)
         _refuse_untracked_new_artifact(project, worktree_root, rel, current)
         _safe_write(worktree_root, rel, content)
@@ -1238,7 +1238,7 @@ def edit_page_batch(
     only for ``knowledge/`` pages.
 
     ``core_generated=True`` is the CORE-AUTHORED regeneration seam of the
-    explicit schema refresh and the revision-2 native finalize (spec0035 §6):
+    explicit schema refresh and the revision-2 native finalize:
     deterministic Core generation may change the system-owned claims
     (``ariadne_profile`` native families, ``core_ref``) it derives against
     operator-approved inputs. It is never caller-facing — the public
@@ -1441,7 +1441,7 @@ def refuse_untracked_scope(project: Path, record: dict) -> None:
     artifact creation (the edit seam writes before it stages), and the
     finalize pass reads pages from disk — indexing an untracked page while it
     never enters the commit would split the effective bundle from the
-    candidate. Human resolution, bytes preserved (spec §4). Untracked files
+    candidate. Human resolution, bytes preserved. Untracked files
     OUTSIDE the artifact scope stay tolerated scratch."""
     proposal = record["id"]
     worktree = project / WORKTREES_REL / proposal
@@ -1470,7 +1470,7 @@ def store_validation(project: Path, evidence: dict) -> Path:
     proposal-record discipline) under the operator-owned ignored
     ``.ariadne/validation/<proposal>/<commit>.json`` — SEPARATE from the
     committed artifact content, so evidence never changes the revision it
-    describes (spec §4, plan §2)."""
+    describes."""
     path = _validation_path(project, evidence["proposal"], evidence["commit"])
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")

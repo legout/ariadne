@@ -1,6 +1,6 @@
 """Project scaffolder (``ariadne-init TARGET``): creates ONE native Lumio
 Knowledge Base under the project's ``knowledge/`` subtree through the SDK's
-public confirmed empty-setup contract (spec0035 §2, ADR-0029) plus the Core
+public confirmed empty-setup contract plus the Core
 input files the fresh project needs — the inert source registry, AGENTS.md
 pointer page, Git-ignore and env templates. It never creates admitted
 artifacts, initializes Git, publishes, or accesses original source documents:
@@ -212,7 +212,7 @@ _ARIADNE_ENTITY_TYPES = (
 )
 
 # Core's own KB categories beyond the SDK's seeded catalog: the page kinds of
-# the ariadne knowledge path (spec0035 §2).
+# the ariadne knowledge path.
 _CORE_CATEGORIES = ("metrics", "policies", "computations", "answer-examples")
 
 
@@ -318,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             print(refusal, file=sys.stderr)
             return 1
 
-    # spec0035 §6: a retired standalone project refuses BEFORE any mutation,
+    # a retired standalone project refuses BEFORE any mutation,
     # with fresh-setup guidance — never a reset or conversion.
     try:
         refuse_unsupported_project(target)
@@ -341,7 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         (".env.example", ENV_EXAMPLE),
         (".gitignore", GITIGNORE),
     ]
-    if args.with_mcp:  # opt-in only (spec §7): the local CLI needs no MCP config
+    if args.with_mcp:  # opt-in only: the local CLI needs no MCP config
         files.append((".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"))
 
     # Fail closed: refuse before any write if a scaffold path, a callback

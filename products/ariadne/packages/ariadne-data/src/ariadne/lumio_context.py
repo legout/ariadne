@@ -1,4 +1,4 @@
-"""Native Lumio binding for admitted Core Bound Releases (spec0035)."""
+"""Native Lumio binding for admitted Core Bound Releases."""
 
 # pyright: reportMissingImports=false
 
@@ -19,8 +19,8 @@ SUPPORT = {
     # table/computation/skill profiles and unrelated extensions still refuse.
     "profiles": ["metric", "policy", "reference"],
     # query_metrics and list_datasets join
-    # the supported integrated operations. A2 (spec0029 §1.3) adds the three
-    # scoped SDK navigation operations; T2 (spec0029 §1.5) adds resolve_term
+    # the supported integrated operations. A2 adds the three
+    # scoped SDK navigation operations; T2 adds resolve_term
     # over the pinned structured References — every other r2 refusal stands.
     "operations": [
         "get_metric",
@@ -49,13 +49,13 @@ def digest(value):
     ).hexdigest()
 
 
-# Frozen per-revision capability tables (spec0032 §10.3): each support
+# Frozen per-revision capability tables: each support
 # revision integer names ONE immutable capability table, validated against
 # the RECORDED revision of each admission — never against the currently
 # newest set. Revision 1 is the legacy contract (a selector and manifest with
-# neither opt-in key); revision 2 (#83) adds the native Dataset/Table/
+# neither opt-in key); revision 2 adds the native Dataset/Table/
 # Computation profile kinds and requires the authored policy_bindings block.
-# Revision 3 (#84) is query-expanded: the three Analyst query operations
+# Revision 3 is query-expanded: the three Analyst query operations
 # join revision 3's frozen table only; the SUPPORT default and the frozen
 # revision-1/2 tables never change, so older matching admissions keep their
 # own contracts and never silently gain operations.
@@ -112,7 +112,7 @@ def capability_table(revision: int) -> dict:
         operations = [*operations, *_REVISION3_OPERATIONS]
         unsupported = [op for op in unsupported if op not in _REVISION3_OPERATIONS]
     if revision >= 4:
-        # spec0035 C4 (#112): the answer_example producer profile and the two
+        # spec0035 C4: the answer_example producer profile and the two
         # Example operations join THIS revision's frozen table only; the
         # SUPPORT default and the immutable revision-1/2/3 tables stay
         # untouched, so older matching admissions never silently gain them.
@@ -142,7 +142,7 @@ def validated_selector(data):
         raise ValueError(
             "unsupported or malformed context_integration.yaml; no standalone fallback"
         )
-    # spec0032 §10.1: the authored selector gains exactly two optional keys —
+    # the authored selector gains exactly two optional keys —
     # an exact-integer support_revision opt-in and the versioned
     # policy_bindings block. Absence of both is the legacy revision 1; an
     # explicit revision 1 forbids the block; revision ≥2 requires it.
@@ -473,7 +473,7 @@ def _policy_binding_errors(root: Path, selected: dict, captured) -> list[str]:
     # §10.1 agreement: every subject consumed by an operation of this
     # revision must have its complete typed closure exactly classified. The
     # governed operations consume every bound metric page and the computation
-    # pages their context assembles (§10.3); at revision 3 the query
+    # pages their context assembles; at revision 3 the query
     # operations additionally consume every captured Table/Dataset profile
     # (§10.5 physical dependencies), so their closures join the same exact
     # classification requirement.
@@ -500,7 +500,7 @@ def _policy_binding_errors(root: Path, selected: dict, captured) -> list[str]:
 
 
 def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, str]]) -> list[str]:
-    """#83 review fix F1 (spec0032 §§3, 5, §10.1): the consumer-OWNING identity
+    """the consumer-OWNING identity
     validation of one captured technical profile — hidden or unreferenced
     pages included, always. Kind-correct resource anchors, agreement of every
     SUPPLIED table identity (core_ref, native resource, observation citation)
@@ -592,7 +592,7 @@ def _technical_identity_errors(where: str, profile, sanctioned: set[tuple[str, s
 
 def candidate(root, kb_root, revision):
     """Reuse the producer's captured schema/catalog gate, then apply the
-    consumer support of the SELECTED support revision (spec0032 §10.1/§10.3)."""
+    consumer support of the SELECTED support revision."""
     selected = selector(root)
     if selected is None:
         return None, []
@@ -903,7 +903,7 @@ def _admission_s3_binding(root: Path, storage_profile, destination: str):
     """Resolve the explicitly selected Knowledge profile at admission: the
     candidate's declared env-NAMES profile, its resolved non-secret binding,
     scope coverage of the exact destination and the native effective target
-    identity — every piece frozen into the composite consent (spec0029 r6)."""
+    identity — every piece frozen into the composite consent."""
     from lumio_wiki.s3_location import S3Location
 
     from ariadne import sources
@@ -980,7 +980,7 @@ def _frozen_s3_runtime(manifest: dict):
 
 
 def _require_integrated_retention(source_context) -> None:
-    """Integrated admission keeps required retention (F1; spec0035 §3/AC12).
+    """Integrated admission keeps required retention.
 
     A deliberately disabled private profile is a standalone-only exception and
     cannot author or admit an integrated release: refuse before any release
@@ -1061,9 +1061,9 @@ def prepare_release(
     # operations, so admitting one requires an SDK that actually provides
     # them — an older installed SDK refuses admission instead of being
     # advertised with capabilities it lacks. An S3 destination additionally
-    # needs the r4 private-admission navigation keyword (plan0029 r29).
+    # needs the r4 private-admission navigation keyword.
     _navigation_gate()
-    # spec0032 §10.3: the manifest's stored support set is the frozen table
+    # the manifest's stored support set is the frozen table
     # of the SELECTED support revision — never the currently newest set.
     support_revision = selected.get("support_revision", 1)
     support = capability_table(support_revision)
@@ -1159,7 +1159,7 @@ def prepare_release(
         "publication_review_digest": publication.review_digest,
     }
     if support_revision >= 2:
-        # spec0032 §10.3: the revision-2 Bound Release gains the two
+        # the revision-2 Bound Release gains the two
         # digest-bound, admission-captured fields — the exact integer the
         # reviewed selector declared and the validated binding inventory
         # captured verbatim from the reviewed Content Commit (the §10.1
@@ -1206,7 +1206,7 @@ class OverallAdmissionError(ValueError):
 def _s3_navigation_capability() -> None:
     """The approved r4 ``metadata_store`` navigation keyword, or an explicit
     refusal: an older local-only SDK generation must never be admitted or
-    advertised as S3-capable (plan0029 r29)."""
+    advertised as S3-capable."""
     import inspect
 
     for function in _navigation_gate():
@@ -1353,7 +1353,7 @@ def verify_release(record, snapshot):
         raise ValueError("Bound Release lacks native Core validation")
     validation = record.get("validation") or {}
     s3_destination = str(manifest.get("destination") or "").startswith("s3://")
-    # spec0032 §10.3: support is verified against the frozen table of the
+    # support is verified against the frozen table of the
     # manifest's RECORDED revision — never the currently newest set. A
     # legacy manifest missing both opt-in fields is revision 1 without
     # rewriting its bytes; a revision newer than this consumer's implemented
@@ -1472,7 +1472,7 @@ def verify_release(record, snapshot):
 
 def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None):
     # ``_now`` is the runtime's multi-metric seam: one assessment instant for
-    # every metric of one query_metrics answer (spec 0011 §2); the public
+    # every metric of one query_metrics answer; the public
     # single-metric call keeps its own clock.
     from lumio_wiki.ariadne_context import disclose_native
 
@@ -1530,7 +1530,7 @@ def metric_context(snapshot, manifest, context_dir, model, metric, *, _now=None)
 
 def _native_computation_from_view(snapshot, model: str, metric: str) -> tuple[str, dict] | None:
     """The authorized snapshot's native Computation page for one governed
-    metric (revision-2 supported route; spec0035 §5): resolved ONLY from the
+    metric (revision-2 supported route): resolved ONLY from the
     exact authorized producer view — the scope-filtered public
     ``ContextSnapshot`` pages — matched by its exact core_ref semantic
     identity through the producer's public frontmatter parse (never a Core
@@ -1653,7 +1653,7 @@ def input_context(manifest, snapshot, operation, resources, *, check_targets=Non
         signals.append(context._page_view(pinned.path, view["native"], now))
         # the contract-native evidence disclosure, verbatim: one caveat per
         # concrete advisory warning of the same assessed pages — no new
-        # numerical measurement interpreter (spec0032 §10.4)
+        # numerical measurement interpreter
         caveats.extend(
             f"{warning['path']}: {warning['code']}"
             for warning in view["context_signals"]["warnings"]
@@ -1676,7 +1676,7 @@ def input_context(manifest, snapshot, operation, resources, *, check_targets=Non
     # subjects: the admitted, verified inventory IS the classification — a
     # source-level obligation applies only where explicitly bound to this
     # operation (§4: never a calculation rule turned into a universal
-    # filter), and admission (§10.1) proved every classified policy lies in
+    # filter), and admission proved every classified policy lies in
     # its subject's complete typed closure
     policy_pages = {page.entity_id: page for page in snapshot.pages if page.kind == "policy"}
     policies: list[dict] = []
@@ -1757,11 +1757,11 @@ def input_context(manifest, snapshot, operation, resources, *, check_targets=Non
     }
 
 
-# --------------------------------------------- A2 scoped SDK navigation (§1.3)
+# --------------------------------------------- A2 scoped SDK navigation
 
 
 def _navigation_gate():
-    """The three approved scoped-navigation SDK operations (spec0009 r3), or
+    """The three approved scoped-navigation SDK operations, or
     an explicit refusal: an installed SDK that lacks them must never be
     advertised as supporting navigation it cannot serve."""
     try:
@@ -1804,7 +1804,7 @@ def _navigation_identity(manifest):
 
 def _list_row(page, manifest, now, meta):
     """One metadata-only list entry: existing Core outer fields plus the SDK
-    identity additions; no page body (spec0029 §1.3)."""
+    identity additions; no page body."""
     from ariadne import context
 
     return {
@@ -1893,7 +1893,7 @@ def search_context(manifest, query, limit=10):
     """Native Lumio lexical search over exactly the visible page set of the
     pinned Bound Release: SDK ranking, verbatim canonical passages with
     inclusive 1-based coordinates and fence-aware sections, and visible-only
-    completeness counters (spec0029 §1.3)."""
+    completeness counters."""
     from lumio_wiki.ariadne_context import disclose_native
 
     from ariadne import context
@@ -1926,7 +1926,7 @@ def search_context(manifest, query, limit=10):
 
 def search_examples(manifest, query, limit=10, include_history=False, include_sql=False):
     """Search admitted Answer Examples in the pinned Bound Release through
-    the scoped SDK views (spec0035 §4, AC8/14): visibility scope applies
+    the scoped SDK views: visibility scope applies
     before matching, the producer ``answer_example`` kind filters the typed
     scoped view BEFORE ranking and limiting, staleness is evaluated at read
     time against the pinned cited bytes, and the exact submitted SQL provenance

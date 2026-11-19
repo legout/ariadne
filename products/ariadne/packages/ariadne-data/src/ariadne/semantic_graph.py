@@ -141,7 +141,7 @@ class MetricNode:
     ownership from their dependencies instead. ``fill`` (an explicit metric
     fill rule) applies to the OUTPUT only, never to a hidden ratio denominator;
     ``window`` moves the metric's declared expression to the post-aggregate
-    window stage (issue #29)."""
+    window stage."""
 
     name: str
     owner: str | None
@@ -340,7 +340,7 @@ def _load_datasets(model: dict, model_name: str, file: str, datasets: dict[str, 
 
 
 def _parse_window(raw: Any, where: str) -> WindowDecl | None:
-    """One declared window form (issue #29): strict keys, one of the five
+    """One declared window form: strict keys, one of the five
     declared kinds, a positive integer size for the sized forms, an aggregate
     function for the aggregating forms and an order direction for ranking."""
     if raw is None:
@@ -446,7 +446,7 @@ def _resolve_field_dataset(
 
 
 def _assert_acyclic(deps: dict[str, tuple[str, ...]]) -> None:
-    """Metric dependency cycles fail at load, project-wide (spec rev 1 §5)."""
+    """Metric dependency cycles fail at load, project-wide."""
     done: set[str] = set()
 
     def visit(name: str, stack: tuple[str, ...]) -> None:
@@ -520,7 +520,7 @@ def _resolve_metrics(
             owner_of[name] = owners.pop()
         elif not owners:
             # COUNT(*)-style aggregate with no column reference: only a
-            # single-dataset model resolves it unambiguously (spec rev 1 §2).
+            # single-dataset model resolves it unambiguously.
             if len(model_datasets) != 1:
                 raise GraphError(
                     f"{where}: expression references no dataset column and the model "
@@ -536,7 +536,7 @@ def _resolve_metrics(
 
     # Derived metrics inherit a single owning dataset when their whole
     # dependency closure stays inside it (the same fixed point compilation
-    # applies); cross-fact chains compile with the planner (#27).
+    # applies); cross-fact chains compile with the planner.
     changed = True
     while changed:
         changed = False
@@ -693,7 +693,7 @@ def _resolve_relationships(
 
 
 def _assert_topology(edges: list[RelationshipEdge]) -> None:
-    """Spec rev 1 §3: the join graph must be bounded, acyclic and unambiguous —
+    """the join graph must be bounded, acyclic and unambiguous —
     no directed cycles, and at most one simple path between any dataset pair (a
     diamond of individually well-formed edges leaves the join path ambiguous).
     Simple-path counting is exponential in pathological topologies; hand-authored
@@ -861,7 +861,7 @@ def _resolve_conformed(
         if time_roles == {True} and len(native_grains) != len(members):
             # a declared conformed primary business time carries its native
             # grain on every member — the planner refuses requests finer than
-            # the coarsest of them (issue #29)
+            # the coarsest of them
             missing = sorted(dataset for dataset, _field in members if dataset not in native_grains)
             raise GraphError(
                 f"{where} conformed dimension '{name}': a conformed primary business "

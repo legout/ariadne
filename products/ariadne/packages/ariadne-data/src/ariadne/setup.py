@@ -360,7 +360,7 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
         args.private_profile.absolute() if args.private_profile is not None else None
     )
     try:
-        # AC10 / spec0035 §6: retired or incomplete layouts refuse BEFORE any
+        # retired or incomplete layouts refuse BEFORE any
         # KB/profile/source write; plain empty projects stay supported.
         proposals.refuse_unsupported_project(root)
         knowledge = root / "knowledge"

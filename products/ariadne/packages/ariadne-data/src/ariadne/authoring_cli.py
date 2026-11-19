@@ -511,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.proposal, request, part=args.part
             )
         elif args.command == "reconcile":
-            # HUMAN-ONLY (issue #37/G5): records a local rebase/merge; never an
+            # HUMAN-ONLY: records a local rebase/merge; never an
             # MCP/Agent tool and never an automatic merge.
             result = reconcile(args.project, args.proposal, args.expected_revision, args.revision)
         elif args.command == "contribution-review":

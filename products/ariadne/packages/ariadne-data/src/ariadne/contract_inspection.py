@@ -1,5 +1,5 @@
 """The bound approved-source observation and SQL-execution seam of the ODCS
-consumer profile (spec 2028 §§4–6, issue #77/C1).
+consumer profile.
 
 Only this module opens sources for contract inspection. It combines the
 static binding resolution (contract/binding/model agreement, declaration-level
@@ -9,7 +9,7 @@ quality rules executed under the operator's existing inspection ceilings
 through :class:`ariadne.execution.DeadlineBudget` and the reviewed
 ad-hoc SQL authority, narrowed to the selected asset. Contract servers,
 URLs, variable tokens and binding files never create a source, replace an
-approved endpoint or supply credentials (ADR-0025): the only connection is
+approved endpoint or supply credentials: the only connection is
 the operator-approved resolved identity built by the authoring seam.
 
 Pure document/profile validation lives in :mod:`ariadne.contracts`; this
@@ -168,7 +168,7 @@ def _dataset_agrees(asset: dict, source: str, columns=()) -> tuple[bool, str]:
     """The binding must agree with the selected OSI dataset's actual physical
     source: its single physical table is exactly the bound asset. A derived
     or joined source whose relationship the native resolver cannot establish
-    is unsupported, not guessed equivalent (spec 2028 §3)."""
+    is unsupported, not guessed equivalent."""
     tables = _physical_source_tables(source)
     if not tables:
         return False, (
@@ -417,7 +417,7 @@ def _quality_requirements(
     """Enumerate the bound object's applicable declared quality rules: SQL
     rules carry their resolved producer server; library/text/custom rules are
     preserved but explicitly unsupported — no severity or selection flag drops
-    a declared requirement (spec 2028 §5)."""
+    a declared requirement."""
     requirements: list[dict] = []
     errors: list[str] = []
     where = f"binding {binding.id!r}"
@@ -516,7 +516,7 @@ def static_contract_checks(tree: Path) -> tuple[dict, list[str]]:
     """The OFFLINE contract checks of one materialized candidate tree: every
     contract document under the pinned profile, the fixed binding document,
     exact contract/object resolution, property-mapping completeness and the
-    binding's agreement with the selected OSI dataset (spec 0028 §§2–3).
+    binding's agreement with the selected OSI dataset.
     Returns (static evidence, errors) — errors carry artifact and instance
     paths and fail validation; nothing here opens a connection."""
     evidence: dict = {"present": False, "documents": [], "bindings": []}
@@ -591,7 +591,7 @@ def _narrowed_authority(con, table: dict) -> sql_authority.AdHocAuthority:
     """The ad-hoc SQL authority narrowed to EXACTLY the selected asset: the
     reviewed function/relation checks of ``sql_authority`` apply to the whole
     expanded tree, and the permitted relation scope is the bound table alone —
-    joins and foreign reads are refused before execution (spec 2028 §5)."""
+    joins and foreign reads are refused before execution."""
     current = con.execute("SELECT current_catalog(), current_schema()").fetchone() or ("", "")
     return sql_authority.AdHocAuthority(
         relations=frozenset({(table.get("catalog"), table["schema"], table["name"])}),
@@ -608,7 +608,7 @@ def _expand_placeholders(
     binding: each expands to ONE quoted identifier, never an expression,
     path or arbitrary text. General ``${...}`` variables and other
     unresolved placeholders are unsupported; no template engine runs and no
-    environment value is consulted (spec 0028 §5)."""
+    environment value is consulted."""
     if not isinstance(query, str) or not query.strip():
         return "", "the rule carries no query — an SQL rule is one SELECT over the selected dataset"
     text = query
@@ -650,7 +650,7 @@ def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
     """Authorize, execute and compare one SQL-quality rule. The expanded
     tree passes the existing ad-hoc authority (narrowed to the selected
     asset) BEFORE any execution; one guarded single statement must return
-    exactly one row/column finite numeric or boolean scalar (spec 2028 §5)."""
+    exactly one row/column finite numeric or boolean scalar."""
     column = (
         _quote(requirement["property_column"])
         if requirement.get("property_column") is not None
@@ -721,7 +721,7 @@ def _observe_binding(
     """Observe ONE bound dataset against the approved catalog: presence,
     per-property type/physical-type checks, full-dataset required-NULL counts
     and the SQL-quality rules — each with its own honest outcome. Never a
-    whole-registry scan (spec 0028 §§4–5)."""
+    whole-registry scan."""
     contract_object, _error = _find_object(document, binding.object_id)
     assert contract_object is not None  # static resolution already refused otherwise
     declaration, _declaration_errors = _declaration_requirements(contract_object, binding)
@@ -783,7 +783,7 @@ def _observe_binding(
             "dependencies": dependencies,
         }
     assert table is not None
-    # Parent-dispositioned profile guard (spec 0028 §5): SQL-quality rules
+    # Parent-dispositioned profile guard: SQL-quality rules
     # evaluate only over an approved NATIVE DuckDB source. A duckdb-labelled
     # producer server cannot make a non-native approved source (a file-view
     # projection) a SQL-quality engine — those rules are unsupported, never
@@ -1122,7 +1122,7 @@ def observe_contracts(
     def _unavailable_observation(binding: Binding, detail: str) -> dict:
         """The honest unavailable observation: the permitted source/observation
         could not be obtained (an exhausted budget or an unopenable setup) —
-        never a compliant claim (spec 0028 §6)."""
+        never a compliant claim."""
         return {
             "binding": binding.id,
             "contract": {"id": binding.contract_id, "version": binding.contract_version},
@@ -1161,7 +1161,7 @@ def observe_contracts(
     except ValueError as exc:
         # DeadlineExhausted (its subclass) or a redacted setup refusal — the
         # permitted observation could not be obtained: every binding reports
-        # unavailable, never compliant (spec 0028 §6).
+        # unavailable, never compliant.
         evidence["observations"] = [
             _unavailable_observation(
                 binding,

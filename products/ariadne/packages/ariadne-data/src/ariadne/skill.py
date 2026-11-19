@@ -1,4 +1,4 @@
-"""``ariadne-skill`` — the packaged agent skill (ADR-0011, spec rev 10 §8.21).
+"""``ariadne-skill`` — the packaged agent skill.
 
 The wheel ships the skill as package data (``ariadne/skill_assets/``:
 SKILL.md + the grain-rubric reference), version-locked to the package.

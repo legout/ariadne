@@ -10,7 +10,7 @@ reads no environment variable and resolves nothing remote — the approved
 source observation seam lives in :mod:`ariadne.contract_inspection`.
 
 Document validity, binding validity, supported evaluation and observed
-conformance are separate facts (ADR-0025): a valid four-field document is
+conformance are separate facts: a valid four-field document is
 never source-compliant evidence, and a schema-valid feature outside this
 evaluator stays valid ODCS while being explicitly unsupported here.
 """
@@ -28,7 +28,7 @@ from typing import Any
 import yaml
 from jsonschema.validators import extend, validator_for
 
-# The immutable official pin (spec 0028 §2): the unmodified upstream
+# The immutable official pin: the unmodified upstream
 # ``schema/odcs-json-schema-v3.2.0.json`` from commit f0bdad9, Git blob
 # f934075, exactly the recorded bytes. A drifted package refuses validation
 # rather than validating against unknown schema bytes; schema updates are
@@ -44,7 +44,7 @@ ODCS_KIND = "DataContract"
 CONSUMER_PROFILE = "ariadne-odcs-consumer/2"
 
 # The exact logical-type → observed-scalar-family mapping of the supported
-# field profile (spec 0028 §4). NOT profiler.types_compatible (which owns
+# field profile. NOT profiler.types_compatible (which owns
 # identifier comparability): unknown or unavailable type metadata is never
 # proof of compatibility.
 _LOGICAL_FAMILIES: dict[str, frozenset[str]] = {
@@ -107,7 +107,7 @@ _PHYSICAL_ALIASES = {
     "logical": "boolean",
 }
 
-# Unsupported declared constraints of the field profile (spec 0028 §4):
+# Unsupported declared constraints of the field profile:
 # preserved and displayed per property, never silently ignored or inferred
 # fulfilled from a different SQL rule.
 _UNSUPPORTED_PROPERTY_FLAGS = ("unique", "primaryKey")
@@ -119,7 +119,7 @@ class ContractError(ValueError):
 
 class _UniqueKeyLoader(yaml.SafeLoader):
     """A YAML loader that refuses ambiguous duplicate mapping keys instead of
-    silently choosing the last interpretation (spec 0028 §2)."""
+    silently choosing the last interpretation."""
 
 
 def _construct_mapping(loader: yaml.Loader, node: yaml.MappingNode, deep: bool = False):
@@ -195,7 +195,7 @@ def load_pinned_schema() -> dict:
 def _json_compatible(value: object, where: str) -> None:
     """A contract document carries one JSON-compatible object: non-JSON YAML
     values (dates, sets, bytes, non-string keys, NaN) are refused rather than
-    silently coerced (spec 0028 §2)."""
+    silently coerced."""
 
     def check(node: object, path: str) -> None:
         if node is None or isinstance(node, (bool, int, str)):
@@ -252,7 +252,7 @@ def parse_contract_document(text: str, where: str) -> dict:
 def _schema_errors(document: dict) -> list[str]:
     """The pinned official schema's structural Draft 2019-09 assertions.
     ``format`` stays an annotation: no environment-dependent format checker
-    may silently change document validity (spec 0028 §2)."""
+    may silently change document validity."""
     schema = load_pinned_schema()
     validator_class = validator_for(schema)
     # JSON integer semantics also cover an exactly integral decimal literal.
@@ -439,7 +439,7 @@ def _check_references(document: dict, where: str, errors: list[str]) -> None:
 
 @dataclass
 class DocumentResult:
-    """The separate document-level facts of one contract file (spec 0028 §6):
+    """The separate document-level facts of one contract file:
     structural validity under the pinned schema, the explicit version
     dispatch, and the producer identity — never a data-conformance claim."""
 
@@ -464,7 +464,7 @@ class DocumentResult:
             "api_version": self.api_version,
             # ownership is PRESERVED as declared and honestly undeclared when
             # absent — never inferred from a source alias, Git author or
-            # filename (spec 0028 §2)
+            # filename
             "team": self.team,
             "ownership": "declared" if self.team is not None else "undeclared",
         }
@@ -475,7 +475,7 @@ def validate_document(text: str, where: str) -> tuple[dict | None, DocumentResul
     official schema plus the native semantic rules. Returns (document,
     result); ``document`` is None when the text does not parse. A different
     ``apiVersion`` label fails the explicit version dispatch even though the
-    pinned schema accepts some older labels (spec 0028 §2)."""
+    pinned schema accepts some older labels."""
     result = DocumentResult(
         path=where,
         digest=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -530,7 +530,7 @@ def observed_type_family(observed: str) -> tuple[str | None, dict]:
     """The supported observed scalar family of one catalog type string plus
     its retained variant distinctions (width/precision/scale/time-zone) —
     ``None`` when the type is unknown or unavailable, which is never proof of
-    compatibility (spec 0028 §4)."""
+    compatibility."""
     text = (observed or "").strip().lower()
     variant: dict[str, Any] = {}
     from ariadne.query_results import classify_output_type
@@ -664,7 +664,7 @@ def compare_physical_type(declared: Any, observed: str) -> tuple[str, str]:
 # equates ``mustBeBetween: [a, b]`` with ``mustBeGreaterThan a`` plus
 # ``mustBeLessThan b``: this profile uses OPEN interval endpoints, and the
 # complement for ``mustNotBeBetween``. Bounds must be increasing; they are
-# never sorted or repaired (spec 0028 §5).
+# never sorted or repaired.
 QUALITY_OPERATORS = (
     "mustBe",
     "mustNotBe",
@@ -769,7 +769,7 @@ def compare_quality_rule(rule: dict, value: object) -> tuple[str, str]:
 
 # ------------------------------------------------------------- binding grammar
 
-# The native binding document (spec 0028 §3): repository-local consumer
+# The native binding document: repository-local consumer
 # configuration, SEPARATE from the producer contract. ``server_id`` is
 # required when SQL-quality rules apply to the binding's object.
 BINDING_VERSION = 1

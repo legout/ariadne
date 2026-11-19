@@ -222,7 +222,7 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
 
 def _example_counts(snapshot: Path | None, record: dict | None) -> dict:
     """The admitted release's native Answer-Example count from the pinned
-    scoped SDK view (C6, spec0035 C4): producer-kind pages of the admitted KB
+    scoped SDK view: producer-kind pages of the admitted KB
     under the release's authorized visibility scope — never a filename or
     directory guess, never a hidden-page disclosure, never a raw KB parse.
     The pinned release is admitted, so every counted page is admitted

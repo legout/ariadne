@@ -6,10 +6,10 @@ refusal every result operation refuses through.
 This helper is today's four result operations (``get_metric``,
 ``define_metric``, ``query_metrics``, ``query_detail``) plus their CLI/MCP
 adapters — not a generic response framework. It imports no MCP or workflow
-module (plan 0014 §2): the MCP adapter supplies its own actual-representation
+module: the MCP adapter supplies its own actual-representation
 measure; the core only calls it.
 
-The ceilings (spec 0014 §4) are operator-owned, never request fields:
+The ceilings are operator-owned, never request fields:
 
 ===========  ============================================  =====================
 Key          Bound                                          Built-in ceiling
@@ -52,7 +52,7 @@ DEFAULT_QUERY_LIMITS: dict[str, float | int] = {
 QUERY_LIMIT_KEYS = frozenset(DEFAULT_QUERY_LIMITS)
 _INT_LIMIT_KEYS = ("max_rows", "response_bytes", "cell_bytes", "mcp_response_bytes")
 
-# Stable refusal codes (spec 0014 §5).
+# Stable refusal codes.
 RESULT_ROW_LIMIT = "result_row_limit"
 RESULT_BYTE_LIMIT = "result_byte_limit"
 RESULT_CELL_LIMIT = "result_cell_limit"
@@ -177,7 +177,7 @@ def _bound_columns(columns: list[str]) -> list[str]:
 
 
 class QueryResultError(ValueError):
-    """The all-or-nothing refusal (spec 0014 §5): no result rows,
+    """The all-or-nothing refusal: no result rows,
     ``complete: false``, a stable code, the exhausted bound and observed
     lower bounds. The refusal representation itself is small by construction
     (fixed messages, counts only — the rejected remainder is never scanned or
@@ -197,7 +197,7 @@ class QueryResultError(ValueError):
         self.observed = dict(observed or {})
 
     def refusal(self) -> dict:
-        """The transport-neutral structured refusal body (spec 0014 §5).
+        """The transport-neutral structured refusal body.
         Result refusals never save an authored artifact.
         """
         return {
@@ -302,7 +302,7 @@ def encode_scalar(value: Any) -> Any:
 def cell_json_bytes(value: Any) -> int:
     """Exact serialized size of one already-encoded cell: UTF-8 bytes after
     the actual serializer's escaping (quotes included) — never the character
-    count or an estimate of the raw size (spec 0014 §4)."""
+    count or an estimate of the raw size."""
     return len(json.dumps(value).encode("utf-8"))
 
 
@@ -346,7 +346,7 @@ def effective_limits(section: dict | None) -> dict:
     ceilings (tightening-only) and return the effective limits. ``None`` is
     the built-in default. Rejects unknown keys, booleans, zero, negatives,
     NaN/inf and attempted increases; then rejects a byte budget too small to
-    carry even the compact refusal before it is ever used (spec 0014 §5)."""
+    carry even the compact refusal before it is ever used."""
     limits = dict(DEFAULT_QUERY_LIMITS)
     if section is None:
         return limits
@@ -474,7 +474,7 @@ def bounded_error_object(error: dict, budget: float) -> dict:
     bytes serialized (fix pass 2, finding 2a: the effective host budget, and
     every appended field is accounted): a fitting error keeps its verbatim
     content; an oversized representation is replaced wholesale by the bounded
-    explicit refusal (spec 0014 §5)."""
+    explicit refusal."""
     if len(json.dumps({"error": error}, default=json_default).encode("utf-8")) <= budget:
         return error
     bounded = oversized_error_refusal()
@@ -485,7 +485,7 @@ def bounded_error_object(error: dict, budget: float) -> dict:
 
 
 def completeness(returned_rows: int) -> dict:
-    """The additive fitting-answer metadata (spec 0014 §5): complete for the
+    """The additive fitting-answer metadata: complete for the
     caller's full logical request (``scope: requested_query``), including any
     explicit post-aggregate limit — not all source rows."""
     return {

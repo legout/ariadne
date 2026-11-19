@@ -1,6 +1,6 @@
 """Shared document conversion and credential-pattern helpers.
 
-Document onboarding itself is Lumio-native (spec0035/ADR-0029): ``extract_source``
+Document onboarding itself is Lumio-native: ``extract_source``
 plus ``CandidateRequest``/``ingest_candidate`` own source binding, authored
 pages and original retention, and the retired ``ariadne-ingest`` orchestration
 (distillation, reconciliation, proposal writes, CLI) is gone. This module keeps
@@ -42,7 +42,7 @@ def _convert_native(path: Path) -> str:
 
 
 def _convert_pdf(path: Path) -> str:
-    # Lazy import: the [documents] extra is optional (ADR-0009); a missing
+    # Lazy import: the [documents] extra is optional; a missing
     # converter must surface as the actionable install hint, not a crash.
     # liteparse's package __init__ exposes LiteParse through a runtime
     # __getattr__ mapping pyright cannot follow — import the real submodule.
