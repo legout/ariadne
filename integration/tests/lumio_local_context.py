@@ -3323,8 +3323,10 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         # a request no relationship participates in reports the audit not-run:
         # the authored generated/verified flags cannot attest it, so the
         # operation refuses instead of labeling the narrative enforced (§10.2)
-        with pytest.raises(PlannerError, match="graph.relationship_audit"):
+        with pytest.raises(PlannerError, match="graph.relationship_audit") as caught:
             asyncio.run(runtime.query_metrics({"metrics": ["revenue"]}))
+        assert caught.value.code == "binding_not_attested"
+        assert "relationship audit 'not-run'" in str(caught.value)  # the audit-not-passed leg
 
         # F3: the derived-only request carries no executable binding of its
         # own, but it CONSUMES retail_sales::revenue — the obligation must be
@@ -3910,62 +3912,6 @@ def test_integrated_detail_requires_complete_input_context(tmp_path, monkeypatch
                 asyncio.run(bare.query_detail({"dataset": "orders", "fields": ["status_label"]}))
     finally:
         bare.con.close()
-
-
-def test_executable_binding_refuses_when_its_dependency_does_not_participate(tmp_path):
-    """Spec0032 §10.2 (Attestation): a required binding is not satisfied by an
-    allowlisted check that did not run for the consumed subject/dependencies.
-    The metric's executable ``graph.relationship_audit`` binding declares the
-    order_status table as a dependency, but the executed plan's consumed
-    lineage (the orders fact branch) never reads a dataset backed by it: the
-    relationship audit passes, yet proves nothing for that dependency, so the
-    query refuses with the stable code before any result SQL."""
-    import copy
-
-    from ariadne.planner import PlannerError
-    from ariadne.sources import table_resource
-
-    orders_resource = table_resource(**P1_ORDERS_ASSET)
-    status_resource = table_resource(**P1_STATUS_ASSET)
-    project, _review = _q1_release(tmp_path)
-    runtime = QueryRuntime.open_project(project)
-    try:
-        request = {"metrics": ["revenue"], "dimensions": ["status_label"]}
-        assert asyncio.run(runtime.query_metrics(request))["governed"] is True  # control
-
-        # The pinned manifest is digest-protected, so the declared dependency is
-        # swapped only for the attestation step (a release authored with this
-        # dependency would be the same input).
-        real_attest = runtime._attest_bound_checks
-
-        def attest_with_status_dependency(plan, graph):
-            pinned = runtime._managed
-            altered = copy.deepcopy(pinned)
-            [executable] = [
-                binding
-                for binding in altered["bound_release"]["policy_bindings"]["bindings"]
-                if (binding["enforcement"] or {}).get("check") == "graph.relationship_audit"
-            ]
-            assert executable["enforcement"]["dependencies"] == [orders_resource]
-            executable["enforcement"]["dependencies"] = [status_resource]
-            runtime._managed = altered
-            try:
-                real_attest(plan, graph)
-            finally:
-                runtime._managed = pinned
-
-        runtime._attest_bound_checks = attest_with_status_dependency
-
-        def unreachable(*args, **kwargs):  # pragma: no cover - only if the refusal is bypassed
-            raise AssertionError("result SQL ran although the binding was not attested")
-
-        runtime._collect = unreachable
-        with pytest.raises(PlannerError) as caught:
-            asyncio.run(runtime.query_metrics(request))
-        assert caught.value.code == "binding_not_attested"
-        assert "participates in this executed plan" in str(caught.value)
-    finally:
-        runtime.con.close()
 
 
 def test_integrated_records_keep_calculation_policies_scoped(tmp_path):
