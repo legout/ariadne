@@ -74,7 +74,6 @@ jobs:
           /tmp/core-pair/bin/python -m pytest -q \
             --ignore=tests/test_s3_lakehouse.py \
             --ignore=tests/test_s3_storage_access.py \
-            --ignore=tests/test_s3_storage_profiles.py \
             "$GITHUB_WORKSPACE/integration/tests/lumio_metric_mvp.py" \
             "$GITHUB_WORKSPACE/integration/tests/lumio_managed_sources.py" \
             "$GITHUB_WORKSPACE/integration/tests/lumio_contribution_review.py" \
