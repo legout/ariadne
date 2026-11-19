@@ -69,6 +69,8 @@ jobs:
           uv venv --python 3.14 /tmp/core-pair
           uv pip install --python /tmp/core-pair/bin/python \
             "./dist/core/$WHEEL[mcp,dev,spreadsheets]" "./dist/sdk/$SDK"
+      - name: Install DuckDB httpfs extension (offline S3 storage-profile tests load it)
+        run: /tmp/core-pair/bin/python -c "import duckdb; duckdb.sql('INSTALL httpfs')"
       - name: Core native test selection (pair-installed, member config)
         run: |
           /tmp/core-pair/bin/python -m pytest -q \
