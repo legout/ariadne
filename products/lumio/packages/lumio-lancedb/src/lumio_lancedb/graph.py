@@ -1,4 +1,4 @@
-"""Disposable LanceDB Entity and Claim graph projections (issue #171, ADR-0021).
+"""Disposable LanceDB Entity and Claim graph projections.
 
 Materializes the Knowledge Base's Entities and Claims as two LanceDB tables
 beside the Evidence/page tables: ``entities`` (one row per stable Entity —
@@ -17,7 +17,7 @@ The projections are disposable and fingerprint-bound, never canonical:
   produces, so traversal stays in memory — never one LanceDB query per hop.
 * Missing, corrupt, stale, or fingerprint-mismatched tables never raise:
   ``load_graph_state`` returns ``None`` so the caller falls back to the
-  MessagePack artifact or deterministic in-memory derivation (ADR-0021).
+  MessagePack artifact or deterministic in-memory derivation.
 
 Semantic candidate retrieval (vectors over these tables) requires an
 embedder and is deliberately not built here; scalar and lexical graph use
@@ -244,7 +244,7 @@ def _graph_edge_rows(kb: Any, fingerprint: SourceFingerprint) -> list[dict]:
                 }
             )
     # Extracted Reference rows: non-canonical discovery topology, marked
-    # separately and never promoted to Claims (ADR-0011, ADR-0021). The
+    # separately and never promoted to Claims. The
     # discovery adjacency holds exactly the reference edges that resolved, so
     # it — not the raw extraction list — is the authoritative source.
     for subject_key, edges in sorted(index.discovery_adjacency.items()):
@@ -343,7 +343,7 @@ def has_graph_tables(
     """Health probe: both graph tables exist, and optionally match a fingerprint.
 
     Extends the local/remote :class:`~lumio_lancedb.location.IndexLocation`
-    health contract for the graph projections (issue #171): verifies table
+    health contract for the graph projections: verifies table
     presence through a real connection (unlike the sidecar-only
     ``has_index``), and — when ``expected_fingerprint`` is given — that the
     recorded index fingerprint matches, so a stale projection is reported
@@ -389,7 +389,7 @@ def _edge_from_row(row: dict) -> GraphEdge | None:
             scope=GRAPH_EDGE_SCOPE_CANONICAL,
         )
     # Extracted Reference row: never carries Claim identity; carries source
-    # provenance with a bounded 1-based line range (ADR-0021).
+    # provenance with a bounded 1-based line range.
     if row["predicate"] or row["status"]:
         raise _CorruptGraphTable("extracted-reference row carries Claim identity")
     if scope != GRAPH_EDGE_SCOPE_DISCOVERY:
@@ -453,7 +453,7 @@ def load_graph_state(
             return None
         table = db.open_table(GRAPH_EDGE_TABLE_NAME)
         rows = table.to_arrow().to_pylist()
-        # Per-table provenance (issue #173): every row must be recorded for
+        # Per-table provenance: every row must be recorded for
         # exactly the expected fingerprint. A table replaced or partially
         # rebuilt under a current index sidecar is stale and never serves.
         for row in rows:

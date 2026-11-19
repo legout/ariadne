@@ -8,7 +8,7 @@ imports this package; callers inject :class:`LanceDBRetrievalAdapter` into a
 
 The local embedding extra (``lumio-lancedb[embeddings]``) pulls in
 ``sentence-transformers`` and Torch; Torch stays out of the base adapter and
-out of ``lumio-wiki`` (ADR-0010).
+out of ``lumio-wiki``.
 """
 
 from __future__ import annotations

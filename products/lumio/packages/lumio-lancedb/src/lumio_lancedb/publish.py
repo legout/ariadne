@@ -1,4 +1,4 @@
-"""Remote LanceDB index publication for S3 Published Versions (issue #163).
+"""Remote LanceDB index publication for S3 Published Versions.
 
 ``lumio-wiki`` publishes one complete immutable S3 Published Version and gates
 activation on every requested artifact, but it never imports ``lumio-lancedb``
@@ -65,7 +65,7 @@ def remote_publication_builder(
         the lexical BM25 + page tables only.
 
     The returned closure raises on any build or health failure, which blocks
-    activation of the Published Version (issue #163).
+    activation of the Published Version.
     """
 
     def _build(
@@ -85,7 +85,7 @@ def remote_publication_builder(
         )
         adapter = LanceDBRetrievalAdapter()
         adapter.build_index(list(pages), location, embedder=embedder, fingerprint=fingerprint)
-        # Graph projections (issue #171): materialize entities/graph_edges
+        # Graph projections: materialize entities/graph_edges
         # from the loaded, fingerprinted Knowledge Base snapshot the
         # publisher validated — never from a partially read page list.
         if kb is not None:
@@ -96,7 +96,7 @@ def remote_publication_builder(
         # tables are requested whenever the publisher supplied the Knowledge
         # Base, so a missing/incomplete graph projection blocks activation
         # (issue #171: requested tables complete before activation). Graph
-        # health is fingerprint-bound (issue #173): a projection recorded for
+        # health is fingerprint-bound: a projection recorded for
         # different content is stale and blocks activation like any other
         # incomplete artifact.
         db = location.connect()
@@ -122,7 +122,7 @@ def remote_publication_builder(
                     f"expected {fingerprint.digest})"
                 )
             # Per-table provenance: each graph table records the fingerprint
-            # it was built for (issue #173). A table replaced or rebuilt
+            # it was built for. A table replaced or rebuilt
             # under a current sidecar is stale and blocks activation.
             for name in (ENTITY_TABLE_NAME, GRAPH_EDGE_TABLE_NAME):
                 head = db.open_table(name).head(1).to_pylist()

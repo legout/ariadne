@@ -13,7 +13,7 @@ immutable S3 Published Version's ``derived/lance/`` prefix. Both are expressed
 as a typed :class:`~lumio_lancedb.location.IndexLocation` so build and search
 work uniformly; a missing or unhealthy index selects truthful zero-index
 retrieval over the same snapshot and records the fallback in the Retrieval
-Trace (ADR-0013).
+Trace.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ VECTOR_TABLE_NAME = "evidence_vectors"
 # The Path-based ``lumio_wiki`` helpers are re-exported above for callers that
 # still work with a local directory; internally every build/search path goes
 # through an :class:`IndexLocation` so the sidecars move beside the tables on a
-# local filesystem OR an object store (ADR-0013). A mismatch between the
+# local filesystem OR an object store. A mismatch between the
 # recorded fingerprint / model identity and the current source is rejected so a
 # stale or rebuilt-with-a-different-model index can never silently serve.
 # ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ def _zero_index_fallback(
     The LanceDB index is progressive enhancement: when it is missing or
     unhealthy, retrieval must still answer over the same snapshot rather than
     crash or return nothing. The fallback records an ``index-fallback`` stage
-    in every result's trace so the degradation is observable (ADR-0013).
+    in every result's trace so the degradation is observable.
     """
     reason = "missing" if missing else "unavailable"
     detail = (
@@ -389,7 +389,7 @@ def _eligible_page_predicate(paths: set[str]) -> str:
     """Build a LanceDB SQL ``page_path IN (...)`` predicate for eligible pages.
 
     ``paths`` is the non-empty set of eligible Compiled Page paths selected by
-    Discovery Graph expansion (issue #112). Single quotes are SQL-escaped by
+    Discovery Graph expansion. Single quotes are SQL-escaped by
     doubling so page paths cannot break out of the string literal. The caller
     short-circuits an empty eligible set to ``[]`` before reaching here.
     """
@@ -401,7 +401,7 @@ def _apply_eligible_filter(search, eligible_paths: set[str] | None):
     """Apply the eligible-page prefilter to a LanceDB search builder, or pass through.
 
     Centralizes the ``eligible_paths`` -> ``.where(...)`` application so the
-    lexical and semantic ranking paths cannot drift (issue #112). ``None`` means
+    lexical and semantic ranking paths cannot drift. ``None`` means
     no filtering (every page eligible); the caller short-circuits an empty set.
     """
     if eligible_paths is not None:
@@ -419,7 +419,7 @@ def search_lexical_index(
     """Search the lexical index and return citation-ready results.
 
     When ``eligible_paths`` is provided, only Evidence from those Compiled
-    Pages is ranked (issue #112): LanceDB applies the filter as a prefilter so
+    Pages is ranked: LanceDB applies the filter as a prefilter so
     ``limit`` binds over eligible-only Evidence. ``None`` means every page.
     """
     if limit <= 0:
@@ -510,7 +510,7 @@ def build_semantic_index(
 
     Stores normalized vectors in a dedicated LanceDB table alongside the
     lexical FTS index and persists the embedding-model identity so later
-    builds can detect a model change and rebuild vectors from source (#75).
+    builds can detect a model change and rebuild vectors from source.
     Lexical-only deployments never call this.
     """
     index = as_location(index_dir)
@@ -576,9 +576,9 @@ def search_semantic_index(
 
     Candidates whose cosine similarity falls below ``score_threshold`` are
     dropped so unsupported questions return no results (-> "not covered by this
-    knowledge base") rather than a weak nearest-neighbour hit (#75). When
+    knowledge base") rather than a weak nearest-neighbour hit. When
     ``eligible_paths`` is provided only Evidence from those Compiled Pages is
-    ranked (issue #112); ``None`` means every page.
+    ranked; ``None`` means every page.
     """
     if limit <= 0:
         return []
@@ -736,7 +736,7 @@ class LanceDBRetrievalAdapter:
     :class:`~lumio_lancedb.location.RemoteIndexLocation` pointing at an
     immutable S3 Published Version's ``derived/lance/`` prefix). A missing or
     unhealthy index selects truthful zero-index retrieval over the same
-    snapshot and records the fallback in the Retrieval Trace (ADR-0013).
+    snapshot and records the fallback in the Retrieval Trace.
     """
 
     def __init__(
@@ -749,7 +749,7 @@ class LanceDBRetrievalAdapter:
         # Snapshot) and the source fingerprint it must match. The Knowledge
         # Base's default ``retrieve()`` path passes ``index_dir=None`` for an
         # S3 Snapshot, so a bound location lets enhanced retrieval reach the
-        # published remote index without a local build (ADR-0013, #124). An
+        # published remote index without a local build. An
         # explicit per-call ``index_dir`` always wins over the bound location.
         self._index_location = index_location
         self._expected_fingerprint = expected_fingerprint
@@ -819,7 +819,7 @@ class LanceDBRetrievalAdapter:
     ):
         self._last_fallback_detail = None
         # The LanceDB index is built over every Compiled Page; when the caller
-        # supplies graph-selected eligible pages (#112), we restrict ranked
+        # supplies graph-selected eligible pages, we restrict ranked
         # Evidence to them via a LanceDB prefilter so ``limit`` binds over
         # eligible-only Evidence. The adapter consumes only page identities: it
         # never imports graph code or owns traversal.
@@ -864,7 +864,7 @@ class LanceDBRetrievalAdapter:
                 )
             # Verify the stored fingerprint matches the current Knowledge Base
             # so a stale remote index (built from a different Published Version)
-            # is never silently served (ADR-0013, #122 AC3).
+            # is never silently served.
             stored_fp = _load_fingerprint(index)
             if effective_fingerprint is not None and (
                 stored_fp is None or stored_fp.digest != effective_fingerprint.digest
@@ -946,7 +946,7 @@ def build_lancedb_index(kb, index_dir, *, embedder: Embedder | None = None):
     and call :meth:`LanceDBRetrievalAdapter.build_index` directly.
 
     Also materializes the disposable Entity/Claim graph projections
-    (``entities`` / ``graph_edges``, issue #171) beside the Evidence tables,
+    (``entities`` / ``graph_edges``) beside the Evidence tables,
     fingerprint-bound to the same Knowledge Base snapshot.
     """
     # A convenience build is explicitly a current-source operation. Reload a

@@ -1,4 +1,4 @@
-"""Typed local-or-remote LanceDB index locations (ADR-0013).
+"""Typed local-or-remote LanceDB index locations.
 
 A LanceDB derived index lives either on the local filesystem (the original
 behavior) or under an immutable S3 Published Version's ``derived/lance/``
@@ -6,7 +6,7 @@ prefix. This module normalizes both into one ``IndexLocation`` so build and
 search work uniformly:
 
 * LanceDB connects to its own ``uri`` with the ``storage_options`` recorded
-  here — Lumio never hands its obstore client to LanceDB (ADR-0013). A remote
+  here — Lumio never hands its obstore client to LanceDB. A remote
   connection uses ``read_consistency_interval=timedelta(0)`` for the strongest
   documented cross-process visibility (research:
   ``project/research/lancedb-s3-remote-storage.md``).
@@ -124,7 +124,7 @@ class LocalIndexLocation:
 class RemoteIndexLocation:
     """A LanceDB index under an immutable S3 Published Version's derived prefix.
 
-    LanceDB connects to its own ``uri`` with ``storage_options`` (ADR-0013):
+    LanceDB connects to its own ``uri`` with ``storage_options``:
     Lumio never passes its obstore client to LanceDB. The metadata sidecars are
     read/written through ``store`` at ``sidecar_prefix`` so the index carries
     its source fingerprint and embedding-model identity beside the tables.
@@ -194,7 +194,7 @@ class RemoteIndexLocation:
             # Object-store "not found" means the sidecar was never published
             # here; the caller treats None as absence. Availability errors
             # (auth, network, outage) propagate so the adapter can classify
-            # them as "unavailable" rather than silently "missing" (ADR-0013).
+            # them as "unavailable" rather than silently "missing".
             return None
 
     def write_sidecar(self, name: str, data: bytes) -> None:
