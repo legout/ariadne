@@ -239,27 +239,16 @@ def _metric_static_inventory(root: Path, model: str, metric: str) -> list[str]:
     metric's expression is statically owned by, derived from the SAME graph
     loader validation serves. Request-selected lookup dimensions of other
     datasets are not part of the subject's own inventory."""
-    from ariadne.semantic_graph import GraphError, load_graph
+    from ariadne.semantic_graph import GraphError, load_graph, metric_owners
 
     try:
         graph = load_graph(Path(root) / "semantic_layer")
     except GraphError, OSError, ValueError:
         return []  # the structural/graph check owns that failure with its own diagnostic
 
-    def owners_of(name: str) -> set[str]:
-        node = graph.metrics.get(name)
-        if node is None:
-            return set()
-        if node.owner is not None:
-            return {node.owner}
-        owners: set[str] = set()
-        for dep in node.deps:
-            owners |= owners_of(dep)
-        return owners
-
     datasets = graph.datasets
     resources: list[str] = []
-    for owner in sorted(owners_of(metric)):
+    for owner in sorted(metric_owners(graph, metric)):
         dataset = datasets.get(owner)
         if dataset is None or dataset.model != model:
             continue

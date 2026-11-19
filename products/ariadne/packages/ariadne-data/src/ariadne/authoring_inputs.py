@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -265,15 +264,6 @@ def project_profiling_limits(project: str | Path) -> dict:
 def _input_root(project: str | Path) -> Path:
     """The project-controlled input area every document read stays inside."""
     return (Path(project) / INPUT_ROOT_REL).resolve()
-
-
-def _lstat(path: Path) -> os.stat_result | None:
-    """The entry's own status, symlinks NOT followed (None = nothing claims
-    the name, unlike Path.exists which follows — a dangling link claims it)."""
-    try:
-        return path.lstat()
-    except FileNotFoundError:
-        return None
 
 
 def _project_documents_config(project: Path) -> tuple[list[Path], list[str]]:

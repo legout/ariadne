@@ -21,6 +21,8 @@ from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
+from ariadne.contract_inspection import _quote
+
 MAX_WORKBOOK_BYTES = 25 * 1024 * 1024
 MAX_EXPANDED_BYTES = 64 * 1024 * 1024
 MAX_SELECTED_NONEMPTY_CELLS = 200_000
@@ -163,10 +165,6 @@ def _duckdb_type(values: list[object], where: str) -> str:
         "instead of guessing a conversion",
         code="ambiguous_column_type",
     )
-
-
-def _quote(identifier: str) -> str:
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _column_letter(column: int) -> str:

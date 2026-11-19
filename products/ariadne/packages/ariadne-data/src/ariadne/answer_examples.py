@@ -27,7 +27,6 @@ the optional MCP adapter, issue #21) shares; the operator review command
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import secrets
@@ -39,6 +38,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+
+from ariadne.authoring_inputs import _sha256_hex
 
 EXAMPLES_DIR = "answer-examples"  # the native knowledge/ category slug of one Example
 MAX_EXCERPT_BYTES = 8 * 1024  # spec: the timestamped answer excerpt bound
@@ -74,10 +75,6 @@ _ANSWER_EVIDENCE_RE = re.compile(
 def _canonical(payload: Any) -> str:
     """Deterministic JSON form for excerpts and digests (sorted keys, compact)."""
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _require_str(submission: dict, key: str) -> str:

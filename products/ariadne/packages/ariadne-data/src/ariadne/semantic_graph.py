@@ -882,3 +882,17 @@ def _resolve_conformed(
             )
         )
     return tuple(out)
+
+
+def metric_owners(graph: SemanticGraph, name: str) -> set[str]:
+    """The dataset-level owning-fact set of one metric: its own owner, or the union
+    over the metrics it derives from."""
+    node = graph.metrics.get(name)
+    if node is None:
+        return set()
+    if node.owner is not None:
+        return {node.owner}
+    owners: set[str] = set()
+    for dep in node.deps:
+        owners |= metric_owners(graph, dep)
+    return owners

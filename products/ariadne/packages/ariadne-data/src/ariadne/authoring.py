@@ -53,7 +53,6 @@ from ariadne.authoring_inputs import (  # noqa: F401 — re-export: the historic
     _evidence_record,
     _fetch_object_bytes,
     _input_root,
-    _lstat,
     _project_documents_config,
     _sha256_hex,
     bytes_evidence,
@@ -76,8 +75,9 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     resolve_term_entries,  # C6 fix: the candidate feeds the shared core through native entries
     validate_inspection_candidate,
 )
+from ariadne.contract_inspection import _quote
 from ariadne.render import render
-from ariadne.semantic_graph import load_graph
+from ariadne.semantic_graph import load_graph, metric_owners
 from ariadne.sources import _URI_SCHEME_RE, collection_resource, parse_resource, table_resource
 from ariadne.validate import (
     VALIDATOR_VERSION,
@@ -229,19 +229,6 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     except Exception:
         return []  # the producer page/candidate gates own a malformed KB
 
-    def owners_of(name: str) -> set[str]:
-        """The dataset-level owning-fact set of one metric (the same graph
-        resolution the §10.2 static inventory uses)."""
-        node = graph.metrics.get(name)
-        if node is None:
-            return set()
-        if node.owner is not None:
-            return {node.owner}
-        owners: set[str] = set()
-        for dep in node.deps:
-            owners |= owners_of(dep)
-        return owners
-
     metric_pages = {}
     for page in kb.pages:
         profile = page.ariadne_profile
@@ -262,7 +249,7 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
         closure, diagnostics = policy_closure(kb.pages, page.ariadne_profile, namespace=namespace)
         for diagnostic in diagnostics:
             errors.append(f"knowledge/{page.path}: {diagnostic.message}")
-        owner_datasets = owners_of(name)
+        owner_datasets = metric_owners(graph, name)
         if len(owner_datasets) > 1 and not closure:
             errors.append(
                 f"knowledge/{page.path}: graph metric '{name}' is a multi-fact "
@@ -2337,12 +2324,6 @@ def load_receipt(project: Path, proposal: str, receipt_id: str) -> dict:
         )
     receipt["integrity_digest"] = recorded
     return receipt
-
-
-def _quote(identifier: str) -> str:
-    """Quote one SQL identifier (the profiler discipline: catalog-validated
-    names, doubled inner quotes — no identifier is ever interpolated raw)."""
-    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _sql_ref(ref: str) -> str:
