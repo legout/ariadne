@@ -31,10 +31,8 @@ from sqlglot import exp  # pyright: ignore[reportMissingImports] — same
 
 from ariadne import (
     answer_examples,
-    authoring_context,
-    authoring_contracts,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
+    authoring_edits,
     authoring_inputs,  # noqa: F401 — re-export: the historical seam
-    authoring_semantic,
     authoring_sources,
     context,
     contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — same
@@ -104,18 +102,7 @@ def _fsync_tree(root: Path) -> None:
     proposals._fsync_path(root)
 
 
-_LAYER_EDITORS = {
-    "model": authoring_semantic,
-    "graph": authoring_semantic,
-    "page": authoring_context,
-    "seed_notes": authoring_context,
-    # spec 0028 §3 (issue #77/C1): producer contract documents and the fixed
-    # native binding document are typed authored artifacts — the same
-    # revision-checked read/edit seam, no arbitrary file paths
-    "contract": authoring_contracts,
-    "contract_bindings": authoring_contracts,
-}
-EDIT_KINDS = tuple(sorted(_LAYER_EDITORS))
+EDIT_KINDS = authoring_edits.EDIT_KINDS
 
 
 def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
@@ -294,18 +281,12 @@ class AuthoringProject:
         ``{kind: page, section, name}``, ``{kind: seed_notes}``), in bounded
         parts. Returns ``{proposal, revision, path, content, part, parts,
         chars, complete}`` or a specific missing-artifact error."""
-        if not isinstance(identity, dict) or identity.get("kind") not in _LAYER_EDITORS:
+        if not isinstance(identity, dict) or identity.get("kind") not in EDIT_KINDS:
             got = identity.get("kind") if isinstance(identity, dict) else identity
             raise ValueError(
                 f"an artifact identity is a typed object with kind one of {EDIT_KINDS}, got {got!r}"
             )
-        editor = _LAYER_EDITORS[identity["kind"]]
-        kwargs = (
-            {"project": self.project, "proposal": proposal}
-            if identity["kind"] == "contract"
-            else {}
-        )
-        rel = editor.resolve_identity(identity, **kwargs)
+        rel = authoring_edits.resolve_identity(identity, project=self.project, proposal=proposal)
         return proposals.read_artifact(self.project, proposal, rel, part=part)
 
     def edit_proposal(self, proposal: str, expected_revision: str, edit: dict) -> dict:
@@ -316,18 +297,16 @@ class AuthoringProject:
         revision (stale or competing writers are refused before any write; an
         identical edit at the current revision is a no-op). Returns
         ``{proposal, revision, changed, path}``."""
-        if not isinstance(edit, dict) or edit.get("kind") not in _LAYER_EDITORS:
+        if not isinstance(edit, dict) or edit.get("kind") not in EDIT_KINDS:
             got = edit.get("kind") if isinstance(edit, dict) else edit
             raise ValueError(
                 "an edit is a discriminated JSON object with kind one of "
                 f"{EDIT_KINDS} (typed source proposals arrive through the "
                 f"propose_sources operation), got kind {got!r}"
             )
-        editor = _LAYER_EDITORS[edit["kind"]]
-        kwargs = (
-            {"project": self.project, "proposal": proposal} if edit["kind"] == "contract" else {}
+        rel, content = authoring_edits.resolve_edit(
+            edit, project=self.project, proposal=proposal
         )
-        rel, content = editor.resolve_edit(edit, **kwargs)
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
