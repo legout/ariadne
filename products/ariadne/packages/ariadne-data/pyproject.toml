@@ -9,7 +9,7 @@ description = "Governed metrics for autonomous agents: one Lumio knowledge found
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "duckdb>=1.0,<2",  # 2.0 removed relation fetchmany/fetchone used by the engine (2026-10-21 CI 39602964323)
+    "duckdb>=2.0,<3",  # spec 0039 §4: 2.x removed relation fetchone/fetchmany; bounded reads use cursor methods
     "sqlglot>=25.0",  # own compile engine: ariadne/render.py (ADR-0008) + grain guard
     "openai>=1.40",
     "pyyaml>=6.0",

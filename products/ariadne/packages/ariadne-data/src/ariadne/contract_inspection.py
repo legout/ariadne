@@ -592,7 +592,7 @@ def _narrowed_authority(con, table: dict) -> sql_authority.AdHocAuthority:
     reviewed function/relation checks of ``sql_authority`` apply to the whole
     expanded tree, and the permitted relation scope is the bound table alone —
     joins and foreign reads are refused before execution."""
-    current = con.execute("SELECT current_catalog(), current_schema()").fetchone() or ("", "")
+    current = con.execute("SELECT current_catalog(), current_schema()").fetchall()[0]
     return sql_authority.AdHocAuthority(
         relations=frozenset({(table.get("catalog"), table["schema"], table["name"])}),
         default_catalog=str(current[0]),
@@ -693,7 +693,7 @@ def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
                         "refused before collection"
                     ),
                 }
-            rows = relation.limit(2).fetchmany(2)
+            rows = relation.limit(2).fetchall()
     except execution.DeadlineExhausted:
         raise
     except duckdb.Error as exc:
@@ -882,7 +882,7 @@ def _observe_binding(
             try:
                 execution.assert_single_statement(sql)
                 with budget.guard(con):
-                    nulls = con.execute(sql).fetchone()[0]
+                    nulls = con.execute(sql).fetchall()[0][0]
             except execution.DeadlineExhausted:
                 raise
             except duckdb.Error as exc:

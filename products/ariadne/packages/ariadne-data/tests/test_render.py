@@ -185,7 +185,7 @@ def test_derived_metric_resolves_two_levels_recursively():
     con = duckdb.connect()
     try:
         con.execute("CREATE OR REPLACE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(x)")
-        row = con.sql(sql).fetchone()  # sql is render() compile output (spec §6)
+        row = (con.sql(sql).fetchall() or [None])[0]  # sql is render() compile output (spec §6)
         assert row is not None
         assert row[0] == 14  # (SUM(x) + 1) * 2 = (6 + 1) * 2 — resolved recursively
     finally:

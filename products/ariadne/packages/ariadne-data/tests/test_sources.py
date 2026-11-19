@@ -551,7 +551,8 @@ class RecordingConnection:
         if not sql.lstrip().upper().startswith("SELECT"):
             self.statements.append(sql)
             return None
-        return type("R", (), {"fetchall": lambda self: [], "fetchone": lambda self: ("memory",)})()
+        rows = [("memory",)] if "current_database" in sql else []
+        return type("R", (), {"fetchall": lambda self: rows})()
 
     def close(self):
         pass

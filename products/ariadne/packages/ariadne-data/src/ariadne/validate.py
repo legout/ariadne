@@ -351,7 +351,7 @@ def _assertion_1(
         )
     total, distinct = con.execute(
         statements[0].sql(dialect="duckdb")  # nosemgrep — sqlglot re-rendered, proven single
-    ).fetchone() or (0, 0)
+    ).fetchall()[0]
     if total == distinct:
         return None
     return (
@@ -459,7 +459,7 @@ def _assertion_2(
                 f"SELECT (SELECT SUM({parent_expr}) FROM {parent_sql}), "
                 f"(SELECT SUM({refs[parent_expr]}) FROM {wrapped} _a)"  # nosemgrep — read-only
                 # attach; source is the staged authored file gated to one SELECT above
-            ).fetchone() or (None, None)
+            ).fetchall()[0]
         except duckdb.Error:
             continue  # non-numeric or not a parent column: the compile gate's domain
         if baseline is None and modeled is None:
