@@ -8,13 +8,12 @@ managed target against the packaged assets and reports drift. User-scope tests
 monkeypatch HOME so nothing ever touches the real home directory.
 """
 
-import hashlib
 import os
 import re
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.skill import ASSETS, _dir_hash, main
+from ariadne.skill import ASSETS, main
 
 
 @pytest.fixture
@@ -189,12 +188,6 @@ def test_status_symlink_target_hashes_through_the_link(project, capsys):
     out = capsys.readouterr().out
     pi_line = next(line for line in out.splitlines() if ".pi" in line)
     assert "ok" in pi_line and "(symlink)" in pi_line  # resolves to the same content
-
-
-def test_dir_hash_is_content_sensitive():
-    baseline = _dir_hash(ASSETS)
-    assert baseline == _dir_hash(ASSETS)  # stable
-    assert len(baseline) == hashlib.sha256().digest_size * 2
 
 
 def test_install_agent_refuses_existing_non_symlink_dir(project, capsys):

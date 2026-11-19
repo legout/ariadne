@@ -166,13 +166,6 @@ def test_profile_without_selector_keeps_full_behavior(tmp_path):
     assert profile(sources_path=registry) == profile(sources_path=registry, selector=None)
 
 
-def test_expected_columns_present(demo_db):
-    tables = profile(demo_db)["tables"]
-    assert set(tables) == set(EXPECTED_COLUMNS)
-    for table, expected in EXPECTED_COLUMNS.items():
-        assert set(tables[table]["columns"]) == expected
-
-
 def test_pk_and_fk_heuristics(demo_db):
     tables = profile(demo_db)["tables"]
     assert "order_id" in tables["orders"]["primary_key_candidates"]

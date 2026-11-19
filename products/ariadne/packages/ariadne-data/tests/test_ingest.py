@@ -27,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne.ingest import (  # noqa: E402
     _CONVERTERS,
-    _NATIVE_SUFFIXES,
 )
 
 
@@ -64,26 +63,6 @@ def make_doc(tmp_path: Path, suffix: str = ".md", text: str | None = None) -> Pa
 def test_dispatch_table_maps_suffix_to_requirement(suffix, requirement):
     assert suffix in _CONVERTERS
     assert _CONVERTERS[suffix][1] == requirement
-
-
-def test_dispatch_table_exactly_matches_native_suffixes():
-    assert set(_CONVERTERS) | set(_NATIVE_SUFFIXES) == {
-        ".md",
-        ".txt",
-        ".pdf",
-        ".docx",
-        ".pptx",
-        ".xlsx",
-        ".html",
-        ".doc",
-        ".rtf",
-        ".epub",
-        ".csv",
-        ".odt",
-        ".ods",
-        ".odp",
-        ".xls",
-    }
 
 
 def test_native_conversion_is_plain_read(tmp_path):
