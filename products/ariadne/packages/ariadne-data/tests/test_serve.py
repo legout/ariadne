@@ -545,7 +545,7 @@ def test_governed_get_metric_carries_context_with_policy_bodies(facade):
 def test_governed_answer_refuses_before_sql_when_required_context_is_missing(served, monkeypatch):
     """Spec 0035 §100/AC7: a metric whose required Context (metric page + Policy
     closure) is absent from the pinned release refuses at query time, before any
-    SQL is compiled or collected — the Lumio write gate is not involved (the
+    SQL work (bind, grain audit, collection) — the Lumio write gate is not involved (the
     project is already admitted)."""
     import msgspec
 
@@ -566,11 +566,16 @@ def test_governed_answer_refuses_before_sql_when_required_context_is_missing(ser
     monkeypatch.setattr(lumio_context, "verify_release", release_without_gross_margin_context)
 
     def unreachable(*args, **kwargs):  # pragma: no cover - only if the refusal is bypassed
-        raise AssertionError("SQL was collected although the required Context is missing")
+        raise AssertionError("SQL work started although the required Context is missing")
 
-    monkeypatch.setattr(runtime, "_collect", unreachable)
-    with pytest.raises(ValueError, match="required metric Context Binding unavailable"):
-        asyncio.run(runtime.get_metric("gross_margin", ["region"]))
+    # every SQL boundary of the governed path: the EXPLAIN bind, the live grain
+    # audit and the bounded collection
+    with monkeypatch.context() as sql_boundaries:
+        sql_boundaries.setattr(runtime._execution, "bind", unreachable)
+        sql_boundaries.setattr("ariadne.query.check_grain_preserving", unreachable)
+        sql_boundaries.setattr(runtime, "_collect", unreachable)
+        with pytest.raises(ValueError, match="required metric Context Binding unavailable"):
+            asyncio.run(runtime.get_metric("gross_margin", ["region"]))
     # the metric whose Context is intact still answers on the same release
     monkeypatch.undo()
     assert asyncio.run(runtime.get_metric("order_count", ["region"]))["governed"] is True
