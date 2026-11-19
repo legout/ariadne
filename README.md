@@ -39,7 +39,10 @@ human review gate. Ariadne runs entirely locally (CLI + query engine; no
 service, app or cloud) and always pairs with its required Lumio SDK.
 
 ```bash
-pip install ariadne-data   # local CLI + query engine; optional extras: [mcp], [documents]
+# The native route on main is not on PyPI yet (PyPI ariadne-data 0.8.0 predates it);
+# install a pinned revision, which brings the matching lumio-wiki from the same commit:
+uv tool install --python 3.14 \
+  "ariadne-data @ git+https://github.com/legout/ariadne@REV#subdirectory=products/ariadne/packages/ariadne-data"
 ```
 
 Runnable local example: the
@@ -71,12 +74,17 @@ setup route; do not carry its classic catalog into a new native project.
 
 ## Using versus developing
 
-- **Using the products:** install the published wheels into your own
-  environment (`pip install lumio-wiki` / `pip install ariadne-data`); all
-  packages require Python ≥ 3.14. You do not need this checkout. Installing
+- **Using the products:** install into your own environment; all packages
+  require Python ≥ 3.14. You do not need this checkout. Installing
   `ariadne-data` always brings its required compatible `lumio-wiki`
   dependency (SDK 0.7 line with Core 0.8); installing or using `lumio-wiki`
-  alone never installs or requires Ariadne.
+  alone never installs or requires Ariadne. Until Core 0.8/SDK 0.7 are
+  published, use a pinned Git revision as shown above.
+- **Agent skills:** `ariadne-skill install` / `lumio-wiki skill install`
+  copy the skill that matches the installed package. Alternatively
+  `npx skills add legout/ariadne --skill ariadne` (or `lumio-wiki`) installs
+  the [`skills/`](skills/) mirror; pin `@REV` to the revision you installed.
+  A skill is instructions only: it installs no package.
 - **Developing this repository:** one uv workspace with a single development
   lockfile; the root distributes nothing. Component commands and scope notes:
   [CONTRIBUTING.md](CONTRIBUTING.md).
