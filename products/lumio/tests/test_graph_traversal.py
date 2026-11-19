@@ -154,6 +154,11 @@ def test_shortest_path_never_returns_unauthorized_endpoint():
     kb = _kb()
     authorized = {"Alpha", "Beta", "Gamma"}
     assert kb.shortest_path("Alpha", "Delta", candidate_titles=authorized) is None
+    # Decoy: Beta is the only bridge from Alpha to Gamma. With Beta unauthorized the
+    # path must not route through it (hidden pages are indistinguishable from absent),
+    # even though both endpoints are authorized.
+    assert kb.shortest_path("Alpha", "Gamma") == ["Alpha", "Beta", "Gamma"]
+    assert kb.shortest_path("Alpha", "Gamma", candidate_titles={"Alpha", "Gamma"}) is None
 
 
 def test_source_outside_candidate_set_returns_empty_neighbors():
