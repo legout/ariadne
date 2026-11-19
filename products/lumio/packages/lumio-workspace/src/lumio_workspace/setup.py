@@ -60,7 +60,7 @@ class SetupPreview:
 
 
 def attachment_resource_needs(profile) -> frozenset[str]:
-    """Resource needs bound into owner-confirmed attachments (spec0034 §12.4).
+    """Resource needs bound into owner-confirmed attachments.
 
     The owner-confirmed standalone document-only exception
     (``retention: disabled``) binds registry-only: the unused original-byte
@@ -152,7 +152,7 @@ def preview_setup(
         workspace_id=workspace_id,
         kind="empty",
         # plan_empty_setup refuses any non-required retention, so the empty
-        # managed journey is always required (spec0010 §2.1/§2.2).
+        # managed journey is always required.
         retention="required",
         analytics_enabled=analytics_enabled,
         digest=_digest(
@@ -385,7 +385,7 @@ def apply_setup(
     }
 
 
-# Owner-facing setup disclosure of the effective retention policy (§12.4):
+# Owner-facing setup disclosure of the effective retention policy:
 # the exception never claims secure deletion — transient uploads/backups may
 # remain — and required retention stays the default elsewhere.
 RETENTION_NOTES = {

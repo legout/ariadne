@@ -236,7 +236,7 @@ class ReviewService:
             resources = self.publication.resources()
             # Current separate inspect_source permission precedes any
             # inspection-specific availability probing or private registry
-            # metadata lookup (spec0035 §3, spec0034 §12.3/AC13).
+            # metadata lookup.
             inspection_permitted = self.state.permits(
                 self.workspace_id, actor, "inspect_source"
             )
@@ -399,7 +399,7 @@ class ReviewService:
 
         Binary originals must stay bytes end to end: the caller decides the
         delivery form, so no UTF-8 decoding or extracted-text substitution
-        happens here (spec0034 §12.3).
+        happens here.
         """
         if not self.state.permits(self.workspace_id, actor, "inspect_source"):
             raise ReviewError(
@@ -662,7 +662,7 @@ def _claim_sources(context: ReviewContext, page: Any, quotes: list[str]) -> str:
         if context.source_availability is None:
             # Plain review: no availability probing and no private registry
             # metadata — one static authorization-required state regardless
-            # of original presence (spec0034 §12.3/AC13). Authored attribution
+            # of original presence. Authored attribution
             # and the reviewed manifest binding stay visible.
             facts = [
                 f"attribution: {source.title or 'unknown'}",

@@ -153,7 +153,7 @@ class AnalyticsService:
         )
 
     def _require_required_retention_profile(self) -> None:
-        """Integrated analytics requires original retention (F1; spec0035 §3/AC12).
+        """Integrated analytics requires original retention.
 
         The CURRENT workspace context decides eligibility, never persisted task
         shape: a deliberately disabled profile is a standalone-only exception
@@ -200,7 +200,7 @@ class AnalyticsService:
         """True when the CURRENT destination is a restored root.
 
         Presence of the private restore record the R4 recovery boundary
-        stamps after a completed restore (spec0034 §12.5) selects the
+        stamps after a completed restore selects the
         restoration-specific readiness case. The record authorizes nothing
         by itself — it only selects the owner-prerequisite gate below; a
         workspace without it keeps its existing native query contract
@@ -238,7 +238,7 @@ class AnalyticsService:
         return Path(destination).resolve() != configured
 
     def _verify_restored_query_ready(self, record: dict | None) -> None:
-        """Restoration-specific query readiness (spec0035 §5 recovery; AC15).
+        """Restoration-specific query readiness (spec0035 §5 recovery).
 
         Only a restored root requires the fresh owner setup confirmation AND
         a current association bound to THIS destination before dependent
@@ -715,7 +715,7 @@ class AnalyticsService:
         # Ordinary workspaces (no restore record at the current destination)
         # keep their existing native query contract unchanged (F1), and a
         # restored old association refuses with actionable prerequisites
-        # before SQL (spec0035 §5; AC15) even when the old publication is
+        # before SQL even when the old publication is
         # offline.
         current_record = admission.load_current(self.project)
         self._verify_restored_query_ready(current_record)

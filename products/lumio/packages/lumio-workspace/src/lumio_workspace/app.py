@@ -59,7 +59,7 @@ class WorkspaceError(ToolError):
     pass
 
 
-# The shared audience (spec0034 §12.2): explicitly public and internal admitted
+# The shared audience: explicitly public and internal admitted
 # pages. ``restricted`` and absent/unknown Visibility are unavailable through
 # every ordinary workspace read, search, and Evidence path, before any lookup,
 # match, rank, count, or snippet.
@@ -129,7 +129,7 @@ def _safe_attachment(raw: bytes, filename: str | None, source_id: str) -> Respon
 
     The name is the registry's sanitized safe basename; the generic media type
     plus ``nosniff`` prevent active rendering, and no signed or otherwise
-    bearer-capable URL is produced (spec0034 §12.3).
+    bearer-capable URL is produced.
     """
     name = safe_artifact_filename(filename) or f"{source_id}.bin"
     ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "")
@@ -347,7 +347,7 @@ def _authorized_pages(resolved: Any) -> list[CompiledPage]:
     Every ordinary workspace read, search, and Evidence path filters to this
     candidate set before any lookup, match, rank, count, or snippet, so a
     hidden page cannot influence visible results and a hidden title, alias, or
-    ID is indistinguishable from a missing one (spec0034 §12.2).
+    ID is indistinguishable from a missing one.
     """
     return [page for page in resolved.pages if (page.visibility or "") in _SHARED_AUDIENCE]
 
@@ -440,7 +440,7 @@ def prepare_retrieval_cache(config: WorkspaceConfig) -> str:
 def _search_entry(result: Any) -> dict[str, Any]:
     """One bounded search result, preserving the existing response fields.
 
-    The stable Entity ID is additive native metadata (spec0034 §12.2); Legacy
+    The stable Entity ID is additive native metadata; Legacy
     Flat Mode pages declare none, so the key stays absent rather than deriving
     an ID from the title.
     """
@@ -514,9 +514,9 @@ def _bounded_evidence_response(
 
     Oversized indivisible Evidence units are omitted — never returned with
     false complete spans — and their exact coordinates are disclosed without
-    their text (spec0034 §12.2). Each result carries every authored source
+    their text. Each result carries every authored source
     attribution of its page with the non-bearer reference actions of the
-    served Published Version (spec0034 §12.3).
+    served Published Version.
     """
     entity_ids = {page.path: (page.id or None) for page in authorized}
     pages_by_path = {page.path: page for page in authorized}
@@ -704,7 +704,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         """Resolve one version of the configured publication for an ordinary read.
 
         Historical reads stay on admitted history at the configured destination
-        under current authorization (spec0034 §12.2); an explicit reader pin
+        under current authorization; an explicit reader pin
         serves exactly that version and nothing else.
         """
         if requested_version is None:
@@ -727,7 +727,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
     def verify_admitted_version(version: str) -> None:
         """Gate a caller-selected version on verified native admission.
 
-        A complete manifest is not admission (spec0034 §12.2): the version's
+        A complete manifest is not admission: the version's
         admission receipt must verify against the configured destination and
         be activated, or the destination's current pointer must name it
         (native activation reconciliation). Interrupted publication residue —
@@ -1022,7 +1022,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
             if source_task_id is not None or core_edits:
                 # Explicit data/Core change requests keep the grant and joint
                 # whole-change review route; analytics configuration alone
-                # must not capture ordinary knowledge contributions (AC12).
+                # must not capture ordinary knowledge contributions.
                 analytics = analytics_service(required=False)
                 if analytics is None:
                     raise WorkspaceError(
@@ -1265,7 +1265,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         # The bound metadata does not positively establish text (binary
         # original, extension lost to the safe-filename cap, or unknown name):
         # deliver the exact verified bytes as a safe attachment — never a
-        # UTF-8 decode of unknown content (spec0034 §12.3).
+        # UTF-8 decode of unknown content.
         return _safe_attachment(raw, binding.filename, request.path_params["source_id"])
 
     @server.custom_route(
@@ -1282,7 +1282,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         size, or digest disclosure; only then does the reference resolve the
         exact admitted configured page/source/version binding through the
         native sealed record — never a caller-supplied object key, filesystem
-        path, hash, or registry-latest substitute (spec0034 §12.3).
+        path, hash, or registry-latest substitute.
         """
         actor = _browser_actor(request)
         if actor is None:
@@ -1329,7 +1329,7 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
         pages = [page for page in _authorized_pages(resolved) if page.id == entity_id]
         if not pages or source_id not in {source.id for source in pages[0].sources}:
             # A hidden or unknown reference is indistinguishable from a missing
-            # one; no binding detail is disclosed either way (spec0034 §12.2).
+            # one; no binding detail is disclosed either way.
             return unavailable
         if config.authoring_path is None or config.private_profile_path is None:
             return JSONResponse(

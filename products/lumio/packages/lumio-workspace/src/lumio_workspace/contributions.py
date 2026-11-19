@@ -142,7 +142,7 @@ class ContributionService:
         self.destination = destination
         # The CURRENT workspace context (analytics-enabled = integrated) gates
         # retention-exception eligibility; it is never derived from persisted
-        # task shape (spec0035 §3/AC12).
+        # task shape.
         self.analytics_enabled = analytics_enabled
 
     def _resources(self):
@@ -151,7 +151,7 @@ class ContributionService:
             # The owner-confirmed retention policy selects the resource needs:
             # the standalone document-only exception (retention 'disabled') is
             # registry-only — the unused original-byte backend is neither
-            # constructed nor probed (spec0034 §12.4). An integrated
+            # constructed nor probed. An integrated
             # (analytics-enabled) context refuses the exception outright,
             # before any Source Registry open or backend probe.
             if self.analytics_enabled and profile.retention != "required":
@@ -294,7 +294,7 @@ class ContributionService:
             verbatim_page: str | None = None
             expected_text_digest: str | None = None
             if verbatim:
-                # Managed verbatim preparation (spec0010 §3.1): the actual
+                # Managed verbatim preparation: the actual
                 # native extraction record from the original bytes is the
                 # conversion truth; the digest below is only a caller
                 # expectation the producer re-checks against the candidate.

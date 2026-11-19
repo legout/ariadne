@@ -36,7 +36,7 @@ class PublicationService:
             kb_root=self.authoring_path,
             # Same owner-confirmed retention binding as the attachment: the
             # standalone exception (disabled) is registry-only and constructs
-            # no original-byte backend (spec0034 §12.4).
+            # no original-byte backend.
             needs=attachment_resource_needs(profile),
         )
 

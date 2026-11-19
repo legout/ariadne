@@ -460,7 +460,7 @@ def _invalidate_restored_actions(state_path: Path) -> None:
 
 
 def _refuse_unfinished_backup_activation(backup_root: Path) -> None:
-    """Preflight the backup BEFORE the target exists (spec0034 §12.5).
+    """Preflight the backup BEFORE the target exists.
 
     A backup whose active pointer names an imported receipt whose activation
     never completed is unsupported by this bounded restore: the owner
@@ -496,7 +496,7 @@ def _write_restored_root_record(backup_root: Path, target_root: Path, manifest: 
 
     Binds the exact resolved destination and the exact imported
     version/receipt-byte digests; workspace/time/backup-manifest digest are
-    provenance, not substitute authorization (spec0034 §12.5).
+    provenance, not substitute authorization.
     """
     published = target_root / _PUBLISHED
     receipts_dir = published / PRIVATE_OPERATIONS_DIR / "receipts"
@@ -572,7 +572,7 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
 
     if shared:
         # One physical repository hosts the knowledge subtree and the
-        # Ariadne project (spec0035 §2): relink both worktree roles against
+        # Ariadne project: relink both worktree roles against
         # the single restored checkout instead of splitting the repo into
         # independently advancing copies.
         _relink_shared_root_worktrees(
