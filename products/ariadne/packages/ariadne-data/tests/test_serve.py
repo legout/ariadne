@@ -542,6 +542,40 @@ def test_governed_get_metric_carries_context_with_policy_bodies(facade):
     assert any(GOTCHA_2 in body for body in bodies)  # emea-currency-cutover body
 
 
+def test_governed_answer_refuses_before_sql_when_required_context_is_missing(served, monkeypatch):
+    """Spec 0035 §100/AC7: a metric whose required Context (metric page + Policy
+    closure) is absent from the pinned release refuses at query time, before any
+    SQL is compiled or collected — the Lumio write gate is not involved (the
+    project is already admitted)."""
+    import msgspec
+
+    from ariadne import lumio_context
+    from ariadne.query import QueryRuntime
+
+    project, _db = served
+    runtime = QueryRuntime.open_project(project)
+    real_verify = lumio_context.verify_release
+
+    def release_without_gross_margin_context(record, snapshot_dir):
+        snapshot = real_verify(record, snapshot_dir)
+        return msgspec.structs.replace(
+            snapshot,
+            bindings=tuple(b for b in snapshot.bindings if b.metric_ref.metric != "gross_margin"),
+        )
+
+    monkeypatch.setattr(lumio_context, "verify_release", release_without_gross_margin_context)
+
+    def unreachable(*args, **kwargs):  # pragma: no cover - only if the refusal is bypassed
+        raise AssertionError("SQL was collected although the required Context is missing")
+
+    monkeypatch.setattr(runtime, "_collect", unreachable)
+    with pytest.raises(ValueError, match="required metric Context Binding unavailable"):
+        asyncio.run(runtime.get_metric("gross_margin", ["region"]))
+    # the metric whose Context is intact still answers on the same release
+    monkeypatch.undo()
+    assert asyncio.run(runtime.get_metric("order_count", ["region"]))["governed"] is True
+
+
 def test_adhoc_define_metric_carries_context_null(private):
     """Ad-hoc metrics have no served page: context is exactly null."""
     session, _db = private
