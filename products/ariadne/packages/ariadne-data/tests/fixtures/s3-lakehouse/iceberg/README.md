@@ -50,7 +50,8 @@ object-container writer (zigzag varints, header map, one data block). The
 `s3://` locations are the fixed disjoint bucket/prefix scopes; the endpoint
 itself is supplied at test time by the storage profile, never by these files.
 
-Producing runtime: DuckDB 1.5.6 with the repository `iceberg` extension
+Producing runtime: DuckDB 2.0.0 (regenerated for plan 0039 T2: its iceberg reader
+requires the manifest `schema` key-value metadata) with the `iceberg` extension
 (`890b78a9c`). Regenerating under a different DuckDB may change the data
 parquet bytes; re-run `prepare.py` and re-commit both variants together so
 manifest sizes stay exact.
