@@ -3196,9 +3196,10 @@ def data_signals_pinned(
     bindings_by_metric: dict[str, list] = {}
     for binding in bindings:
         metric_ref = getattr(binding, "metric_ref", None)
-        name = getattr(metric_ref, "metric", None)
-        if isinstance(name, str) and name:
-            bindings_by_metric.setdefault(name, []).append(binding)
+        key = getattr(metric_ref, "metric", None)
+        model = getattr(metric_ref, "model", None)
+        if isinstance(key, str) and key and isinstance(model, str) and model:
+            bindings_by_metric.setdefault(f"{model}::{key}", []).append(binding)
     page_by_entity = {page.entity_id: page for page in pages}
     # typed index over the VISIBLE pinned pages (deterministic order; the
     # disclosed FLAT native metadata is the only metadata read)
