@@ -553,7 +553,7 @@ class _DiscoverySession:
                     next(
                         binding
                         for binding in manifest["bindings"]
-                        if binding["metric"] == entry["name"]
+                        if binding["metric"] == self._metrics[entry["name"]]["key"]
                         and binding["model"] == self._metrics[entry["name"]]["model_name"]
                     )
                 )

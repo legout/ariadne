@@ -310,7 +310,7 @@ def test_golden_entry(entry, demo):
 
     dimensions = entry["dimensions"]
     actual = {
-        (row[dimensions[0]] if dimensions else "ALL"): row[result["metric"]]
+        (row[dimensions[0]] if dimensions else "ALL"): row[entry["metric"]]
         for row in result["rows"]
     }
     expected_sql = independent_expected(demo_db, entry["metric"], dimensions)
@@ -525,7 +525,7 @@ _TRAP_GOVERNING_REFERENCE = (
 )
 
 
-def _trap_metric_page(model: str, metric: str, grain_key: str) -> str:
+def _trap_metric_page(model: str, metric: str, grain_key: str, dataset: str) -> str:
     """One producer-native no-Policy Metric page for a trap model (spec0035
     §5: none of the trap metrics has a Policy obligation, so none is
     invented)."""
@@ -544,7 +544,7 @@ def _trap_metric_page(model: str, metric: str, grain_key: str) -> str:
         "  version: 1\n"
         "  kind: metric\n"
         "  metric_ref:\n"
-        f"    model: {model}\n    metric: {metric}\n"
+        f"    model: {model}\n    metric: {dataset}.{metric}\n"
         "  required_policies: []\n"
         "  native:\n"
         "    type: metric\n"
@@ -596,13 +596,13 @@ def _admitted_trap_project(root: Path, *, drifted: bool) -> Path:
         f"version: 1\nnamespace: \"{_TRAP_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
         encoding="utf-8",
     )
-    for model, metric, grain_key in (
-        ("trap_orders", "orders_total", "order_id"),
-        ("trap_orders", "lines_total", "order_id"),
-        ("lines_many_to_one", "sanctioned_lines_total", "line_id"),
+    for model, metric, grain_key, dataset in (
+        ("trap_orders", "orders_total", "order_id", "trap_join"),
+        ("trap_orders", "lines_total", "order_id", "trap_join"),
+        ("lines_many_to_one", "sanctioned_lines_total", "line_id", "lines_join"),
     ):
         (knowledge / "metrics" / f"{metric.replace('_', '-')}.md").write_text(
-            _trap_metric_page(model, metric, grain_key), encoding="utf-8"
+            _trap_metric_page(model, metric, grain_key, dataset), encoding="utf-8"
         )
     (knowledge / "references" / "trap-fixture-notes.md").write_text(
         _TRAP_GOVERNING_REFERENCE, encoding="utf-8"

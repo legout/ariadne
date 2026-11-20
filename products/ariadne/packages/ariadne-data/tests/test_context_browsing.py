@@ -33,7 +33,7 @@ def runtime(tmp_path_factory):
 def test_listing_is_a_metadata_directory(runtime):
     listing = asyncio.run(runtime.list_context_pages())
     assert [entry["path"] for entry in listing] == [
-        "computations/event_count.md",
+        "computations/events-event_count.md",
         "metrics/event-count.md",
         "policies/all-events-count.md",
     ]
@@ -41,7 +41,8 @@ def test_listing_is_a_metadata_directory(runtime):
     assert titles["metrics/event-count.md"] == "event_count"
     assert titles["policies/all-events-count.md"] == "All events count"
     # the finalize pass's generated page: the documented title format
-    assert titles["computations/event_count.md"] == "sanctioned SQL — events::event_count"
+    expected_title = "sanctioned SQL — events::events.event_count"
+    assert titles["computations/events-event_count.md"] == expected_title
     for entry in listing:
         assert entry["draft"] is False
         assert "content" not in entry

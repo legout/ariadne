@@ -350,9 +350,9 @@ def test_get_metric_accepts_no_raw_sql(facade):
 def test_list_metrics_returns_both_with_descriptions(facade):
     metrics = asyncio.run(facade.list_metrics())[:-1]  # trailing entry is the routing hint
     by_name = {m["name"]: m for m in metrics}
-    assert {"gross_margin", "order_count"} <= set(by_name)
-    assert by_name["gross_margin"]["description"]
-    assert by_name["order_count"]["description"]
+    assert {"orders::gross_margin", "orders::orders.order_count"} <= set(by_name)
+    assert by_name["orders::gross_margin"]["description"]
+    assert by_name["orders::orders.order_count"]["description"]
 
 
 def test_search_context_returns_gotchas_page(facade):
@@ -381,8 +381,8 @@ def test_list_metrics_includes_dimensions_and_routing_hint(facade):
     assert isinstance(hint, str)
     assert "list_datasets" in hint and "define_metric" in hint
     by_name = {m["name"]: m for m in result[:-1]}
-    assert "region" in by_name["gross_margin"]["dimensions"]
-    assert "status" in by_name["order_count"]["dimensions"]
+    assert "region" in by_name["orders::gross_margin"]["dimensions"]
+    assert "status" in by_name["orders::orders.order_count"]["dimensions"]
 
 
 def test_range_filters_on_primary_date_dimension(facade):
