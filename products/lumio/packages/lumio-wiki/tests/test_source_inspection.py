@@ -107,9 +107,11 @@ def test_resolve_registry_binding_rejects_secret_bearing_id_without_echo(
 def _store_with_manifest(version: str, entries: list[SourceBindingEntry]):
     store = InMemoryArtifactStore()
     manifest = SourceBindingManifest(
-        published_version=version, fingerprint="fp", created_at="2026-01-01T00:00:00Z"
+        published_version=version,
+        fingerprint="fp",
+        created_at="2026-01-01T00:00:00Z",
+        entries=entries,
     )
-    object.__setattr__(manifest, "entries", entries)
     store.put_binding_manifest(version, msgspec.json.encode(manifest))
     return store
 

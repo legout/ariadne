@@ -102,3 +102,5 @@ Ariadne's integration selector plus its admission-captured inventory
 required or authorized for the integrated expansion; Lumio's whole producer
 role remains the typed `required_policies` association, native envelopes and
 lossless preservation.
+
+**Amendment note — 2026-11-19 (Ariadne [spec 0039](../../../../project/specs/2026-11-19-0039-python312-duckdb2-ossie03.md), accepted):** a Metric's `metric_ref.metric` may contain a dot, `<dataset>.<metric>`, naming a dataset-scoped metric under Ariadne's Metric Identity (`<model>::<dataset>.<metric>`). Lumio's validation requires only non-empty strings, so no SDK change is made; the `{model, metric}` shape is unchanged.

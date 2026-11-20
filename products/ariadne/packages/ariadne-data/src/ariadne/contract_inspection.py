@@ -34,6 +34,7 @@ from sqlglot import (  # pyright: ignore[reportMissingImports] — same
 from ariadne import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
     contracts,  # pyright: ignore[reportAttributeAccessIssue] — same stale index
     execution,
+    ossie,
     sql_authority,
     validate,
 )
@@ -234,29 +235,26 @@ def _dataset_agrees(asset: dict, source: str, columns=()) -> tuple[bool, str]:
 
 
 def _dataset_dependency(tree: Path, binding: Binding) -> dict:
-    for model, envelope in validate._model_entries(tree):
+    for model, parsed in validate._model_entries(tree):
         if model != binding.model:
             continue
-        for dataset in envelope["semantic_model"][0].get("datasets") or []:
-            if dataset.get("name") != binding.dataset:
-                continue
-            fields = {field["name"]: field for field in dataset.get("fields") or []}
-            columns = {}
-            for column in binding.properties.values():
-                field = fields.get(column)
-                dialects = (field or {}).get("expression", {}).get("dialects") or []
-                if not dialects:
-                    raise ContractError(f"unsupported OSI column identity for {column!r}")
-                for dialect in dialects:
-                    expression = sqlglot.parse_one(dialect["expression"])
-                    if (
-                        not isinstance(expression, exp.Column)
-                        or expression.name != column
-                        or expression.table
-                    ):
-                        raise ContractError(f"unsupported transformed OSI field {column!r}")
-                columns[column] = dialects
-            return {"source": dataset["source"], "columns": columns}
+        dataset = parsed.datasets.get(binding.dataset)
+        if dataset is None:
+            continue
+        columns = {}
+        for column in binding.properties.values():
+            field = dataset.fields.get(column)
+            if field is None:
+                raise ContractError(f"unsupported OSI column identity for {column!r}")
+            expression = sqlglot.parse_one(field.sql)
+            if (
+                not isinstance(expression, exp.Column)
+                or expression.name != column
+                or expression.table
+            ):
+                raise ContractError(f"unsupported transformed OSI field {column!r}")
+            columns[column] = [{"dialect": ossie.PRIMARY_DIALECT, "expression": field.sql}]
+        return {"source": dataset.source, "columns": columns}
     raise ContractError("unsupported unresolved OSI dataset identity")
 
 
@@ -592,7 +590,7 @@ def _narrowed_authority(con, table: dict) -> sql_authority.AdHocAuthority:
     reviewed function/relation checks of ``sql_authority`` apply to the whole
     expanded tree, and the permitted relation scope is the bound table alone —
     joins and foreign reads are refused before execution."""
-    current = con.execute("SELECT current_catalog(), current_schema()").fetchone() or ("", "")
+    current = con.execute("SELECT current_catalog(), current_schema()").fetchall()[0]
     return sql_authority.AdHocAuthority(
         relations=frozenset({(table.get("catalog"), table["schema"], table["name"])}),
         default_catalog=str(current[0]),
@@ -693,7 +691,7 @@ def _execute_quality_rule(con, budget, table: dict, requirement: dict) -> dict:
                         "refused before collection"
                     ),
                 }
-            rows = relation.limit(2).fetchmany(2)
+            rows = relation.limit(2).fetchall()
     except execution.DeadlineExhausted:
         raise
     except duckdb.Error as exc:
@@ -882,7 +880,7 @@ def _observe_binding(
             try:
                 execution.assert_single_statement(sql)
                 with budget.guard(con):
-                    nulls = con.execute(sql).fetchone()[0]
+                    nulls = con.execute(sql).fetchall()[0][0]
             except execution.DeadlineExhausted:
                 raise
             except duckdb.Error as exc:

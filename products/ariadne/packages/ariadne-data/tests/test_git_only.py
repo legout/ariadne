@@ -92,14 +92,12 @@ def test_ad_hoc_is_ephemeral_and_explicit_authoring_retains_definition(tmp_path,
     # define_metric option or a new persistence tool.
     started = authoring.start_proposal()
     retained_model = MODEL_YML.replace(
-        "    metrics:\n",
-        "    metrics:\n"
-        "      - name: one_time_event_count\n"
-        "        description: Count event rows once\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: COUNT(id)\n",
+        "  metrics:\n",
+        "  metrics:\n"
+        "  - name: one_time_event_count\n"
+        "    description: Count event rows once\n"
+        "    expression:\n"
+        "      sql: COUNT(id)\n",
         1,
     )
     edited = authoring.edit_proposal(
@@ -172,7 +170,9 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     before_admission = admission.load_current(project)
     assert before_admission is not None
     before_release = before_admission["bound_release"]["digest"]
-    assert [entry["name"] for entry in metrics_before if isinstance(entry, dict)] == ["event_count"]
+    assert [entry["name"] for entry in metrics_before if isinstance(entry, dict)] == [
+        "events::events.event_count"
+    ]
     assert all(
         entry["bound_release"] == before_release
         for entry in metrics_before

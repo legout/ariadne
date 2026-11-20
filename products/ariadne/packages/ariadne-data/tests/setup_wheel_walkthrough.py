@@ -21,33 +21,27 @@ import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack
 import ariadne
 
 MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Three fixture events
-    datasets:
-      - name: events
-        source: events.events
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Three fixture events
+datasets:
+- name: events
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count all events
 """
 
 
@@ -67,7 +61,7 @@ def native_page(kind, title, resource, body):
         policy_extra = (
             "  metric_ref:\n"
             "    model: events\n"
-            f"    metric: {title}\n"
+            f"    metric: events.{title}\n"
             "  required_policies:\n"
             '    - namespace: "urn:uuid:wheel-walkthrough"\n'
             '      entity_id: "entity:all-events-count"\n'
@@ -221,7 +215,7 @@ def main():
             "policy_bindings:\n"
             "  version: 1\n"
             "  bindings:\n"
-            "    - subject: {kind: metric, identity: events::event_count}\n"
+            "    - subject: {kind: metric, identity: events::events.event_count}\n"
             "      policy: {namespace: urn:uuid:wheel-walkthrough,"
             " entity_id: entity:all-events-count}\n"
             "      operations: [get_metric, query_metrics]\n"
@@ -398,7 +392,7 @@ def main():
             "--confirm",
         )
         metrics = command("ariadne", "list-metrics", "--project", str(project), structured=True)
-        assert any(m["name"] == "event_count" for m in metrics)
+        assert metrics[0]["name"] == "events::events.event_count"  # spec 0039 §6 identity
         result = command(
             "ariadne", "get-metric", "event_count", "--project", str(project), structured=True
         )

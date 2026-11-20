@@ -48,32 +48,26 @@ CURRENT = STATE / "current.json"
 # One governed metric over the retail source (the test_sources.py minimal-OSI
 # pattern): SUM(amount) must come from storage A (60), never storage B (200).
 ORDERS_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: total_amount
-        description: Sum of order amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: orders.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: total_amount
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts
 """
 
 

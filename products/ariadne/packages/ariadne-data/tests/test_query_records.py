@@ -25,20 +25,21 @@ from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime, _QueryRuntimeSession
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
 
-_MODELS = """version: 0.2.0.dev0
-semantic_model:
-  - name: records_probe
-    description: V1 probe model
-    datasets:
-      - name: ev
-        source: fixture.main.events
-        fields:
-          - name: productnumber
-            expression: {dialects: [{dialect: ANSI_SQL, expression: productnumber}]}
-    metrics:
-      - name: probe_count
-        description: probe count
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
+_MODELS = """version: 0.3.0.dev0
+name: records_probe
+description: V1 probe model
+datasets:
+- name: ev
+  source: fixture.main.events
+  fields:
+  - name: productnumber
+    expression:
+      sql: productnumber
+  metrics:
+  - name: probe_count
+    expression:
+      sql: COUNT(*)
+    description: probe count
 """
 
 # the §7 V1 fixture identities, insertion order e1..e8 (trace type 2

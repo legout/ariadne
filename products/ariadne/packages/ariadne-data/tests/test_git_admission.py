@@ -996,7 +996,7 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     assert cli(["list-metrics", "--project", str(project)]) == 0
     listed = json.loads(capsys.readouterr().out)
     names = [entry["name"] for entry in listed if isinstance(entry, dict)]
-    assert "event_count" in names
+    assert "events::events.event_count" in names
 
     assert cli(["get-metric", "event_count", "--project", str(project)]) == 0
     answer = json.loads(capsys.readouterr().out)
@@ -1385,7 +1385,7 @@ def test_search_context_and_list_metrics_refuse_tampered_snapshot_bytes(tmp_path
     runtime = QueryRuntime.open_project(project)
     assert asyncio.run(runtime.search_context("rule"))  # serves pinned pages
     names = asyncio.run(runtime.list_metrics())
-    assert any(isinstance(n, dict) and n["name"] == "event_count" for n in names)
+    assert any(isinstance(n, dict) and n["name"] == "events::events.event_count" for n in names)
     # spec 0015 (issue #60): the browsing tools serve the same pinned bytes
     listing = asyncio.run(runtime.list_context_pages())
     served_paths = {entry["path"] for entry in listing if not entry["draft"]}

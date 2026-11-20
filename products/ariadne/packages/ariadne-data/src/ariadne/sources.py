@@ -1421,8 +1421,7 @@ def _catalog_entry(con: duckdb.DuckDBPyConnection, src: Source, *, selected_asse
             [src.name, *parameters],
         ).fetchall()
     else:
-        row = con.execute("SELECT current_database()").fetchone()
-        assert row is not None  # current_database() always returns exactly one row
+        row = con.execute("SELECT current_database()").fetchall()[0]
         (database,) = row
         rows = con.execute(
             "SELECT table_catalog, table_schema, table_name, column_name, data_type "

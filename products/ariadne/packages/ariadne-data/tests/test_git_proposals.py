@@ -32,27 +32,23 @@ from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model
-    datasets:
-      - name: events
-        source: events.events
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Events model
+datasets:
+- name: events
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
 

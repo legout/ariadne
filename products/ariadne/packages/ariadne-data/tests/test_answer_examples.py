@@ -145,7 +145,7 @@ def _example_release(root):
         "version": 1,
         "bindings": [
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:retail-return-policy"},
                 "operations": ["get_metric"],
                 "enforcement": None,

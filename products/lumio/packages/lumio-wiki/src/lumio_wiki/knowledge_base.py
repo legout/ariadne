@@ -440,10 +440,10 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
     canonical_pages: dict[str, bytes] = msgspec.field(default_factory=dict)
 
     @cached_property
-    def _cached_knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
+    def _cached_knowledge_index(self) -> "_KnowledgeIndex":
         return _KnowledgeIndex(self.pages)
 
-    def _knowledge_index(self) -> _KnowledgeIndex:  # noqa: F821
+    def _knowledge_index(self) -> "_KnowledgeIndex":
         return self._cached_knowledge_index
 
     def _retrieval_adapter(self) -> RetrievalAdapter:
@@ -1058,7 +1058,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         owned = [ref for ref in refs if ref.source_title == title]
         return sorted(owned, key=lambda r: (r.target_title, r.line_start, r.source_path))
 
-    def extraction_diagnostics(self) -> list[ExtractionDiagnostic]:  # noqa: F821
+    def extraction_diagnostics(self) -> list["ExtractionDiagnostic"]:
         """Return non-blocking diagnostics from Extracted Reference resolution.
 
         Broken and ambiguous link targets are excluded from the traversable
@@ -1532,7 +1532,7 @@ class KnowledgeBase(msgspec.Struct, frozen=True, dict=True):
         *,
         embedder: Embedder | None = None,
         retrieval: RetrievalAdapter | None = None,
-    ) -> KnowledgeBase:  # noqa: F821
+    ) -> "KnowledgeBase":
         """Build a derived index at ``index_dir`` and return a new KnowledgeBase.
 
         Routes the build through the retrieval adapter slot: ``retrieval`` (or

@@ -324,7 +324,7 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
         assert out[key]["rows"] == [{"event_count": 3}], key
         assert out[key]["admission"]["revision"] == review["revision"], key
         assert out[key]["admission"]["route"] == "git-review-admission", key
-    assert "event_count" in {entry.get("name") for entry in out["listed"]}
+    assert "events::events.event_count" in {entry.get("name") for entry in out["listed"]}
 
     # the authoring registration still works beside the served state
     started = out["started"]

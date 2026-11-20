@@ -354,7 +354,7 @@ class AdHocAuthority:
             for source in catalog
             for table in source["tables"]
         }
-        current = con.execute("SELECT current_catalog(), current_schema()").fetchone() or ("", "")
+        current = con.execute("SELECT current_catalog(), current_schema()").fetchall()[0]
         return cls(frozenset(relations), str(current[0]), str(current[1]))
 
     def authorizes(self, identity: tuple[str, str, str]) -> bool:

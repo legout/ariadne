@@ -38,20 +38,21 @@ CANARY_HEX = CANARY.hex().upper()
 
 # One governed model over the declared registry view (vals.vals) so the runtime
 # constructs and compiles exactly like every production route.
-_MODELS = """version: 0.2.0.dev0
-semantic_model:
-  - name: probe
-    description: containment probe
-    datasets:
-      - name: vals
-        source: vals.vals
-        fields:
-          - name: v
-            expression: {dialects: [{dialect: ANSI_SQL, expression: v}]}
-    metrics:
-      - name: total
-        description: sum of the fixture values
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "SUM(v)"}]}
+_MODELS = """version: 0.3.0.dev0
+name: probe
+description: containment probe
+datasets:
+- name: vals
+  source: vals.vals
+  fields:
+  - name: v
+    expression:
+      sql: v
+  metrics:
+  - name: total
+    expression:
+      sql: SUM(v)
+    description: sum of the fixture values
 """
 
 

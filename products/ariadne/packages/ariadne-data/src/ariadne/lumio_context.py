@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from ariadne import ossie
+
 SUPPORT = {
     "storage": "local-immutable",
     # the `reference` profile joins the
@@ -243,12 +245,12 @@ def _metric_static_inventory(root: Path, model: str, metric: str) -> list[str]:
 
     try:
         graph = load_graph(Path(root) / "semantic_layer")
-    except GraphError, OSError, ValueError:
+    except (GraphError, OSError, ValueError):
         return []  # the structural/graph check owns that failure with its own diagnostic
 
     datasets = graph.datasets
     resources: list[str] = []
-    for owner in sorted(metric_owners(graph, metric)):
+    for owner in sorted(metric_owners(graph, f"{model}::{metric}")):
         dataset = datasets.get(owner)
         if dataset is None or dataset.model != model:
             continue
@@ -608,11 +610,8 @@ def candidate(root, kb_root, revision):
     # static derivation the metric-completeness gate below compares against
     sanctioned: set[tuple[str, str]] = set()
     for path in sorted((Path(root) / "semantic_layer" / "models").glob("*.y*ml")):
-        doc = yaml.safe_load(path.read_text()) or {}
-        for model in doc.get("semantic_model") or []:
-            sanctioned.update(
-                (model["name"], metric["name"]) for metric in model.get("metrics") or []
-            )
+        parsed = ossie.parse_model(ossie.read_document(path), path.name)
+        sanctioned.update((parsed.name, key) for key in parsed.metrics)
     for page in captured.kb.pages:
         profile = page.ariadne_profile
         if profile is None:
@@ -1981,7 +1980,7 @@ def search_examples(manifest, query, limit=10, include_history=False, include_sq
         for entry in citations:
             try:
                 cited = _read(str(entry.get("path")))
-            except ValueError, KeyError, OSError, TypeError:
+            except (ValueError, KeyError, OSError, TypeError):
                 stale = True  # a missing/hidden/unreadable citation is stale
                 break
             if hashlib.sha256(cited.content.encode("utf-8")).hexdigest() != entry.get("sha256"):

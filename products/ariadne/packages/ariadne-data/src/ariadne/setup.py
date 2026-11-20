@@ -89,7 +89,7 @@ def _select_entries(
         try:
             entry = candidate if answer == "accept" else json.loads(answer)
             sources.validate_entries([entry], "setup declaration", root, storages=storages)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             raise ValueError(
                 "invalid declaration; use registry fields and environment-variable "
                 "names, never inline credentials; nothing declared"
@@ -106,7 +106,7 @@ def _select_entries(
         try:
             entry = json.loads(answer)
             sources.validate_entries([entry], "setup declaration", root, storages=storages)
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             raise ValueError(
                 "invalid declaration; use environment-variable names, never "
                 "inline credentials; nothing declared"

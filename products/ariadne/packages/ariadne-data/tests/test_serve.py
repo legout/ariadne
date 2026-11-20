@@ -41,88 +41,64 @@ _COUNT = "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN 1 ELSE 0 EN
 # verified against expected_metrics.json) plus an OKF page carrying both gotchas.
 GOLDEN_OSI = (
     """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: >-
-          SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code,
-                 o.currency, o.amount, o.product_cost,
-                 CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01'
-                      THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate
-          FROM demo.main.orders o
-          LEFT JOIN demo.main.currency_conversion_rate r ON r.currency = o.currency
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: order_date
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: CAST(order_timestamp AS DATE)
-            dimension:
-              is_time: true
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: status
-            dimension: {}
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region_code
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: product_cost
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: product_cost
-          - name: fx_rate
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: fx_rate
-    metrics:
-      - name: gross_revenue
-        description: Billed revenue in USD excluding non-billable statuses
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: @REV@
-      - name: cogs
-        description: Direct cost of goods in USD excluding non-billable statuses
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: @COGS@
-      - name: gross_margin
-        description: Ratio of sums, not an average of per-row margins
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: (gross_revenue - cogs) / NULLIF(gross_revenue, 0)
-        custom_extensions:
-          - vendor_name: DATUS
-            data: '{"metric_kind":"derived","inputs":["gross_revenue","cogs"]}'
-      - name: order_count
-        description: Count of billable orders
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: @COUNT@
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: |-
+    SELECT o.order_id, o.customer_id, o.order_timestamp, o.status, o.region_code,
+           o.currency, o.amount, o.product_cost,
+           CASE WHEN o.region_code = 'EMEA' AND o.order_timestamp < '2024-01-01'
+                THEN COALESCE(r.rate_to_usd, 1.0) ELSE 1.0 END AS fx_rate
+    FROM demo.main.orders o
+    LEFT JOIN demo.main.currency_conversion_rate r ON r.currency = o.currency
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: order_date
+    expression:
+      sql: CAST(order_timestamp AS DATE)
+    dimension:
+      is_time: true
+  - name: status
+    expression:
+      sql: status
+    dimension: {}
+  - name: region
+    expression:
+      sql: region_code
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: product_cost
+    expression:
+      sql: product_cost
+  - name: fx_rate
+    expression:
+      sql: fx_rate
+  metrics:
+  - name: gross_revenue
+    expression:
+      sql: @REV@
+    description: Billed revenue in USD excluding non-billable statuses
+  - name: cogs
+    expression:
+      sql: @COGS@
+    description: Direct cost of goods in USD excluding non-billable statuses
+  - name: order_count
+    expression:
+      sql: @COUNT@
+    description: Count of billable orders
+metrics:
+- name: gross_margin
+  expression:
+    sql: (AGG(orders.gross_revenue) - AGG(orders.cogs)) / NULLIF(AGG(orders.gross_revenue), 0)
+  description: Ratio of sums, not an average of per-row margins
 """.replace("@REV@", _REV)
     .replace("@COGS@", _COGS)
     .replace("@COUNT@", _COUNT)
@@ -374,9 +350,9 @@ def test_get_metric_accepts_no_raw_sql(facade):
 def test_list_metrics_returns_both_with_descriptions(facade):
     metrics = asyncio.run(facade.list_metrics())[:-1]  # trailing entry is the routing hint
     by_name = {m["name"]: m for m in metrics}
-    assert {"gross_margin", "order_count"} <= set(by_name)
-    assert by_name["gross_margin"]["description"]
-    assert by_name["order_count"]["description"]
+    assert {"orders::gross_margin", "orders::orders.order_count"} <= set(by_name)
+    assert by_name["orders::gross_margin"]["description"]
+    assert by_name["orders::orders.order_count"]["description"]
 
 
 def test_search_context_returns_gotchas_page(facade):
@@ -405,8 +381,8 @@ def test_list_metrics_includes_dimensions_and_routing_hint(facade):
     assert isinstance(hint, str)
     assert "list_datasets" in hint and "define_metric" in hint
     by_name = {m["name"]: m for m in result[:-1]}
-    assert "region" in by_name["gross_margin"]["dimensions"]
-    assert "status" in by_name["order_count"]["dimensions"]
+    assert "region" in by_name["orders::gross_margin"]["dimensions"]
+    assert "status" in by_name["orders::orders.order_count"]["dimensions"]
 
 
 def test_range_filters_on_primary_date_dimension(facade):

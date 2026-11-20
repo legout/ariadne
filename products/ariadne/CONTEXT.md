@@ -17,8 +17,24 @@ The source-linked physical schemas and business guide: tribal knowledge, filteri
 _Avoid_: documentation, business glossary, wiki
 
 **Semantic Layer**:
-The calculation engine: declarative OSI YAML models compiled to dialect SQL with join safety. Calculates; never holds business narrative.
+The calculation engine: declarative Ossie 0.3 models compiled to dialect SQL with join safety. Calculates; never holds business narrative.
 _Avoid_: metrics layer, headless BI
+
+**Ossie Model**:
+One Apache Ossie `0.3.0.dev0` document in the Semantic Layer, validated against the pinned schema; Ariadne-only semantics live in `ARIADNE` extension entries.
+_Avoid_: OSI envelope, `semantic_model`
+
+**Dataset-scoped Metric**:
+A metric declared inside one dataset: an aggregate over that dataset's fields (or `source.<column>`), owned by that dataset as a fact-branch measure.
+_Avoid_: dataset metric, measure
+
+**Model-scoped Metric**:
+A root-level metric of an Ossie Model: either an aggregate over fields of exactly one dataset or a composition of `AGG(dataset.metric)` terms evaluated after the fact branches align.
+_Avoid_: derived metric (as a separate kind), cross-model metric
+
+**Metric Identity**:
+The name by which a Governed Metric is addressed everywhere: `<model>::<metric>` for a Model-scoped Metric and `<model>::<dataset>.<metric>` for a Dataset-scoped Metric. A short name resolves only when unique across the project.
+_Avoid_: metric id, metric key
 
 **Ontology**:
 The world model: the business entities (Customer, Order) and their relationships across databases, independent of physical tables.

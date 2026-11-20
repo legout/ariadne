@@ -55,83 +55,70 @@ SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 # source, a unique declared grain, one governed metric (the test_authoring
 # shape; a joined source variant lives below for the unsafe-grain regression).
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model
-    datasets:
-      - name: events
-        source: events.events
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Events model
+datasets:
+- name: events
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
 # A model edit that introduces an unsafe grain (AC2): the dataset source joins
 # the labels table whose event_id REPEATS (one-to-many), so the structural
 # ADR-0006 join check must refuse it even though only one file changed.
 UNSAFE_GRAIN_MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model (unsafe join)
-    datasets:
-      - name: events
-        source: >-
-          SELECT e.id AS id, e.label AS label, l.tag AS tag
-          FROM events.events e JOIN labels.labels l ON e.id = l.event_id
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-          - name: tag
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: tag
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Events model (unsafe join)
+datasets:
+- name: events
+  source: |-
+    SELECT e.id AS id, e.label AS label, l.tag AS tag
+    FROM events.events e JOIN labels.labels l ON e.id = l.event_id
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  - name: tag
+    expression:
+      sql: tag
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
-# A model edit whose semantic_model entry is not a mapping: the edit seam
+# A model edit whose datasets entry is not a mapping: the edit seam
 # accepts invalid DRAFT content (spec §3), so the pre-validation finalizer and
 # the check stack must both treat it as a recoverable structural failure —
 # never an exception escaping validate_proposal.
 MALFORMED_SEMANTIC_MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model: [not-a-mapping]
+version: 0.3.0.dev0
+name: events
+datasets: [not-a-mapping]
 """
 
 TABLES_PAGE = (
@@ -266,7 +253,7 @@ NATIVE_METRIC_PAGE = (
     "  kind: metric\n"
     "  metric_ref:\n"
     "    model: events\n"
-    "    metric: event_count\n"
+    "    metric: events.event_count\n"
     "  required_policies:\n"
     '    - namespace: "urn:uuid:authoring-fixture"\n'
     '      entity_id: "entity:all-events-count"\n'
@@ -321,7 +308,7 @@ NATIVE_SELECTOR = (
     "policy_bindings:\n"
     "  version: 1\n"
     "  bindings:\n"
-    "    - subject: {kind: metric, identity: events::event_count}\n"
+    "    - subject: {kind: metric, identity: events::events.event_count}\n"
     "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
     "      operations: [get_metric, query_metrics]\n"
     "      enforcement: null\n"
@@ -681,7 +668,7 @@ def test_page_only_edit_validates_inherited_dependencies_and_exact_final_commit(
     assert result["revision"] != edited["revision"]
     assert result["revision"] == branch_of(project, started["proposal"])
     generated = commit_paths(project, result["revision"])
-    assert any(line.endswith("knowledge/computations/event_count.md") for line in generated)
+    assert any(line.endswith("knowledge/computations/events-event_count.md") for line in generated)
     # the classic index trees retired with the classic finalize (spec0035 §6):
     # the native derivation commits exactly the generated Computation page
 
@@ -918,7 +905,7 @@ def test_unchanged_computation_preserves_attestation_but_a_changed_one_cannot(tm
     approved(api, project, started)
     result = api.validate_proposal(started["proposal"], started["candidate_revision"])
     assert result["ok"] is True
-    computation = "knowledge/computations/event_count.md"
+    computation = "knowledge/computations/events-event_count.md"
 
     # an unchanged retry keeps the generated bytes verbatim: the finalize pass
     # is deterministic and the computation is unchanged (idempotent evidence)
@@ -935,7 +922,7 @@ def test_unchanged_computation_preserves_attestation_but_a_changed_one_cannot(tm
         {
             "kind": "model",
             "name": "events",
-            "content": MODEL_YML.replace("expression: COUNT(*)", "expression: COUNT(1)"),
+            "content": MODEL_YML.replace("sql: COUNT(*)", "sql: COUNT(1)"),
         },
     )
     second = api.validate_proposal(started["proposal"], changed["revision"])
@@ -982,7 +969,7 @@ def test_a_source_only_model_change_cannot_inherit_the_predecessor_attestation(t
     approved(api, project, started)
     first = api.validate_proposal(started["proposal"], started["candidate_revision"])
     assert first["ok"] is True
-    computation = "knowledge/computations/event_count.md"
+    computation = "knowledge/computations/events-event_count.md"
     attested = _attest_computation_on_branch(
         project, started["proposal"], computation, "an-independent-oracle"
     )
@@ -1271,7 +1258,135 @@ def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
     assert error["type"] == "ValueError" and "stale" in error["message"]
 
 
-def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
+@pytest.mark.parametrize(
+    ("second_source", "refusal"),
+    [
+        ("elsewhere.main.t", "not an approved source registry identity"),
+        ("read_parquet('/etc/x.parquet')", "table function"),
+    ],
+    ids=["unapproved-catalog", "table-function"],
+)
+def test_every_dataset_source_of_a_model_passes_the_source_access_boundary(
+    tmp_path, second_source, refusal
+):
+    """A two-dataset model: the first dataset reads the approved registry, the
+    second reads outside it. The boundary checks EVERY dataset's own source and
+    names the offending dataset, before any audit execution."""
+    two_datasets = MODEL_YML + (
+        "- name: second\n"
+        f"  source: {second_source}\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n  - name: id\n    expression:\n      sql: id\n"
+    )
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": "events", "content": two_datasets},
+    )
+    result = api.validate_proposal(started["proposal"], edited["revision"])
+    assert result["ok"] is False
+    assert any("events.second" in e and refusal in e for e in result["errors"]), result["errors"]
+
+
+def _validate_model_text(tmp_path, content):
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": "events", "content": content},
+    )
+    return api.validate_proposal(started["proposal"], edited["revision"])
+
+
+_SUBQUERY_METRIC = MODEL_YML.replace(
+    "      sql: COUNT(*)\n",
+    "      sql: COUNT(*) + (SELECT COUNT(*) FROM other_catalog.main.t)\n",
+)
+
+
+def test_a_relation_inside_a_metric_expression_is_refused_before_any_bind(tmp_path):
+    """A metric expression may not read a relation (subquery, EXISTS, IN (SELECT))
+    — refused at load, naming the metric, before validation binds anything."""
+    result = _validate_model_text(tmp_path, _SUBQUERY_METRIC)
+    assert result["ok"] is False
+    assert any("relational construct" in e and "event_count" in e for e in result["errors"])
+
+
+def test_the_compiled_sql_authorization_refuses_a_relation_when_the_load_check_is_gone(
+    tmp_path, monkeypatch
+):
+    """Scratch fault: with the load-time refusal removed, the pre-bind check over
+    the compiled SQL still refuses the unapproved catalog; and with the compiled
+    check removed, the load-time refusal still holds."""
+    from ariadne import authoring, ossie
+
+    with monkeypatch.context() as scratch:
+        scratch.setattr(ossie, "refuse_relations", lambda tree, context: None)
+        result = _validate_model_text(tmp_path / "a", _SUBQUERY_METRIC)
+        assert any("not an approved source registry identity" in e for e in result["errors"])
+    with monkeypatch.context() as scratch:
+        scratch.setattr(authoring, "_compiled_slices", lambda model: [])
+        result = _validate_model_text(tmp_path / "b", _SUBQUERY_METRIC)
+        assert any("relational construct" in e for e in result["errors"])
+
+
+def test_a_cte_name_exempts_a_table_only_inside_the_scope_that_defines_it(tmp_path):
+    """`t` is a CTE inside the inner subquery; the same name outside is a physical
+    unqualified table and is refused."""
+    source = (
+        "SELECT x.id AS id FROM (WITH t AS (SELECT 1 AS id) SELECT id FROM t) x "
+        "JOIN t ON t.id = x.id"
+    )
+    content = MODEL_YML.replace("source: events.events", f"source: {json.dumps(source)}")
+    result = _validate_model_text(tmp_path, content)
+    assert result["ok"] is False
+    assert any("table 't' is unqualified" in e for e in result["errors"]), result["errors"]
+
+
+@pytest.mark.parametrize(
+    ("source", "refusal"),
+    [
+        # non-recursive: a CTE does not see its own name, so `events` is the physical table
+        ("WITH events AS (SELECT * FROM events) SELECT id FROM events", "is unqualified"),
+        # an earlier CTE does not see a later sibling's name
+        (
+            "WITH a AS (SELECT * FROM b), b AS (SELECT 1 AS id) SELECT id FROM a",
+            "table 'b' is unqualified",
+        ),
+        # a literal path is refused even when the name matches a CTE
+        (
+            'WITH "/etc/x.parquet" AS (SELECT 1 AS id) SELECT id FROM "/etc/x.parquet"',
+            "scans '/etc/x.parquet' directly",
+        ),
+    ],
+    ids=["self-reference", "earlier-sibling", "literal-path"],
+)
+def test_cte_visibility_follows_duckdb_order_and_literal_paths_are_always_refused(
+    tmp_path, source, refusal
+):
+    content = MODEL_YML.replace("source: events.events", f"source: {json.dumps(source)}")
+    result = _validate_model_text(tmp_path, content)
+    assert result["ok"] is False
+    assert any(refusal in e for e in result["errors"]), result["errors"]
+
+
+def test_a_path_named_like_a_cte_is_refused_in_the_compiled_sql_check():
+    from ariadne import authoring
+
+    with pytest.raises(ValueError, match="scans '/x.csv' directly"):
+        authoring._authorize_statement(
+            "m.d", 'WITH "/x.csv" AS (SELECT 1) SELECT * FROM "/x.csv"', {"events"}
+        )
+
+
+def test_an_unparsable_draft_model_is_a_recoverable_validation_error(tmp_path):
     """The edit seam deliberately accepts invalid DRAFT content (spec §3), so a
     model whose YAML does not parse is a validation ERROR — never a crash of
     the finalize pass — leaving the proposal repairable with actionable
@@ -1331,7 +1446,7 @@ def test_malformed_drafts_return_a_stored_failed_validation_never_a_crash(tmp_pa
     assert result["ok"] is False and result["status"] == "invalid"
     assert result["attempts"] == 1 and result["repair_status"] == "open"
     outcomes = {check["name"]: check["outcome"] for check in result["report"]["checks"]}
-    assert any("semantic_model entry is not a mapping" in error for error in result["errors"])
+    assert any("datasets/0" in error and "is not of type" in error for error in result["errors"])
     assert outcomes["structural"] == "failed"
     # the failed report is STORED for the exact final revision (repair
     # accounting counted it — never an escaped exception instead of evidence)
@@ -3121,7 +3236,9 @@ def test_value_evidence_bounds_fallback_and_atomic_refusals(tmp_path):
     write_parquet(support_parquet, [(1, "t1"), (2, "t2"), (3, "t3")], ["order_id", "ticket"])
     support_con = duckdb.connect()
     assert (
-        support_con.execute(f"SELECT COUNT(*) FROM read_parquet('{support_parquet}')").fetchone()[0]
+        support_con.execute(f"SELECT COUNT(*) FROM read_parquet('{support_parquet}')").fetchall()[
+            0
+        ][0]
         == 3
     )  # the pending source carries 3 authored rows…
     support_con.close()

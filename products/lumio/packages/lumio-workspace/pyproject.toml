@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Authenticated, owner-managed shared workspace service for Lumio."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "lumio-wiki[documents,mcp,s3]>=0.7,<0.8",
     "mcp>=2.2,<3",

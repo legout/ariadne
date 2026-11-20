@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 MEMBER = ROOT / "products" / "lumio" / "packages" / "lumio-wiki"
@@ -43,7 +42,7 @@ def test_uv_workspace_root_is_coordination_only_with_four_members():
 
     member = _toml(MEMBER / "pyproject.toml")
     assert member["project"]["name"] == "lumio-wiki"
-    assert member["project"]["requires-python"] == ">=3.14"
+    assert member["project"]["requires-python"] == ">=3.12"
     assert member["project"]["dependencies"] == [
         "msgpack>=1.0",
         "msgspec[yaml]>=0.21.1",
@@ -53,7 +52,7 @@ def test_uv_workspace_root_is_coordination_only_with_four_members():
 
     lancedb_member = _toml(LANCEDB_MEMBER / "pyproject.toml")
     assert lancedb_member["project"]["name"] == "lumio-lancedb"
-    assert lancedb_member["project"]["requires-python"] == ">=3.14"
+    assert lancedb_member["project"]["requires-python"] == ">=3.12"
     assert lancedb_member["project"]["license"] == "Apache-2.0"
     assert "lumio-wiki>=0.7.0,<0.8.0" in lancedb_member["project"]["dependencies"]
     assert "lancedb>=0.34.0" in lancedb_member["project"]["dependencies"]
@@ -70,7 +69,7 @@ def test_uv_workspace_root_is_coordination_only_with_four_members():
 
     workspace_member = _toml(WORKSPACE_MEMBER / "pyproject.toml")
     assert workspace_member["project"]["name"] == "lumio-workspace"
-    assert workspace_member["project"]["requires-python"] == ">=3.14"
+    assert workspace_member["project"]["requires-python"] == ">=3.12"
     assert workspace_member["project"]["license"] == "Apache-2.0"
     assert workspace_member["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
         "src/lumio_workspace"

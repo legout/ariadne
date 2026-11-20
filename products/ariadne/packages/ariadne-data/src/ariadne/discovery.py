@@ -10,9 +10,15 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-from ariadne import admission, answer_examples, authoring_inputs, context, proposals, query_results
+from ariadne import (
+    admission,
+    answer_examples,
+    authoring_inputs,
+    context,
+    ossie,
+    proposals,
+    query_results,
+)
 from ariadne.context import resolve_term
 from ariadne.contracts import (  # pyright: ignore[reportMissingImports] — new module, stale analysis index; resolves in the qualified env
     CONSUMER_PROFILE,
@@ -111,27 +117,33 @@ class _DiscoverySession:
         # Envelope metadata read directly (no datus): per metric, its description,
         # available dimensions (fields carrying a dimension flag — spec rev 4 §8.12)
         # and the single-entry envelope render() compiles.
+        # Keyed by metric IDENTITY (``<model>::<key>``, spec 0039 §6). Each entry
+        # carries the parsed Ossie model, the metric's declaring dataset and its
+        # dimensions. Bare names resolve through ``_resolve``.
         self._metrics: dict[str, Any] = {}
-        for path in sorted(models.glob("*.yml")) if models.is_dir() else []:
+        paths = sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []
+        for path in paths:
             try:
-                doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-                for model in doc.get("semantic_model") or []:
-                    dimension_names = {
-                        field.get("name")
-                        for dataset in model.get("datasets") or []
-                        for field in dataset.get("fields") or []
-                        if isinstance(field.get("dimension"), dict) and field.get("name")
+                parsed = ossie.parse_model(ossie.read_document(path), path.name)
+                for key, metric in parsed.metrics.items():
+                    datasets = (
+                        [parsed.datasets[metric.owner]]
+                        if metric.owner is not None
+                        else list(parsed.datasets.values())
+                    )
+                    self._metrics[ossie.metric_identity(parsed.name, key)] = {
+                        "description": metric.description,
+                        "dimensions": sorted(
+                            {n for d in datasets for n, f in d.fields.items() if f.dimension}
+                        ),
+                        "model": parsed,
+                        "model_name": parsed.name,
+                        "key": key,
+                        "short": metric.name,
+                        "owner": metric.owner,
+                        "ai_context": ossie.ai_guidance(parsed, key),
                     }
-                    for metric in model.get("metrics") or []:
-                        name = metric.get("name")
-                        if not isinstance(name, str) or not name:
-                            continue
-                        self._metrics[name] = {
-                            "description": metric.get("description") or "",
-                            "dimensions": sorted(dimension_names),
-                            "model": {"version": doc.get("version"), "semantic_model": [model]},
-                        }
-            except (OSError, yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
                 if not report_read_errors:
                     raise  # QueryRuntime retains the native construction failure.
                 self._catalog_error = f"{path}: {type(exc).__name__}: {exc}"
@@ -140,6 +152,77 @@ class _DiscoverySession:
             if admission_record is None:
                 raise RuntimeError(f"no governed metrics found under {models}")
             self._context_only = True  # a managed catalog-less admission serves discovery
+
+    def _resolve(self, name: str) -> str:
+        """The metric identity (``<model>::<key>``) a requested name resolves
+        to (spec 0039 §6.4): a full identity exactly; a short name when it is
+        unique across the project. Unknown and ambiguous names refuse; an
+        ambiguous one lists the full identities."""
+        if name in self._metrics:
+            return name
+        matches = sorted(
+            identity
+            for identity, meta in self._metrics.items()
+            if "::" not in name and name in (meta["short"], meta["key"])
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            raise ValueError(
+                f"ambiguous metric name {name!r}; use one of the full identities: "
+                f"{', '.join(matches)}"
+            )
+        available = ", ".join(sorted(self._metrics))
+        hint = ROUTING_HINT
+        if self._context_snapshot is not None:
+            assert self._managed is not None
+            hint = (
+                "Integrated supported operations: "
+                f"{', '.join(self._managed['bound_release']['support']['operations'])}."
+            )
+        raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
+
+    def _metric_datasets(self, identity: str) -> list:
+        """The parsed datasets a metric reads: its owning dataset, or every
+        dataset its ``AGG`` terms consume."""
+        meta = self._metrics[identity]
+        model = meta["model"]
+        metric = model.metrics[meta["key"]]
+        names = [metric.owner] if metric.owner is not None else []
+        for dep in metric.deps:
+            owner = model.metrics[dep].owner
+            if owner not in names:
+                names.append(owner)
+        return [model.datasets[name] for name in names]
+
+    def _metric_slice(self, identity: str):
+        """``(Slice, output name)`` for the single-dataset compile of a metric
+        (``get_metric``): every measure of the metric's dataset plus its
+        derived compositions, each output under its short name (the key when
+        short names collide). A derived metric spanning several datasets is
+        refused here — ``query_metrics`` aligns the fact branches."""
+        from ariadne.render import build_slice
+
+        meta = self._metrics[identity]
+        model = meta["model"]
+        datasets = self._metric_datasets(identity)
+        if len(datasets) != 1:
+            raise ValueError(
+                f"metric {identity!r} combines several datasets "
+                f"({', '.join(d.name for d in datasets)}); get_metric compiles one dataset — "
+                "use query_metrics, which aligns the fact branches"
+            )
+        dataset = datasets[0].name
+        keys = [k for k, m in model.metrics.items() if m.owner == dataset]
+        for key, metric in model.metrics.items():
+            if metric.owner is None and all(dep in keys for dep in metric.deps):
+                keys.append(key)
+        shorts = [model.metrics[k].name for k in keys]
+        aliases = {
+            k: (model.metrics[k].name if shorts.count(model.metrics[k].name) == 1 else k)
+            for k in keys
+        }
+        return build_slice(model, dataset, keys, aliases=aliases), aliases[meta["key"]]
 
     def _init_artifacts(self, semantic_dir, db_path, sources, admission_record, project_root):
         self._graph: SemanticGraph | None = None
@@ -457,6 +540,7 @@ class _DiscoverySession:
                 "name": name,
                 "description": meta["description"],
                 "dimensions": meta["dimensions"],
+                **({"ai_context": meta["ai_context"]} if meta["ai_context"] else {}),
             }
             for name, meta in self._metrics.items()
         ]
@@ -471,9 +555,8 @@ class _DiscoverySession:
                     next(
                         binding
                         for binding in manifest["bindings"]
-                        if binding["metric"] == entry["name"]
-                        and binding["model"]
-                        == self._metrics[entry["name"]]["model"]["semantic_model"][0]["name"]
+                        if binding["metric"] == self._metrics[entry["name"]]["key"]
+                        and binding["model"] == self._metrics[entry["name"]]["model_name"]
                     )
                 )
             hint = (

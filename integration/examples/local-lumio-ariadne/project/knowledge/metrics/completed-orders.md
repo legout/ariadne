@@ -14,7 +14,7 @@ ariadne_profile:
   kind: metric
   metric_ref:
     model: retail_sales
-    metric: completed_orders
+    metric: orders.completed_orders
   required_policies:
     - namespace: urn:example:local-retail
       entity_id: entity:cancelled-orders

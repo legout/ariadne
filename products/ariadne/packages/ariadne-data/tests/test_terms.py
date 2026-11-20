@@ -61,40 +61,33 @@ ORDER_ROWS = [
 ]
 
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.orders
-        primary_key: [store_id, local_order_number]
-        fields:
-          - name: store_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: store_id
-            dimension: {}
-          - name: local_order_number
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: local_order_number
-            dimension: {}
-          - name: global_order_number
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: global_order_number
-            dimension: {}
-    metrics:
-      - name: order_number_count
-        description: Count of order number pairs
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: orders.orders
+  primary_key:
+  - store_id
+  - local_order_number
+  fields:
+  - name: store_id
+    expression:
+      sql: store_id
+    dimension: {}
+  - name: local_order_number
+    expression:
+      sql: local_order_number
+    dimension: {}
+  - name: global_order_number
+    expression:
+      sql: global_order_number
+    dimension: {}
+  metrics:
+  - name: order_number_count
+    expression:
+      sql: COUNT(*)
+    description: Count of order number pairs
 """
 
 
@@ -218,7 +211,7 @@ def orders_project(tmp_path: Path) -> Path:
         "  kind: metric\n"
         "  metric_ref:\n"
         "    model: orders\n"
-        "    metric: order_number_count\n"
+        "    metric: orders.order_number_count\n"
         "  required_policies:\n"
         '    - namespace: "urn:uuid:terms-fixture"\n'
         '      entity_id: "entity:order-number-format"\n'
@@ -255,7 +248,7 @@ def orders_project(tmp_path: Path) -> Path:
         "policy_bindings:\n"
         "  version: 1\n"
         "  bindings:\n"
-        "    - subject: {kind: metric, identity: orders::order_number_count}\n"
+        "    - subject: {kind: metric, identity: orders::orders.order_number_count}\n"
         "      policy: {namespace: urn:uuid:terms-fixture,"
         " entity_id: entity:order-number-format}\n"
         "      operations: [get_metric, query_metrics]\n"

@@ -63,39 +63,33 @@ GOLDEN = json.loads((REPO_ROOT / "tests" / "evals" / "golden.json").read_text())
 # Reference customers model used by the private numerical fixture. Values are
 # independently verified on the synthetic demo.db: 30 overall, exactly 3 per country.
 CUSTOMERS_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: customers
-    description: Customers master data
-    datasets:
-      - name: customers
-        source: >-
-          SELECT id, name, country FROM demo.main.customers
-        primary_key: [id]
-        fields:
-          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: customer_name
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: name
-          - name: country
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: country
-            dimension: {}
-    metrics:
-      - name: customer_count
-        description: Count of customers in the master data
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: customers
+description: Customers master data
+datasets:
+- name: customers
+  source: SELECT id, name, country FROM demo.main.customers
+  primary_key:
+  - id
+  fields:
+  - name: customer_id
+    expression:
+      sql: id
+  - name: customer_name
+    expression:
+      sql: name
+  - name: country
+    expression:
+      sql: country
+    dimension: {}
+  - name: id
+    expression:
+      sql: id
+  metrics:
+  - name: customer_count
+    expression:
+      sql: COUNT(*)
+    description: Count of customers in the master data
 """
 
 _REGION_METRICS = {"gross_margin", "gross_revenue", "cogs", "order_count"}
@@ -205,7 +199,7 @@ CUSTOMER_COUNT_PAGE = (
     "  version: 1\n"
     "  kind: metric\n"
     "  metric_ref:\n"
-    "    model: customers\n    metric: customer_count\n"
+    "    model: customers\n    metric: customers.customer_count\n"
     "  required_policies: []\n"
     "  native:\n"
     "    type: metric\n"
@@ -316,7 +310,7 @@ def test_golden_entry(entry, demo):
 
     dimensions = entry["dimensions"]
     actual = {
-        (row[dimensions[0]] if dimensions else "ALL"): row[result["metric"]]
+        (row[dimensions[0]] if dimensions else "ALL"): row[entry["metric"]]
         for row in result["rows"]
     }
     expected_sql = independent_expected(demo_db, entry["metric"], dimensions)
@@ -441,41 +435,31 @@ PREAGG_SOURCE = (
 # sanctioned direction (join key unique on the joined side), the governed-path
 # counterpart of PREAGG_SOURCE (same trap.db, both directions on one fixture).
 LINES_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: lines_many_to_one
-    description: Lines joined many-to-one to orders (sanctioned direction)
-    datasets:
-      - name: lines_join
-        source: >-
-          SELECT l.line_id, o.region, l.line_amount
-          FROM demo.main.order_lines l
-          JOIN demo.main.orders o ON o.order_id = l.order_id
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: sanctioned_lines_total
-        description: SUM of line amounts over the many-to-one join
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: lines_many_to_one
+description: Lines joined many-to-one to orders (sanctioned direction)
+datasets:
+- name: lines_join
+  source: SELECT l.line_id, o.region, l.line_amount FROM demo.main.order_lines l
+    JOIN demo.main.orders o ON o.order_id = l.order_id
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: sanctioned_lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: SUM of line amounts over the many-to-one join
 """
 
 
@@ -541,7 +525,7 @@ _TRAP_GOVERNING_REFERENCE = (
 )
 
 
-def _trap_metric_page(model: str, metric: str, grain_key: str) -> str:
+def _trap_metric_page(model: str, metric: str, grain_key: str, dataset: str) -> str:
     """One producer-native no-Policy Metric page for a trap model (spec0035
     §5: none of the trap metrics has a Policy obligation, so none is
     invented)."""
@@ -560,7 +544,7 @@ def _trap_metric_page(model: str, metric: str, grain_key: str) -> str:
         "  version: 1\n"
         "  kind: metric\n"
         "  metric_ref:\n"
-        f"    model: {model}\n    metric: {metric}\n"
+        f"    model: {model}\n    metric: {dataset}.{metric}\n"
         "  required_policies: []\n"
         "  native:\n"
         "    type: metric\n"
@@ -612,13 +596,13 @@ def _admitted_trap_project(root: Path, *, drifted: bool) -> Path:
         f"version: 1\nnamespace: \"{_TRAP_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
         encoding="utf-8",
     )
-    for model, metric, grain_key in (
-        ("trap_orders", "orders_total", "order_id"),
-        ("trap_orders", "lines_total", "order_id"),
-        ("lines_many_to_one", "sanctioned_lines_total", "line_id"),
+    for model, metric, grain_key, dataset in (
+        ("trap_orders", "orders_total", "order_id", "trap_join"),
+        ("trap_orders", "lines_total", "order_id", "trap_join"),
+        ("lines_many_to_one", "sanctioned_lines_total", "line_id", "lines_join"),
     ):
         (knowledge / "metrics" / f"{metric.replace('_', '-')}.md").write_text(
-            _trap_metric_page(model, metric, grain_key), encoding="utf-8"
+            _trap_metric_page(model, metric, grain_key, dataset), encoding="utf-8"
         )
     (knowledge / "references" / "trap-fixture-notes.md").write_text(
         _TRAP_GOVERNING_REFERENCE, encoding="utf-8"

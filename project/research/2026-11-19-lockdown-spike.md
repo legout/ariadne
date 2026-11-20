@@ -109,3 +109,68 @@ scope can also be refused by layer 2.
 
 The owner decided on DuckDB `>=2.0` (2026-11-19). Sub-spec A re-runs these gap classes
 under 2.0 before B relies on them.
+
+## Re-probe under DuckDB 2.0.0 (spec 0039 §4.4)
+
+Date: 2026-11-19, DuckDB 2.0.0 on CPython 3.12 (linux arm64). Throwaway code in `/tmp`,
+not in the repository. The same setup order as above: `LOAD`s, read-only attaches, views
+over `read_*`, a scoped `TYPE S3, PROVIDER CONFIG` secret, then
+`allowed_directories` + `enable_external_access=false` + `lock_configuration=true`.
+
+**Scope of this re-probe.** Local sources and the parse-tree node types were re-probed
+directly. The Postgres, S3 (SeaweedFS) and live Delta/Iceberg-on-S3 stages were **not**
+re-run, because no servers were started for this task. Their attach and load paths are
+covered by the existing source-type tests, which pass under 2.0.0 (offline S3 profile
+tests, Delta/Iceberg/DuckLake statement tests). G1 (S3 `..` normalization) and the
+Postgres half of G3 are therefore **unverified under 2.x**. B must re-probe them against
+live servers before relying on them.
+
+**Extensions:** `sqlite`, `httpfs`, `delta`, `iceberg`, `ducklake` and `postgres` all
+install and load.
+
+**Works under lock (2.0.0):** parquet, csv and json views; SQLite attach (a SQLite
+`INTEGER` column came back as `BLOB` bytes in this probe, with the probe table declared
+untyped); native DuckDB read-only attach; window and CTE queries.
+
+**Refused by lock alone (2.0.0):**
+
+- A file outside the allowed directory, a sibling prefix glob, a symlink that points
+  outside, `http(s)`, `~/`, and a `..` path that leaves the directory.
+- `ATTACH` of a new file **outside** the allowed directory (see the differences below for inside).
+- `INSTALL`, `SET s3_endpoint`, `CREATE PERSISTENT SECRET`.
+- `read_text` and `glob` on an outside path.
+- `COPY TO` outside the allowed directory, and `COPY TO s3://…` without httpfs loaded
+  (the S3 write itself, G5, was not re-run against a server).
+- `INSERT` into a read-only attach (refused with a type error in this probe, so it does
+  not prove the read-only refusal by itself).
+
+**Differences from 1.5.6 (not verified against 1.5.6 in this run):** inside the allowed
+directory, `ATTACH` of a new file and `COPY TO` a local file both **succeed** under 2.0.0.
+The 1.5.6 note records both as refused, but only tested a target that was not covered by
+the allow-list, so the comparison is inconclusive. B's statement guard must refuse both
+statements regardless.
+
+**Gap classes under 2.0.0:**
+
+| # | Result |
+|---|---|
+| G1 | Not re-run (needs an S3 server). |
+| G2 | `sqlite_scan` of an outside file is now **refused** by the file system check (was a bypass in 1.5.6). Keep the parse-tree guard as defense in depth. |
+| G3 | `postgres_scan` is not a defined function; `postgres_query` on a non-Postgres attach is refused. The live Postgres case was not re-run. |
+| G4 | `CREATE SECRET … SCOPE` and `DROP SECRET` are still **allowed** under lock. |
+| G5 | Not re-run against an S3 server. |
+| G6 | `duckdb_secrets()` still lists name, type and scope. |
+| G7 | A directory allow-list still exposes an unapproved file in an approved directory; `allowed_paths` refuses it. |
+
+**`json_serialize_sql` node types:** `TABLE_FUNCTION` appears for plain, subquery and
+`LATERAL` table functions; `BASE_TABLE` covers named relations and literal paths
+(`FROM 's3://b/p.parquet'`); `SUBQUERY` and `JOIN` appear as before. Only `SELECT`
+statements serialize (`COPY`, `ATTACH`, `CREATE SECRET` and `EXPLAIN` return "Only SELECT
+statements can be serialized to json!"), and a multi-statement string serializes as a
+SELECT with `error=false`, so the statement count must come from `extract_statements`
+(`n=2` for `select 1; select 2`).
+
+**Requirement inputs for B (no change to A):** keep all three layers; the statement
+guard must run on `extract_statements` and must refuse `COPY` even inside the allowed
+directory; re-probe G1, G3 (Postgres) and G5 against live servers; G2 is closed by lock in
+2.0.0 but the parse-tree guard should stay.

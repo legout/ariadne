@@ -55,47 +55,39 @@ support_revision: 2
 policy_bindings:
   version: 1
   bindings:
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
       operations: [get_metric, query_metrics]
       enforcement: null
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:cancelled-orders}
       operations: [get_metric, query_metrics]
       enforcement: null
 """
-MODEL = """version: 0.2.0.dev0
-semantic_model:
-  - name: retail_sales
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.main.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: status
-            dimension: {}
-    metrics:
-      - name: revenue
-        description: Completed revenue in EUR
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+MODEL = """version: 0.3.0.dev0
+name: retail_sales
+description: Orders model
+datasets:
+- name: orders
+  source: orders.main.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  - name: status
+    expression:
+      sql: status
+    dimension: {}
+  metrics:
+  - name: revenue
+    expression:
+      sql: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+    description: Completed revenue in EUR
 """
 NATIVE_POLICY = """---
 type: policy
@@ -213,7 +205,7 @@ ariadne_profile:
   kind: metric
   metric_ref:
     model: retail_sales
-    metric: revenue
+    metric: orders.revenue
   required_policies:
     - namespace: urn:demo:retail
       entity_id: entity:retail-return-policy
@@ -289,7 +281,7 @@ def _git(cwd: Path, *arguments: str) -> str:
 
 
 MODEL_SOURCE = "model-retail_sales"
-COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
+COMPUTATION_ENTITY = "entity:retail-sales-orders-revenue-computation"
 MODEL_DIGEST = hashlib.sha256(MODEL.encode("utf-8")).hexdigest()
 
 

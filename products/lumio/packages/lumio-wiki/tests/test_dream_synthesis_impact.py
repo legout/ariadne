@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 
 import lumio_wiki as lw
+import msgspec
 import pytest
 from lumio_wiki.cli import main
 
@@ -243,9 +244,8 @@ def test_synthetic_and_legacy_pages_excluded(kb_root: Path):
 
     assert find_synthesis_candidates(load_knowledge_base(kb_root)[0].pages)
     kb, _ = load_knowledge_base(kb_root)
-    for page in kb.pages:
-        object.__setattr__(page, "synthetic", True)
-    assert find_synthesis_candidates(kb.pages) == []
+    synthetic_pages = [msgspec.structs.replace(page, synthetic=True) for page in kb.pages]
+    assert find_synthesis_candidates(synthetic_pages) == []
 
 
 # ---------------------------------------------------------------------------

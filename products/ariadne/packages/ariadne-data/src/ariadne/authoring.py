@@ -23,6 +23,7 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages; the guarded statement seam's error type
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -73,7 +74,7 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     validate_inspection_candidate,
 )
 from ariadne.contract_inspection import _quote
-from ariadne.render import render
+from ariadne.render import build_slice, render
 from ariadne.semantic_graph import load_graph, metric_owners
 from ariadne.sources import _URI_SCHEME_RE, collection_resource, parse_resource, table_resource
 from ariadne.validate import (
@@ -108,58 +109,121 @@ EDIT_KINDS = authoring_edits.EDIT_KINDS
 def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
     """Refuse candidate sources outside the approved registry before bind/audit.
 
-    Every table in rendered model SQL is walked through SQLGlot; table
-    functions, direct file/URI scans, unqualified tables and identities outside
-    the approved set never reach validation's source connection.
+    Two layers, both before validation opens the audit connection: every
+    dataset's own source (metricless datasets included), and the compiled SQL of
+    every compile slice (defense in depth behind the load-time refusal of
+    relational constructs in field/metric expressions). Every table is walked
+    through SQLGlot; table functions, direct file/URI scans, unqualified tables
+    and identities outside the approved set never reach validation's source
+    connection.
     """
-    for name, envelope in _model_entries(tree):
-        model = envelope["semantic_model"][0]
-        if isinstance(model, dict) and len(model.get("datasets") or []) > 1:
-            raise ValueError(
-                f"model '{name}': multi-dataset (domain-layout) models are refused "
-                "at the source-access boundary until authorization understands the "
-                "normalized graph — submit one dataset per model"
-            )
-        try:
-            rendered = render(envelope)
-        except Exception:  # RenderError et al.: the compile gate owns the error
+    for model_name, model in _model_entries(tree):
+        for dataset in model.datasets.values():
+            _authorize_source(f"{model_name}.{dataset.name}", dataset.source, approved)
+        for dataset, sql in _compiled_slices(model):
+            _authorize_statement(f"{model_name}.{dataset}", sql, approved)
+
+
+def _compiled_slices(model: Any) -> list[tuple[str, str]]:
+    """``(dataset, SQL)`` of each single-dataset compile slice of a model, as
+    validation compiles it (a compile failure is the compile gate's to report)."""
+    out: list[tuple[str, str]] = []
+    for dataset in model.datasets:
+        keys = [k for k, m in model.metrics.items() if m.owner == dataset]
+        keys += [
+            k
+            for k, m in model.metrics.items()
+            if m.owner is None and m.derived and all(dep in keys for dep in m.deps)
+        ]
+        if not keys:
             continue
         try:
-            parsed = sqlglot.parse_one(rendered, dialect="duckdb")
+            out.append((dataset, render(build_slice(model, dataset, sorted(keys)))))
         except Exception:
-            continue  # render() re-parses its output; unreachable in practice
-        ctes = {cte.alias_or_name for cte in parsed.find_all(exp.CTE)}
-        names = ", ".join(sorted(approved)) or "none approved yet"
-        for table in parsed.find_all(exp.Table):
-            this = table.this
-            if not isinstance(this, exp.Identifier):
-                raise ValueError(
-                    f"model '{name}': the dataset source uses the table function "
-                    f"{this.name or type(this).__name__}(...) — only SELECT/joins over "
-                    f"approved registry tables ({names}) enter validation; raw scans "
-                    "of server files or object URIs are refused before any execution"
-                )
-            ref = table.sql(dialect="duckdb")
-            if table.catalog or table.db:
-                if (table.catalog or table.db) not in approved:
+            continue
+    return out
+
+
+def _authorize_source(name: str, source: str, approved: set[str]) -> None:
+    """One dataset source's table references against the approved registry."""
+    _authorize_statement(
+        name,
+        source if re.match(r"(?is)\s*(select|with)\b", source) else f"SELECT * FROM {source}",
+        approved,
+    )
+
+
+def _authorize_statement(name: str, sql: str, approved: set[str]) -> None:
+    try:
+        statements = sqlglot.parse(sql, dialect="duckdb")
+    except Exception as exc:
+        raise ValueError(f"model '{name}': the dataset source does not parse: {exc}") from exc
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError(f"model '{name}': the dataset source must be exactly one SELECT or table")
+    names = ", ".join(sorted(approved)) or "none approved yet"
+
+    def walk(node: Any, ctes: frozenset[str]) -> None:
+        # DuckDB visibility: a CTE name is visible to the main query and to LATER
+        # sibling definitions only — not to its own (non-recursive) body nor to
+        # earlier siblings. A recursive self-reference is refused outright.
+        clause = node.args.get("with_") or node.args.get("with")
+        main = ctes
+        if clause is not None:
+            recursive = bool(clause.args.get("recursive"))
+            visible = ctes
+            for cte in clause.expressions:
+                if recursive and any(
+                    t.name == cte.alias_or_name and not t.db and not t.catalog
+                    for t in cte.this.find_all(exp.Table)
+                ):
                     raise ValueError(
-                        f"model '{name}': {ref} is not an approved source registry "
-                        f"identity (approved: {names}) — validation never opens "
-                        "locations outside the approved registry"
+                        f"model '{name}': the CTE '{cte.alias_or_name}' refers to itself — "
+                        "recursive CTEs are not allowed in a dataset source"
                     )
-            elif table.name in ctes:
-                continue
-            elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
-                raise ValueError(
-                    f"model '{name}': the dataset source scans {table.name!r} directly "
-                    "— only SELECT/joins over approved registry tables enter validation; "
-                    "direct file/URI scans are refused before any execution"
-                )
-            else:
-                raise ValueError(
-                    f"model '{name}': table '{table.name}' is unqualified — qualify "
-                    f"tables with an approved source name ({names})"
-                )
+                walk(cte.this, visible)
+                visible = visible | {cte.alias_or_name}
+            main = visible
+        if isinstance(node, exp.Table):
+            _authorize_table(name, node, ctes, approved, names)
+        for child in node.iter_expressions():
+            if child is not clause:
+                walk(child, main)
+
+    walk(statements[0], frozenset())
+
+
+def _authorize_table(
+    name: str, table: Any, ctes: frozenset[str], approved: set[str], names: str
+) -> None:
+    this = table.this
+    if not isinstance(this, exp.Identifier):
+        raise ValueError(
+            f"model '{name}': the dataset source uses the table function "
+            f"{this.name or type(this).__name__}(...) — only SELECT/joins over "
+            f"approved registry tables ({names}) enter validation; raw scans "
+            "of server files or object URIs are refused before any execution"
+        )
+    ref = table.sql(dialect="duckdb")
+    if table.catalog or table.db:
+        if (table.catalog or table.db) not in approved:
+            raise ValueError(
+                f"model '{name}': {ref} is not an approved source registry "
+                f"identity (approved: {names}) — validation never opens "
+                "locations outside the approved registry"
+            )
+    elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
+        raise ValueError(
+            f"model '{name}': the dataset source scans {table.name!r} directly "
+            "— only SELECT/joins over approved registry tables enter validation; "
+            "direct file/URI scans are refused before any execution"
+        )
+    elif table.name in ctes:
+        return
+    else:
+        raise ValueError(
+            f"model '{name}': table '{table.name}' is unqualified — qualify "
+            f"tables with an approved source name ({names})"
+        )
 
 
 def _graph_citation_errors(tree: Path) -> list[str]:
@@ -178,7 +242,7 @@ def _graph_citation_errors(tree: Path) -> list[str]:
             selected = lumio_context.validated_selector(
                 yaml.safe_load(selector_blob.read_bytes().decode("utf-8"))
             )
-        except OSError, ValueError, yaml.YAMLError:
+        except (OSError, ValueError, yaml.YAMLError):
             selected = None  # the candidate gate owns a malformed selector
         if selected is not None and selected.get("support_revision", 1) >= 2:
             return _native_graph_policy_errors(tree, selected["namespace"])
@@ -220,7 +284,8 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     for page in kb.pages:
         profile = page.ariadne_profile
         if profile is not None and profile.kind == "metric" and profile.metric_ref is not None:
-            metric_pages.setdefault(profile.metric_ref.metric, page)
+            ref = profile.metric_ref
+            metric_pages.setdefault(f"{ref.model}::{ref.metric}", page)
     from lumio_wiki.ariadne_context import policy_closure
 
     errors: list[str] = []
@@ -304,9 +369,7 @@ class AuthoringProject:
                 f"{EDIT_KINDS} (typed source proposals arrive through the "
                 f"propose_sources operation), got kind {got!r}"
             )
-        rel, content = authoring_edits.resolve_edit(
-            edit, project=self.project, proposal=proposal
-        )
+        rel, content = authoring_edits.resolve_edit(edit, project=self.project, proposal=proposal)
         return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
 
     def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
@@ -3411,7 +3474,7 @@ def _verify_receipt(
             if observed_at is None:
                 raise ValueError(observed)
             age = datetime.now(UTC) - observed_at
-        except ValueError, TypeError, OverflowError:
+        except (ValueError, TypeError, OverflowError):
             return None, (
                 f"receipt {receipt_id!r} carries no parseable measurement time — "
                 "its freshness is unknown and can never be verified as current"

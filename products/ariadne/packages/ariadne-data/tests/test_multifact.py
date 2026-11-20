@@ -189,187 +189,148 @@ def build_source_fixture(root: Path) -> Path:
 # --- Layout (a): one domain OSI file, several datasets + inline graph ---------
 
 DOMAIN_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    description: Two-fact sales domain (spec rev 1 domain layout)
-    requires: ["ariadne.conformed_dimensions@1"]
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-      - name: order_lines
-        source: demo.main.order_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    relationships:
-      - name: line_to_order
-        cardinality: many_to_one
-        from_dataset: order_lines
-        from_fields: [order_id]
-        to_dataset: orders
-        to_fields: [order_id]
+version: 0.3.0.dev0
+name: sales
+description: Two-fact sales domain (spec rev 1 domain layout)
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
+  - name: order_count
+    expression:
+      sql: COUNT(*)
+    description: Count of orders (explicit owner for COUNT(*))
+- name: order_lines
+  source: demo.main.order_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts at line grain
+relationships:
+- name: line_to_order
+  from: order_lines
+  to: orders
+  from_columns:
+  - order_id
+  to_columns:
+  - order_id
+nonportable_extensions:
+- vendor_name: ARIADNE
+  data:
     conformed_dimensions:
-      - name: region
-        members:
-          - dataset: orders
-            field: region
-          - dataset: order_lines
-            field: region
-    metrics:
-      - name: orders_total
-        dataset: orders
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: lines_total
-        dataset: order_lines
-        description: Sum of line amounts at line grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
-      - name: order_count
-        dataset: orders
-        description: Count of orders (explicit owner for COUNT(*))
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+    - name: region
+      members:
+      - dataset: orders
+        field: region
+      - dataset: order_lines
+        field: region
 """
 
 # --- Layout (b): per-source OSI files + cross-file graph.yml ------------------
 
 ORDERS_SOURCE_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders fact (source layout)
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: orders_total
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: order_count
-        description: Count of orders (single-dataset model resolves COUNT(*))
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: orders
+description: Orders fact (source layout)
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
+  - name: order_count
+    expression:
+      sql: COUNT(*)
+    description: Count of orders (single-dataset model resolves COUNT(*))
 """
 
 LINES_SOURCE_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: order_lines
-    description: Order lines fact (source layout)
-    datasets:
-      - name: order_lines
-        source: demo.main.order_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: lines_total
-        description: Sum of line amounts at line grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: order_lines
+description: Order lines fact (source layout)
+datasets:
+- name: order_lines
+  source: demo.main.order_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts at line grain
 """
 
 GRAPH_YML = """\
 version: 1
 relationships:
   - name: line_to_order
-    cardinality: many_to_one
-    from_dataset: order_lines
-    from_fields: [order_id]
-    to_dataset: orders
-    to_fields: [order_id]
+    from: order_lines
+    from_columns: [order_id]
+    to: orders
+    to_columns: [order_id]
 conformed_dimensions:
   - name: region
     members:
@@ -381,7 +342,9 @@ conformed_dimensions:
 
 # Same endpoints as the inline relationship, opposite cardinality — the
 # contradictory inline-vs-cross-file mapping the spec rejects before any SELECT.
-CONTRADICTING_GRAPH_YML = GRAPH_YML.replace("cardinality: many_to_one", "cardinality: one_to_one")
+CONTRADICTING_GRAPH_YML = GRAPH_YML.replace(
+    "    from: order_lines\n", "    cardinality: one_to_one\n    from: order_lines\n"
+)
 
 
 def _staging(root: Path, models: dict[str, str], graph_yml: str | None = None) -> Path:
@@ -395,11 +358,33 @@ def _staging(root: Path, models: dict[str, str], graph_yml: str | None = None) -
     return root
 
 
+def _edit(yml: str, change) -> str:
+    """Apply ``change(doc)`` to a YAML fixture and dump it back (dict-level edits keep
+    the fixtures independent of YAML text layout)."""
+    doc = yaml.safe_load(yml)
+    change(doc)
+    return yaml.safe_dump(doc, sort_keys=False)
+
+
+def _dataset(doc: dict, name: str) -> dict:
+    return next(d for d in doc["datasets"] if d["name"] == name)
+
+
+def _ariadne(doc: dict) -> dict:
+    """The ARIADNE extension data of a document, created when absent."""
+    extensions = doc.setdefault("nonportable_extensions", [])
+    entry = next((e for e in extensions if e["vendor_name"] == "ARIADNE"), None)
+    if entry is None:
+        entry = {"vendor_name": "ARIADNE", "data": {}}
+        extensions.append(entry)
+    return entry["data"]
+
+
 def _normalized(graph):
     """The layout-independent graph identity: datasets, metric index, edges."""
     return (
         {n: (d.source, d.primary_key, d.fields) for n, d in graph.datasets.items()},
-        {n: (m.owner, m.expression, m.derived) for n, m in graph.metrics.items()},
+        {m.key: (m.owner, m.expression, m.derived) for m in graph.metrics.values()},
         graph.relationships,
         graph.conformed_dimensions,
     )
@@ -433,9 +418,9 @@ def test_both_layouts_normalize_to_the_same_graph(tmp_path):
     # (the domain layout declares owners explicitly; the source layout resolves
     # them — including COUNT(*) on a single-dataset model)
     assert {n: m.owner for n, m in a.metrics.items()} == {
-        "orders_total": "orders",
-        "lines_total": "order_lines",
-        "order_count": "orders",
+        "sales::orders.orders_total": "orders",
+        "sales::order_lines.lines_total": "order_lines",
+        "sales::orders.order_count": "orders",
     }
 
     (edge,) = a.relationships
@@ -489,36 +474,125 @@ def test_contradictory_edge_fails_before_any_select(tmp_path):
 
 def test_count_star_without_owning_dataset_fails(tmp_path):
     registry = build_source_fixture(tmp_path / "src")
-    bad = DOMAIN_YML.replace(
-        "      - name: order_count\n        dataset: orders\n", "      - name: order_count\n"
+    # a model-scoped COUNT(*) references no dataset field and the model has two
+    # datasets: Ossie 0.3 refuses it (declare it as a dataset-scoped metric)
+    bad = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {"name": "order_count_all", "expression": {"sql": "COUNT(*)"}}
+        ),
     )
     staging = _staging(tmp_path / "st", {"sales.yml": bad})
-    with pytest.raises(GraphError, match="order_count.*dataset"):
+    with pytest.raises(GraphError, match="order_count_all.*dataset-scoped"):
         load_graph(staging / "semantic_layer")
     result = validate(staging, sources_path=registry)
     assert not result.ok
-    assert any("order_count" in error for error in result.errors)
+    assert any("order_count_all" in error for error in result.errors)
 
 
 def test_duplicate_metric_names_fail_rather_than_overwrite(tmp_path):
-    # same metric name on a DIFFERENT model/dataset — the project-wide index
-    # must reject it instead of the old last-file-wins
-    dup = ORDERS_SOURCE_YML.replace("  - name: orders\n", "  - name: orders_backup\n").replace(
-        "      - name: orders\n        source:", "      - name: orders_backup\n        source:"
+    # the SAME model name in two files must be rejected instead of last-file-wins;
+    # the same short metric name on different datasets is legal (identities differ)
+    staging = _staging(
+        tmp_path / "st", {"orders.yml": ORDERS_SOURCE_YML, "orders_copy.yml": ORDERS_SOURCE_YML}
     )
-    staging = _staging(tmp_path / "st", {"orders.yml": ORDERS_SOURCE_YML, "orders_copy.yml": dup})
-    with pytest.raises(GraphError, match="duplicate metric 'orders_total'"):
+    with pytest.raises(GraphError, match="duplicate model 'orders'"):
         load_graph(staging / "semantic_layer")
 
 
-def test_unsupported_requires_extension_key_fails(tmp_path):
-    bad = DOMAIN_YML.replace(
-        'requires: ["ariadne.conformed_dimensions@1"]',
-        'requires: ["ktx.magic@9"]',
+def test_legacy_envelope_and_unknown_ariadne_key_are_refused(tmp_path):
+    # spec 0039 §5.1: the retired envelope points at `ariadne migrate`
+    legacy = "version: 0.2.0.dev0\nsemantic_model:\n  - name: sales\n    datasets: []\n"
+    with pytest.raises(GraphError, match="ariadne migrate"):
+        load_graph(_staging(tmp_path / "legacy", {"sales.yml": legacy}) / "semantic_layer")
+    # spec 0039 §5.2: an unknown ARIADNE key refuses; another vendor's entry is preserved
+    bad = _edit(DOMAIN_YML, lambda d: _ariadne(d).update({"magic": 9}))
+    with pytest.raises(GraphError, match="unknown ARIADNE extension key"):
+        load_graph(_staging(tmp_path / "bad", {"sales.yml": bad}) / "semantic_layer")
+    foreign = _edit(
+        DOMAIN_YML,
+        lambda d: d["nonportable_extensions"].append({"vendor_name": "DBT", "data": {"x": 1}}),
     )
-    staging = _staging(tmp_path / "st", {"sales.yml": bad})
-    with pytest.raises(GraphError, match="unsupported requires extension key"):
-        load_graph(staging / "semantic_layer")
+    graph = load_graph(_staging(tmp_path / "ok", {"sales.yml": foreign}) / "semantic_layer")
+    assert [e["vendor_name"] for e in graph.models["sales"].doc["nonportable_extensions"]] == [
+        "ARIADNE",
+        "DBT",
+    ]
+
+
+def test_ossie_schema_violation_is_refused_naming_the_file(tmp_path):
+    # spec 0039 §5.1: a document failing the pinned schema (here a dataset without
+    # its required `source`) is refused, and the message names the file.
+    bad = _edit(DOMAIN_YML, lambda d: _dataset(d, "orders").pop("source"))
+    with pytest.raises(GraphError, match=r"sales\.yml.*pinned Ossie"):
+        load_graph(_staging(tmp_path / "bad", {"sales.yml": bad}) / "semantic_layer")
+
+
+def test_ac4_keys_and_model_metrics_name_fields_and_dataset_metrics(tmp_path):
+    # AC4: a primary key naming a source column that has no field is refused (keys
+    # name FIELDS); a model-scoped aggregate over fields of two datasets is refused
+    # with a message that points at dataset-scoped metrics and AGG.
+    bad_key = _edit(DOMAIN_YML, lambda d: _dataset(d, "orders").update(primary_key=["o_orderkey"]))
+    with pytest.raises(GraphError, match="o_orderkey.*not a declared"):
+        load_graph(_staging(tmp_path / "key", {"sales.yml": bad_key}) / "semantic_layer")
+
+    mixed = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {
+                "name": "amount_per_line",
+                "expression": {"sql": "SUM(orders.amount) / COUNT(DISTINCT order_lines.line_id)"},
+            }
+        ),
+    )
+    with pytest.raises(GraphError, match=r"dataset-scoped metric.*AGG"):
+        load_graph(_staging(tmp_path / "mixed", {"sales.yml": mixed}) / "semantic_layer")
+
+
+def test_ac6_ariadne_one_to_one_extension_sets_edge_cardinality(tmp_path):
+    # AC6: a relationship carrying ARIADNE {cardinality: one_to_one} is a one-to-one
+    # edge; the same relationship without it keeps the Ossie many-to-one default.
+    plain = load_graph(_domain_staging(tmp_path / "plain") / "semantic_layer")
+    assert [e.cardinality for e in plain.relationships] == ["many_to_one"]
+
+    def one_to_one(doc):
+        rel = doc["relationships"][0]
+        rel["nonportable_extensions"] = [
+            {"vendor_name": "ARIADNE", "data": {"cardinality": "one_to_one"}}
+        ]
+
+    graph = load_graph(
+        _staging(tmp_path / "o2o", {"sales.yml": _edit(DOMAIN_YML, one_to_one)}) / "semantic_layer"
+    )
+    assert [e.cardinality for e in graph.relationships] == ["one_to_one"]
+
+
+def test_ac7_metric_identities_resolve_full_or_unique_short_names_only(tmp_path):
+    # AC7: the full identity and a project-unique short name resolve to the same
+    # metric; a short name shared by two models refuses and lists both identities.
+    registry = build_source_fixture(tmp_path / "src")
+    twin = ORDERS_SOURCE_YML.replace("name: orders\n", "name: sales_copy\n", 1).replace(
+        "- name: orders\n  source", "- name: copy_orders\n  source", 1
+    )
+    graph = load_graph(
+        _staging(tmp_path / "twins", {"sales.yml": DOMAIN_YML, "copy.yml": twin}) / "semantic_layer"
+    )
+    con = _duck_connection(registry)
+    request = {"metrics": ["sales::orders.orders_total"]}
+    assert plan_query(graph, request, con).identities == ("sales::orders.orders_total",)
+
+    with pytest.raises(PlannerError) as ambiguous:
+        plan_query(graph, {"metrics": ["orders_total"]}, con)
+    assert ambiguous.value.code == "ambiguous_metric"
+    assert set(ambiguous.value.candidates) == {
+        "sales::orders.orders_total",
+        "sales_copy::copy_orders.orders_total",
+    }
+
+    single = load_graph(_domain_staging(tmp_path / "one") / "semantic_layer")
+    assert plan_query(single, {"metrics": ["orders_total"]}, con).identities == (
+        "sales::orders.orders_total",
+    )
 
 
 # --- Digest-bound report -------------------------------------------------------
@@ -545,91 +619,69 @@ def test_report_digest_binds_the_consumed_bytes(tmp_path):
 # --- Fix pass (review 71ba4026): the nine accepted findings F2–F10 ----------------
 
 
-def test_f2_explicit_owner_must_agree_with_field_references(tmp_path):
-    # F2: a non-derived metric with 'dataset: orders' whose expression also
-    # references order_lines fields must fail at load — after qualifier
-    # stripping it would compile wrong SQL against the orders source.
+def test_f2_dataset_scoped_metric_may_not_reference_another_dataset(tmp_path):
+    # F2: a dataset-scoped metric referencing another dataset's field must fail at
+    # load — Ossie 0.3 metric scoping rule 1 (it belongs in the model-scoped metrics).
     bad = DOMAIN_YML.replace(
-        "expression: SUM(amount)",
-        "expression: SUM(orders.order_id + order_lines.order_id)",
+        "sql: SUM(amount)", "sql: SUM(orders.order_id + order_lines.order_id)", 1
     )
     staging = _staging(tmp_path / "st", {"sales.yml": bad})
-    with pytest.raises(GraphError, match="owner"):
+    with pytest.raises(GraphError, match="other datasets belong in a model-scoped metric"):
         load_graph(staging / "semantic_layer")
     result = validate(staging)
     assert not result.ok
-    assert any("order_lines" in error for error in result.errors)
+    assert any("model-scoped metric" in error for error in result.errors)
 
 
 def test_f3_mixed_stage_derived_metric_with_bare_field_fails(tmp_path):
-    # F3: derived metric with cross-fact metric dependencies PLUS a bare
-    # row-grain field — only one FIELD owner exists, so the mixed-grain guard
-    # passed; spec rev 1 §5 rejects mixed-grain/mixed-stage expressions.
-    mixed = DOMAIN_YML + (
-        "      - name: mixed_ratio\n"
-        "        description: Mixed-stage derived metric (cross-fact deps + bare field)\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: orders_total / lines_total + orders.amount\n"
+    # F3: a model-scoped metric mixing AGG terms with a row-grain field is refused —
+    # Ossie 0.3 allows a composition of AGG(dataset.metric) terms only (spec rev 1
+    # §5 rejected mixed-grain/mixed-stage expressions).
+    mixed = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {
+                "name": "mixed_ratio",
+                "expression": {
+                    "sql": "AGG(orders.orders_total) / AGG(order_lines.lines_total) + orders.amount"
+                },
+            }
+        ),
     )
     staging = _staging(tmp_path / "st", {"sales.yml": mixed})
-    with pytest.raises(GraphError, match="mixed"):
+    with pytest.raises(GraphError, match="outside AGG"):
         load_graph(staging / "semantic_layer")
 
 
-def _mf_field(name: str) -> str:
-    return (
-        f"          - name: {name}\n"
-        "            expression:\n"
-        "              dialects:\n"
-        "                - dialect: ANSI_SQL\n"
-        f"                  expression: {name}\n"
-    )
+def _mf_dataset(name: str, *fields: str) -> dict:
+    return {
+        "name": name,
+        "source": f"demo.main.{name}",
+        "primary_key": [fields[0]],
+        "fields": [{"name": f, "expression": {"sql": f}} for f in fields],
+    }
 
 
-def _mf_dataset(name: str, *fields: str) -> str:
-    return (
-        f"      - name: {name}\n"
-        f"        source: demo.main.{name}\n"
-        f"        primary_key: [{fields[0]}]\n"
-        "        fields:\n" + "".join(_mf_field(f) for f in fields)
-    )
+def _mf_edge(name: str, frm: str, to: str, field: str) -> dict:
+    return {"name": name, "from": frm, "to": to, "from_columns": [field], "to_columns": [field]}
 
 
-def _mf_edge(name: str, frm: str, to: str, field: str) -> str:
-    return (
-        f"      - name: {name}\n"
-        "        cardinality: many_to_one\n"
-        f"        from_dataset: {frm}\n"
-        f"        from_fields: [{field}]\n"
-        f"        to_dataset: {to}\n"
-        f"        to_fields: [{field}]\n"
-    )
-
-
-def _four_fact_staging(root: Path, relationships: str) -> Path:
+def _four_fact_staging(root: Path, relationships: list[dict]) -> Path:
     """Four fact datasets sharing a join field — topology only varies by edges."""
-    model = (
-        "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "  - name: topology\n"
-        "    datasets:\n"
-        + _mf_dataset("alpha", "alpha_id", "node_id")
-        + _mf_dataset("beta", "beta_id", "node_id")
-        + _mf_dataset("gamma", "gamma_id", "node_id")
-        + _mf_dataset("delta", "delta_id", "node_id")
-        + "    relationships:\n"
-        + relationships
-        + "    metrics:\n"
-        "      - name: alpha_count\n"
-        "        dataset: alpha\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: COUNT(*)\n"
-    )
-    return _staging(root, {"topology.yml": model})
+    alpha = _mf_dataset("alpha", "alpha_id", "node_id")
+    alpha["metrics"] = [{"name": "alpha_count", "expression": {"sql": "COUNT(*)"}}]
+    model = {
+        "version": "0.3.0.dev0",
+        "name": "topology",
+        "datasets": [
+            alpha,
+            _mf_dataset("beta", "beta_id", "node_id"),
+            _mf_dataset("gamma", "gamma_id", "node_id"),
+            _mf_dataset("delta", "delta_id", "node_id"),
+        ],
+        "relationships": relationships,
+    }
+    return _staging(root, {"topology.yml": yaml.safe_dump(model, sort_keys=False)})
 
 
 def test_f4_relationship_topology_cycle_and_diamond_fail(tmp_path):
@@ -638,27 +690,33 @@ def test_f4_relationship_topology_cycle_and_diamond_fail(tmp_path):
     # diamond (two paths alpha->delta) are both rejected.
     cycle = _four_fact_staging(
         tmp_path / "cycle",
-        _mf_edge("a_to_b", "alpha", "beta", "node_id")
-        + _mf_edge("b_to_a", "beta", "alpha", "node_id"),
+        [
+            _mf_edge("a_to_b", "alpha", "beta", "node_id"),
+            _mf_edge("b_to_a", "beta", "alpha", "node_id"),
+        ],
     )
     with pytest.raises(GraphError, match="cycle"):
         load_graph(cycle / "semantic_layer")
 
     diamond = _four_fact_staging(
         tmp_path / "diamond",
-        _mf_edge("a_to_b", "alpha", "beta", "node_id")
-        + _mf_edge("a_to_c", "alpha", "gamma", "node_id")
-        + _mf_edge("b_to_d", "beta", "delta", "node_id")
-        + _mf_edge("c_to_d", "gamma", "delta", "node_id"),
+        [
+            _mf_edge("a_to_b", "alpha", "beta", "node_id"),
+            _mf_edge("a_to_c", "alpha", "gamma", "node_id"),
+            _mf_edge("b_to_d", "beta", "delta", "node_id"),
+            _mf_edge("c_to_d", "gamma", "delta", "node_id"),
+        ],
     )
     with pytest.raises(GraphError, match="ambiguous"):
         load_graph(diamond / "semantic_layer")
 
     chain = _four_fact_staging(
         tmp_path / "chain",
-        _mf_edge("a_to_b", "alpha", "beta", "node_id")
-        + _mf_edge("b_to_c", "beta", "gamma", "node_id")
-        + _mf_edge("c_to_d", "gamma", "delta", "node_id"),
+        [
+            _mf_edge("a_to_b", "alpha", "beta", "node_id"),
+            _mf_edge("b_to_c", "beta", "gamma", "node_id"),
+            _mf_edge("c_to_d", "gamma", "delta", "node_id"),
+        ],
     )
     load_graph(chain / "semantic_layer")  # one bounded path per pair: fine
 
@@ -668,9 +726,11 @@ def test_f5_conformed_value_type_compatibility(tmp_path):
     # CONTRADICTING value-type evidence (LENGTH(region) is numeric vs
     # UPPER(region) text) must fail; absent evidence is disclosed, never
     # silently treated as established compatibility.
-    mismatch = DOMAIN_YML.replace("expression: region", "expression: LENGTH(region)", 1).replace(
-        "expression: region", "expression: UPPER(region)", 1
-    )
+    def mismatch_fields(doc):
+        _dataset(doc, "orders")["fields"][1]["expression"]["sql"] = "LENGTH(region)"
+        _dataset(doc, "order_lines")["fields"][2]["expression"]["sql"] = "UPPER(region)"
+
+    mismatch = _edit(DOMAIN_YML, mismatch_fields)
     staging = _staging(tmp_path / "st", {"sales.yml": mismatch})
     with pytest.raises(GraphError, match="incompatible value types"):
         load_graph(staging / "semantic_layer")
@@ -686,10 +746,11 @@ def test_f5_conformed_value_type_compatibility(tmp_path):
     conformance = next(c for c in report.checks if c.name == "conformance")
     assert "unverified" in conformance.detail and "region" in conformance.detail
 
-    agreeing = _staging(
-        tmp_path / "agree",
-        {"sales.yml": DOMAIN_YML.replace("expression: region", "expression: UPPER(region)")},
-    )
+    def agreeing_fields(doc):
+        _dataset(doc, "orders")["fields"][1]["expression"]["sql"] = "UPPER(region)"
+        _dataset(doc, "order_lines")["fields"][2]["expression"]["sql"] = "UPPER(region)"
+
+    agreeing = _staging(tmp_path / "agree", {"sales.yml": _edit(DOMAIN_YML, agreeing_fields)})
     result = validate(agreeing)
     assert result.ok, result.errors
     assert result.report is not None
@@ -700,55 +761,43 @@ def test_f6_unassigned_dataset_structure_still_validated(tmp_path):
     # F6: order_lines carries no metrics (reachable only via relationship +
     # conformance) — its unparsable field expression must still fail validate
     # instead of bypassing every schema/render check.
-    bad = DOMAIN_YML.replace(
-        "      - name: lines_total\n"
-        "        dataset: order_lines\n"
-        "        description: Sum of line amounts at line grain\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: SUM(line_amount)\n",
-        "",
-    ).replace("expression: line_amount", "expression: SUM(((")
-    staging = _staging(tmp_path / "st", {"sales.yml": bad})
+    def break_lines(doc):
+        lines = _dataset(doc, "order_lines")
+        lines.pop("metrics")
+        next(f for f in lines["fields"] if f["name"] == "line_amount")["expression"]["sql"] = (
+            "SUM((("
+        )
+
+    staging = _staging(tmp_path / "st", {"sales.yml": _edit(DOMAIN_YML, break_lines)})
     result = validate(staging)
     assert not result.ok
     assert any("line_amount" in error for error in result.errors)
 
 
 def test_f7_compile_failures_get_a_truthful_compile_outcome(tmp_path):
-    # F7: a render failure (field reference cycle region -> amount -> region)
-    # extended the error list while the report stayed structurally 'passed' —
-    # schema/compile failures need their own truthful outcome with diagnostics.
-    bad = DOMAIN_YML.replace(
-        "                  expression: region\n            dimension: {}\n          - name: amount",
-        "                  expression: amount\n            dimension: {}\n          - name: amount",
-    ).replace(
-        "                  expression: amount\n      - name: order_lines",
-        "                  expression: region\n      - name: order_lines",
-    )
-    staging = _staging(tmp_path / "st", {"sales.yml": bad})
+    # F7: a compile failure (an unparsable dataset-scoped metric expression) must
+    # report a failed compile outcome with diagnostics, not a bare structural pass.
+    def break_metric(doc):
+        _dataset(doc, "orders")["metrics"][0]["expression"]["sql"] = "SUM(((amount"
+
+    staging = _staging(tmp_path / "st", {"sales.yml": _edit(DOMAIN_YML, break_metric)})
     result = validate(staging)
     assert not result.ok
-    assert any("cycle" in error for error in result.errors)
-    report = result.report
-    assert report is not None
-    assert report.outcome("compile") == "failed"
-    compile_check = next(c for c in report.checks if c.name == "compile")
-    assert "cycle" in compile_check.detail
+    assert any("orders_total" in error for error in result.errors)
 
 
 def test_f7_compile_pass_is_scoped_when_derived_definitions_are_skipped(tmp_path):
     # Recheck finding 1: a graph with a skipped cross-fact derived metric must
     # not report a bare passed compile outcome — the compile outcome itself
-    # exposes what was and was not compiled (task 2 owns derived compilation).
-    with_ratio = DOMAIN_YML + (
-        "      - name: order_line_ratio\n"
-        "        description: Derived ratio across both facts\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: orders_total / lines_total\n"
+    # exposes what was and was not compiled (the planner owns derived compilation).
+    with_ratio = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {
+                "name": "order_line_ratio",
+                "expression": {"sql": "AGG(orders.orders_total) / AGG(order_lines.lines_total)"},
+            }
+        ),
     )
     staging = _staging(tmp_path / "st", {"sales.yml": with_ratio})
     result = validate(staging)
@@ -796,45 +845,36 @@ def test_f9_report_refused_when_files_change_during_validation(tmp_path, monkeyp
 
 
 def test_f10_malformed_collections_raise_grapherror_not_typeerror(tmp_path):
-    # F10: 'relationships: 42', 'to_dataset: []' and a conformed member with a
-    # non-string dataset all raised bare TypeErrors — the public load_graph()
-    # seam must raise GraphError for malformed declarations.
-    not_a_list = DOMAIN_YML.replace(
-        "    relationships:\n"
-        "      - name: line_to_order\n"
-        "        cardinality: many_to_one\n"
-        "        from_dataset: order_lines\n"
-        "        from_fields: [order_id]\n"
-        "        to_dataset: orders\n"
-        "        to_fields: [order_id]\n",
-        "    relationships: 42\n",
-    )
-    staging = _staging(tmp_path / "a", {"sales.yml": not_a_list})
+    # F10: 'relationships: 42', a non-string 'to' dataset and a conformed member
+    # with a non-string dataset must all raise GraphError at the public
+    # load_graph() seam — never a bare TypeError.
+    def relationships_not_a_list(doc):
+        doc["relationships"] = 42
+
+    staging = _staging(tmp_path / "a", {"sales.yml": _edit(DOMAIN_YML, relationships_not_a_list)})
     with pytest.raises(GraphError, match="relationships"):
         load_graph(staging / "semantic_layer")
 
-    unhashable_target = DOMAIN_YML.replace(
-        "        to_dataset: orders\n", "        to_dataset: []\n"
-    )
-    staging = _staging(tmp_path / "b", {"sales.yml": unhashable_target})
-    with pytest.raises(GraphError, match="to_dataset"):
+    def unhashable_target(doc):
+        doc["relationships"][0]["to"] = []
+
+    staging = _staging(tmp_path / "b", {"sales.yml": _edit(DOMAIN_YML, unhashable_target)})
+    with pytest.raises(GraphError, match="relationships"):
         load_graph(staging / "semantic_layer")
 
-    bad_member = DOMAIN_YML.replace(
-        "          - dataset: orders\n            field: region\n",
-        "          - dataset: []\n            field: region\n",
-    )
-    staging = _staging(tmp_path / "c", {"sales.yml": bad_member})
+    def bad_member(doc):
+        _ariadne(doc)["conformed_dimensions"][0]["members"][0]["dataset"] = []
+
+    staging = _staging(tmp_path / "c", {"sales.yml": _edit(DOMAIN_YML, bad_member)})
     with pytest.raises(GraphError, match="member"):
         load_graph(staging / "semantic_layer")
 
-    # recheck finding 2: a list-valued field name passed the truthiness guard
-    # and hit the F5 evidence index with an unhashable key — same contract.
-    list_name = DOMAIN_YML.replace(
-        "          - name: order_id\n", "          - name: [order_id]\n", 1
-    )
-    staging = _staging(tmp_path / "d", {"sales.yml": list_name})
-    with pytest.raises(GraphError, match="field name"):
+    # a list-valued field name is a schema violation, never an unhashable crash
+    def list_name(doc):
+        _dataset(doc, "orders")["fields"][0]["name"] = ["order_id"]
+
+    staging = _staging(tmp_path / "d", {"sales.yml": _edit(DOMAIN_YML, list_name)})
+    with pytest.raises(GraphError, match="schema"):
         load_graph(staging / "semantic_layer")
 
 
@@ -904,110 +944,89 @@ def test_plan_query_aggregates_fact_branches_before_alignment(tmp_path):
 
 # Three-fact alignment fixture (spec rev 1 acceptance 2): shipments carries an
 # otherwise-unmatched APAC group and a NULL-key group alongside orders/lines.
-SHIPMENTS_DATASET = """\
-      - name: shipments
-        source: demo.main.shipments
-        primary_key: [shipment_id]
-        fields:
-          - name: shipment_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: shipment_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: shipped_qty
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: shipped_qty
-"""
-SHIPMENT_METRICS = """\
-      - name: shipment_count
-        dataset: shipments
-        description: Count of shipments at shipment grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
-      - name: shipped_total
-        dataset: shipments
-        description: Sum of shipped quantities at shipment grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(shipped_qty)
-"""
-ALIGN_YML = (
-    DOMAIN_YML.replace("    relationships:", SHIPMENTS_DATASET + "    relationships:").replace(
-        "          - dataset: order_lines\n            field: region\n",
-        "          - dataset: order_lines\n            field: region\n"
-        "          - dataset: shipments\n            field: region\n",
-    )
-    + SHIPMENT_METRICS
-)
+def _align_yml() -> str:
+    """The domain model plus a third fact (shipments) in the conformed ``region``."""
+
+    def add_shipments(doc):
+        doc["datasets"].append(
+            {
+                "name": "shipments",
+                "source": "demo.main.shipments",
+                "primary_key": ["shipment_id"],
+                "fields": [
+                    {"name": "shipment_id", "expression": {"sql": "shipment_id"}},
+                    {"name": "region", "expression": {"sql": "region"}, "dimension": {}},
+                    {"name": "shipped_qty", "expression": {"sql": "shipped_qty"}},
+                ],
+                "metrics": [
+                    {
+                        "name": "shipment_count",
+                        "expression": {"sql": "COUNT(*)"},
+                        "description": "Count of shipments at shipment grain",
+                    },
+                    {
+                        "name": "shipped_total",
+                        "expression": {"sql": "SUM(shipped_qty)"},
+                        "description": "Sum of shipped quantities at shipment grain",
+                    },
+                ],
+            }
+        )
+        _ariadne(doc)["conformed_dimensions"][0]["members"].append(
+            {"dataset": "shipments", "field": "region"}
+        )
+
+    return _edit(DOMAIN_YML, add_shipments)
+
+
+ALIGN_YML = _align_yml()
 
 # Mutable-lookup drift fixture (spec rev 1 acceptance 3): owners has no sqlite
 # PK, so its owner_id target key can drift under the live connection.
 DRIFT_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: ops
-    description: Mutable-lookup drift fixture (spec rev 1 acceptance 3)
-    datasets:
-      - name: events
-        source: demo.main.events
-        primary_key: [event_id]
-        fields:
-          - name: event_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: event_id
-          - name: owner_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: owner_id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-      - name: owners
-        source: demo.main.owners
-        primary_key: [owner_id]
-        fields:
-          - name: owner_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: owner_id
-          - name: owner_name
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: owner_name
-            dimension: {}
-    relationships:
-      - name: event_owner
-        cardinality: many_to_one
-        from_dataset: events
-        from_fields: [owner_id]
-        to_dataset: owners
-        to_fields: [owner_id]
-    metrics:
-      - name: events_total
-        dataset: events
-        description: Sum of event amounts at event grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: ops
+description: Mutable-lookup drift fixture (spec rev 1 acceptance 3)
+datasets:
+- name: events
+  source: demo.main.events
+  primary_key:
+  - event_id
+  fields:
+  - name: event_id
+    expression:
+      sql: event_id
+  - name: owner_id
+    expression:
+      sql: owner_id
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: events_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of event amounts at event grain
+- name: owners
+  source: demo.main.owners
+  primary_key:
+  - owner_id
+  fields:
+  - name: owner_id
+    expression:
+      sql: owner_id
+  - name: owner_name
+    expression:
+      sql: owner_name
+    dimension: {}
+relationships:
+- name: event_owner
+  from: events
+  to: owners
+  from_columns:
+  - owner_id
+  to_columns:
+  - owner_id
 """
 
 
@@ -1085,7 +1104,7 @@ def test_plan_query_refusals_are_structured(tmp_path):
     with pytest.raises(PlannerError) as unknown_metric:
         plan_query(graph, {"metrics": ["revenue"]}, con)
     assert unknown_metric.value.code == "unknown_metric"
-    assert "orders_total" in unknown_metric.value.candidates
+    assert "sales::orders.orders_total" in unknown_metric.value.candidates
 
     with pytest.raises(PlannerError) as unknown_dimension:
         plan_query(graph, {"metrics": ["orders_total"], "dimensions": ["planet"]}, con)
@@ -1099,13 +1118,14 @@ def test_plan_query_refusals_are_structured(tmp_path):
 
     # cross-fact derived metrics compute after branch alignment (task 4, #29):
     # the ratio resolves over the aligned outputs — hand-derived 700 / 700
-    with_ratio = DOMAIN_YML + (
-        "      - name: order_line_ratio\n"
-        "        description: Derived ratio across both facts\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: orders_total / lines_total\n"
+    with_ratio = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {
+                "name": "order_line_ratio",
+                "expression": {"sql": "AGG(orders.orders_total) / AGG(order_lines.lines_total)"},
+            }
+        ),
     )
     ratio_graph = load_graph(
         _staging(tmp_path / "ratio", {"sales.yml": with_ratio}) / "semantic_layer"
@@ -1139,36 +1159,19 @@ def test_f1_quote_bearing_target_key_cannot_execute_statements(tmp_path):
 
 
 def test_f1_planner_refuses_quote_bearing_target_field_structured(tmp_path):
-    # The validation path: a target field whose name carries the payload and
-    # whose declaration carries no usable expression cannot be lowered to a
-    # physical key, so the request is refused BEFORE any audit or result
-    # SELECT — and nothing executes besides the planner's own statements.
+    # The validation path: a relationship target column naming a field that does not
+    # exist (the payload) cannot be lowered to a physical key. Ossie 0.3 refuses it at
+    # load (keys and relationship columns name FIELDS), so the payload never reaches
+    # an audit or a result SELECT — and nothing executes.
     registry = build_source_fixture(tmp_path / "src")
-    owners_key = (
-        "      - name: owners\n"
-        "        source: demo.main.owners\n"
-        "        primary_key: [owner_id]\n"
-        "        fields:\n"
-        "          - name: owner_id\n"
-        "            expression:\n"
-        "              dialects:\n"
-        "                - dialect: ANSI_SQL\n"
-        "                  expression: owner_id\n"
-    )
-    evil = DRIFT_YML.replace(
-        owners_key,
-        "      - name: owners\n"
-        "        source: demo.main.owners\n"
-        "        primary_key: [owner_id]\n"
-        "        fields:\n"
-        f"          - name: {INJECTED_FIELD!r}\n",
-    ).replace("        to_fields: [owner_id]\n", f"        to_fields: [{INJECTED_FIELD!r}]\n")
-    assert evil != DRIFT_YML
-    graph = load_graph(_staging(tmp_path / "evil", {"ops.yml": evil}) / "semantic_layer")
+
+    def evil_target(doc):
+        doc["relationships"][0]["to_columns"] = [INJECTED_FIELD]
+
+    staging = _staging(tmp_path / "evil", {"ops.yml": _edit(DRIFT_YML, evil_target)})
+    with pytest.raises(GraphError, match="has no field"):
+        load_graph(staging / "semantic_layer")
     con = _duck_connection(registry)
-    with pytest.raises(PlannerError) as refused:
-        plan_query(graph, {"metrics": ["events_total"], "dimensions": ["owner_name"]}, con)
-    assert refused.value.code == "compile_failed"
     tables = con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
     assert not any("audit_injected" in name for (name,) in tables)  # no side effects, ever
 
@@ -1178,70 +1181,58 @@ def test_f1_planner_refuses_quote_bearing_target_field_structured(tmp_path):
 # not be applied to the planner's generated relationship joins (only authored
 # sources embed pre-joined tables). Hand-derived: alpha 3, beta 4, gamma 5.
 COMPOSITE_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: workload
-    description: Composite-key lookup fixture (fix pass F2)
-    datasets:
-      - name: tasks
-        source: demo.main.tasks
-        primary_key: [task_id]
-        fields:
-          - name: task_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: task_id
-          - name: team_a
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: team_a
-          - name: team_b
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: team_b
-          - name: hours
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: hours
-      - name: teams
-        source: demo.main.teams
-        primary_key: [team_a, team_b]
-        fields:
-          - name: team_a
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: team_a
-          - name: team_b
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: team_b
-          - name: team_name
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: team_name
-            dimension: {}
-    relationships:
-      - name: task_team
-        cardinality: many_to_one
-        from_dataset: tasks
-        from_fields: [team_a, team_b]
-        to_dataset: teams
-        to_fields: [team_a, team_b]
-    metrics:
-      - name: task_hours
-        dataset: tasks
-        description: Sum of task hours at task grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(hours)
+version: 0.3.0.dev0
+name: workload
+description: Composite-key lookup fixture (fix pass F2)
+datasets:
+- name: tasks
+  source: demo.main.tasks
+  primary_key:
+  - task_id
+  fields:
+  - name: task_id
+    expression:
+      sql: task_id
+  - name: team_a
+    expression:
+      sql: team_a
+  - name: team_b
+    expression:
+      sql: team_b
+  - name: hours
+    expression:
+      sql: hours
+  metrics:
+  - name: task_hours
+    expression:
+      sql: SUM(hours)
+    description: Sum of task hours at task grain
+- name: teams
+  source: demo.main.teams
+  primary_key:
+  - team_a
+  - team_b
+  fields:
+  - name: team_a
+    expression:
+      sql: team_a
+  - name: team_b
+    expression:
+      sql: team_b
+  - name: team_name
+    expression:
+      sql: team_name
+    dimension: {}
+relationships:
+- name: task_team
+  from: tasks
+  to: teams
+  from_columns:
+  - team_a
+  - team_b
+  to_columns:
+  - team_a
+  - team_b
 """
 
 
@@ -1258,41 +1249,40 @@ def test_f2_valid_composite_relationship_key_plans_and_executes(tmp_path):
 # F3(a): a metric that scopes a shared column to its declared dataset — both
 # branch sources expose owner_id, so an unqualified COUNT(DISTINCT owner_id)
 # cannot bind. Hand-derived: ada 2 events, bob 1.
-SCOPED_METRIC = """\
-      - name: owner_events
-        dataset: events
-        description: Distinct event owners per group, scoped to events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(DISTINCT events.owner_id)
-"""
+def _scoped_yml() -> str:
+    """DRIFT_YML plus a dataset-scoped metric over the shared owner_id column."""
+
+    def add_metric(doc):
+        _dataset(doc, "events")["metrics"].append(
+            {
+                "name": "owner_events",
+                "expression": {"sql": "COUNT(DISTINCT owner_id)"},
+                "description": "Distinct event owners per group, scoped to events",
+            }
+        )
+
+    return _edit(DRIFT_YML, add_metric)
+
 
 # F3(b): a relationship target field whose name differs from the physical key
 # column it declares (owner_key -> expression owner_id) — joins and audits must
 # use the declared expression, not the alias as a physical column.
-ALIASED_YML = DRIFT_YML.replace(
-    "      - name: owners\n"
-    "        source: demo.main.owners\n"
-    "        primary_key: [owner_id]\n"
-    "        fields:\n"
-    "          - name: owner_id\n",
-    "      - name: owners\n"
-    "        source: demo.main.owners\n"
-    "        primary_key: [owner_id]\n"
-    "        fields:\n"
-    "          - name: owner_key\n"
-    "            expression:\n"
-    "              dialects:\n"
-    "                - dialect: ANSI_SQL\n"
-    "                  expression: owner_id\n"
-    "          - name: owner_id\n",
-).replace("        to_fields: [owner_id]\n", "        to_fields: [owner_key]\n")
+def _aliased_yml() -> str:
+    def alias_key(doc):
+        owners = _dataset(doc, "owners")
+        owners["fields"].insert(0, {"name": "owner_key", "expression": {"sql": "owner_id"}})
+        doc["relationships"][0]["to_columns"] = ["owner_key"]
+
+    return _edit(DRIFT_YML, alias_key)
+
+
+ALIASED_YML = _aliased_yml()
+SCOPED_YML = _scoped_yml()
 
 
 def test_f3_scoped_shared_column_and_aliased_key_resolve_per_dataset(tmp_path):
     registry = build_source_fixture(tmp_path / "src")
-    scoped = _staging(tmp_path / "scoped", {"ops.yml": DRIFT_YML + SCOPED_METRIC})
+    scoped = _staging(tmp_path / "scoped", {"ops.yml": SCOPED_YML})
     graph = load_graph(scoped / "semantic_layer")
     con = _duck_connection(registry)
     plan = plan_query(
@@ -1317,39 +1307,25 @@ def test_f3_scoped_shared_column_and_aliased_key_resolve_per_dataset(tmp_path):
 
 
 def test_f3_audit_and_join_share_one_resolved_target_key(tmp_path):
-    # Delta-recheck surviving finding (runtime-confirmed by the parent): the
-    # audit resolved only ONE level of field substitution while join lowering
-    # resolves recursively — the audit proved uniqueness of the DECLARED key
-    # (owner_ref + 0 → 10,20) while the join used the RESOLVED key
-    # (owner_id % 10 + 0 → 0,0) and fanned every event across both owners
-    # (ada/bob 12.0 instead of 7.0/5.0). One shared resolution must refuse.
+    # Delta-recheck surviving finding (runtime-confirmed by the parent): the audit and
+    # the join must resolve the declared target key to the SAME expression. Ossie 0.3
+    # field expressions are source-level (no field chains), so the declared key
+    # ``owner_id % 10 + 0`` is both what is audited and what the join compares: owner
+    # ids 10 and 20 both map to 0, the audited tuple is NOT unique, and the request
+    # must refuse instead of fanning every event across both owners (ada/bob 12.0
+    # instead of 7.0/5.0).
     registry = build_source_fixture(tmp_path / "src")
-    doc = yaml.safe_load(DRIFT_YML)
-    model = doc["semantic_model"][0]
-    datasets = {d["name"]: d for d in model["datasets"]}
-    datasets["events"]["fields"].append(
-        {
-            "name": "owner_match",
-            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]},
-        }
-    )
-    datasets["owners"]["source"] = (
-        "SELECT owner_id, owner_id AS owner_ref, owner_name FROM demo.main.owners"
-    )
-    datasets["owners"]["fields"] += [
-        {
-            "name": "owner_ref",
-            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_id % 10"}]},
-        },
-        {
-            "name": "owner_key",
-            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "owner_ref + 0"}]},
-        },
-    ]
-    relationship = model["relationships"][0]
-    relationship["from_fields"] = ["owner_match"]
-    relationship["to_fields"] = ["owner_key"]
-    staging = _staging(tmp_path / "split", {"split.yml": yaml.safe_dump(doc, sort_keys=False)})
+
+    def split(doc):
+        _dataset(doc, "events")["fields"].append(
+            {"name": "owner_match", "expression": {"sql": "owner_id % 10"}}
+        )
+        owners = _dataset(doc, "owners")
+        owners["fields"].append({"name": "owner_key", "expression": {"sql": "owner_id % 10 + 0"}})
+        doc["relationships"][0]["from_columns"] = ["owner_match"]
+        doc["relationships"][0]["to_columns"] = ["owner_key"]
+
+    staging = _staging(tmp_path / "split", {"split.yml": _edit(DRIFT_YML, split)})
     graph = load_graph(staging / "semantic_layer")
     con = _duck_connection(registry)
     with pytest.raises(PlannerError, match="is not unique") as refusal:
@@ -1404,16 +1380,15 @@ def test_f4_conformed_key_aligns_with_lookup_dimensions(tmp_path):
 
 # F5: a base metric requested together with a same-fact derived metric built on
 # it — the branch must expose BOTH outputs (total 700, double 1400).
-DERIVED_YML = (
-    DOMAIN_YML
-    + """\
-      - name: double_total
-        description: Derived twice the orders total (same fact)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total * 2
-"""
+DERIVED_YML = _edit(
+    DOMAIN_YML,
+    lambda d: d.setdefault("metrics", []).append(
+        {
+            "name": "double_total",
+            "expression": {"sql": "AGG(orders.orders_total) * 2"},
+            "description": "Derived twice the orders total (same fact)",
+        }
+    ),
 )
 
 
@@ -1437,138 +1412,112 @@ def test_f5_base_and_same_fact_derived_metric_both_return(tmp_path):
 # NO member of the conformed `region` dimension — the unpaired-filter refusal.
 # amount exists on orders AND events, so those metrics qualify their fields.
 TASK3_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales_t3
-    description: Task 3 fixture (two-hop lookup + fact without the conformed member)
-    requires: ["ariadne.conformed_dimensions@1"]
-    datasets:
-      - name: customers
-        source: demo.main.customers
-        primary_key: [customer_id]
-        fields:
-          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-          - name: tier
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: tier
-            dimension: {}
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-      - name: order_lines
-        source: demo.main.order_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-      - name: events
-        source: demo.main.events
-        primary_key: [event_id]
-        fields:
-          - name: event_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: event_id
-          - name: owner_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: owner_id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    relationships:
-      - name: line_to_order
-        cardinality: many_to_one
-        from_dataset: order_lines
-        from_fields: [order_id]
-        to_dataset: orders
-        to_fields: [order_id]
-      - name: order_customer
-        cardinality: many_to_one
-        from_dataset: orders
-        from_fields: [customer_id]
-        to_dataset: customers
-        to_fields: [customer_id]
+version: 0.3.0.dev0
+name: sales_t3
+description: Task 3 fixture (two-hop lookup + fact without the conformed member)
+datasets:
+- name: customers
+  source: demo.main.customers
+  primary_key:
+  - customer_id
+  fields:
+  - name: customer_id
+    expression:
+      sql: customer_id
+  - name: tier
+    expression:
+      sql: tier
+    dimension: {}
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: customer_id
+    expression:
+      sql: customer_id
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
+- name: order_lines
+  source: demo.main.order_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts at line grain
+- name: events
+  source: demo.main.events
+  primary_key:
+  - event_id
+  fields:
+  - name: event_id
+    expression:
+      sql: event_id
+  - name: owner_id
+    expression:
+      sql: owner_id
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: events_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of event amounts at event grain
+relationships:
+- name: line_to_order
+  from: order_lines
+  to: orders
+  from_columns:
+  - order_id
+  to_columns:
+  - order_id
+- name: order_customer
+  from: orders
+  to: customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+nonportable_extensions:
+- vendor_name: ARIADNE
+  data:
     conformed_dimensions:
-      - name: region
-        members:
-          - dataset: orders
-            field: region
-          - dataset: order_lines
-            field: region
-    metrics:
-      - name: orders_total
-        dataset: orders
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(orders.amount)
-      - name: lines_total
-        dataset: order_lines
-        description: Sum of line amounts at line grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
-      - name: events_total
-        dataset: events
-        description: Sum of event amounts at event grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(events.amount)
+    - name: region
+      members:
+      - dataset: orders
+        field: region
+      - dataset: order_lines
+        field: region
 """
 
 
@@ -1582,27 +1531,16 @@ def _t3_graph(root: Path):
 # mf-t3 review F2: an orders field whose declared expression is an AGGREGATE —
 # accepted by graph validation while unused, but projecting it in detail would
 # collapse the root grain to one row (spec rev 1, acceptance 5).
-AGG_FIELD_YML = TASK3_YML.replace(
-    """          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-      - name: order_lines
-""",
-    """          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-          - name: collapsed
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: SUM(amount)
-      - name: order_lines
-""",
-)
+def _agg_field_yml() -> str:
+    return _edit(
+        TASK3_YML,
+        lambda d: _dataset(d, "orders")["fields"].append(
+            {"name": "collapsed", "expression": {"sql": "SUM(amount)"}}
+        ),
+    )
+
+
+AGG_FIELD_YML = _agg_field_yml()
 
 
 def _agg_field_graph(root: Path):
@@ -2072,29 +2010,18 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
     # per-row analytics. LAG(amount) OVER (ORDER BY order_id) leaves one row
     # per root key and must project; a true aggregate window (SUM OVER) and a
     # nested aggregate (LAG(SUM(x))) must still refuse.
-    import yaml
-
     from ariadne.planner import plan_detail
 
-    doc = yaml.safe_load(DOMAIN_YML)
-    for model in doc["semantic_model"]:
-        for dataset in model["datasets"]:
-            if dataset["name"] == "orders":
-                dataset["fields"].append(
-                    {
-                        "name": "previous_amount",
-                        "expression": {
-                            "dialects": [
-                                {
-                                    "dialect": "ANSI_SQL",
-                                    "expression": "LAG(amount) OVER (ORDER BY order_id)",
-                                }
-                            ]
-                        },
-                    }
-                )
+    def add_lag(doc):
+        _dataset(doc, "orders")["fields"].append(
+            {
+                "name": "previous_amount",
+                "expression": {"sql": "LAG(amount) OVER (ORDER BY order_id)"},
+            }
+        )
+
     registry = build_source_fixture(tmp_path / "src")
-    staging = _staging(tmp_path / "lag", {"lag.yml": yaml.safe_dump(doc, sort_keys=False)})
+    staging = _staging(tmp_path / "lag", {"lag.yml": _edit(DOMAIN_YML, add_lag)})
     graph = load_graph(staging / "semantic_layer")
     con = _duck_connection(registry)
 
@@ -2110,20 +2037,14 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
             "LAG(SUM(amount)) OVER (ORDER BY order_id)",
         )
     ):
-        evil = yaml.safe_load(DOMAIN_YML)
-        for model in evil["semantic_model"]:
-            for dataset in model["datasets"]:
-                if dataset["name"] == "orders":
-                    dataset["fields"].append(
-                        {
-                            "name": "previous_amount",
-                            "expression": {
-                                "dialects": [{"dialect": "ANSI_SQL", "expression": bad}]
-                            },
-                        }
-                    )
+
+        def add_bad(doc, bad=bad):
+            _dataset(doc, "orders")["fields"].append(
+                {"name": "previous_amount", "expression": {"sql": bad}}
+            )
+
         bad_graph = load_graph(
-            _staging(tmp_path / f"bad{index}", {"bad.yml": yaml.safe_dump(evil, sort_keys=False)})
+            _staging(tmp_path / f"bad{index}", {"bad.yml": _edit(DOMAIN_YML, add_bad)})
             / "semantic_layer"
         )
         with pytest.raises(PlannerError) as refused:
@@ -2139,182 +2060,186 @@ def test_t3_detail_nonaggregating_analytic_field_projects_one_row_per_key(tmp_pa
 # output only, never a hidden ratio denominator. The five window metrics cover
 # every declared window form (spec rev 1 "Query and result contract").
 TIME_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales_time
-    description: Task 4 fixture (differently named business dates)
-    requires: ["ariadne.conformed_dimensions@1"]
-    datasets:
-      - name: dated_orders
-        source: demo.main.dated_orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: ordered_on
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: ordered_on
-            dimension:
-              is_time: true
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-      - name: dated_customers
-        source: demo.main.dated_customers
-        primary_key: [customer_id]
-        fields:
-          - name: customer_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: customer_id
-          - name: tier
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: tier
-            dimension: {}
-      - name: dated_lines
-        source: demo.main.dated_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: shipped_on
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: shipped_on
-            dimension:
-              is_time: true
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    relationships:
-      - name: order_dated_customer
-        cardinality: many_to_one
-        from_dataset: dated_orders
-        from_fields: [customer_id]
-        to_dataset: dated_customers
-        to_fields: [customer_id]
-    conformed_dimensions:
-      - name: region
-        members:
-          - dataset: dated_orders
-            field: region
-          - dataset: dated_lines
-            field: region
-      - name: business_date
-        members:
-          - dataset: dated_orders
-            field: ordered_on
-            native_grain: day
-          - dataset: dated_lines
-            field: shipped_on
-            native_grain: month
-    metrics:
-      - name: orders_total
-        dataset: dated_orders
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: lines_total
-        dataset: dated_lines
-        description: Sum of line amounts, filled with 0 on output only
+version: 0.3.0.dev0
+name: sales_time
+description: Task 4 fixture (differently named business dates)
+datasets:
+- name: dated_orders
+  source: demo.main.dated_orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    dimension:
+      is_time: true
+  - name: amount
+    expression:
+      sql: amount
+  - name: customer_id
+    expression:
+      sql: customer_id
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
+- name: dated_customers
+  source: demo.main.dated_customers
+  primary_key:
+  - customer_id
+  fields:
+  - name: customer_id
+    expression:
+      sql: customer_id
+  - name: tier
+    expression:
+      sql: tier
+    dimension: {}
+- name: dated_lines
+  source: demo.main.dated_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: shipped_on
+    expression:
+      sql: shipped_on
+    dimension:
+      is_time: true
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts, filled with 0 on output only
+    nonportable_extensions:
+    - vendor_name: ARIADNE
+      data:
         fill: 0
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
-      - name: order_line_ratio
-        description: Derived ratio across both facts (resolves after merge)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total / lines_total
-      - name: orders_rolling_3
-        description: Rolling 3-group sum of orders_total
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: rolling
-          size: 3
-          function: sum
-      - name: orders_cumulative
-        description: Cumulative sum of orders_total
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: cumulative
-          function: sum
-      - name: orders_prior
-        description: Preceding-period orders_total
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: prior_period
-      - name: orders_rank
-        description: Rank of the group by orders_total, descending
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: ranking
-          direction: desc
-      - name: orders_value_1m
-        description: Value-window sum of orders_total, one grain period back
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: value_window
-          size: 1
-          function: sum
+relationships:
+- name: order_dated_customer
+  from: dated_orders
+  to: dated_customers
+  from_columns:
+  - customer_id
+  to_columns:
+  - customer_id
+metrics:
+- name: order_line_ratio
+  expression:
+    sql: AGG(dated_orders.orders_total) / AGG(dated_lines.lines_total)
+  description: Derived ratio across both facts (resolves after merge)
+- name: orders_cumulative
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Cumulative sum of orders_total
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: cumulative
+        function: sum
+- name: orders_prior
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Preceding-period orders_total
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: prior_period
+- name: orders_rank
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Rank of the group by orders_total, descending
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: ranking
+        direction: desc
+- name: orders_rolling_3
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Rolling 3-group sum of orders_total
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: rolling
+        size: 3
+        function: sum
+- name: orders_value_1m
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Value-window sum of orders_total, one grain period back
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: value_window
+        size: 1
+        function: sum
+nonportable_extensions:
+- vendor_name: ARIADNE
+  data:
+    conformed_dimensions:
+    - name: region
+      members:
+      - dataset: dated_orders
+        field: region
+      - dataset: dated_lines
+        field: region
+    - name: business_date
+      members:
+      - dataset: dated_orders
+        field: ordered_on
+        native_grain: day
+      - dataset: dated_lines
+        field: shipped_on
+        native_grain: month
 """
+
+
+def _windowed_base_yml() -> str:
+    """TIME_YML plus a dataset-scoped BASE aggregate that declares a cumulative window."""
+
+    def add(doc):
+        _dataset(doc, "dated_orders")["metrics"].append(
+            {
+                "name": "orders_base_cumulative",
+                "description": "Cumulative sum of the base order aggregate",
+                "expression": {"sql": "SUM(amount)"},
+                "nonportable_extensions": [
+                    {
+                        "vendor_name": "ARIADNE",
+                        "data": {"window": {"kind": "cumulative", "function": "sum"}},
+                    }
+                ],
+            }
+        )
+
+    return _edit(TIME_YML, add)
 
 
 def _t4_graph(root: Path):
@@ -2574,18 +2499,7 @@ def test_t4_windowed_base_metric_keeps_its_fact_branch(tmp_path):
     # its home fact branch — the aggregate computes in-branch, the cumulative
     # window applies post-alignment over the aligned column (candidate review
     # C4). Hand-derived from the month totals 300/400/50.
-    windowed_base = TIME_YML + (
-        "      - name: orders_base_cumulative\n"
-        "        dataset: dated_orders\n"
-        "        description: Cumulative sum of the base order aggregate\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: SUM(amount)\n"
-        "        window:\n"
-        "          kind: cumulative\n"
-        "          function: sum\n"
-    )
+    windowed_base = _windowed_base_yml()
     registry = build_source_fixture(tmp_path / "src")
     staging = _staging(tmp_path / "wb", {"windowed_base.yml": windowed_base})
     graph = load_graph(staging / "semantic_layer")
@@ -2636,23 +2550,20 @@ def test_t4_finer_than_native_grain_refuses(tmp_path):
 def test_t4_cyclic_derivation_fails_at_load(tmp_path):
     # metric_a -> metric_b -> metric_a: dependency cycles are rejected at load,
     # before any branch, alignment or window stage is compiled (spec rev 1 §5).
-    cyclic = TIME_YML + (
-        "      - name: metric_a\n"
-        "        description: cyclic pair a\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: metric_b + 1\n"
-        "      - name: metric_b\n"
-        "        description: cyclic pair b\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: metric_a + 1\n"
+    cyclic = _edit(
+        TIME_YML,
+        lambda d: d.setdefault("metrics", []).extend(
+            [
+                {"name": "metric_a", "expression": {"sql": "metric_b + 1"}},
+                {"name": "metric_b", "expression": {"sql": "metric_a + 1"}},
+            ]
+        ),
     )
     build_source_fixture(tmp_path / "src")
     staging = _staging(tmp_path / "cyclic", {"cyclic.yml": cyclic})
-    with pytest.raises(GraphError, match="cycle"):
+    # Ossie 0.3 expresses no metric->metric reference except AGG(dataset.metric), so a
+    # cycle cannot be written: the bare reference is refused at load (spec 0039 §5.3.5).
+    with pytest.raises(GraphError, match="dataset.field"):
         load_graph(staging / "semantic_layer")
 
 
@@ -2726,80 +2637,60 @@ def test_t4_time_and_window_refusals_are_structured(tmp_path):
 # One dataset per model (the b09f649 source-boundary shape), the cross-file
 # graph supplying the relationship and the conformed dimension.
 T5_ORDERS_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders fact (task 5 source layout)
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: orders_total
-        dataset: orders
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: orders
+description: Orders fact (task 5 source layout)
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
 """
 
 T5_LINES_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: order_lines
-    description: Order lines fact (task 5 source layout)
-    datasets:
-      - name: order_lines
-        source: demo.main.order_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: lines_total
-        dataset: order_lines
-        description: Sum of line amounts at line grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: order_lines
+description: Order lines fact (task 5 source layout)
+datasets:
+- name: order_lines
+  source: demo.main.order_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts at line grain
 """
 
 
@@ -2857,9 +2748,12 @@ def _t5_native_metric_page(
     model: str,
     policy: str = "policies/region-rollup.md",
     grain_key: str = "order_id",
+    dataset: str | None = None,
 ) -> str:
     """A native metric page whose native.sources cite one governing Policy
-    page by its KB-relative visible path."""
+    page by its KB-relative visible path. ``metric_ref.metric`` is the identity
+    key ``<dataset>.<metric>`` of a dataset-scoped metric (spec 0039 §6)."""
+    key = f"{dataset or model}.{name}"
     return (
         "---\n"
         f'id: "entity:{name.replace("_", "-")}"\n'
@@ -2877,7 +2771,7 @@ def _t5_native_metric_page(
         "  kind: metric\n"
         "  metric_ref:\n"
         f"    model: {model}\n"
-        f"    metric: {name}\n"
+        f"    metric: {key}\n"
         "  required_policies:\n"
         '    - namespace: "urn:uuid:t5-fixture"\n'
         '      entity_id: "entity:region-rollup"\n'
@@ -2921,9 +2815,7 @@ T5_KB_LUMIO_YAML = (
     "  predicates: {}\n"
     "  redirects: {}\n"
 )
-T5_KB_AUTHORING_YAML = (
-    'version: 1\nnamespace: "urn:uuid:t5-fixture"\nsources: {}\nbindings: {}\n'
-)
+T5_KB_AUTHORING_YAML = 'version: 1\nnamespace: "urn:uuid:t5-fixture"\nsources: {}\nbindings: {}\n'
 T5_SELECTOR = (
     "version: 1\n"
     "mode: integrated\n"
@@ -2934,11 +2826,11 @@ T5_SELECTOR = (
     "policy_bindings:\n"
     "  version: 1\n"
     "  bindings:\n"
-    "    - subject: {kind: metric, identity: orders::orders_total}\n"
+    "    - subject: {kind: metric, identity: orders::orders.orders_total}\n"
     "      policy: {namespace: urn:uuid:t5-fixture, entity_id: entity:region-rollup}\n"
     "      operations: [get_metric, query_metrics]\n"
     "      enforcement: null\n"
-    "    - subject: {kind: metric, identity: order_lines::lines_total}\n"
+    "    - subject: {kind: metric, identity: order_lines::order_lines.lines_total}\n"
     "      policy: {namespace: urn:uuid:t5-fixture, entity_id: entity:region-rollup}\n"
     "      operations: [get_metric, query_metrics]\n"
     "      enforcement: null\n"
@@ -3144,19 +3036,17 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
     # per-metric cited context: the served metric page plus the cited Policy
     # body, the honest pending attestation state (ADR-0013), and the advisory
     # signals envelope over exactly the consumed pages (spec 0011 §§4–5)
-    for name in ("orders_total", "lines_total"):
+    for name, dataset in (("orders_total", "orders"), ("lines_total", "order_lines")):
         context = result["context"][name]
         assert f"# {name}" in context["metric_page"]
         assert context["policies"] and "Region rollup" in context["policies"][0]
         assert context["attestation"] == "pending"
         signals = context["context_signals"]
         # each signals page carries its CITED identity; the path is its final component
-        assert [
-            page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]
-        ] == [
+        assert [page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]] == [
             f"metrics/{name}.md",
             "policies/region-rollup.md",
-            f"computations/{name}.md",
+            f"computations/{dataset}-{name}.md",  # identity key <dataset>.<metric>
         ]
         assert signals["warnings"] == []
         policy_view = signals["pages"][1]
@@ -3429,8 +3319,8 @@ def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_pa
     error = json.loads(captured.err)["error"]
     assert error["type"] == "PlannerError"
     assert error["code"] == "unknown_metric"
-    assert "orders_total" in error["candidates"]
-    assert "lines_total" in error["candidates"]
+    assert "orders::orders.orders_total" in error["candidates"]
+    assert "order_lines::order_lines.lines_total" in error["candidates"]
 
 
 def test_t4_windowed_base_alongside_a_derived_window_computes(tmp_path):
@@ -3440,18 +3330,7 @@ def test_t4_windowed_base_alongside_a_derived_window_computes(tmp_path):
     # failure for a valid combined request. The base's aligned column is
     # reused; only its window applies post-alignment. Hand-derived: months
     # 300/400/50 → cumulative 300/700/750 and prior NULL/300/400.
-    windowed_base = TIME_YML + (
-        "      - name: orders_base_cumulative\n"
-        "        dataset: dated_orders\n"
-        "        description: Cumulative sum of the base order aggregate\n"
-        "        expression:\n"
-        "          dialects:\n"
-        "            - dialect: ANSI_SQL\n"
-        "              expression: SUM(amount)\n"
-        "        window:\n"
-        "          kind: cumulative\n"
-        "          function: sum\n"
-    )
+    windowed_base = _windowed_base_yml()
     registry = build_source_fixture(tmp_path / "src")
     staging = _staging(tmp_path / "wb2", {"windowed_base.yml": windowed_base})
     graph = load_graph(staging / "semantic_layer")

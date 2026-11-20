@@ -78,7 +78,7 @@ support_revision: 2
 policy_bindings:
   version: 1
   bindings:
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
       operations: [get_metric, query_metrics]
       enforcement: null
@@ -125,7 +125,7 @@ def content_project(root):
     model = project / "semantic_layer" / "models" / "orders.yml"
     model.write_text(
         model.read_text()
-        .replace("name: orders\n    description", "name: retail_sales\n    description")
+        .replace("name: orders\ndescription", "name: retail_sales\ndescription")
         .replace("region", "status")
         .replace("order_count", "revenue")
         .replace("COUNT(*)", "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)")
@@ -377,7 +377,7 @@ def supported_candidate(root):
     selector["policy_bindings"]["bindings"].extend(
         [
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
@@ -812,7 +812,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
             m.setattr(DuckDBExecution, "__init__", no_execution)
             catalog = asyncio.run(discovery.list_metrics())
             assert isinstance(catalog, list) and isinstance(catalog[0], dict)
-            assert catalog[0]["name"] == "revenue"
+            assert catalog[0]["name"] == "retail_sales::orders.revenue"
             assert (
                 catalog[0]["bound_release"]
                 == json.loads(current_bytes(project))["bound_release"]["digest"]
@@ -847,7 +847,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                 ):
                     asyncio.run(getattr(deferred, name)(*args))
             assert cli(["list-metrics", "--project", str(project)]) == 0
-            assert json.loads(capsys.readouterr().out)[0]["name"] == "revenue"
+            assert json.loads(capsys.readouterr().out)[0]["name"] == "retail_sales::orders.revenue"
         # Q2 (spec0029 §1.2): the superseded refusals serve natively where
         # their native admission exists. This fixture pins no multi-fact
         # graph, so query_metrics now keeps the GRAPH-specific refusal (never

@@ -1,4 +1,4 @@
-"""Renderer unit tests per metric kind (spec rev 7 §8.18, ADR-0008).
+"""Renderer unit tests per metric kind (spec rev 7 §8.18, ADR-0008; Ossie 0.3 per spec 0039).
 
 ariadne/render.py is the compile engine replacing datus-semantic-osi: aggregate
 metrics in one inner GROUP BY, derived metrics resolved recursively (N levels)
@@ -23,46 +23,42 @@ from ariadne.render import render  # noqa: E402  # pyright: ignore[reportMissing
 
 
 def _field(name: str, expression: str, dimension: dict | None = None) -> dict:
-    spec: dict = {
-        "name": name,
-        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": expression}]},
-    }
+    spec: dict = {"name": name, "expression": {"sql": expression}}
     if dimension is not None:
         spec["dimension"] = dimension
     return spec
 
 
-def _metric(name: str, expression: str, datus_derived: bool = False) -> dict:
-    spec: dict = {
-        "name": name,
-        "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": expression}]},
-    }
-    if datus_derived:  # the authoring contract's derived-metric marker (author.py)
-        spec["custom_extensions"] = [
-            {"vendor_name": "DATUS", "data": '{"metric_kind":"derived","inputs":[]}'}
-        ]
-    return spec
+def _metric(name: str, expression: str) -> dict:
+    """A dataset-scoped metric: fields unqualified, source columns as source.<col>."""
+    return {"name": name, "expression": {"sql": expression}}
 
 
-def _model(metrics: list[dict], fields: list[dict], source: str = "demo.main.orders") -> dict:
-    return {
-        "version": "0.2.0.dev0",
-        "semantic_model": [
+def _model(
+    metrics: list[dict],
+    fields: list[dict],
+    source: str = "demo.main.orders",
+    derived: list[dict] | None = None,
+) -> dict:
+    """One Ossie 0.3 document: dataset ``orders`` owning ``metrics``; ``derived``
+    are model-scoped AGG(orders.<metric>) compositions."""
+    doc: dict = {
+        "version": "0.3.0.dev0",
+        "name": "orders",
+        "description": "test model",
+        "datasets": [
             {
                 "name": "orders",
-                "description": "test model",
-                "datasets": [
-                    {
-                        "name": "orders",
-                        "source": source,
-                        "primary_key": ["order_id"],
-                        "fields": fields,
-                    }
-                ],
+                "source": source,
+                "primary_key": ["order_id"],
+                "fields": [_field("order_id", "order_id"), *fields],
                 "metrics": metrics,
             }
         ],
     }
+    if derived:
+        doc["metrics"] = derived
+    return doc
 
 
 GOLDEN_FIELDS = [
@@ -80,13 +76,19 @@ GOLDEN_METRICS = [
     _metric(
         "cogs",
         "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') "
-        "THEN product_cost * fx_rate ELSE 0 END)",
-    ),
-    _metric(
-        "gross_margin", "(gross_revenue - cogs) / NULLIF(gross_revenue, 0)", datus_derived=True
+        "THEN source.product_cost * fx_rate ELSE 0 END)",
     ),
 ]
-GOLDEN_MODEL = _model(GOLDEN_METRICS, GOLDEN_FIELDS)
+GOLDEN_DERIVED = [
+    {
+        "name": "gross_margin",
+        "expression": {
+            "sql": "(AGG(orders.gross_revenue) - AGG(orders.cogs)) / "
+            "NULLIF(AGG(orders.gross_revenue), 0)"
+        },
+    }
+]
+GOLDEN_MODEL = _model(GOLDEN_METRICS, GOLDEN_FIELDS, derived=GOLDEN_DERIVED)
 
 
 # --- Aggregate metrics --------------------------------------------------------
@@ -101,17 +103,127 @@ def test_aggregate_metric_renders_inner_group_by():
     assert sql.count("(") == sql.count(")")  # balanced — it is one statement
 
 
-def test_field_alias_resolution_uses_the_field_expression():
-    """Expressions referencing fields resolve through the dataset's alias ->
-    expression mapping: the region dimension groups on region_code, and a metric
-    expression referencing `region` inlines its field expression too."""
-    fields = GOLDEN_FIELDS + [_field("amount", "amount")]
+def test_field_expression_is_the_dimension_and_inlined_into_dataset_metrics():
+    """A dimension groups on its field expression (region -> region_code) and a
+    dataset-scoped metric referencing the field `region` inlines that expression."""
     model = _model(
-        [_metric("emea_count", "SUM(CASE WHEN region = 'EMEA' THEN 1 ELSE 0 END)")], fields
+        [_metric("emea_count", "SUM(CASE WHEN region = 'EMEA' THEN 1 ELSE 0 END)")],
+        GOLDEN_FIELDS,
     )
     sql = render(model, ["region"])
     assert "region_code AS region" in sql
     assert "CASE WHEN region_code = 'EMEA' THEN 1 ELSE 0 END" in sql
+
+
+def test_a_substituted_field_expression_keeps_its_grouping():
+    """price = a + b, units = 2 over (a, b) = (5, 3): SUM(price * units) is
+    (5 + 3) * 2 = 16 — in a dataset-scoped and in a model-scoped metric."""
+    model = _model(
+        [_metric("scoped", "SUM(price * units)")],
+        [_field("price", "a + b"), _field("units", "units")],
+        source="t",
+    )
+    model["metrics"] = [
+        {"name": "model_scoped", "expression": {"sql": "SUM(orders.price * orders.units)"}}
+    ]
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT 1 AS order_id, 5 AS a, 3 AS b, 2 AS units")
+        sql = render(model, [])
+        assert con.sql(sql).fetchall() == [(16, 16)]  # sql is render() compile output
+    finally:
+        con.close()
+
+
+def test_a_substituted_boolean_field_keeps_its_grouping():
+    """eligible = a AND b over (a, b) = (true, false): COUNT of rows where
+    NOT eligible is 1 (NOT (a AND b)), not 0 (NOT a AND b) — in both scopes."""
+    model = _model(
+        [_metric("scoped", "SUM(CASE WHEN NOT eligible THEN 1 ELSE 0 END)")],
+        [_field("eligible", "a AND b")],
+        source="t",
+    )
+    model["metrics"] = [
+        {
+            "name": "model_scoped",
+            "expression": {"sql": "SUM(CASE WHEN NOT orders.eligible THEN 1 ELSE 0 END)"},
+        }
+    ]
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT 1 AS order_id, true AS a, false AS b")
+        assert con.sql(render(model, [])).fetchall() == [(1, 1)]
+    finally:
+        con.close()
+
+
+def test_a_metric_named_like_a_source_column_is_not_its_own_dependency(tmp_path):
+    """`total = SUM(source.total)` has no field `total`: it is a plain measure.
+    The served catalog loads, the metric compiles and answers 2 + 3 = 5, and a
+    sibling metric still answers (row count 2)."""
+    from ariadne.query import _QueryRuntimeSession
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "vals.csv").write_text("total\n2\n3\n", encoding="utf-8")
+    models = tmp_path / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "m.yml").write_text(
+        "version: 0.3.0.dev0\nname: m\ndatasets:\n- name: vals\n  source: vals.vals\n"
+        "  fields:\n  - name: n\n    expression:\n      sql: total\n"
+        "  metrics:\n  - name: total\n    expression:\n      sql: SUM(source.total)\n"
+        "  - name: rows\n    expression:\n      sql: COUNT(*)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "context_layer").mkdir()
+    registry = tmp_path / "ariadne.yaml"
+    registry.write_text(
+        f"sources:\n  - name: vals\n    type: csv\n    path: {tmp_path / 'data' / 'vals.csv'}\n",
+        encoding="utf-8",
+    )
+    runtime = _QueryRuntimeSession(
+        models.parent, tmp_path / "context_layer", None, sources=str(registry)
+    )
+    try:
+        spec, _alias = runtime._metric_slice("m::vals.total")
+        cursor = runtime.con.sql(render(spec))  # sql is render() output
+        row = dict(zip(cursor.columns, cursor.fetchall()[0]))
+        assert row == {"rows": 2, "total": 5}
+    finally:
+        runtime.con.close()
+
+
+def test_a_model_metric_named_like_a_dataset_metric_identity_is_refused():
+    """Model metric `orders.revenue` and dataset `orders` metric `revenue` share the
+    identity `orders::orders.revenue`: the model is refused naming both."""
+    model = _model([_metric("revenue", "SUM(x)")], [_field("x", "x")], source="t")
+    model["metrics"] = [{"name": "orders.revenue", "expression": {"sql": "SUM(orders.x)"}}]
+    with pytest.raises(ValueError, match=r"orders.revenue.*orders.*revenue.*share the identity"):
+        render(model, [])
+
+
+def test_two_dataset_scoped_metrics_with_one_full_identity_are_refused():
+    """Dataset `orders.net` metric `sales` and dataset `orders` metric `net.sales`
+    both are `orders::orders.net.sales`: refused naming both definitions."""
+    model = _model([_metric("net.sales", "SUM(x)")], [_field("x", "x")], source="t")
+    other = _model([_metric("sales", "SUM(x)")], [_field("x", "x")], source="t")
+    other["datasets"][0]["name"] = "orders.net"
+    other["datasets"][0]["primary_key"] = ["x"]
+    model["datasets"].append(other["datasets"][0])
+    with pytest.raises(
+        ValueError, match=r"'orders' → 'net.sales' and 'orders.net' → 'sales' share"
+    ):
+        render(model, [])
+
+
+def test_a_field_referencing_another_field_is_refused():
+    """Ossie 0.3 (spec 0039 §5.3.1): a field expression names source columns only."""
+    model = _model(
+        [_metric("total", "SUM(alias2)")],
+        [_field("alias1", "x"), _field("alias2", "alias1", {})],
+        source="t",
+    )
+    with pytest.raises(ValueError, match="references field 'alias1'"):
+        render(model, [])
 
 
 @pytest.mark.parametrize(
@@ -122,14 +234,13 @@ def test_field_alias_resolution_uses_the_field_expression():
         ([], {"start": "2025-01-02", "end": "2025-01-03"}, [(5,)]),
     ],
 )
-def test_chained_fields_resolve_in_all_clauses(dimensions, time_range, expected):
+def test_fields_resolve_from_source_columns_in_all_clauses(dimensions, time_range, expected):
+    # the table's alias1/day1 columns are decoys (100 / 1999): fields name SOURCE columns
     model = _model(
         [_metric("total", "SUM(alias2)")],
         [
-            _field("alias1", "x"),
-            _field("alias2", "alias1", {}),
-            _field("day1", "CAST(occurred AS DATE)"),
-            _field("day2", "day1", {"is_time": True}),
+            _field("alias2", "x", {}),
+            _field("day2", "CAST(occurred AS DATE)", {"is_time": True}),
         ],
         source="t",
     )
@@ -145,62 +256,81 @@ def test_chained_fields_resolve_in_all_clauses(dimensions, time_range, expected)
         assert sorted(rows) == expected
 
 
-def test_qualified_column_refs_are_stripped():
-    """The wrapped source knows no scan aliases — `orders.amount` must lower to a
-    bare column (the datus lowering contract the served models rely on)."""
-    model = _model([_metric("total", "SUM(orders.amount)")], GOLDEN_FIELDS)
+def test_source_column_reference_lowers_to_a_bare_column():
+    """`source.amount` names the source column (spec metric scoping rule 2)."""
+    model = _model([_metric("total", "SUM(source.amount)")], GOLDEN_FIELDS)
     assert "SUM(amount) AS total" in render(model, [])
 
 
-# --- Derived metrics ----------------------------------------------------------
+# --- Derived metrics (model-scoped AGG compositions) -----------------------------
 
 
 def test_derived_metric_nests_one_level():
-    """The DATUS-derived metric becomes an outer SELECT over the inner aggregate
-    of its inputs (the golden served shape)."""
+    """A model-scoped AGG composition is an outer SELECT over the inner aggregates."""
     sql = render(GOLDEN_MODEL, ["region"], metric="gross_margin")
-    assert "(gross_revenue - cogs) / NULLIF(gross_revenue, 0) AS gross_margin" in sql
+    assert 'NULLIF("gross_revenue", 0) AS gross_margin' in sql
     assert "AS gross_revenue" in sql and "AS cogs" in sql  # inputs computed inner
     # source wrapper + inner aggregate + derived outer = 3 SELECT statements
     assert sql.upper().count("SELECT") == 3
 
 
-def test_derived_metric_resolves_two_levels_recursively():
-    """N-level resolution: c = b * 2, b = a + 1, a = SUM(x) -> three stacked
-    SELECT statements, and EXECUTING the rendered SQL pins the values (14, not shape)."""
+def test_derived_metric_composes_aggregates_and_executes():
+    """(SUM(x) + 1) * 2 over x = 1, 2, 3 is (6 + 1) * 2 = 14."""
     model = _model(
-        [
-            _metric("a", "SUM(x)"),
-            _metric("b", "a + 1", datus_derived=True),
-            _metric("c", "b * 2", datus_derived=True),
-        ],
+        [_metric("a", "SUM(x)")],
         [_field("x", "x")],
         source="t",
+        derived=[{"name": "c", "expression": {"sql": "(AGG(orders.a) + 1) * 2"}}],
     )
     sql = render(model, [], metric="c")
-    # source wrapper + inner aggregate + two derived levels = 4 SELECT statements
-    assert sql.upper().count("SELECT") == 4
-    assert "AS a" in sql and "AS b" in sql and "AS c" in sql
-
+    assert sql.upper().count("SELECT") == 3
     con = duckdb.connect()
     try:
         con.execute("CREATE OR REPLACE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(x)")
-        row = con.sql(sql).fetchone()  # sql is render() compile output (spec §6)
+        row = (con.sql(sql).fetchall() or [None])[0]  # sql is render() compile output (spec §6)
         assert row is not None
-        assert row[0] == 14  # (SUM(x) + 1) * 2 = (6 + 1) * 2 — resolved recursively
+        assert row[0] == 14
     finally:
         con.close()
 
 
-def test_derived_metric_keeps_dependencies_from_earlier_levels():
+def test_governed_arithmetic_divides_truly_and_rounds_half_away_from_zero():
+    """AC5, hand-worked: a = 2, 3 and b = 1, 1 give SUM(a) / SUM(b) = 5 / 2 = 2.5
+    (true division of integer sums); ROUND(-2.5) = -3 and ROUND(2.5) = 3."""
     model = _model(
         [
-            _metric("base", "SUM(x)"),
-            _metric("double_base", "base * 2"),
-            _metric("triple_base", "double_base + base"),
+            _metric("ratio", "SUM(a) / SUM(b)"),
+            _metric("rounded_neg", "ROUND(SUM(n))"),
+            _metric("rounded_pos", "ROUND(SUM(p))"),
         ],
+        [_field("a", "a"), _field("b", "b"), _field("n", "n"), _field("p", "p")],
+        source="t",
+    )
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES (1, 2, 1, -2.5, 2.5), (2, 3, 1, 0.0, 0.0))"
+            " v(order_id, a, b, n, p)"
+        )
+        sql = render(model, [])
+        row = con.sql(sql).fetchall()[0]  # sql is render() compile output
+        columns = [c[0] for c in con.sql(sql).description]
+        assert dict(zip(columns, row)) == {"ratio": 2.5, "rounded_neg": -3.0, "rounded_pos": 3.0}
+    finally:
+        con.close()
+
+
+def test_derived_metric_reusing_one_measure_twice_keeps_it_once():
+    model = _model(
+        [_metric("base", "SUM(x)")],
         [_field("x", "x")],
         source="t",
+        derived=[
+            {
+                "name": "triple_base",
+                "expression": {"sql": "AGG(orders.base) * 2 + AGG(orders.base)"},
+            }
+        ],
     )
     with duckdb.connect() as con:
         con.execute("CREATE TABLE t AS SELECT * FROM (VALUES (1), (2), (3)) v(x)")
@@ -209,16 +339,18 @@ def test_derived_metric_keeps_dependencies_from_earlier_levels():
         assert result.fetchall() == [(18,)]  # (1 + 2 + 3) * 2 + (1 + 2 + 3)
 
 
-def test_metric_cycle_is_detected_and_named():
-    cycle_model = _model(
-        [
-            _metric("a", "b + 1"),
-            _metric("b", "a + 1"),
-        ],
+def test_a_model_scoped_metric_cannot_reference_another_model_scoped_metric():
+    """Metric -> metric other than AGG(dataset.metric) is refused (spec 0039 §5.3.5)."""
+    model = _model(
+        [_metric("a", "SUM(x)")],
         [_field("x", "x")],
+        derived=[
+            {"name": "b", "expression": {"sql": "AGG(orders.a) + 1"}},
+            {"name": "c", "expression": {"sql": "b + 1"}},
+        ],
     )
-    with pytest.raises(ValueError, match="metric dependency cycle: a -> b -> a"):
-        render(cycle_model, [])
+    with pytest.raises(ValueError, match="dataset.field"):
+        render(model, [])
 
 
 def test_unknown_metric_and_dimension_errors():
@@ -234,33 +366,10 @@ def test_unparsable_expression_carries_the_verbatim_reason():
         render(model, [])
 
 
-def test_missing_source_and_field_expression_are_compile_errors():
-    with pytest.raises(ValueError, match="missing source"):
-        render(_model([_metric("m", "COUNT(*)")], GOLDEN_FIELDS, source="   "), [])
+def test_a_field_without_an_expression_violates_the_pinned_schema():
     broken = _model([_metric("m", "COUNT(*)")], [{"name": "x", "expression": {}}])
-    with pytest.raises(ValueError, match="no usable dialect expression"):
+    with pytest.raises(ValueError, match="violates the pinned Ossie 0.3.0.dev0 schema"):
         render(broken, [])
-
-
-# --- DATUS extension hint (datus-spike.md §6.6 parity) ------------------------
-
-
-def test_malformed_datus_extension_data_is_a_compile_error():
-    model = _model([_metric("m", "COUNT(*)")], GOLDEN_FIELDS)
-    model["semantic_model"][0]["metrics"][0]["custom_extensions"] = [
-        {"vendor_name": "DATUS", "data": '{"metric_kind":broken}'}
-    ]
-    with pytest.raises(ValueError, match="not valid JSON"):
-        render(model, [])
-
-
-def test_stray_datus_extension_key_is_a_compile_error():
-    model = _model([_metric("m", "COUNT(*)")], GOLDEN_FIELDS)
-    model["semantic_model"][0]["metrics"][0]["custom_extensions"] = [
-        {"vendor_name": "DATUS", "data": '{"v": "1", "metric_kind": "derived"}'}
-    ]
-    with pytest.raises(ValueError, match="unsupported DATUS extension hint keys: v"):
-        render(model, [])
 
 
 # --- time_range ----------------------------------------------------------------

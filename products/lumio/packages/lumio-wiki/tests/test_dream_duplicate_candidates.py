@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import lumio_wiki as lw
+import msgspec
 import pytest
 from lumio_wiki.cli import main
 
@@ -162,9 +163,8 @@ def test_synthetic_pages_excluded(kb_root: Path):
     _add_page(kb_root, "acme-dup.md", "entity:acme-dup", "Acme Corporation")
     kb, _ = load_knowledge_base(kb_root)
     assert find_duplicate_entity_candidates(kb.pages)
-    for page in kb.pages:
-        object.__setattr__(page, "synthetic", True)
-    assert find_duplicate_entity_candidates(kb.pages) == []
+    synthetic_pages = [msgspec.structs.replace(page, synthetic=True) for page in kb.pages]
+    assert find_duplicate_entity_candidates(synthetic_pages) == []
 
 
 def test_finder_is_pure_over_given_pages(kb_root: Path):

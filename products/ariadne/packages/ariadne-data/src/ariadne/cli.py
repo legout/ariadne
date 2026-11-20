@@ -26,6 +26,9 @@ query behavior (compilation, execution, context and grain) stays in the runtime:
                                                terminology resolution; the exact
                                                {resource, column} field form
                                                arrives through --file)
+    ariadne migrate [--project DIR]            (spec 0039 §7: Ossie 0.2 -> 0.3 as an
+                                               Authoring Proposal; the operator
+                                               admits it as usual)
     ariadne status [--json]                   (spec 0016: read-only project
                                                readiness diagnostics — human-
                                                first text, one JSON object with
@@ -227,6 +230,12 @@ def build_parser() -> _Parser:
         help="emit exactly one structured report object instead of human text "
         "(the spec-0001 usability amendment, this command only)",
     )
+    migrate_cmd = sub.add_parser(
+        "migrate",
+        parents=[common],
+        help="convert a project from the retired Ossie 0.2 envelope to Ossie 0.3 as a proposal",
+    )
+    migrate_cmd.set_defaults(command="migrate")
     review_cmd = sub.add_parser("review", help="operator-only review walkthrough for Git proposals")
     review_cmd.add_argument("--project", default=".", help="Git project root")
     review_cmd.add_argument(
@@ -269,6 +278,12 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         from ariadne import setup
 
         return setup.run(args, stdin)
+    if args.command == "migrate":
+        from ariadne import migrate
+
+        result = migrate.migrate_project(args.project)
+        print(json.dumps(result))
+        return 0
     if args.command == "status":
         from ariadne import status as status_module
 

@@ -66,9 +66,33 @@ def _bytes(value: bytes) -> bytes:
     return _zigzag(len(value)) + value
 
 
-def _avro_file(schema: dict, row: bytes, sync: bytes) -> bytes:
+TABLE_SCHEMA = {
+    "type": "struct",
+    "schema-id": 0,
+    "fields": [
+        {"id": 1, "name": "id", "required": False, "type": "int"},
+        {"id": 2, "name": "amount", "required": False, "type": "int"},
+        {"id": 3, "name": "region", "required": False, "type": "string"},
+    ],
+}
+# Iceberg-spec Avro key-value metadata of a manifest file; DuckDB 2's iceberg
+# extension refuses a manifest without it.
+MANIFEST_META = {
+    "schema": json.dumps(TABLE_SCHEMA),
+    "schema-id": "0",
+    "partition-spec": "[]",
+    "partition-spec-id": "0",
+    "format-version": "2",
+    "content": "data",
+}
+
+
+def _avro_file(schema: dict, row: bytes, sync: bytes, meta: dict[str, str] | None = None) -> bytes:
+    entries = {"avro.schema": json.dumps(schema), **(meta or {})}
     header = bytearray(b"Obj\x01")
-    header += _zigzag(1) + _str("avro.schema") + _bytes(json.dumps(schema).encode())
+    header += _zigzag(len(entries))
+    for key, value in entries.items():
+        header += _str(key) + _bytes(value.encode())
     header += _zigzag(0)  # end of the header metadata map
     header += sync
     return bytes(header) + _zigzag(1) + _zigzag(len(row)) + row + sync
@@ -192,7 +216,7 @@ def manifest_bytes(data_path: str, record_count: int, file_size: int) -> bytes:
     row += _zigzag(record_count)
     row += _zigzag(file_size)
     row += b"\x00" * 4  # lower/upper bounds, null counts, equality ids -> null
-    return _avro_file(MANIFEST_SCHEMA, bytes(row), b"S" * 16)
+    return _avro_file(MANIFEST_SCHEMA, bytes(row), b"S" * 16, MANIFEST_META)
 
 
 def manifest_list_bytes(manifest_path: str, manifest_length: int, added_rows: int) -> bytes:

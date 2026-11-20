@@ -551,7 +551,8 @@ class RecordingConnection:
         if not sql.lstrip().upper().startswith("SELECT"):
             self.statements.append(sql)
             return None
-        return type("R", (), {"fetchall": lambda self: [], "fetchone": lambda self: ("memory",)})()
+        rows = [("memory",)] if "current_database" in sql else []
+        return type("R", (), {"fetchall": lambda self: rows})()
 
     def close(self):
         pass
@@ -974,33 +975,26 @@ def test_absolute_and_scheme_paths_pass_through_untouched(tmp_path):
 
 
 MINIMAL_OSI = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: >-
-          SELECT id, amount FROM demo.main.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: total_amount
-        description: Sum of order amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: SELECT id, amount FROM demo.main.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: total_amount
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts
 """
 
 
@@ -1064,7 +1058,7 @@ _SOURCES_METRIC_PAGE = (
     "  version: 1\n"
     "  kind: metric\n"
     "  metric_ref:\n"
-    "    model: orders\n    metric: total_amount\n"
+    "    model: orders\n    metric: orders.total_amount\n"
     "  required_policies: []\n"
     "  native:\n"
     "    type: metric\n"

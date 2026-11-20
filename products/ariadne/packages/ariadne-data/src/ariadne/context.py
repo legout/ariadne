@@ -115,78 +115,90 @@ def _load(text: str) -> tuple[dict | None, str]:
 
 
 def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
-    """``(metric name -> {model, primary_key, dimensions, dataset_sources,
-    expression}, all_parsed)`` from the candidate OSI models — the mechanical
-    source of truth for enrichment and computations. A model file whose YAML
-    does not parse — or whose structures are malformed (a non-list
-    ``semantic_model``, a non-mapping model/dataset/metric entry) — is SKIPPED
-    and reported through ``all_parsed=False`` so the validation gate can report
-    the structural failure without a finalize crash or treating an unparseable
-    draft's metrics as removed."""
+    """``(full identity -> {model, primary_key, dimensions, dataset_sources,
+    expression}, all_parsed)`` from the candidate Ossie models — the mechanical
+    source of truth for enrichment and computations. The identity is
+    ``<model>::<key>`` with key ``<metric>`` or ``<dataset>.<metric>``, so two
+    models sharing a metric key stay distinct. A model file that does not parse
+    or validate is SKIPPED and reported through ``all_parsed=False`` so the
+    validation gate can report the structural failure without a finalize crash
+    or treating an unparseable draft's metrics as removed."""
+    from ariadne import ossie
+
     index: dict[str, dict] = {}
     all_parsed = True
     models_dir = staging / "semantic_layer" / "models"
-    for path in sorted(models_dir.glob("*.yml")) if models_dir.is_dir() else []:
+    paths = (
+        sorted((*models_dir.glob("*.yml"), *models_dir.glob("*.yaml")))
+        if models_dir.is_dir()
+        else []
+    )
+    for path in paths:
         try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            all_parsed = False  # unparseable draft: the validation gate owns the error
+            model = ossie.parse_model(ossie.read_document(path), path.name)
+        except ValueError:
+            all_parsed = False  # unparseable/invalid draft: the validation gate owns the error
             continue
-        if not isinstance(doc, dict):
-            all_parsed = False
-            continue
-        models = doc.get("semantic_model")
-        if not isinstance(models, list):
-            all_parsed = False  # malformed draft: the gate owns the error
-            continue
-        for model in models:
-            if not isinstance(model, dict):
-                all_parsed = False
-                continue
-            pk: list[str] = []
-            dimensions: list[str] = []
-            dataset_sources: list[str] = []
-            for dataset in model.get("datasets") or []:
-                if not isinstance(dataset, dict):
-                    all_parsed = False
-                    continue
-                pk = pk or [str(key) for key in dataset.get("primary_key") or []]
-                source = dataset.get("source")
-                if (
-                    isinstance(source, str)
-                    and source.strip()
-                    and source.strip() not in dataset_sources
-                ):
-                    dataset_sources.append(source.strip())
-                for field in dataset.get("fields") or []:
-                    if isinstance(field, dict) and field.get("name") and "dimension" in field:
-                        dimensions.append(str(field["name"]))
-            for metric in model.get("metrics") or []:
-                if not isinstance(metric, dict):
-                    all_parsed = False
-                    continue
-                name = metric.get("name")
-                if not name:
-                    continue
-                block = metric.get("expression")
-                dialects = (block.get("dialects") if isinstance(block, dict) else None) or [{}]
-                lead = dialects[0]
-                if not isinstance(lead, dict):
-                    all_parsed = False
-                    lead = {}
-                index[str(name)] = {
-                    "model": str(model.get("name") or path.stem),
-                    "primary_key": pk,
-                    "dimensions": dimensions,
-                    "dataset_sources": dataset_sources,
-                    "expression": str(lead.get("expression") or ""),
-                }
+        for key, metric in model.metrics.items():
+            owner = model.datasets.get(metric.owner) if metric.owner else None
+            scope = [owner] if owner is not None else list(model.datasets.values())
+            sources: list[str] = []
+            for dataset in scope:
+                if dataset.source not in sources:
+                    sources.append(dataset.source)
+            index[f"{model.name}::{key}"] = {
+                "model": model.name,
+                "primary_key": list(scope[0].primary_key) if scope else [],
+                "dimensions": [n for d in scope for n, f in d.fields.items() if f.dimension],
+                "dataset_sources": sources,
+                "expression": metric.expression,
+            }
     return index, all_parsed
 
 
 # ------------------------------------------- the Git-candidate finalize pass
 
 _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
+
+
+def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
+    """The CURRENT resolved sanctioned SQL of every single-dataset governed
+    metric of the tree (``models`` is :func:`_model_index`'s index, keyed by full
+    identity), from the existing compiler; cross-fact and unresolvable metrics
+    are absent."""
+    from ariadne.render import render
+    from ariadne.semantic_graph import load_graph
+
+    try:
+        graph = load_graph(staging / "semantic_layer")
+    except Exception:
+        graph = None  # the structural gate owns the loader failure
+    rendered: dict[str, str] = {}
+    if graph is not None:
+        for identity, info in models.items():
+            name = identity.partition("::")[2]
+            if identity not in graph.metrics:
+                continue
+            try:
+                from ariadne.render import build_slice
+
+                model = graph.models[info["model"]]
+                node = graph.metrics[identity]
+                datasets = {graph.metrics[d].owner for d in node.deps} or {node.owner}
+                dataset = next(iter(datasets))
+                if len(datasets) != 1 or dataset is None:
+                    continue  # cross-fact: the planner compiles it, not the single renderer
+                keys = [k for k, m in model.metrics.items() if m.owner == dataset]
+                keys += [
+                    k
+                    for k, m in model.metrics.items()
+                    if m.owner is None and all(d in keys for d in m.deps)
+                ]
+                spec = build_slice(model, dataset, keys, aliases={k: k for k in keys})
+                rendered[identity] = render(spec, metric=name).strip()
+            except Exception:
+                continue  # the compile gate owns the structural failure
+    return rendered
 
 
 def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
@@ -220,23 +232,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
     models, all_parsed = _model_index(staging)
     if not models or not all_parsed:
         return [], []
-    from ariadne.render import render
-    from ariadne.semantic_graph import load_graph
-
-    try:
-        graph = load_graph(staging / "semantic_layer")
-    except Exception:
-        graph = None  # the structural gate owns the loader failure
-    rendered: dict[str, str] = {}
-    if graph is not None:
-        for name, info in models.items():
-            envelope = graph.models.get(info["model"])
-            if envelope is None:
-                continue
-            try:
-                rendered[name] = render(envelope, metric=name).strip()
-            except Exception:
-                continue  # the compile gate owns the structural failure
+    rendered = sanctioned_sql(staging, models)
     comps_dir = staging / "knowledge" / "computations"
     existing: dict[str, tuple[str, str]] = {}
     if comps_dir.is_dir():
@@ -256,14 +252,15 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
                 existing[str(core_ref.get("id"))] = (page.name, raw)
     specs: list[dict] = []
     errors: list[str] = []
-    for name, info in sorted(models.items()):
-        sanctioned = rendered.get(name)
-        page = existing.get(f"{info['model']}::{name}")
+    for identity, info in sorted(models.items()):
+        name = identity.partition("::")[2]
+        sanctioned = rendered.get(identity)
+        page = existing.get(identity)
         if page is None:
             if sanctioned is not None:
                 specs.append(
                     {
-                        "path": f"knowledge/computations/{name}.md",
+                        "path": f"knowledge/computations/{name.replace('.', '-')}.md",
                         "content": _build_native_computation_page(name, info, sanctioned),
                     }
                 )
@@ -403,7 +400,9 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     semantic_id = f"{info['model']}::{name}"
     model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
     meta = {
-        "id": "entity:" + semantic_id.replace("::", "-").replace("_", "-").lower() + "-computation",
+        "id": "entity:"
+        + semantic_id.replace("::", "-").replace(".", "-").replace("_", "-").lower()
+        + "-computation",
         "entity_types": ["computation"],
         "tags": ["computation"],
         "title": f"sanctioned SQL — {semantic_id}",
@@ -432,7 +431,7 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Sanctioned computation\n\n"
-        f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
+        f"Sanctioned SQL (OSSIE_SQL_2026, `semantic_layer/models/{info['model']}.yml`); "
         "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
         "command (`ariadne get-metric`); independent attestation pending — no "
         "expected-value oracle is cited (compile and grain checks are not "
@@ -1727,7 +1726,7 @@ def evidence_freshness(observed_at: object, max_age_hours: float | None) -> dict
         if observed is None:
             raise ValueError(observed_at)
         age = datetime.now(UTC) - observed
-    except ValueError, TypeError, OverflowError:
+    except (ValueError, TypeError, OverflowError):
         return {
             "state": "unknown",
             "observed_at": observed_at,
@@ -3207,9 +3206,10 @@ def data_signals_pinned(
     bindings_by_metric: dict[str, list] = {}
     for binding in bindings:
         metric_ref = getattr(binding, "metric_ref", None)
-        name = getattr(metric_ref, "metric", None)
-        if isinstance(name, str) and name:
-            bindings_by_metric.setdefault(name, []).append(binding)
+        key = getattr(metric_ref, "metric", None)
+        model = getattr(metric_ref, "model", None)
+        if isinstance(key, str) and key and isinstance(model, str) and model:
+            bindings_by_metric.setdefault(f"{model}::{key}", []).append(binding)
     page_by_entity = {page.entity_id: page for page in pages}
     # typed index over the VISIBLE pinned pages (deterministic order; the
     # disclosed FLAT native metadata is the only metadata read)

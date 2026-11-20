@@ -152,7 +152,7 @@ def run(args, stdin: Any) -> int:
         if not project.is_dir():
             raise ValueError(f"project directory does not exist: {project}")
         return _managed(project, args.proposal, stdin, interactive)
-    except KeyboardInterrupt, EOFError:
+    except (KeyboardInterrupt, EOFError):
         print(
             "Review interrupted before admission: no human decision was recorded.",
             file=sys.stderr,
