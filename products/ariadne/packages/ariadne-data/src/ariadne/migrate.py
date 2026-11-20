@@ -687,10 +687,11 @@ def _context_rewrites(
                 isinstance(s, dict) and s.get("id") == f"model-{model}"
                 for s in native.get("sources") or []
             )
-            if claims:
+            if generated:
+                if key != old:
+                    deletes.append(rel)  # regenerated under the new identity, whatever it retained
+            elif claims:
                 attested.append((rel, meta, body, model, old, key))
-            elif key != old and generated:
-                deletes.append(rel)  # regenerated under the new identity by the finalize pass
             elif key != old:
                 core["id"] = f"{model}::{key}"
                 writes[rel] = _render_page(meta, body)
@@ -702,19 +703,25 @@ def _context_rewrites(
             index, _ok = context._model_index(Path(tmp))
             sanctioned = context.sanctioned_sql(Path(tmp), index)
         for rel, meta, body, model, old, key in attested:
-            meta["ariadne_profile"]["core_ref"]["id"] = f"{model}::{key}"
+            identity = f"{model}::{key}"
+            meta["ariadne_profile"]["core_ref"]["id"] = identity
             page = _render_page(meta, body)
-            state, refusal = (
-                context._native_computation_state(page, key, index[key], sanctioned.get(key))
-                if key in index
-                else ("stale", "the metric no longer resolves")
-            )
-            if refusal is not None or state == "stale":
+            sql = sanctioned.get(identity)
+            if identity not in index or sql is None:
+                refusal = (
+                    "the metric no longer resolves"
+                    if identity not in index
+                    else "no sanctioned SQL can be computed for it (a cross-fact composition)"
+                )
+            else:
+                state, refusal = context._native_computation_state(page, key, index[identity], sql)
+                if refusal is None and state == "stale":
+                    refusal = "sanctioned SQL differs"
+            if refusal is not None:
                 conv.problem(
                     rel,
-                    f"attested Computation page for {model}::{old} binds SQL that changes "
-                    "under Ossie 0.3 — it needs re-attestation "
-                    f"({refusal or 'sanctioned SQL differs'})",
+                    f"attested Computation page for {model}::{old} cannot be proven against "
+                    f"{identity} under Ossie 0.3 — it needs re-attestation ({refusal})",
                 )
             elif key != old:
                 writes[rel] = page

@@ -379,3 +379,85 @@ def test_policy_binding_identities_are_mapped_exactly_not_by_prefix():
         "definition": "retail::returns.sales-net",
         "dependencies": ["retail::orders.sales"],
     }
+
+
+def _attested(project: Path, name: str, info: dict, sql: str, *, generated: bool) -> Path:
+    """A Computation page under the old identity carrying an independent attestation."""
+    from ariadne import context
+
+    page = project / "knowledge" / "computations" / f"{name}.md"
+    page.parent.mkdir(exist_ok=True)
+    text = context._build_native_computation_page(name, info, sql)
+    text = text.replace("attestation: pending", "attestation: verified\n    attester: expert:dana")
+    if not generated:
+        text = text.replace(f"model-{info['model']}", "authored-note")
+    page.write_text(text, encoding="utf-8")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-q", "-m", "human: an attested computation")
+    return page
+
+
+def test_a_generated_page_with_a_retained_check_is_deleted_for_regeneration(tmp_path):
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    info = {"model": "retail_sales", "dataset_sources": ["orders.main.orders"]}
+    _attested(project, "revenue", info, "SELECT 1", generated=True)
+    result = migrate.migrate_project(project)
+    assert result["deleted"] == ["knowledge/computations/revenue.md"]
+
+
+def test_an_authored_attested_page_on_a_cross_fact_metric_is_refused(tmp_path):
+    """No sanctioned SQL exists for a cross-fact composition, so an authored attestation
+    cannot be proven against it: the project is refused, nothing written."""
+    cross = LEGACY_RETAIL_SALES.replace(
+        "    metrics:\n",
+        "      - name: returns\n        source: orders.main.returns\n        primary_key: [id]\n"
+        "        fields:\n          - name: id\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}\n"
+        "          - name: refunded\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: refunded}]}\n"
+        "    metrics:\n      - name: refunds\n        dataset: returns\n        expression:\n"
+        "          dialects:\n            - dialect: ANSI_SQL\n"
+        "              expression: SUM(returns.refunded)\n"
+        "      - name: net\n        expression:\n          dialects:\n"
+        "            - dialect: ANSI_SQL\n              expression: revenue - refunds\n",
+        1,
+    )
+    project = _legacy_project(tmp_path, cross)
+    info = {"model": "retail_sales", "dataset_sources": ["orders.main.orders"]}
+    _attested(project, "net", info, "SELECT 1", generated=False)
+    before = _unchanged(project)
+    with pytest.raises(migrate.MigrationError, match=r"net\.md.*re-attestation"):
+        migrate.migrate_project(project)
+    assert _unchanged(project) == before
+
+
+def test_an_attested_page_is_proven_against_its_own_models_sql_not_a_namesake(tmp_path):
+    """Two models share the metric key `revenue`; the twin (sorted later) defines it
+    differently. The page attests model A's exact sanctioned SQL, so it is kept and
+    rewritten to `retail_sales::orders.revenue`; a bare-key lookup would compare it with
+    the twin's SQL and refuse it."""
+    from ariadne import context
+
+    twin = (
+        LEGACY_RETAIL_SALES.replace("retail_sales", "twin_sales")
+        .replace("name: orders", "name: twin_orders")
+        .replace("status <> 'cancelled' THEN amount", "status = 'shipped' THEN amount")
+    )
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    (project / "semantic_layer" / "models" / "twin_sales.yml").write_text(twin, encoding="utf-8")
+    files = {
+        "semantic_layer/models/retail_sales.yml": LEGACY_RETAIL_SALES,
+        "semantic_layer/models/twin_sales.yml": twin,
+    }
+    conv = migrate.convert_documents(files)
+    scratch = tmp_path / "scratch"
+    for rel, text in conv.files.items():
+        (scratch / rel).parent.mkdir(parents=True, exist_ok=True)
+        (scratch / rel).write_text(text, encoding="utf-8")
+    index, _ok = context._model_index(scratch)
+    sql_a = context.sanctioned_sql(scratch, index)["retail_sales::orders.revenue"]
+    assert sql_a != context.sanctioned_sql(scratch, index)["twin_sales::twin_orders.revenue"]
+    info = {"model": "retail_sales", "dataset_sources": ["orders.main.orders"]}
+    _attested(project, "revenue", info, sql_a, generated=False)
+    result = migrate.migrate_project(project)
+    assert "knowledge/computations/revenue.md" in result["files"]

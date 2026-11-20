@@ -115,14 +115,14 @@ def _load(text: str) -> tuple[dict | None, str]:
 
 
 def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
-    """``(metric key -> {model, primary_key, dimensions, dataset_sources,
+    """``(full identity -> {model, primary_key, dimensions, dataset_sources,
     expression}, all_parsed)`` from the candidate Ossie models — the mechanical
-    source of truth for enrichment and computations. The key is the metric's
-    identity key (``<metric>`` or ``<dataset>.<metric>``; identity is
-    ``<model>::<key>``). A model file that does not parse or validate is
-    SKIPPED and reported through ``all_parsed=False`` so the validation gate
-    can report the structural failure without a finalize crash or treating an
-    unparseable draft's metrics as removed."""
+    source of truth for enrichment and computations. The identity is
+    ``<model>::<key>`` with key ``<metric>`` or ``<dataset>.<metric>``, so two
+    models sharing a metric key stay distinct. A model file that does not parse
+    or validate is SKIPPED and reported through ``all_parsed=False`` so the
+    validation gate can report the structural failure without a finalize crash
+    or treating an unparseable draft's metrics as removed."""
     from ariadne import ossie
 
     index: dict[str, dict] = {}
@@ -146,7 +146,7 @@ def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
             for dataset in scope:
                 if dataset.source not in sources:
                     sources.append(dataset.source)
-            index[key] = {
+            index[f"{model.name}::{key}"] = {
                 "model": model.name,
                 "primary_key": list(scope[0].primary_key) if scope else [],
                 "dimensions": [n for d in scope for n, f in d.fields.items() if f.dimension],
@@ -163,7 +163,7 @@ _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
 
 def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
     """The CURRENT resolved sanctioned SQL of every single-dataset governed
-    metric of the tree (``models`` is :func:`_model_index`'s index), from the
+    metric of the tree (``models`` is :func:`_model_index`'s index, keyed by full identity), from the
     existing compiler; cross-fact and unresolvable metrics are absent."""
     from ariadne.render import render
     from ariadne.semantic_graph import load_graph
@@ -174,8 +174,8 @@ def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
         graph = None  # the structural gate owns the loader failure
     rendered: dict[str, str] = {}
     if graph is not None:
-        for name, info in models.items():
-            identity = f"{info['model']}::{name}"
+        for identity, info in models.items():
+            name = identity.partition("::")[2]
             if identity not in graph.metrics:
                 continue
             try:
@@ -194,7 +194,7 @@ def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
                     if m.owner is None and all(d in keys for d in m.deps)
                 ]
                 spec = build_slice(model, dataset, keys, aliases={k: k for k in keys})
-                rendered[name] = render(spec, metric=name).strip()
+                rendered[identity] = render(spec, metric=name).strip()
             except Exception:
                 continue  # the compile gate owns the structural failure
     return rendered
@@ -251,9 +251,10 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
                 existing[str(core_ref.get("id"))] = (page.name, raw)
     specs: list[dict] = []
     errors: list[str] = []
-    for name, info in sorted(models.items()):
-        sanctioned = rendered.get(name)
-        page = existing.get(f"{info['model']}::{name}")
+    for identity, info in sorted(models.items()):
+        name = identity.partition("::")[2]
+        sanctioned = rendered.get(identity)
+        page = existing.get(identity)
         if page is None:
             if sanctioned is not None:
                 specs.append(
