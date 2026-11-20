@@ -125,7 +125,7 @@ def content_project(root):
     model = project / "semantic_layer" / "models" / "orders.yml"
     model.write_text(
         model.read_text()
-        .replace("name: orders\n    description", "name: retail_sales\n    description")
+        .replace("name: orders\ndescription", "name: retail_sales\ndescription")
         .replace("region", "status")
         .replace("order_count", "revenue")
         .replace("COUNT(*)", "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)")
