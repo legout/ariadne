@@ -27,11 +27,13 @@ import shutil
 import subprocess
 import sys
 import venv
+import zipfile
 from pathlib import Path
 
 import pytest
 from lumio_wiki import GRAPH_ARTIFACT_FILENAME
 from lumio_wiki.cli import default_index_dir
+from packaging.specifiers import SpecifierSet
 
 # Building and installing into a fresh venv is expensive; skip under the
 # standard fast suite unless explicitly requested or running from the repo
@@ -751,6 +753,26 @@ def test_isolated_skill_install(isolated_wheel_env: dict, tmp_path: Path):
     assert (project / ".agents" / "skills" / "lumio-wiki" / "SKILL.md").is_file()
 
 
+def _prior_wheel_requires_python() -> str:
+    wheel = (
+        Path(__file__).parent / "fixtures" / "prior_wheels" / "lumio_wiki-0.1.1-py3-none-any.whl"
+    )
+    with zipfile.ZipFile(wheel) as archive:
+        metadata = next(n for n in archive.namelist() if n.endswith(".dist-info/METADATA"))
+        return next(
+            line.split(":", 1)[1].strip()
+            for line in archive.read(metadata).decode().splitlines()
+            if line.startswith("Requires-Python:")
+        )
+
+
+_PRIOR_REQUIRES = _prior_wheel_requires_python()
+
+
+@pytest.mark.skipif(
+    not SpecifierSet(_PRIOR_REQUIRES).contains(".".join(map(str, sys.version_info[:3]))),
+    reason=f"the prior wheel fixture lumio_wiki-0.1.1 requires Python {_PRIOR_REQUIRES}",
+)
 def test_isolated_skill_upgrade_from_prior_wheel(
     isolated_wheel_env: dict,
     tmp_path: Path,
