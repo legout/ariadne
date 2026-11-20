@@ -632,12 +632,12 @@ def _simple_quality_project(
             for source_name, db_path in sources.items()
         ),
         "semantic_layer/models/orders.yml": model,
-        "context_integration.yaml": _selector([_policy_binding("orders::order_count")]),
+        "context_integration.yaml": _selector([_policy_binding("orders::orders.order_count")]),
         "knowledge/lumio.yaml": KB_CONTROL,
         f"knowledge/{SOURCE_REFERENCE_MANIFEST_BASENAME}": _MANIFEST_BYTES,
         "knowledge/policies/retail-return-policy.md": _POLICY_PAGE,
         "knowledge/metrics/order_count.md": _metric_page(
-            "order_count", "orders", "order_count", citations
+            "order_count", "orders", "orders.order_count", citations
         ),
     }
     if with_demo_page:
@@ -697,7 +697,11 @@ def test_expired_report_preserves_rows_sql_and_discloses_as_of_evidence(tmp_path
     }  # the closed view contract (plan §2)
     assert signals["assessed_at"] == ASSESS_NOW.isoformat()
     [metric] = signals["metrics"]
-    assert metric == {"name": "order_count", "assets": [resource], "coverage": "unknown"}
+    assert metric == {
+        "name": "orders::orders.order_count",
+        "assets": [resource],
+        "coverage": "unknown",
+    }
     # the identified, cited dependency keeps its attached as-of evidence, but
     # COVERAGE stays unknown: version correspondence cannot be mechanically
     # established — the runtime holds no dataset-version fact to cross-check
@@ -937,7 +941,11 @@ def test_absent_citation_supplies_no_evidence_and_invents_no_warning(tmp_path, m
     assert _rows_by_region(result) == {"NA": 2, "EMEA": 1}
     signals = result["data_signals"]
     [metric] = signals["metrics"]
-    assert metric == {"name": "order_count", "assets": [resource], "coverage": "unknown"}
+    assert metric == {
+        "name": "orders::orders.order_count",
+        "assets": [resource],
+        "coverage": "unknown",
+    }
     [asset] = signals["assets"]
     assert asset["page"] is None and asset["coverage"] == "unknown" and asset["reports"] == []
     assert signals["warnings"] == []  # absent citation never warns by itself
@@ -1215,37 +1223,39 @@ def test_malformed_supplied_profiles_fail_the_native_batch_before_admission(tmp_
 _MF_LIVE_DB_ROWS = ORDERS  # NA 300 / EMEA 400, hand-derived from the module rows
 _MF_ARCHIVE_DB_ROWS = [(1, "EMEA", 400.0), (2, "EMEA", 900.0)]  # EMEA 1300
 
-_MF_FACT_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: {model}
-    description: {dataset} fact
-    datasets:
-      - name: {dataset}
-        source: {source}
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression: {{dialects: [{{dialect: ANSI_SQL, expression: order_id}}]}}
-          - name: region
-            expression: {{dialects: [{{dialect: ANSI_SQL, expression: region}}]}}
-            dimension: {{}}
-          - name: amount
-            expression: {{dialects: [{{dialect: ANSI_SQL, expression: amount}}]}}
-    metrics:
-      - name: {metric}
-        dataset: {dataset}
-        description: Sum of amounts
-        expression: {{dialects: [{{dialect: ANSI_SQL, expression: SUM(amount)}}]}}
-{derived}"""
-
-_MF_DERIVED_METRIC = """\
-      - name: combined_orders_total
-        description: Live plus archive totals (cross-fact derived)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: live_orders_total + archive_orders_total
+# One Ossie model holds both facts: a model-scoped AGG composition may only
+# reference datasets of its own model (spec 0039 §5.3.4).
+_MF_FACTS_MODEL = """\
+version: 0.3.0.dev0
+name: facts
+description: Live and archive order facts
+datasets:
+- name: live_orders
+  source: demo.main.orders
+  primary_key: [order_id]
+  fields:
+  - {name: order_id, expression: {sql: order_id}}
+  - {name: region, expression: {sql: region}, dimension: {}}
+  - {name: amount, expression: {sql: amount}}
+  metrics:
+  - name: live_orders_total
+    description: Sum of amounts
+    expression: {sql: SUM(amount)}
+- name: archive_orders
+  source: archive.main.orders
+  primary_key: [order_id]
+  fields:
+  - {name: order_id, expression: {sql: order_id}}
+  - {name: region, expression: {sql: region}, dimension: {}}
+  - {name: amount, expression: {sql: amount}}
+  metrics:
+  - name: archive_orders_total
+    description: Sum of amounts
+    expression: {sql: SUM(amount)}
+metrics:
+- name: combined_orders_total
+  description: Live plus archive totals (cross-fact derived)
+  expression: {sql: AGG(live_orders.live_orders_total) + AGG(archive_orders.archive_orders_total)}
 """
 
 _MF_REGIONS_MODEL = """\
@@ -1321,30 +1331,17 @@ def _admit_multifact_project(tmp_path: Path, *, quality: bool):
     finally:
         con.close()
     bindings = [
-        _policy_binding("live_orders::live_orders_total"),
-        _policy_binding("archive_orders::archive_orders_total"),
-        _policy_binding("archive_orders::combined_orders_total"),
-        _policy_binding("regions::region_count"),
+        _policy_binding("facts::live_orders.live_orders_total"),
+        _policy_binding("facts::archive_orders.archive_orders_total"),
+        _policy_binding("facts::combined_orders_total"),
+        _policy_binding("regions::regions.region_count"),
     ]
     files = {
         "data/seed_notes.md": "# Seed notes\n\nTwo facts.\n",
         "ariadne.yaml": "sources:\n"
         f"  - name: demo\n    type: sqlite\n    path: {demo_db}\n"
         f"  - name: archive\n    type: sqlite\n    path: {archive_db}\n",
-        "semantic_layer/models/live_orders.yml": _MF_FACT_MODEL.format(
-            model="live_orders",
-            dataset="live_orders",
-            source="demo.main.orders",
-            metric="live_orders_total",
-            derived="",
-        ),
-        "semantic_layer/models/archive_orders.yml": _MF_FACT_MODEL.format(
-            model="archive_orders",
-            dataset="archive_orders",
-            source="archive.main.orders",
-            metric="archive_orders_total",
-            derived=_MF_DERIVED_METRIC,
-        ),
+        "semantic_layer/models/facts.yml": _MF_FACTS_MODEL,
         "semantic_layer/models/regions.yml": _MF_REGIONS_MODEL,
         "semantic_layer/graph.yml": _MF_GRAPH_YML,
         "context_integration.yaml": _selector(bindings),
@@ -1357,21 +1354,24 @@ def _admit_multifact_project(tmp_path: Path, *, quality: bool):
         ),
         "knowledge/tables/regions.md": _table_page(regions_resource, None),
         "knowledge/metrics/live_orders_total.md": _metric_page(
-            "live_orders_total", "live_orders", "live_orders_total", [demo_resource]
+            "live_orders_total", "facts", "live_orders.live_orders_total", [demo_resource]
         ),
         "knowledge/metrics/archive_orders_total.md": _metric_page(
-            "archive_orders_total", "archive_orders", "archive_orders_total", [archive_resource]
+            "archive_orders_total",
+            "facts",
+            "archive_orders.archive_orders_total",
+            [archive_resource],
         ),
         "knowledge/metrics/combined_orders_total.md": _metric_page(
             "combined_orders_total",
-            "archive_orders",  # the derived metric lives in archive_orders.yml
+            "facts",
             "combined_orders_total",
             [demo_resource, archive_resource],
         ),
         "knowledge/metrics/region_count.md": _metric_page(
             "region_count",
             "regions",
-            "region_count",
+            "regions.region_count",
             [regions_resource],
             primary_key="region",
         ),
@@ -1565,7 +1565,7 @@ def _bounds_project(tmp_path: Path, *, with_reports: bool):
         "data/seed_notes.md": "# Seed notes\n\nBounds.\n",
         "ariadne.yaml": f"sources:\n  - name: demo\n    type: sqlite\n    path: {db}\n",
         "context_integration.yaml": _selector(
-            [_policy_binding(f"{name}::{name}_count") for name in ("ta", "tb", "tc")]
+            [_policy_binding(f"{name}::{name}.{name}_count") for name in ("ta", "tb", "tc")]
         ),
         "knowledge/lumio.yaml": KB_CONTROL,
         f"knowledge/{SOURCE_REFERENCE_MANIFEST_BASENAME}": _MANIFEST_BYTES,
@@ -1579,7 +1579,7 @@ def _bounds_project(tmp_path: Path, *, with_reports: bool):
         reports = [EXPIRED_REPORT, UNKNOWN_REPORT] if with_reports and name != "tc" else None
         files[f"knowledge/tables/{name}.md"] = _table_page(resource, reports)
         files[f"knowledge/metrics/{name}_count.md"] = _metric_page(
-            f"{name}_count", name, f"{name}_count", [resource]
+            f"{name}_count", name, f"{name}.{name}_count", [resource]
         )
     runtime, _project = _admit_project(tmp_path, files)
     snapshot = runtime._context_snapshot
@@ -1837,9 +1837,9 @@ def _admit_windowed_quality_project(tmp_path: Path):
         ),
     ]
     bindings = [
-        _policy_binding("dated_orders::orders_total"),
+        _policy_binding("dated_orders::dated_orders.orders_total"),
         _policy_binding("dated_orders::orders_value_1m"),
-        _policy_binding("dated_lines::lines_total"),
+        _policy_binding("dated_lines::dated_lines.lines_total"),
     ]
     project = tmp_path / "proj"
     project.mkdir(parents=True, exist_ok=True)
@@ -1879,7 +1879,7 @@ def _admit_windowed_quality_project(tmp_path: Path):
         "knowledge/tables/dated-orders.md": _table_page(orders_resource, reports),
         "knowledge/tables/dated-lines.md": _table_page(lines_resource, None),
         "knowledge/metrics/orders_total.md": _metric_page(
-            "orders_total", "dated_orders", "orders_total", [orders_resource]
+            "orders_total", "dated_orders", "dated_orders.orders_total", [orders_resource]
         ),
         "knowledge/metrics/orders_value_1m.md": _metric_page(
             "orders_value_1m", "dated_orders", "orders_value_1m", [orders_resource]
@@ -1887,7 +1887,7 @@ def _admit_windowed_quality_project(tmp_path: Path):
         "knowledge/metrics/lines_total.md": _metric_page(
             "lines_total",
             "dated_lines",
-            "lines_total",
+            "dated_lines.lines_total",
             [lines_resource],
             primary_key="line_id",
         ),
