@@ -1362,7 +1362,7 @@ def test_a_cte_name_exempts_a_table_only_inside_the_scope_that_defines_it(tmp_pa
         ),
         # a literal path is refused even when the name matches a CTE
         (
-            "WITH \"/etc/x.parquet\" AS (SELECT 1 AS id) SELECT id FROM \"/etc/x.parquet\"",
+            'WITH "/etc/x.parquet" AS (SELECT 1 AS id) SELECT id FROM "/etc/x.parquet"',
             "scans '/etc/x.parquet' directly",
         ),
     ],
@@ -1382,7 +1382,7 @@ def test_a_path_named_like_a_cte_is_refused_in_the_compiled_sql_check():
 
     with pytest.raises(ValueError, match="scans '/x.csv' directly"):
         authoring._authorize_statement(
-            "m.d", "WITH \"/x.csv\" AS (SELECT 1) SELECT * FROM \"/x.csv\"", {"events"}
+            "m.d", 'WITH "/x.csv" AS (SELECT 1) SELECT * FROM "/x.csv"', {"events"}
         )
 
 

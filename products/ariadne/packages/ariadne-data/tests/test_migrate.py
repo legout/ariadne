@@ -461,3 +461,35 @@ def test_an_attested_page_is_proven_against_its_own_models_sql_not_a_namesake(tm
     _attested(project, "revenue", info, sql_a, generated=False)
     result = migrate.migrate_project(project)
     assert "knowledge/computations/revenue.md" in result["files"]
+
+
+def test_a_nested_model_copy_is_neither_read_nor_written_and_leaves_no_proposal(tmp_path):
+    """The normal loader reads direct children of semantic_layer/models only: a tracked
+    `models/archive/retail.yaml` is ignored, so the migration neither converts nor
+    refuses it, and the proposal holds exactly the direct-child files."""
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    nested = project / "semantic_layer" / "models" / "archive"
+    nested.mkdir()
+    (nested / "retail.yaml").write_text(LEGACY_RETAIL_SALES, encoding="utf-8")
+    _git(project, "add", "-A")
+    _git(project, "commit", "-q", "-m", "human: an archived legacy copy")
+    result = migrate.migrate_project(project)
+    assert all("archive" not in path for path in result["files"])
+    archived = _git(
+        project, "show", f"{result['revision']}:semantic_layer/models/archive/retail.yaml"
+    )
+    assert "semantic_model" in archived  # untouched
+
+
+def test_a_legacy_model_with_an_inline_credential_is_refused_and_creates_no_proposal(tmp_path):
+    secret = LEGACY_RETAIL_SALES.replace(
+        "source: orders.main.orders", "source: postgres://svc:hunter2pass@db.example/orders"
+    )
+    project = _legacy_project(tmp_path, secret)
+    before = _unchanged(project)
+    with pytest.raises(ValueError, match="inline URL credentials"):
+        migrate.migrate_project(project)
+    assert _unchanged(project) == before
+    assert not (project / ".ariadne").exists() or not any(
+        (project / ".ariadne").rglob("proposals/*")
+    )

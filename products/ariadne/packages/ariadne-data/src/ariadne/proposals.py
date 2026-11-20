@@ -1162,6 +1162,26 @@ def edit_proposal(
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
 
 
+def check_migration_set(writes: dict[str, str], deletes: tuple[str, ...]) -> None:
+    """The migration write boundary: every path in the user artifact scope, every
+    written blob through the shared content check the normal edit path uses, and
+    deletes only of generated Computation pages or direct-child model files."""
+    for rel in (*writes, *deletes):
+        if not _in_user_scope(rel):
+            raise ValueError(f"migration path {rel!r} is outside the proposal artifact scope")
+    for rel, content in writes.items():
+        check_artifact_content(rel, content)
+    for rel in deletes:
+        pure = PurePosixPath(rel)
+        computation = pure.parts[:2] == ("knowledge", "computations") and pure.suffix == ".md"
+        model = pure.parts[:2] == ("semantic_layer", "models") and len(pure.parts) == 3
+        if not (computation or model):
+            raise ValueError(
+                f"migration may delete only generated Computation pages and replaced "
+                f"model files, not {rel!r}"
+            )
+
+
 def migration_commit(
     project: str | Path,
     proposal: str,
@@ -1177,9 +1197,7 @@ def migration_commit(
     a one-time identity migration must delete or re-anchor. Every path must lie
     in the user artifact scope; nothing is attested, nothing admitted."""
     project = Path(project).resolve()
-    for rel in (*writes, *deletes):
-        if not _in_user_scope(rel):
-            raise ValueError(f"migration path {rel!r} is outside the proposal artifact scope")
+    check_migration_set(writes, deletes)
     worktree_root = project / WORKTREES_REL / proposal
     with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
         record = _load_record(project, proposal)

@@ -209,7 +209,9 @@ def test_two_dataset_scoped_metrics_with_one_full_identity_are_refused():
     other["datasets"][0]["name"] = "orders.net"
     other["datasets"][0]["primary_key"] = ["x"]
     model["datasets"].append(other["datasets"][0])
-    with pytest.raises(ValueError, match=r"'orders' → 'net.sales' and 'orders.net' → 'sales' share"):
+    with pytest.raises(
+        ValueError, match=r"'orders' → 'net.sales' and 'orders.net' → 'sales' share"
+    ):
         render(model, [])
 
 

@@ -163,8 +163,9 @@ _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
 
 def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
     """The CURRENT resolved sanctioned SQL of every single-dataset governed
-    metric of the tree (``models`` is :func:`_model_index`'s index, keyed by full identity), from the
-    existing compiler; cross-fact and unresolvable metrics are absent."""
+    metric of the tree (``models`` is :func:`_model_index`'s index, keyed by full
+    identity), from the existing compiler; cross-fact and unresolvable metrics
+    are absent."""
     from ariadne.render import render
     from ariadne.semantic_graph import load_graph
 

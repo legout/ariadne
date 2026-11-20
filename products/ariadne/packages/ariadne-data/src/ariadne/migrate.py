@@ -582,7 +582,12 @@ def _read_revision(root: Path, revision: str) -> dict[str, str]:
     for rel in filter(None, listing.split("\0")):
         pure = Path(rel)
         wanted = (
-            (pure.parts[:2] == ("semantic_layer", "models") and pure.suffix in (".yml", ".yaml"))
+            # the normal loader reads direct children of semantic_layer/models only
+            (
+                len(pure.parts) == 3
+                and pure.parts[:2] == ("semantic_layer", "models")
+                and pure.suffix in (".yml", ".yaml")
+            )
             or rel == "semantic_layer/graph.yml"
             or (pure.parts[0] == "knowledge" and pure.suffix == ".md")
             or rel == "context_integration.yaml"
@@ -778,6 +783,8 @@ def migrate_project(project: str | Path) -> dict:
     if conv.problems:
         report = "; ".join(f"{f}: {'; '.join(r)}" for f, r in sorted(conv.problems.items()))
         raise MigrationError(f"project left unchanged — unconvertible construct(s): {report}")
+    # the complete write and delete set is verified before any proposal state exists
+    proposals.check_migration_set(writes, tuple(deletes))
     started = proposals.start_proposal(root, base_revision=revision)
     result = proposals.migration_commit(
         root, started["proposal"], started["candidate_revision"], writes, tuple(deletes)
