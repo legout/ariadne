@@ -201,6 +201,18 @@ def test_a_model_metric_named_like_a_dataset_metric_identity_is_refused():
         render(model, [])
 
 
+def test_two_dataset_scoped_metrics_with_one_full_identity_are_refused():
+    """Dataset `orders.net` metric `sales` and dataset `orders` metric `net.sales`
+    both are `orders::orders.net.sales`: refused naming both definitions."""
+    model = _model([_metric("net.sales", "SUM(x)")], [_field("x", "x")], source="t")
+    other = _model([_metric("sales", "SUM(x)")], [_field("x", "x")], source="t")
+    other["datasets"][0]["name"] = "orders.net"
+    other["datasets"][0]["primary_key"] = ["x"]
+    model["datasets"].append(other["datasets"][0])
+    with pytest.raises(ValueError, match=r"'orders' → 'net.sales' and 'orders.net' → 'sales' share"):
+        render(model, [])
+
+
 def test_a_field_referencing_another_field_is_refused():
     """Ossie 0.3 (spec 0039 §5.3.1): a field expression names source columns only."""
     model = _model(
