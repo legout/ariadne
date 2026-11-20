@@ -64,38 +64,30 @@ policy_bindings:
       operations: [get_metric, query_metrics]
       enforcement: null
 """
-MODEL = """version: 0.2.0.dev0
-semantic_model:
-  - name: retail_sales
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.main.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: status
-            dimension: {}
-    metrics:
-      - name: revenue
-        description: Completed revenue in EUR
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+MODEL = """version: 0.3.0.dev0
+name: retail_sales
+description: Orders model
+datasets:
+- name: orders
+  source: orders.main.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  - name: status
+    expression:
+      sql: status
+    dimension: {}
+  metrics:
+  - name: revenue
+    expression:
+      sql: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+    description: Completed revenue in EUR
 """
 NATIVE_POLICY = """---
 type: policy

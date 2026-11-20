@@ -1,23 +1,21 @@
-"""Normalized multi-fact semantic graph (issue #26; spec rev 1, "Authoring
-contract and normalized graph").
+"""Normalized multi-fact semantic graph over Ossie ``0.3.0.dev0`` documents
+(spec 0039 §5; originally issue #26).
 
-Both OSI authoring layouts normalize into ONE :class:`SemanticGraph`:
+Every ``semantic_layer/models/*.yml|yaml`` file is ONE Ossie model document
+(:mod:`ariadne.ossie` owns schema validation, name resolution and the
+``ARIADNE`` extension). The documents normalize into ONE :class:`SemanticGraph`;
+relationships come from the models' ``relationships`` and from the optional
+Ariadne-specific, non-portable ``semantic_layer/graph.yml`` (cross-model
+``relationships`` with the same ``name``/``from``/``to``/``from_columns``/
+``to_columns`` keys, an optional ``cardinality: one_to_one``, and
+``conformed_dimensions``).
 
-- **domain layout** — one ``semantic_model`` entry under ``semantic_layer/models/``
-  carrying several datasets, inline ``relationships:`` and — behind the
-  versioned, required ``ariadne.conformed_dimensions@1`` extension — inline
-  ``conformed_dimensions:``;
-- **source layout** — one single-dataset OSI file per source plus the optional
-  cross-file ``semantic_layer/graph.yml`` (``relationships:`` and
-  ``conformed_dimensions:``).
-
-The graph is the gate ahead of the planner (#27+): duplicate model/dataset/
-metric names, unsupported ``requires`` extension keys, duplicate or
-contradictory relationship/conformance declarations, ambiguous ``COUNT(*)``
-ownership, mixed-grain derived fields and metric dependency cycles are
-:class:`GraphError`\\ s raised BEFORE any SELECT is compiled. Live
-relationship-target/grain audits need a connection and belong to the next task;
-this module never reports them as passed.
+The graph is the gate ahead of the planner: duplicate model/dataset/metric
+names, duplicate or contradictory relationship/conformance declarations and
+metric dependencies outside ``AGG(dataset.metric)`` are :class:`GraphError`\\ s
+raised BEFORE any SELECT is compiled. Live relationship-target/grain audits need
+a connection and belong to the planner; this module never reports them as
+passed.
 """
 
 from __future__ import annotations
@@ -34,27 +32,20 @@ from sqlglot.optimizer.annotate_types import (  # pyright: ignore[reportMissingI
     annotate_types,
 )
 
+from ariadne import ossie  # pyright: ignore[reportMissingImports] — new-module resolver drift
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     RenderError,
-    _dialect_expression,
     _parse,
 )
 
-# Canonical extension keys, defined ONCE (spec rev 1 §Authoring contract 4: a
-# versioned, required extension gates what OSI core cannot express — a future
-# extension key is never silently assumed to work merely because the YAML parses).
-SUPPORTED_REQUIRES = frozenset({"ariadne.conformed_dimensions@1"})
-_CONFORMED_REQUIRES = "ariadne.conformed_dimensions@1"
-
-# Typed relationship edges (spec rev 1 §Authoring contract 3). A one_to_many
-# traversal is a planner concern, not a declarable edge kind.
+# Typed relationship edges. Ossie's default is many-to-one; the ARIADNE
+# extension (or graph.yml) may declare ``one_to_one`` (spec 0039 §5.2). A
+# one_to_many traversal is a planner concern, not a declarable edge kind.
 CARDINALITIES = ("many_to_one", "one_to_one")
 
 GRAPH_VERSION = 1
 _GRAPH_KEYS = frozenset({"version", "relationships", "conformed_dimensions"})
-_RELATIONSHIP_KEYS = frozenset(
-    {"name", "cardinality", "from_dataset", "from_fields", "to_dataset", "to_fields"}
-)
+_RELATIONSHIP_KEYS = frozenset({"name", "cardinality", "from", "from_columns", "to", "to_columns"})
 _CONFORMED_KEYS = frozenset({"name", "members"})
 _MEMBER_KEYS = frozenset({"dataset", "field", "native_grain"})
 
@@ -80,7 +71,8 @@ class GraphError(ValueError):
 
 @dataclass(frozen=True)
 class DatasetNode:
-    """One dataset with its declared grain (primary_key) and field inventory."""
+    """One dataset with its declared grain (primary_key, a tuple of FIELD
+    names) and field inventory."""
 
     name: str
     model: str
@@ -88,9 +80,11 @@ class DatasetNode:
     primary_key: tuple[str, ...]
     fields: tuple[str, ...]
     time_fields: frozenset[str]
-    # field name -> expression SQL where a usable dialect exists; type evidence
-    # for conformance (absent entries fail in the schema/render path instead)
+    # field name -> expression SQL over the dataset's SOURCE columns (Ossie 0.3
+    # field expressions never reference other fields)
     expressions: dict[str, str]
+    unique_keys: tuple[tuple[str, ...], ...] = ()
+    dimensions: frozenset[str] = frozenset()  # fields declaring a ``dimension`` object
 
 
 @dataclass(frozen=True)
@@ -136,14 +130,17 @@ class WindowDecl:
 
 @dataclass(frozen=True)
 class MetricNode:
-    """One entry of the project-wide metric index. Base aggregates carry exactly
-    one owning dataset; derived metrics (referencing other metrics) resolve
-    ownership from their dependencies instead. ``fill`` (an explicit metric
-    fill rule) applies to the OUTPUT only, never to a hidden ratio denominator;
-    ``window`` moves the metric's declared expression to the post-aggregate
-    window stage."""
+    """One entry of the project-wide metric index, keyed by its IDENTITY
+    ``<model>::<key>`` (spec 0039 §6): ``key`` is ``<metric>`` for a
+    model-scoped metric and ``<dataset>.<metric>`` for a dataset-scoped one.
+    A measure carries exactly one owning dataset and its expression LOWERED to
+    that dataset's source columns; a derived metric (a model-scoped composition
+    of ``AGG(dataset.metric)`` terms) keeps its authored expression and names
+    the identities of the dataset-scoped metrics it consumes in ``deps``.
+    ``fill`` applies to the OUTPUT only, never to a hidden ratio denominator;
+    ``window`` moves the metric to the post-aggregate window stage."""
 
-    name: str
+    name: str  # the identity ``<model>::<key>``
     owner: str | None
     expression: str
     derived: bool
@@ -151,6 +148,13 @@ class MetricNode:
     deps: tuple[str, ...]
     fill: Any = None
     window: WindowDecl | None = None
+    key: str = ""  # ``<metric>`` or ``<dataset>.<metric>``
+    short: str = ""  # the unqualified metric name
+    description: str = ""
+
+    @property
+    def identity(self) -> str:
+        return self.name
 
 
 @dataclass(frozen=True)
@@ -159,66 +163,77 @@ class SemanticGraph:
     metrics: dict[str, MetricNode]
     relationships: tuple[RelationshipEdge, ...]
     conformed_dimensions: tuple[ConformedEdge, ...]
-    models: dict[str, dict]  # model name -> single-entry envelope (compile input)
+    models: dict[str, ossie.ParsedModel]  # model name -> resolved Ossie model
     files: tuple[str, ...]  # consumed model files + optional graph.yml
 
 
 def load_graph(semantic_dir: str | Path) -> SemanticGraph:
-    """Load and normalize both authoring layouts from ``semantic_dir`` (the
-    ``semantic_layer/`` directory: ``models/*.yml`` + optional ``graph.yml``).
-    Raises :class:`GraphError` on any structural failure."""
+    """Load and normalize ``semantic_dir`` (the ``semantic_layer/`` directory:
+    ``models/*.yml|yaml`` Ossie documents + optional ``graph.yml``). Raises
+    :class:`GraphError` on any structural failure, naming the file."""
     root = Path(semantic_dir)
     models_dir = root / "models"
     if not models_dir.is_dir():
         raise GraphError(f"no semantic models under {models_dir}")
     datasets: dict[str, DatasetNode] = {}
-    envelopes: dict[str, dict] = {}
-    # metric name -> (model, file, expression SQL, explicit owner | None, fill,
-    # window declaration | None)
-    raw_metrics: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]] = {}
+    models: dict[str, ossie.ParsedModel] = {}
+    metrics: dict[str, MetricNode] = {}
     raw_relationships: list[tuple[object, str]] = []
     raw_conformed: list[tuple[object, str]] = []
     files: list[str] = []
 
-    for path in sorted(models_dir.glob("*.yml")):
+    for path in sorted((*models_dir.glob("*.yml"), *models_dir.glob("*.yaml"))):
         files.append(f"models/{path.name}")
-        doc = _read_yaml(path)
-        entries = doc.get("semantic_model")
-        if not isinstance(entries, list) or not entries:
-            raise GraphError(f"{path.name}: no semantic_model entries")
-        for model in entries:
-            if not isinstance(model, dict):
-                raise GraphError(f"{path.name}: semantic_model entry is not a mapping")
-            name = model.get("name")
-            if not isinstance(name, str) or not name.strip():
-                raise GraphError(f"{path.name}: semantic_model entry without a 'name'")
-            if name in envelopes:
-                raise GraphError(f"{path.name}: duplicate model '{name}'")
-            _check_requires(model, name, path.name)
-            envelopes[name] = {"version": doc.get("version"), "semantic_model": [model]}
-            _load_datasets(model, name, path.name, datasets)
-            _collect_metrics(model, name, path.name, raw_metrics)
-            where = f"{path.name} model '{name}'"
-            conformed = model.get("conformed_dimensions")
-            if conformed is not None and _CONFORMED_REQUIRES not in (model.get("requires") or []):
+        try:
+            parsed = ossie.parse_model(ossie.read_document(path), path.name)
+        except ossie.OssieError as exc:
+            raise GraphError(str(exc)) from exc
+        name = parsed.name
+        if name in models:
+            raise GraphError(f"{path.name}: duplicate model '{name}'")
+        models[name] = parsed
+        where = f"{path.name} model '{name}'"
+        for dataset in parsed.datasets.values():
+            if dataset.name in datasets:
                 raise GraphError(
-                    f"{where}: conformed_dimensions requires the versioned extension "
-                    f"'{_CONFORMED_REQUIRES}' — declare requires: [\"{_CONFORMED_REQUIRES}\"]"
+                    f"{where}: duplicate dataset '{dataset.name}' (already declared "
+                    f"by model '{datasets[dataset.name].model}')"
                 )
-            relationships = model.get("relationships")
-            if relationships is not None and not isinstance(relationships, list):
-                raise GraphError(f"{where}: relationships must be a list of edge declarations")
-            for entry in relationships or []:
-                raw_relationships.append((entry, where))
-            if conformed is not None and not isinstance(conformed, list):
-                raise GraphError(
-                    f"{where}: conformed_dimensions must be a list of member declarations"
-                )
-            for entry in conformed or []:
-                raw_conformed.append((entry, where))
+            datasets[dataset.name] = DatasetNode(
+                name=dataset.name,
+                model=name,
+                source=dataset.source,
+                primary_key=dataset.primary_key,
+                fields=tuple(dataset.fields),
+                time_fields=frozenset(n for n, f in dataset.fields.items() if f.is_time),
+                expressions={n: f.sql for n, f in dataset.fields.items()},
+                unique_keys=dataset.unique_keys,
+                dimensions=frozenset(n for n, f in dataset.fields.items() if f.dimension),
+            )
+        for metric in parsed.metrics.values():
+            window = _parse_window(metric.window, f"{where} metric '{metric.key}'")
+            identity = ossie.metric_identity(name, metric.key)
+            metrics[identity] = MetricNode(
+                name=identity,
+                owner=metric.owner,
+                expression=metric.expression,
+                derived=metric.derived,
+                model=name,
+                deps=tuple(ossie.metric_identity(name, dep) for dep in metric.deps),
+                fill=metric.fill,
+                window=window,
+                key=metric.key,
+                short=metric.name,
+                description=metric.description,
+            )
+        for entry in parsed.relationships:
+            raw_relationships.append((entry, where))
+        for entry in parsed.conformed:
+            raw_conformed.append((entry, where))
 
-    if not envelopes:
+    if not models:
         raise GraphError(f"no semantic models under {models_dir}")
+    _assert_acyclic_windows(metrics)
 
     graph_path = root / "graph.yml"
     if graph_path.is_file():
@@ -246,12 +261,26 @@ def load_graph(semantic_dir: str | Path) -> SemanticGraph:
 
     return SemanticGraph(
         datasets=datasets,
-        metrics=_resolve_metrics(raw_metrics, datasets),
+        metrics=metrics,
         relationships=_resolve_relationships(raw_relationships, datasets),
         conformed_dimensions=_resolve_conformed(raw_conformed, datasets),
-        models=envelopes,
+        models=models,
         files=tuple(files),
     )
+
+
+def _assert_acyclic_windows(metrics: dict[str, MetricNode]) -> None:
+    """A windowed output is terminal: a derived metric may not consume a
+    windowed dataset-scoped metric (one declared post-aggregate stage per
+    metric, issue #29)."""
+    for node in metrics.values():
+        for dep in node.deps:
+            if metrics[dep].window is not None:
+                raise GraphError(
+                    f"model '{node.model}' metric '{node.name}': references windowed "
+                    f"metric '{dep}' — a windowed metric is a terminal post-aggregate "
+                    "output, not a dependency"
+                )
 
 
 def _read_yaml(path: Path) -> dict:
@@ -262,81 +291,6 @@ def _read_yaml(path: Path) -> dict:
     if not isinstance(doc, dict):
         raise GraphError(f"{path.name}: top level is not a mapping")
     return doc
-
-
-def _check_requires(model: dict, name: str, file: str) -> None:
-    requires = model.get("requires")
-    if requires is None:
-        return
-    if not isinstance(requires, list) or not all(isinstance(key, str) for key in requires):
-        raise GraphError(f"{file} model '{name}': requires must be a list of extension keys")
-    for key in requires:
-        if key not in SUPPORTED_REQUIRES:
-            raise GraphError(
-                f"{file} model '{name}': unsupported requires extension key {key!r}; "
-                f"supported: {sorted(SUPPORTED_REQUIRES)}"
-            )
-
-
-def _load_datasets(model: dict, model_name: str, file: str, datasets: dict[str, DatasetNode]):
-    entries = model.get("datasets")
-    if not isinstance(entries, list) or not entries:
-        raise GraphError(f"{file} model '{model_name}': no datasets")
-    for entry in entries:
-        if not isinstance(entry, dict):
-            raise GraphError(f"{file} model '{model_name}': dataset entry is not a mapping")
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise GraphError(f"{file} model '{model_name}': dataset without a 'name'")
-        if name in datasets:
-            raise GraphError(
-                f"{file} model '{model_name}': duplicate dataset '{name}' (already declared "
-                f"by model '{datasets[name].model}')"
-            )
-        source = entry.get("source")
-        if not isinstance(source, str) or not source.strip():
-            raise GraphError(f"{file} model '{model_name}' dataset '{name}': missing source")
-        primary_key = entry.get("primary_key")
-        if primary_key is not None and (
-            not isinstance(primary_key, list)
-            or not all(isinstance(key, str) for key in primary_key)
-        ):
-            raise GraphError(
-                f"{file} model '{model_name}' dataset '{name}': "
-                "primary_key must be a list of field names"
-            )
-        fields: list[str] = []
-        expressions: dict[str, str] = {}
-        time_fields: set[str] = set()
-        for spec in entry.get("fields") or []:
-            field_name = spec.get("name") if isinstance(spec, dict) else None
-            if not isinstance(field_name, str) or not field_name.strip():
-                raise GraphError(
-                    f"{file} model '{model_name}' dataset '{name}': field name must "
-                    "be a nonempty string"
-                )
-            if field_name in fields:
-                raise GraphError(
-                    f"{file} model '{model_name}' dataset '{name}': duplicate field '{field_name}'"
-                )
-            fields.append(field_name)
-            try:
-                expressions[field_name] = _dialect_expression(
-                    spec.get("expression") or {}, f"field {field_name!r}"
-                )
-            except RenderError:
-                pass  # missing/invalid dialects fail in the schema/render path
-            if (spec.get("dimension") or {}).get("is_time"):
-                time_fields.add(field_name)
-        datasets[name] = DatasetNode(
-            name=name,
-            model=model_name,
-            source=source.strip(),
-            primary_key=tuple(primary_key or ()),
-            fields=tuple(fields),
-            time_fields=frozenset(time_fields),
-            expressions=expressions,
-        )
 
 
 def _parse_window(raw: Any, where: str) -> WindowDecl | None:
@@ -380,236 +334,6 @@ def _parse_window(raw: Any, where: str) -> WindowDecl | None:
     return WindowDecl(kind=kind, size=size, function=function, direction=direction)
 
 
-def _collect_metrics(
-    model: dict,
-    model_name: str,
-    file: str,
-    raw: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]],
-) -> None:
-    metrics = model.get("metrics")
-    if not isinstance(metrics, list) or not metrics:
-        raise GraphError(f"{file} model '{model_name}': no metrics")
-    for entry in metrics:
-        if not isinstance(entry, dict):
-            raise GraphError(f"{file} model '{model_name}': metric entry is not a mapping")
-        name = entry.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise GraphError(f"{file} model '{model_name}': metric without a 'name'")
-        if name in raw:
-            raise GraphError(
-                f"{file} model '{model_name}': duplicate metric '{name}' (already declared "
-                f"by model '{raw[name][0]}')"
-            )
-        try:
-            expression = _dialect_expression(entry.get("expression") or {}, f"metric {name!r}")
-        except RenderError as exc:
-            raise GraphError(f"{file} model '{model_name}' metric '{name}': {exc}") from exc
-        owner = entry.get("dataset")
-        if owner is not None and not isinstance(owner, str):
-            raise GraphError(
-                f"{file} model '{model_name}' metric '{name}': dataset owner must be a name"
-            )
-        fill = entry.get("fill")
-        if fill is not None and not isinstance(fill, (str, int, float, bool)):
-            raise GraphError(
-                f"{file} model '{model_name}' metric '{name}': 'fill' must be a scalar "
-                "output value (applies to the output only, never a hidden ratio "
-                "denominator)"
-            )
-        window = _parse_window(entry.get("window"), f"{file} model '{model_name}' metric '{name}'")
-        raw[name] = (model_name, file, expression, owner, fill, window)
-
-
-def _resolve_field_dataset(
-    table: str, field_name: str, datasets: dict[str, DatasetNode], scope: list[str]
-) -> str | None:
-    """The dataset a ``(qualifier, field)`` reference resolves to, inside the
-    metric's model's datasets (``scope``) — field names may repeat across models
-    (legacy files share names like ``status``); only the model's own datasets
-    are reachable from its expressions. Unknown references bind later (render's
-    convention); a known-but-wrong qualifier or a field on several scoped
-    datasets is an error — no silent choice."""
-    if table:
-        node = datasets.get(table)
-        if node is not None:
-            if field_name not in node.fields:
-                raise GraphError(
-                    f"field '{table}.{field_name}' does not exist on dataset '{table}'"
-                )
-            return table
-    owners = [name for name in scope if field_name in datasets[name].fields]
-    if len(owners) > 1:
-        raise GraphError(
-            f"field '{field_name}' exists on multiple datasets {sorted(owners)} — qualify it"
-        )
-    return owners[0] if owners else None
-
-
-def _assert_acyclic(deps: dict[str, tuple[str, ...]]) -> None:
-    """Metric dependency cycles fail at load, project-wide."""
-    done: set[str] = set()
-
-    def visit(name: str, stack: tuple[str, ...]) -> None:
-        if name in done:
-            return
-        if name in stack:
-            cycle = stack[stack.index(name) :] + (name,)
-            raise GraphError(f"metric dependency cycle: {' -> '.join(cycle)}")
-        for dep in deps.get(name, ()):
-            visit(dep, (*stack, name))
-        done.add(name)
-
-    for name in sorted(deps):
-        visit(name, ())
-
-
-def _resolve_metrics(
-    raw: dict[str, tuple[str, str, str, str | None, Any, WindowDecl | None]],
-    datasets: dict[str, DatasetNode],
-) -> dict[str, MetricNode]:
-    names = set(raw)
-    parsed: dict[str, tuple[list[tuple[str, str]], tuple[str, ...]]] = {}
-    for name, (model_name, file, expression, _owner, _fill, _window) in raw.items():
-        try:
-            tree = _parse(expression, f"metric {name!r}")
-        except RenderError as exc:
-            raise GraphError(f"{file} metric '{name}': {exc}") from exc
-        field_refs: list[tuple[str, str]] = []
-        metric_refs: set[str] = set()
-        for column in tree.find_all(exp.Column):
-            if column.name in names:
-                metric_refs.add(column.name)
-            else:
-                field_refs.append((column.table, column.name))
-        parsed[name] = (field_refs, tuple(sorted(metric_refs)))
-    _assert_acyclic({name: refs for name, (_fields, refs) in parsed.items()})
-
-    def field_owners(name: str) -> set[str]:
-        """Datasets the metric's bare field references resolve to."""
-        model_name = raw[name][0]
-        scope = [d.name for d in datasets.values() if d.model == model_name]
-        owners: set[str] = set()
-        for table, field_name in parsed[name][0]:
-            resolved = _resolve_field_dataset(table, field_name, datasets, scope)
-            if resolved is not None:
-                owners.add(resolved)
-        return owners
-
-    # Base metrics first (derived metrics may depend on them in any file order):
-    # explicit or field-resolved single-dataset ownership — and an explicit
-    # 'dataset:' owner must AGREE with every resolved field reference, else the
-    # expression would compile against the wrong dataset after qualifier
-    # stripping.
-    owner_of: dict[str, str] = {}
-    for name, (model_name, file, expression, explicit, _fill, _window) in raw.items():
-        if parsed[name][1]:
-            continue  # derived: second pass below
-        where = f"{file} model '{model_name}' metric '{name}'"
-        model_datasets = [d.name for d in datasets.values() if d.model == model_name]
-        owners = field_owners(name)
-        if explicit is not None:
-            if explicit not in datasets:
-                raise GraphError(f"{where}: unknown dataset owner '{explicit}'")
-            for resolved in sorted(owners - {explicit}):
-                raise GraphError(
-                    f"{where}: declared owner 'dataset: {explicit}' disagrees with field "
-                    f"references resolving to dataset '{resolved}'"
-                )
-            owner_of[name] = explicit
-        elif len(owners) == 1:
-            owner_of[name] = owners.pop()
-        elif not owners:
-            # COUNT(*)-style aggregate with no column reference: only a
-            # single-dataset model resolves it unambiguously.
-            if len(model_datasets) != 1:
-                raise GraphError(
-                    f"{where}: expression references no dataset column and the model "
-                    f"declares {len(model_datasets)} datasets — declare an explicit "
-                    "'dataset:' owner"
-                )
-            owner_of[name] = model_datasets[0]
-        else:
-            raise GraphError(
-                f"{where}: ambiguous ownership — field references span datasets "
-                f"{sorted(owners)}; qualify the fields or declare 'dataset:'"
-            )
-
-    # Derived metrics inherit a single owning dataset when their whole
-    # dependency closure stays inside it (the same fixed point compilation
-    # applies); cross-fact chains compile with the planner.
-    changed = True
-    while changed:
-        changed = False
-        for name in raw:
-            deps = parsed[name][1]
-            if not deps or name in owner_of or not all(dep in owner_of for dep in deps):
-                continue
-            dep_owners = {owner_of[dep] for dep in deps}
-            if len(dep_owners) == 1:
-                owner_of[name] = dep_owners.pop()
-                changed = True
-
-    metrics: dict[str, MetricNode] = {}
-    for name, (model_name, file, expression, explicit, fill, window) in raw.items():
-        deps = parsed[name][1]
-        # a windowed output is terminal: a metric referencing one would nest a
-        # window stage inside another expression (issue #29 — one declared
-        # post-aggregate stage per metric)
-        for dep in sorted(deps):
-            if raw[dep][5] is not None:
-                raise GraphError(
-                    f"{file} model '{model_name}' metric '{name}': references windowed "
-                    f"metric '{dep}' — a windowed metric is a terminal post-aggregate "
-                    "output, not a dependency"
-                )
-        if not deps:
-            metrics[name] = MetricNode(
-                name=name,
-                owner=owner_of[name],
-                expression=expression,
-                derived=False,
-                model=model_name,
-                deps=deps,
-                fill=fill,
-                window=window,
-            )
-            continue
-        where = f"{file} model '{model_name}' metric '{name}'"
-        if explicit is not None:
-            raise GraphError(
-                f"{where}: derived metrics take no explicit 'dataset:' owner — "
-                "ownership follows the referenced metrics"
-            )
-        owners = field_owners(name)
-        if len(owners) > 1:
-            raise GraphError(
-                f"{where}: mixed-grain field references span datasets {sorted(owners)}"
-            )
-        if owners:
-            # Spec rev 1 §5 rejects mixed-grain/mixed-stage expressions: a bare
-            # row-grain field may not ride alongside metric dependencies whose
-            # owning datasets differ from (or span more than) the field's grain.
-            grain = next(iter(owners))
-            dep_owners = {owner_of.get(dep) for dep in deps}
-            if dep_owners != {grain}:
-                raise GraphError(
-                    f"{where}: mixed-stage expression — bare field reference at "
-                    f"'{grain}' grain alongside metric dependencies resolving to "
-                    f"{sorted(owner for owner in dep_owners if owner is not None)}"
-                )
-        metrics[name] = MetricNode(
-            name=name,
-            owner=None,
-            expression=expression,
-            derived=True,
-            model=model_name,
-            deps=deps,
-            fill=fill,
-            window=window,
-        )
-    return metrics
-
-
 def _resolve_relationships(
     raw: list[tuple[object, str]], datasets: dict[str, DatasetNode]
 ) -> tuple[RelationshipEdge, ...]:
@@ -628,14 +352,14 @@ def _resolve_relationships(
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             raise GraphError(f"{where}: relationship without a 'name'")
-        cardinality = entry.get("cardinality")
+        cardinality = entry.get("cardinality", "many_to_one")
         if cardinality not in CARDINALITIES:
             raise GraphError(
                 f"{where} relationship '{name}': cardinality must be one of "
                 f"{list(CARDINALITIES)}, got {cardinality!r}"
             )
         endpoints = []
-        for key in ("from_dataset", "to_dataset"):
+        for key in ("from", "to"):
             dataset = entry.get(key)
             # isinstance first: an unhashable value must fail as GraphError, not
             # as a TypeError from the dict lookup
@@ -644,8 +368,8 @@ def _resolve_relationships(
             endpoints.append(dataset)
         from_dataset, to_dataset = endpoints
         keys: list[tuple[str, list | None, str]] = [
-            ("from_fields", entry.get("from_fields"), from_dataset),
-            ("to_fields", entry.get("to_fields"), to_dataset),
+            ("from_columns", entry.get("from_columns"), from_dataset),
+            ("to_columns", entry.get("to_columns"), to_dataset),
         ]
         field_lists = []
         for label, fields, dataset in keys:
@@ -666,7 +390,7 @@ def _resolve_relationships(
             field_lists.append(fields)
         if len(field_lists[0]) != len(field_lists[1]):
             raise GraphError(
-                f"{where} relationship '{name}': from_fields and to_fields must have equal length"
+                f"{where} relationship '{name}': from_columns and to_columns must have equal length"
             )
         edge = RelationshipEdge(
             name=name,
@@ -885,8 +609,8 @@ def _resolve_conformed(
 
 
 def metric_owners(graph: SemanticGraph, name: str) -> set[str]:
-    """The dataset-level owning-fact set of one metric: its own owner, or the union
-    over the metrics it derives from."""
+    """The dataset-level owning-fact set of one metric (by IDENTITY): its own
+    owner, or the union over the dataset-scoped metrics it composes."""
     node = graph.metrics.get(name)
     if node is None:
         return set()
@@ -896,3 +620,23 @@ def metric_owners(graph: SemanticGraph, name: str) -> set[str]:
     for dep in node.deps:
         owners |= metric_owners(graph, dep)
     return owners
+
+
+def resolve_metric(graph: SemanticGraph, name: str) -> tuple[str | None, list[str]]:
+    """``(identity, candidates)`` of a requested metric name (spec 0039 §6.4).
+
+    A full identity (``model::key``) resolves exactly. A bare name matches the
+    short metric name or the dataset-qualified key; it resolves when exactly
+    one metric matches across the project. ``identity`` is ``None`` when the
+    name is unknown (``candidates`` empty) or ambiguous (``candidates`` lists
+    the matching full identities)."""
+    if name in graph.metrics:
+        return name, []
+    if "::" in name:
+        return None, []
+    matches = sorted(
+        identity for identity, node in graph.metrics.items() if name in (node.short, node.key)
+    )
+    if len(matches) == 1:
+        return matches[0], []
+    return None, matches

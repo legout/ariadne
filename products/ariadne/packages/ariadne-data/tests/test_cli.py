@@ -52,6 +52,15 @@ _DEMO_ASSET = {"source": "demo", "catalog": "demo", "schema": "main", "table": "
 # Each governed OSI metric's typed Policy closure: the seed-note rules its
 # sanctioned expression implements — the fixture's preserved financial meaning
 # (billable-status exclusion for every number, the EMEA cutover for amounts).
+# gross_margin is a model-scoped composition of AGG(orders.<metric>) terms; the other
+# metrics are dataset-scoped on ``orders`` (identity key ``orders.<metric>``).
+_DERIVED = {"gross_margin"}
+
+
+def _key(metric: str) -> str:
+    return metric if metric in _DERIVED else f"orders.{metric}"
+
+
 _METRIC_CLOSURE = {
     "gross_margin": ("order-status-billing", "emea-currency-cutover"),
     "gross_revenue": ("order-status-billing", "emea-currency-cutover"),
@@ -142,7 +151,7 @@ def _native_metric_page(metric: str, policies: tuple[str, ...]) -> str:
         "  version: 1\n"
         "  kind: metric\n"
         "  metric_ref:\n"
-        f"    model: orders\n    metric: {metric}\n"
+        f"    model: orders\n    metric: {_key(metric)}\n"
         "  required_policies:\n"
         f"{required}"
         "  native:\n"
@@ -166,7 +175,7 @@ def _selector_text() -> str:
     """The revision-4 integrated selector: the §10.1 opt-in plus the authored
     binding inventory classifying every metric's complete typed closure."""
     bindings = "".join(
-        f"    - subject: {{kind: metric, identity: orders::{metric}}}\n"
+        f"    - subject: {{kind: metric, identity: orders::{_key(metric)}}}\n"
         f"      policy: {{namespace: {NAMESPACE}, entity_id: entity:{policy}}}\n"
         "      operations: [get_metric, query_metrics]\n"
         "      enforcement: null\n"

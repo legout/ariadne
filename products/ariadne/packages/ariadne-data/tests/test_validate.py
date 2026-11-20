@@ -18,74 +18,54 @@ from ariadne.validate import validate  # noqa: E402
 from tests.test_evals import CUSTOMERS_MODEL  # noqa: E402
 from tests.test_serve import GOLDEN_OSI, seed_demo_db  # noqa: E402
 
-EXCLUDE = "SUM(CASE WHEN orders.status NOT IN ('CANCELLED', 'RETURNED')"
+EXCLUDE = "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED')"
 
 ORDERS_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model (research S5B) adapted to OSI core per datus-spike.md S3.1
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: order_date
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: CAST(order_timestamp AS DATE)
-            dimension:
-              is_time: true
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: status
-            dimension: {}
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region_code
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: product_cost
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: product_cost
-    metrics:
-      - name: gross_revenue
-        description: Billed revenue; excludes CANCELLED and RETURNED orders
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: @EXCLUDE@ THEN orders.amount ELSE 0 END)
-      - name: cogs
-        description: Direct cost of goods sold
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(orders.product_cost)
-      - name: gross_margin
-        description: (gross_revenue - cogs) / NULLIF(gross_revenue, 0)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: (gross_revenue - cogs) / NULLIF(gross_revenue, 0)
-        custom_extensions:
-          - vendor_name: DATUS
-            data: '{"metric_kind":"derived","inputs":["gross_revenue","cogs"]}'
+version: 0.3.0.dev0
+name: orders
+description: Orders model (research S5B) adapted to OSI core per datus-spike.md S3.1
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: order_date
+    expression:
+      sql: CAST(order_timestamp AS DATE)
+    dimension:
+      is_time: true
+  - name: status
+    expression:
+      sql: status
+    dimension: {}
+  - name: region
+    expression:
+      sql: region_code
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: product_cost
+    expression:
+      sql: product_cost
+  metrics:
+  - name: gross_revenue
+    expression:
+      sql: @EXCLUDE@ THEN amount ELSE 0 END)
+    description: Billed revenue; excludes CANCELLED and RETURNED orders
+  - name: cogs
+    expression:
+      sql: SUM(product_cost)
+    description: Direct cost of goods sold
+metrics:
+- name: gross_margin
+  expression:
+    sql: (AGG(orders.gross_revenue) - AGG(orders.cogs)) / NULLIF(AGG(orders.gross_revenue), 0)
+  description: (gross_revenue - cogs) / NULLIF(gross_revenue, 0)
 """.replace("@EXCLUDE@", EXCLUDE)
 
 
@@ -117,33 +97,26 @@ TRAP_MODEL = _load_trap_builder().TRAP_MODEL
 # order_lines table repeats order_id across lines, so declaring primary_key
 # [order_id] over a plain lines projection violates grain uniqueness.
 LINES_GRAIN_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: lines_grain
-    description: Lines projection with a non-unique declared grain (audit trap)
-    datasets:
-      - name: lines
-        source: >-
-          SELECT line_id, order_id FROM demo.main.order_lines
-        primary_key: [order_id]
-        fields:
-          - name: line_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_id
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-    metrics:
-      - name: line_count
-        description: Count of lines
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: lines_grain
+description: Lines projection with a non-unique declared grain (audit trap)
+datasets:
+- name: lines
+  source: SELECT line_id, order_id FROM demo.main.order_lines
+  primary_key:
+  - order_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  metrics:
+  - name: line_count
+    expression:
+      sql: COUNT(*)
+    description: Count of lines
 """
 
 
@@ -154,7 +127,13 @@ def test_valid_orders_model_compiles(tmp_path):
 
 
 def test_broken_model_fails_with_captured_error(tmp_path):
-    broken = ORDERS_YML.replace('"metric_kind"', '"v": "1", "metric_kind"')
+    # an unknown ARIADNE extension key is refused (spec 0039 §5.2)
+    broken = ORDERS_YML.replace(
+        "    description: Direct cost of goods sold\n",
+        "    description: Direct cost of goods sold\n"
+        "    nonportable_extensions:\n"
+        "    - vendor_name: ARIADNE\n      data: {not_a_key: 1}\n",
+    )
     result = validate(make_staging(tmp_path, broken))
     assert not result.ok
     assert result.errors, "broken model must produce a captured error message"
@@ -214,53 +193,43 @@ def _write_model(staging: Path, name: str, yml: str) -> None:
 # scan sees nothing parent-side and the audit passed while SUM(amount) inflated
 # 700 (parent truth) to 1100 over the joined rows.
 ALIAS_TRAP_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: trap_orders
-    description: Aliased parent measures over the naive join (alias audit trap)
-    datasets:
-      - name: trap_join
-        source: >-
-          SELECT o.order_id AS order_id, o.region AS region, o.amount AS amount,
-                 l.line_id, l.line_amount
-          FROM demo.main.orders o
-          JOIN demo.main.order_lines l ON l.order_id = o.order_id
-        primary_key: [line_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: orders_total
-        description: SUM of the aliased order amount over the naive join
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: lines_total
-        description: SUM of the line amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: trap_orders
+description: Aliased parent measures over the naive join (alias audit trap)
+datasets:
+- name: trap_join
+  source: |-
+    SELECT o.order_id AS order_id, o.region AS region, o.amount AS amount,
+           l.line_id, l.line_amount
+    FROM demo.main.orders o JOIN demo.main.order_lines l ON l.order_id = o.order_id
+  primary_key:
+  - line_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: line_amount
+    expression:
+      sql: line_amount
+  - name: line_id
+    expression:
+      sql: line_id
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: SUM of the aliased order amount over the naive join
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: SUM of the line amounts
 """
 
 
@@ -298,8 +267,8 @@ def test_injection_in_declared_grain_never_reaches_the_audit_connection(tmp_path
         staging,
         "evil.yml",
         ORDERS_YML.replace(
-            "        primary_key: [order_id]\n",
-            f'        primary_key: ["{payload}"]\n',
+            "  primary_key:\n  - order_id\n",
+            f'  primary_key:\n  - "{payload}"\n',
         ),
     )
     result = validate(staging, db_path=root / "trap.db")
@@ -315,7 +284,7 @@ def test_undeclared_grain_fails_the_audit(tmp_path):
     skipping the assertions."""
     root = build_trap(tmp_path / "trap")
     staging = tmp_path / "staging"
-    _write_model(staging, "nopk.yml", ORDERS_YML.replace("        primary_key: [order_id]\n", ""))
+    _write_model(staging, "nopk.yml", ORDERS_YML.replace("  primary_key:\n  - order_id\n", ""))
     result = validate(staging, db_path=root / "trap.db")
     assert not result.ok
     grain_errors = [error for error in result.errors if "no declared grain" in error]
@@ -346,56 +315,46 @@ def test_aliased_parent_measures_fail_assertion_2(tmp_path):
 
 
 CTE_TRAP_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: cte_trap
-    description: Fan-out join hidden inside a CTE, outer SELECT reads the CTE
-    datasets:
-      - name: cte_join
-        source: >-
-          WITH joined AS (
-            SELECT o.order_id, o.region AS region, o.amount AS amount,
-                   l.line_id, l.line_amount
-            FROM demo.main.orders o
-            JOIN demo.main.order_lines l ON l.order_id = o.order_id
-          )
-          SELECT order_id, region, amount, line_id, line_amount FROM joined
-        primary_key: [line_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: orders_total
-        description: SUM of the aliased order amount over the CTE-joined rows
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: lines_total
-        description: SUM of the line amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: cte_trap
+description: Fan-out join hidden inside a CTE, outer SELECT reads the CTE
+datasets:
+- name: cte_join
+  source: |-
+    WITH joined AS (
+      SELECT o.order_id, o.region AS region, o.amount AS amount,
+             l.line_id, l.line_amount
+      FROM demo.main.orders o
+      JOIN demo.main.order_lines l ON l.order_id = o.order_id
+    ) SELECT order_id, region, amount, line_id, line_amount FROM joined
+  primary_key:
+  - line_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: line_amount
+    expression:
+      sql: line_amount
+  - name: line_id
+    expression:
+      sql: line_id
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: SUM of the aliased order amount over the CTE-joined rows
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: SUM of the line amounts
 """
 
 

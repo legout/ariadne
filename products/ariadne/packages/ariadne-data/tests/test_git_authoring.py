@@ -55,74 +55,60 @@ SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 # source, a unique declared grain, one governed metric (the test_authoring
 # shape; a joined source variant lives below for the unsafe-grain regression).
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model
-    datasets:
-      - name: events
-        source: events.events
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Events model
+datasets:
+- name: events
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
 # A model edit that introduces an unsafe grain (AC2): the dataset source joins
 # the labels table whose event_id REPEATS (one-to-many), so the structural
 # ADR-0006 join check must refuse it even though only one file changed.
 UNSAFE_GRAIN_MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model (unsafe join)
-    datasets:
-      - name: events
-        source: >-
-          SELECT e.id AS id, e.label AS label, l.tag AS tag
-          FROM events.events e JOIN labels.labels l ON e.id = l.event_id
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-          - name: tag
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: tag
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: events
+description: Events model (unsafe join)
+datasets:
+- name: events
+  source: |-
+    SELECT e.id AS id, e.label AS label, l.tag AS tag
+    FROM events.events e JOIN labels.labels l ON e.id = l.event_id
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  - name: tag
+    expression:
+      sql: tag
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
 # A model edit whose semantic_model entry is not a mapping: the edit seam
@@ -266,7 +252,7 @@ NATIVE_METRIC_PAGE = (
     "  kind: metric\n"
     "  metric_ref:\n"
     "    model: events\n"
-    "    metric: event_count\n"
+    "    metric: events.event_count\n"
     "  required_policies:\n"
     '    - namespace: "urn:uuid:authoring-fixture"\n'
     '      entity_id: "entity:all-events-count"\n'
@@ -321,7 +307,7 @@ NATIVE_SELECTOR = (
     "policy_bindings:\n"
     "  version: 1\n"
     "  bindings:\n"
-    "    - subject: {kind: metric, identity: events::event_count}\n"
+    "    - subject: {kind: metric, identity: events::events.event_count}\n"
     "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
     "      operations: [get_metric, query_metrics]\n"
     "      enforcement: null\n"

@@ -35,38 +35,30 @@ run_git = native_fixture.run_git
 admit = import_module("tests.test_git_admission").admit
 s3_git_project = import_module("tests.test_s3_storage_access").s3_git_project
 
-S3_MODEL = """version: 0.2.0.dev0
-semantic_model:
-  - name: events
-    description: Events model
-    datasets:
-      - name: events
-        source: events.events
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-    metrics:
-      - name: event_count
-        description: Count of all events
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+S3_MODEL = """version: 0.3.0.dev0
+name: events
+description: Events model
+datasets:
+- name: events
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  metrics:
+  - name: event_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all events
 """
 
 

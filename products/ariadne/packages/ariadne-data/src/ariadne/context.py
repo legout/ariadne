@@ -115,72 +115,44 @@ def _load(text: str) -> tuple[dict | None, str]:
 
 
 def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
-    """``(metric name -> {model, primary_key, dimensions, dataset_sources,
-    expression}, all_parsed)`` from the candidate OSI models — the mechanical
-    source of truth for enrichment and computations. A model file whose YAML
-    does not parse — or whose structures are malformed (a non-list
-    ``semantic_model``, a non-mapping model/dataset/metric entry) — is SKIPPED
-    and reported through ``all_parsed=False`` so the validation gate can report
-    the structural failure without a finalize crash or treating an unparseable
-    draft's metrics as removed."""
+    """``(metric key -> {model, primary_key, dimensions, dataset_sources,
+    expression}, all_parsed)`` from the candidate Ossie models — the mechanical
+    source of truth for enrichment and computations. The key is the metric's
+    identity key (``<metric>`` or ``<dataset>.<metric>``; identity is
+    ``<model>::<key>``). A model file that does not parse or validate is
+    SKIPPED and reported through ``all_parsed=False`` so the validation gate
+    can report the structural failure without a finalize crash or treating an
+    unparseable draft's metrics as removed."""
+    from ariadne import ossie
+
     index: dict[str, dict] = {}
     all_parsed = True
     models_dir = staging / "semantic_layer" / "models"
-    for path in sorted(models_dir.glob("*.yml")) if models_dir.is_dir() else []:
+    paths = (
+        sorted((*models_dir.glob("*.yml"), *models_dir.glob("*.yaml")))
+        if models_dir.is_dir()
+        else []
+    )
+    for path in paths:
         try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            all_parsed = False  # unparseable draft: the validation gate owns the error
+            model = ossie.parse_model(ossie.read_document(path), path.name)
+        except ValueError:
+            all_parsed = False  # unparseable/invalid draft: the validation gate owns the error
             continue
-        if not isinstance(doc, dict):
-            all_parsed = False
-            continue
-        models = doc.get("semantic_model")
-        if not isinstance(models, list):
-            all_parsed = False  # malformed draft: the gate owns the error
-            continue
-        for model in models:
-            if not isinstance(model, dict):
-                all_parsed = False
-                continue
-            pk: list[str] = []
-            dimensions: list[str] = []
-            dataset_sources: list[str] = []
-            for dataset in model.get("datasets") or []:
-                if not isinstance(dataset, dict):
-                    all_parsed = False
-                    continue
-                pk = pk or [str(key) for key in dataset.get("primary_key") or []]
-                source = dataset.get("source")
-                if (
-                    isinstance(source, str)
-                    and source.strip()
-                    and source.strip() not in dataset_sources
-                ):
-                    dataset_sources.append(source.strip())
-                for field in dataset.get("fields") or []:
-                    if isinstance(field, dict) and field.get("name") and "dimension" in field:
-                        dimensions.append(str(field["name"]))
-            for metric in model.get("metrics") or []:
-                if not isinstance(metric, dict):
-                    all_parsed = False
-                    continue
-                name = metric.get("name")
-                if not name:
-                    continue
-                block = metric.get("expression")
-                dialects = (block.get("dialects") if isinstance(block, dict) else None) or [{}]
-                lead = dialects[0]
-                if not isinstance(lead, dict):
-                    all_parsed = False
-                    lead = {}
-                index[str(name)] = {
-                    "model": str(model.get("name") or path.stem),
-                    "primary_key": pk,
-                    "dimensions": dimensions,
-                    "dataset_sources": dataset_sources,
-                    "expression": str(lead.get("expression") or ""),
-                }
+        for key, metric in model.metrics.items():
+            owner = model.datasets.get(metric.owner) if metric.owner else None
+            scope = [owner] if owner is not None else list(model.datasets.values())
+            sources: list[str] = []
+            for dataset in scope:
+                if dataset.source not in sources:
+                    sources.append(dataset.source)
+            index[key] = {
+                "model": model.name,
+                "primary_key": list(scope[0].primary_key) if scope else [],
+                "dimensions": [n for d in scope for n, f in d.fields.items() if f.dimension],
+                "dataset_sources": sources,
+                "expression": metric.expression,
+            }
     return index, all_parsed
 
 
@@ -230,11 +202,26 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
     rendered: dict[str, str] = {}
     if graph is not None:
         for name, info in models.items():
-            envelope = graph.models.get(info["model"])
-            if envelope is None:
+            identity = f"{info['model']}::{name}"
+            if identity not in graph.metrics:
                 continue
             try:
-                rendered[name] = render(envelope, metric=name).strip()
+                from ariadne.render import build_slice
+
+                model = graph.models[info["model"]]
+                node = graph.metrics[identity]
+                datasets = {graph.metrics[d].owner for d in node.deps} or {node.owner}
+                dataset = next(iter(datasets))
+                if len(datasets) != 1 or dataset is None:
+                    continue  # cross-fact: the planner compiles it, not the single renderer
+                keys = [k for k, m in model.metrics.items() if m.owner == dataset]
+                keys += [
+                    k
+                    for k, m in model.metrics.items()
+                    if m.owner is None and all(d in keys for d in m.deps)
+                ]
+                spec = build_slice(model, dataset, keys, aliases={k: k for k in keys})
+                rendered[name] = render(spec, metric=name).strip()
             except Exception:
                 continue  # the compile gate owns the structural failure
     comps_dir = staging / "knowledge" / "computations"
@@ -263,7 +250,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
             if sanctioned is not None:
                 specs.append(
                     {
-                        "path": f"knowledge/computations/{name}.md",
+                        "path": f"knowledge/computations/{name.replace('.', '-')}.md",
                         "content": _build_native_computation_page(name, info, sanctioned),
                     }
                 )
@@ -403,7 +390,9 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     semantic_id = f"{info['model']}::{name}"
     model_source = {"id": f"model-{info['model']}", "title": f"{info['model']} OSI model"}
     meta = {
-        "id": "entity:" + semantic_id.replace("::", "-").replace("_", "-").lower() + "-computation",
+        "id": "entity:"
+        + semantic_id.replace("::", "-").replace(".", "-").replace("_", "-").lower()
+        + "-computation",
         "entity_types": ["computation"],
         "tags": ["computation"],
         "title": f"sanctioned SQL — {semantic_id}",
@@ -432,7 +421,7 @@ def _build_native_computation_page(name: str, info: dict, sanctioned: str) -> st
     front = yaml.safe_dump(meta, default_flow_style=False, sort_keys=False).strip()
     body = (
         "# Sanctioned computation\n\n"
-        f"Sanctioned SQL (ANSI_SQL, `semantic_layer/models/{info['model']}.yml`); "
+        f"Sanctioned SQL (OSSIE_SQL_2026, `semantic_layer/models/{info['model']}.yml`); "
         "compile gate `ariadne.validate`; execution DuckDB via the local `ariadne` "
         "command (`ariadne get-metric`); independent attestation pending — no "
         "expected-value oracle is cited (compile and grain checks are not "

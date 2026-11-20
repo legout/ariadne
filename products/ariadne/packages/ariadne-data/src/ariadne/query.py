@@ -76,7 +76,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — new-module re
 from ariadne.context import (  # pyright: ignore[reportMissingImports] — drift
     data_signals_pinned,
 )
-from ariadne.discovery import MISSING_CATALOG, ROUTING_HINT, _DiscoverySession
+from ariadne.discovery import MISSING_CATALOG, _DiscoverySession
 
 # Shared Execution: the DuckDB session, catalog, bind
 # operation, statement guard and result collection are execution-owned.
@@ -109,7 +109,7 @@ from ariadne.planner import (  # pyright: ignore[reportMissingImports] — drift
 # (the pyright ignore below: the analyzer may bind `ariadne` to a copy predating
 # this lane's render module —; runtime and uvx pyright resolve it)
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift
-from ariadne.render import render  # pyright: ignore[reportMissingImports]
+from ariadne.render import Slice, render  # pyright: ignore[reportMissingImports]
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
     SemanticGraph,
 )
@@ -171,8 +171,12 @@ class _QueryRuntimeSession(_DiscoverySession):
         self._load_catalog(semantic_dir, context_dir, admission_record)
         models = Path(semantic_dir) / "models"
         try:
-            for entry in self._metrics.values():
-                render(entry["model"])
+            for identity in self._metrics:
+                try:
+                    render(self._metric_slice(identity)[0])
+                except ValueError as exc:
+                    if "query_metrics" not in str(exc):  # cross-dataset: planner's job
+                        raise
         except Exception as exc:
             raise RuntimeError(f"served OSI models under {models} do not compile: {exc}") from exc
 
@@ -393,16 +397,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             if self._context_snapshot is not None:
                 raise ValueError("no admitted metric catalog; integrated MVP has no fallback")
             raise ValueError(MISSING_CATALOG)
-        if name not in self._metrics:  # spec §7/rev 4: discovery before failure
-            available = ", ".join(sorted(self._metrics))
-            hint = ROUTING_HINT
-            if self._context_snapshot is not None:
-                assert self._managed is not None
-                hint = (
-                    "Integrated supported operations: "
-                    f"{', '.join(self._managed['bound_release']['support']['operations'])}."
-                )
-            raise ValueError(f"unknown metric {name!r}; available metrics: {available}. {hint}")
+        name = self._resolve(name)  # spec §7/rev 4: discovery before failure
         if self._managed is not None and self._context_snapshot is None:
             # a governed answer on the managed route re-checks the
             # session's pinned snapshot bytes and source identity first — a
@@ -424,8 +419,8 @@ class _QueryRuntimeSession(_DiscoverySession):
             self._context_snapshot,
             self._managed["bound_release"],
             self.context_dir,
-            self._metrics[name]["model"]["semantic_model"][0]["name"],
-            name,
+            self._metrics[name]["model_name"],
+            self._metrics[name]["key"],
         )
         query_results.account_rows(self._limits, {"context": required_context}, [])
         query_results.finalize_response(
@@ -435,7 +430,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         # never tool input: the executor only ever receives SQL returned
         # by the compile step. The statement guard is defense in depth on this
         # governed path too.
-        sql = render(self._metrics[name]["model"], dimensions or [], range or {}, metric=name)
+        spec, output = self._metric_slice(name)
+        sql = render(spec, dimensions or [], range or {}, metric=output)
         # Choke point shared with the EXPLAIN bind-check below: exactly
         # one statement at parse level before any duckdb call.
         assert_single_statement(sql)
@@ -458,8 +454,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # define_metric. Runs against LIVE data on every call: an ETL reload
             # can introduce fan-out under a long-lived session, so no per-process
             # memo — a few COUNT scans per query are cheap at this scale.
-            (dataset,) = self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []
-            check_grain_preserving(self.con, dataset["source"])
+            check_grain_preserving(self.con, self._metric_datasets(name)[0].source)
             # sql is the render compile step's output and nothing else.
             bounded = self._collect(sql, budget)
         if budget.expired():  # no complete answer after expiry
@@ -510,15 +505,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         declared evidence-period FIELD can be matched mechanically — a period
         on any other field never proves correspondence with the range."""
         fields: set[str] = set()
-        for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
-            for field in (dataset.get("fields") if isinstance(dataset, dict) else None) or []:
-                flag = field.get("dimension") if isinstance(field, dict) else None
-                if (
-                    isinstance(flag, dict)
-                    and flag.get("is_time")
-                    and isinstance(field.get("name"), str)
-                ):
-                    fields.add(field["name"])
+        for dataset in self._metric_datasets(name):
+            fields.update(n for n, f in dataset.fields.items() if f.is_time)
         return fields
 
     def _catalog_resource_map(self) -> dict[str, str]:
@@ -553,9 +541,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         assets). An unmatched or unresolvable dependency is ``None``:
         unknown coverage, never a guess."""
         dependencies: list[str | None] = []
-        for dataset in self._metrics[name]["model"]["semantic_model"][0].get("datasets") or []:
-            source = dataset.get("source") if isinstance(dataset, dict) else None
-            dependencies.extend(self._dataset_resources(source))
+        for dataset in self._metric_datasets(name):
+            dependencies.extend(self._dataset_resources(dataset.source))
         return dependencies
 
     def _plan_table_dependencies(
@@ -572,8 +559,8 @@ class _QueryRuntimeSession(_DiscoverySession):
         coverage."""
         edge_targets = {edge.name: edge.to_dataset for edge in graph.relationships}
         dependencies: dict[str, list[str | None]] = {}
-        for name in plan.metrics:
-            members = set(_closure(graph, name))
+        for name, identity in zip(plan.metrics, plan.identities, strict=True):
+            members = set(_closure(graph, identity))
             datasets: list[str] = []
             for branch in plan.branches:
                 if any(member in branch.metrics for member in members):
@@ -646,25 +633,33 @@ class _QueryRuntimeSession(_DiscoverySession):
         names = request.get("metrics") if isinstance(request, dict) else None
         if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
             return {}
-        unknown = [name for name in names if name not in self._metrics]
-        if unknown:
-            # the planner's exact unknown-metric refusal contract, kept ahead
-            # of the live operations the SDK preflight must precede
-            raise PlannerError(
-                "unknown_metric",
-                f"unknown metric(s) {unknown}",
-                candidates=tuple(sorted(self._metrics)),
-            )
+        identities: list[str] = []
+        for name in names:
+            try:
+                identities.append(self._resolve(name))
+            except ValueError as exc:
+                # the planner's exact unknown/ambiguous-metric refusal contract,
+                # kept ahead of the live operations the SDK preflight must precede
+                matches = sorted(
+                    identity
+                    for identity, meta in self._metrics.items()
+                    if "::" not in name and name in (meta["short"], meta["key"])
+                )
+                code = "ambiguous_metric" if matches else "unknown_metric"
+                message = str(exc) if matches else f"unknown metric(s) {[name]}"
+                raise PlannerError(
+                    code, message, candidates=tuple(matches or sorted(self._metrics))
+                ) from exc
         now = context._assessment_now()  # one clock value for every metric
         resolved: dict[str, dict] = {}
-        for name in dict.fromkeys(names):
-            meta = self._metrics[name]
-            resolved[name] = lumio_context.metric_context(
+        for identity in dict.fromkeys(identities):
+            meta = self._metrics[identity]
+            resolved[identity] = lumio_context.metric_context(
                 self._context_snapshot,
                 self._managed["bound_release"],
                 self.context_dir,
-                meta["model"]["semantic_model"][0]["name"],
-                name,
+                meta["model_name"],
+                meta["key"],
                 _now=now,
             )
         envelope = {"context": resolved}
@@ -865,16 +860,14 @@ class _QueryRuntimeSession(_DiscoverySession):
         from ariadne.planner import _closure
 
         consumed = set()
-        for requested in plan.metrics:
+        for requested in plan.identities:
             # F3 completeness: the actual transitive dependency closure of
             # each requested definition — the EXISTING planner walker, which
             # also reaches post-aggregate/cross-fact intermediates (owner=None
             # members) that never appear inside a branch's aggregated metrics
             for name in _closure(graph, requested):
-                meta = self._metrics.get(name)
-                if meta is None:
-                    continue
-                consumed.add(f"{meta['model']['semantic_model'][0]['name']}::{name}")
+                if name in self._metrics:
+                    consumed.add(name)
         passed_edges = {
             audit.name.removeprefix("relationship:")
             for audit in plan.audits
@@ -1020,7 +1013,10 @@ class _QueryRuntimeSession(_DiscoverySession):
                 "relationship_audit": plan.relationship_audit,
             },
             "governed": True,
-            "context": {name: sdk_contexts[name] for name in plan.metrics},
+            "context": {
+                shown: sdk_contexts[identity]
+                for shown, identity in zip(plan.metrics, plan.identities, strict=True)
+            },
             "admission": self._admission_view(admission),
         }
         # the additive advisory source-quality view
@@ -1729,48 +1725,24 @@ def _normalize_definition(definition: dict) -> dict:
     return params
 
 
-def _expand_adhoc_model(params: dict) -> dict:
-    """Expand define_metric params into an ephemeral OSI-core model — the dialect
-    per project/research/datus-spike.md §3.1 (version 0.2.0.dev0, dialects-expression
-    fields, is_time dimension). ``source`` is a table name or SELECT (query
-    sources pass through untouched); ``expression`` is the aggregate SQL. The
-    definition alone carries any business filter — the runtime adds nothing."""
+def _expand_adhoc_model(params: dict) -> Slice:
+    """Expand define_metric params into the single-dataset compile slice.
 
-    def field(name: str, is_time: bool = False) -> dict:
-        spec: dict[str, Any] = {
-            "name": name,
-            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": name}]},
-        }
-        spec["dimension"] = {"is_time": True} if is_time else {}
-        return spec
-
-    fields = [field(d) for d in params["dimensions"]]
+    The ad-hoc path is NOT an Ossie document (it is never saved or shared and
+    its expression is aggregate SQL over the source's own columns, checked by
+    the IO-authority boundary before this point), so it compiles through
+    :class:`ariadne.render.Slice` directly instead of the strict Ossie name
+    resolution. ``source`` is a table name or SELECT (query sources pass
+    through untouched); the definition alone carries any business filter — the
+    runtime adds nothing."""
+    fields = {d: d for d in params["dimensions"]}
     if "time_field" in params:
-        fields.append(field(params["time_field"], is_time=True))
-    return {
-        "version": "0.2.0.dev0",
-        "semantic_model": [
-            {
-                "name": f"adhoc_{params['name']}",
-                "description": params["description"],
-                "datasets": [
-                    {
-                        "name": "adhoc_source",
-                        "source": params["source"],
-                        "fields": fields,
-                    }
-                ],
-                "metrics": [
-                    {
-                        "name": params["name"],
-                        "description": params["description"],
-                        "expression": {
-                            "dialects": [
-                                {"dialect": "ANSI_SQL", "expression": params["expression"]}
-                            ]
-                        },
-                    }
-                ],
-            }
-        ],
-    }
+        fields[params["time_field"]] = params["time_field"]
+    return Slice(
+        source=params["source"],
+        fields=fields,
+        dimensions=frozenset(fields),
+        time_fields=(params["time_field"],) if "time_field" in params else (),
+        metrics={params["name"]: params["expression"]},
+        name=f"adhoc_{params['name']}",
+    )

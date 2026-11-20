@@ -70,7 +70,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # The packaged agent skill ships in the wheel, version-locked to the package
 # (ADR-0011); ariadne skill install copies it out.
-ariadne = ["skill_assets/**/*", "schemas/odcs/*"]
+ariadne = ["skill_assets/**/*", "schemas/odcs/*", "schemas/ossie/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

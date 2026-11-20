@@ -1424,33 +1424,27 @@ P1_CURATED_MARKER = "CURATED-MARKER status wording is owned by the retail desk"
 # model cannot render — so the lookup lives in its own single-dataset model
 # with one trivial COUNT(*) metric (unambiguous in a single-dataset model).
 P1_LOOKUP_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: status_lookup
-    description: Order status lookup model
-    datasets:
-      - name: order_status
-        source: orders.main.order_status
-        primary_key: [status]
-        fields:
-          - name: status
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: status
-          - name: status_label
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: label
-            dimension: {}
-    metrics:
-      - name: label_count
-        description: Count of curated status labels
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: status_lookup
+description: Order status lookup model
+datasets:
+- name: order_status
+  source: orders.main.order_status
+  primary_key:
+  - status
+  fields:
+  - name: status
+    expression:
+      sql: status
+  - name: status_label
+    expression:
+      sql: label
+    dimension: {}
+  metrics:
+  - name: label_count
+    expression:
+      sql: COUNT(*)
+    description: Count of curated status labels
 """
 
 # The lookup model's inert KB Metric page: exact metric_ref, producer-valid
@@ -1623,28 +1617,24 @@ P1_DERIVED_METRIC_PAGE = (
 # actual plan lineage. Explicit independent compatibility scaffolding, not
 # a maintained KB mirror.
 P1_UNUSED_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: zz_unused_orders
-    description: Unused later-loaded alias over the same physical orders source
-    datasets:
-      - name: unused_orders
-        source: orders.main.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-            dimension: {}
-    metrics:
-      - name: unused_order_count
-        description: Count of all order rows through the unused alias
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: zz_unused_orders
+description: Unused later-loaded alias over the same physical orders source
+datasets:
+- name: unused_orders
+  source: orders.main.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+    dimension: {}
+  metrics:
+  - name: unused_order_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all order rows through the unused alias
 """
 
 # The unused alias metric's classic graph-admission page (cites an EXISTING

@@ -112,16 +112,15 @@ def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
     functions, direct file/URI scans, unqualified tables and identities outside
     the approved set never reach validation's source connection.
     """
-    for name, envelope in _model_entries(tree):
-        model = envelope["semantic_model"][0]
-        if isinstance(model, dict) and len(model.get("datasets") or []) > 1:
+    for name, model in _model_entries(tree):
+        if len(model.datasets) > 1:
             raise ValueError(
                 f"model '{name}': multi-dataset (domain-layout) models are refused "
                 "at the source-access boundary until authorization understands the "
                 "normalized graph — submit one dataset per model"
             )
         try:
-            rendered = render(envelope)
+            rendered = render(model)
         except Exception:  # RenderError et al.: the compile gate owns the error
             continue
         try:
@@ -220,7 +219,8 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     for page in kb.pages:
         profile = page.ariadne_profile
         if profile is not None and profile.kind == "metric" and profile.metric_ref is not None:
-            metric_pages.setdefault(profile.metric_ref.metric, page)
+            ref = profile.metric_ref
+            metric_pages.setdefault(f"{ref.model}::{ref.metric}", page)
     from lumio_wiki.ariadne_context import policy_closure
 
     errors: list[str] = []

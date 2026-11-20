@@ -45,7 +45,7 @@ _REVISION3_SELECTOR = (
     "policy_bindings:\n"
     "  version: 1\n"
     "  bindings:\n"
-    "    - subject: {kind: metric, identity: events::event_count}\n"
+    "    - subject: {kind: metric, identity: events::events.event_count}\n"
     "      policy: {namespace: urn:uuid:authoring-fixture, entity_id: entity:all-events-count}\n"
     "      operations: [get_metric, query_metrics]\n"
     "      enforcement: null\n"

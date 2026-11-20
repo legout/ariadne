@@ -59,8 +59,8 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import yaml
 
+from ariadne import ossie  # pyright: ignore[reportMissingImports] — new-module resolver drift
 from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     DuckDBExecution,
 )
@@ -68,8 +68,7 @@ from ariadne.grain import check_grain_preserving, relationship_target_audit
 from ariadne.planner import resolved_target_keys
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     RenderError,
-    _dialect_expression,
-    _parse,
+    build_slice,
     render,
 )
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
@@ -175,86 +174,22 @@ def _models_dir(staging_dir: str | Path) -> Path:
     return Path(staging_dir) / "semantic_layer" / "models"
 
 
-def _model_entries(staging_dir: str | Path) -> list[tuple[str, dict]]:
-    """(model_name, single-entry envelope) for every semantic_model entry across
-    the artifact YAML files. A file without a semantic_model list is a load error
-    surfaced by the caller."""
-    entries: list[tuple[str, dict]] = []
-    for path in sorted(_models_dir(staging_dir).glob("*.yml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        models = doc.get("semantic_model")
-        if not isinstance(models, list) or not models:
-            raise ValueError(f"{path.name}: no semantic_model entries")
-        for model in models:
-            name = model.get("name") if isinstance(model, dict) else None
-            entries.append(
-                (
-                    str(name) if name else path.stem,
-                    {"version": doc.get("version"), "semantic_model": [model]},
-                )
-            )
-    return entries
+def _model_files(staging_dir: str | Path) -> list[Path]:
+    models = _models_dir(staging_dir)
+    return sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []
 
 
-def _schema_errors(envelope: dict, require_metrics: bool = True) -> list[str]:
-    """Envelope required fields: version, model name, and per dataset name, source,
-    fields (name + expression dialects) and per metric name + expression dialects.
-    primary_key presence is governed by the grain audit stage (ADR-0006 rule of
-    single declared grain — it owns that error's contract, incl. compile-only
-    validate passing pk-less models). ``require_metrics=False`` checks a
-    dataset that owns no metrics (its structure is validated regardless —
-    issue #26 fix pass F6)."""
-    model = envelope["semantic_model"][0]
-    if not isinstance(model, dict):
-        return ["semantic_model entry is not a mapping"]
-    name = model.get("name")
-    errors: list[str] = []
-    if not isinstance(envelope.get("version"), str) or not envelope["version"].strip():
-        errors.append(f"model {name!r}: missing envelope 'version'")
-    if not isinstance(name, str) or not name.strip():
-        errors.append("semantic_model entry without a 'name'")
-        name = "?"
-    metrics = model.get("metrics")
-    if require_metrics and (not isinstance(metrics, list) or not metrics):
-        errors.append(f"model '{name}': no metrics")
-    for metric in metrics or []:
-        mname = metric.get("name") if isinstance(metric, dict) else None
-        block = metric.get("expression") or {} if isinstance(metric, dict) else {}
-        dialects = block.get("dialects") if isinstance(block, dict) else None
-        if not mname or not isinstance(dialects, list) or not dialects:
-            errors.append(
-                f"model '{name}' metric {mname!r}: name and non-empty expression "
-                "dialects are required"
-            )
-    datasets = model.get("datasets")
-    if not isinstance(datasets, list) or not datasets:
-        errors.append(f"model '{name}': no datasets")
-        return errors
-    for dataset in datasets:
-        if not isinstance(dataset, dict):
-            errors.append(f"model '{name}': dataset entry is not a mapping")
-            continue
-        dname = dataset.get("name") or "?"
-        source = dataset.get("source")
-        if not isinstance(source, str) or not source.strip():
-            errors.append(f"model '{name}' dataset '{dname}': missing source")
-        pk = dataset.get("primary_key")
-        if pk is not None and (
-            not isinstance(pk, list) or not all(isinstance(key, str) for key in pk)
-        ):
-            errors.append(
-                f"model '{name}' dataset '{dname}': primary_key must be a list of field names"
-            )
-        for field_spec in dataset.get("fields") or []:
-            fname = field_spec.get("name") if isinstance(field_spec, dict) else None
-            block = field_spec.get("expression") or {} if isinstance(field_spec, dict) else {}
-            dialects = block.get("dialects") if isinstance(block, dict) else None
-            if not fname or not isinstance(dialects, list) or not dialects:
-                errors.append(
-                    f"model '{name}' dataset '{dname}' field {fname!r}: name and non-empty "
-                    "expression dialects are required"
-                )
-    return errors
+def _model_entries(staging_dir: str | Path) -> list[tuple[str, ossie.ParsedModel]]:
+    """(model_name, resolved Ossie model) for every model document of the
+    artifact. A document that is not a valid Ossie 0.3 model is a load error
+    (``ValueError``) naming the file, surfaced by the caller."""
+    return [
+        (parsed.name, parsed)
+        for parsed in (
+            ossie.parse_model(ossie.read_document(path), path.name)
+            for path in _model_files(staging_dir)
+        )
+    ]
 
 
 def _audit_execution(
@@ -289,17 +224,14 @@ def _bind_check(rendered: list[tuple[str, str]], con: duckdb.DuckDBPyConnection)
 
 
 def _datasets(staging_dir: str | Path) -> list[tuple[str, str, str, list[str]]]:
-    """(model_name, dataset_name, source, primary_key) from OSI artifact YAML."""
+    """(model_name, dataset_name, source, primary_key as SOURCE-level key
+    expressions) from the Ossie documents. Keys are declared FIELD names; the
+    grain audit tests uniqueness of the field expressions over the source."""
     found: list[tuple[str, str, str, list[str]]] = []
-    for path in sorted(_models_dir(staging_dir).glob("*.yml")):
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        for model in doc.get("semantic_model") or []:
-            for dataset in model.get("datasets") or []:
-                source = dataset.get("source")
-                if isinstance(source, str) and source.strip():
-                    name = model.get("name") or dataset.get("name") or path.stem
-                    key = [str(k) for k in dataset.get("primary_key") or []]
-                    found.append((name, dataset.get("name") or "", source.strip(), key))
+    for model_name, model in _model_entries(staging_dir):
+        for dataset in model.datasets.values():
+            key = [dataset.fields[name].sql for name in dataset.primary_key]
+            found.append((model_name, dataset.name, dataset.source, key))
     return found
 
 
@@ -321,14 +253,14 @@ def _assertion_1(
         except Exception as exc:
             return (
                 f"grain audit failed for model '{model}' dataset '{dataset}': declared "
-                f"primary_key entry {key!r} is not a field reference ({type(exc).__name__}: "
-                f"{exc}) — declare field names, not expressions"
+                f"primary_key field expression {key!r} does not parse ({type(exc).__name__}: "
+                f"{exc})"
             )
-        if not isinstance(parsed_key, _exp.Column):
+        if parsed_key.find(_exp.Select, _exp.Subquery) is not None:
             return (
                 f"grain audit failed for model '{model}' dataset '{dataset}': declared "
-                f"primary_key entry {key!r} is not a plain field reference — declare "
-                "field names, not expressions"
+                f"primary_key field expression {key!r} contains a subquery — a key field is "
+                "a scalar expression over source columns"
             )
         rendered_keys.append(parsed_key.sql(dialect="duckdb"))
     keys = ", ".join(rendered_keys)
@@ -644,95 +576,41 @@ def _registry_identity(
 
 
 def _compile_graph(graph: SemanticGraph) -> tuple[list[tuple[str, str]], list[str], list[str]]:
-    """Per-owner compilation through the single-dataset ``render()``:
-    each dataset renders with the base metrics it owns plus the derived metrics
-    whose whole dependency closure stays inside that one dataset — a
-    domain-layout model compiles exactly like legacy single-dataset files.
-    Cross-fact derived metrics (closure spanning datasets) are dependency-checked
-    at load; compiling them is the planner's job and they are counted,
-    never silently skipped."""
+    """Per-owner compilation through the single-dataset ``render()``: each
+    dataset renders with the measures it owns (dataset-scoped metrics and
+    model-scoped aggregates over that one dataset). Model-scoped derived
+    metrics (``AGG(dataset.metric)`` compositions) are dependency-checked at
+    load; those whose measures sit in ONE dataset compile with it, cross-fact
+    ones are counted and compiled by the planner — never silently skipped."""
     rendered: list[tuple[str, str]] = []
     errors: list[str] = []
     skipped: list[str] = []
-    for model_name, envelope in sorted(graph.models.items()):
-        model = envelope["semantic_model"][0]
-        raw = {
-            metric.get("name"): metric
-            for metric in model.get("metrics") or []
-            if isinstance(metric, dict)
-        }
-        # metric name -> compiling dataset: base metrics by owner, derived by
-        # fixed point over assigned dependencies (single dataset or not compiled).
+    for model_name, model in sorted(graph.models.items()):
         assigned: dict[str, str] = {
-            name: node.owner
-            for name, node in graph.metrics.items()
+            key: node.owner
+            for key, node in graph.metrics.items()
             if node.model == model_name and node.owner is not None
         }
-        changed = True
-        while changed:
-            changed = False
-            for name, node in sorted(graph.metrics.items()):
-                if node.model != model_name or name in assigned or not node.deps:
-                    continue
-                if (
-                    all(dep in assigned for dep in node.deps)
-                    and len({assigned[dep] for dep in node.deps}) == 1
-                ):
-                    assigned[name] = assigned[node.deps[0]]
-                    changed = True
-        skipped.extend(
-            name
-            for name, node in graph.metrics.items()
-            if node.model == model_name and node.derived and name not in assigned
-        )
+        for key, node in sorted(graph.metrics.items()):
+            if node.model != model_name or node.owner is not None:
+                continue
+            owners = {assigned[dep] for dep in node.deps if dep in assigned}
+            if len(owners) == 1 and all(dep in assigned for dep in node.deps):
+                assigned[key] = next(iter(owners))
+            else:
+                skipped.append(key)
         by_dataset: dict[str, list[str]] = {}
-        for name, dataset in assigned.items():
-            by_dataset.setdefault(dataset, []).append(name)
-        for dataset, names in sorted(by_dataset.items()):
-            sub = {
-                "version": envelope.get("version"),
-                "semantic_model": [
-                    {
-                        "name": model_name,
-                        "datasets": [
-                            entry
-                            for entry in model.get("datasets") or []
-                            if isinstance(entry, dict) and entry.get("name") == dataset
-                        ],
-                        "metrics": [raw[name] for name in sorted(names) if name in raw],
-                    }
-                ],
-            }
+        for key, dataset in assigned.items():
+            by_dataset.setdefault(dataset, []).append(key)
+        for dataset, keys in sorted(by_dataset.items()):
             label = f"model '{model_name}' dataset '{dataset}'"
-            errors.extend(_schema_errors(sub))
             try:
-                rendered.append((model_name, render(sub)))
+                node_keys = sorted(graph.metrics[identity].key for identity in keys)
+                rendered.append((model_name, render(build_slice(model, dataset, node_keys))))
             except RenderError as exc:  # the compiler's verbatim reason
                 errors.append(f"{label} failed to compile: {exc}")
             except Exception as exc:
                 errors.append(f"{label} failed to compile: {type(exc).__name__}: {exc}")
-        # Datasets owning no metrics (reachable only via relationships /
-        # conformance) still get their structure and field expressions checked —
-        # no dataset bypasses validation because no metric compiles against it.
-        for entry in model.get("datasets") or []:
-            if not isinstance(entry, dict) or entry.get("name") in by_dataset:
-                continue
-            label = f"model '{model_name}' dataset '{entry.get('name')}'"
-            sub = {
-                "version": envelope.get("version"),
-                "semantic_model": [{"name": model_name, "datasets": [entry], "metrics": []}],
-            }
-            errors.extend(_schema_errors(sub, require_metrics=False))
-            for field_spec in entry.get("fields") or []:
-                fname = field_spec.get("name") if isinstance(field_spec, dict) else None
-                context = f"field {fname!r}"
-                try:
-                    _parse(
-                        _dialect_expression(field_spec.get("expression") or {}, context),
-                        context,
-                    )
-                except RenderError as exc:
-                    errors.append(f"{label}: {exc}")
     return rendered, errors, skipped
 
 

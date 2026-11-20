@@ -24,52 +24,38 @@ from pathlib import Path
 # The naive model: the 1:N join lives inside the dataset source, and both the
 # order amount and the line amount are summed over the joined rows.
 TRAP_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: trap_orders
-    description: Naive orders-to-lines join (fan-out trap)
-    datasets:
-      - name: trap_join
-        source: >-
-          SELECT o.order_id, o.region, o.amount, l.line_amount
-          FROM demo.main.orders o
-          JOIN demo.main.order_lines l ON l.order_id = o.order_id
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: line_amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: line_amount
-    metrics:
-      - name: orders_total
-        description: SUM of the order amount over the naive join (the trap)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: lines_total
-        description: SUM of the line amounts (immune to this fan-out by construction)
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: trap_orders
+description: Naive orders-to-lines join (fan-out trap)
+datasets:
+- name: trap_join
+  source: SELECT o.order_id, o.region, o.amount, l.line_amount FROM demo.main.orders o JOIN demo.main.order_lines
+    l ON l.order_id = o.order_id
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: amount
+    expression:
+      sql: amount
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: SUM of the order amount over the naive join (the trap)
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: SUM of the line amounts (immune to this fan-out by construction)
 """
 
 # (order_id, region, amount) and the per-order lines, whose sums equal the

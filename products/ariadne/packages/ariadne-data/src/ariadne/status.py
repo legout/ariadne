@@ -8,9 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-
-from ariadne import admission, authoring_sources, proposals, skill, sources
+from ariadne import admission, authoring_sources, ossie, proposals, skill, sources
 
 _LABEL = 18
 
@@ -60,11 +58,8 @@ def _catalog(snapshot: Path) -> dict:
     errors: list[str] = []
     for path in files:
         try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            if not isinstance(doc, dict):
-                raise ValueError("top level is not a mapping")
-            for model in doc.get("semantic_model") or []:
-                metrics += sum(1 for _ in model.get("metrics") or [])
+            parsed = ossie.parse_model(ossie.read_document(path), path.name)
+            metrics += len(parsed.metrics)
         except Exception as exc:
             lines = str(exc).splitlines()
             detail = lines[0].strip() if lines and lines[0].strip() else type(exc).__name__

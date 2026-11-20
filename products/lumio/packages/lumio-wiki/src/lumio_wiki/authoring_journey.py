@@ -672,9 +672,10 @@ def ingest_candidate(
         try:
             # A verbatim page is read without universal-newline translation so
             # the converted body keeps its exact newline form.
-            markdown = page_path.read_text(
+            with page_path.open(
                 encoding="utf-8", newline="" if selected is not None else None
-            )
+            ) as handle:  # Path.read_text(newline=) is 3.13+; open() is the 3.12 form
+                markdown = handle.read()
         except (OSError, UnicodeDecodeError) as exc:
             raise AuthoringJourneyError(
                 f"an authored page could not be read: {exc}", code="missing_page"

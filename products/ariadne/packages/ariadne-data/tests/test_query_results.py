@@ -43,102 +43,137 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _HUGE = "x" * 1000
 
-_MODELS = """version: 0.2.0.dev0
-semantic_model:
-  - name: groups
-    description: three-group probe
-    datasets:
-      - name: groups3
-        source: groups3
-        primary_key: [grp]
-        fields:
-          - name: grp
-            expression: {dialects: [{dialect: ANSI_SQL, expression: grp}]}
-            dimension: {}
-          - name: val
-            expression: {dialects: [{dialect: ANSI_SQL, expression: val}]}
-    metrics:
-      - name: total
-        description: sum val
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "SUM(val)"}]}
-  - name: plain
-    description: ungrouped probe
-    datasets:
-      - name: plain
-        source: plain
-        primary_key: [val]
-        fields:
-          - name: val
-            expression: {dialects: [{dialect: ANSI_SQL, expression: val}]}
-    metrics:
-      - name: plain_total
-        description: sum of all val
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "SUM(val)"}]}
-  - name: cellprobe
-    description: oversized-cell probe
-    datasets:
-      - name: cells
-        source: cells
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-          - name: txt
-            expression: {dialects: [{dialect: ANSI_SQL, expression: txt}]}
-            dimension: {}
-    metrics:
-      - name: n
-        description: count by txt
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
-  - name: uniprobe
-    description: unicode-cell probe
-    datasets:
-      - name: uni
-        source: uni
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-          - name: txt
-            expression: {dialects: [{dialect: ANSI_SQL, expression: txt}]}
-            dimension: {}
-    metrics:
-      - name: u
-        description: count by txt
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
-  - name: collisionprobe
-    description: flag-namespace collision probe
-    datasets:
-      - name: tricky
-        source: tricky
-        primary_key: [id]
-        fields:
-          - name: __ariadne_cell_overflow_0
-            expression: {dialects: [{dialect: ANSI_SQL, expression: __ariadne_cell_overflow_0}]}
-            dimension: {}
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-    metrics:
-      - name: t
-        description: count by the colliding column
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
-  - name: enumprobe
-    description: enum-label probe
-    datasets:
-      - name: enums
-        source: enums
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-          - name: label
-            expression: {dialects: [{dialect: ANSI_SQL, expression: label}]}
-            dimension: {}
-    metrics:
-      - name: e
-        description: count by enum label
-        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
-"""
+# One Ossie 0.3 document per probe model (file name -> content).
+_MODELS = {
+    "probes.yml": """version: 0.3.0.dev0
+name: groups
+description: three-group probe
+datasets:
+- name: groups3
+  source: groups3
+  primary_key:
+  - grp
+  fields:
+  - name: grp
+    expression:
+      sql: grp
+    dimension: {}
+  - name: val
+    expression:
+      sql: val
+  metrics:
+  - name: total
+    expression:
+      sql: SUM(val)
+    description: sum val
+""",
+    "plain.yml": """version: 0.3.0.dev0
+name: plain
+description: ungrouped probe
+datasets:
+- name: plain
+  source: plain
+  primary_key:
+  - val
+  fields:
+  - name: val
+    expression:
+      sql: val
+  metrics:
+  - name: plain_total
+    expression:
+      sql: SUM(val)
+    description: sum of all val
+""",
+    "cellprobe.yml": """version: 0.3.0.dev0
+name: cellprobe
+description: oversized-cell probe
+datasets:
+- name: cells
+  source: cells
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: txt
+    expression:
+      sql: txt
+    dimension: {}
+  metrics:
+  - name: n
+    expression:
+      sql: COUNT(*)
+    description: count by txt
+""",
+    "uniprobe.yml": """version: 0.3.0.dev0
+name: uniprobe
+description: unicode-cell probe
+datasets:
+- name: uni
+  source: uni
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: txt
+    expression:
+      sql: txt
+    dimension: {}
+  metrics:
+  - name: u
+    expression:
+      sql: COUNT(*)
+    description: count by txt
+""",
+    "collisionprobe.yml": """version: 0.3.0.dev0
+name: collisionprobe
+description: flag-namespace collision probe
+datasets:
+- name: tricky
+  source: tricky
+  primary_key:
+  - id
+  fields:
+  - name: __ariadne_cell_overflow_0
+    expression:
+      sql: __ariadne_cell_overflow_0
+    dimension: {}
+  - name: id
+    expression:
+      sql: id
+  metrics:
+  - name: t
+    expression:
+      sql: COUNT(*)
+    description: count by the colliding column
+""",
+    "enumprobe.yml": """version: 0.3.0.dev0
+name: enumprobe
+description: enum-label probe
+datasets:
+- name: enums
+  source: enums
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: label
+    expression:
+      sql: label
+    dimension: {}
+  metrics:
+  - name: e
+    expression:
+      sql: COUNT(*)
+    description: count by enum label
+""",
+}
 
 # (every metric expression uses the same one-level dialects shape the served
 # envelope dialect defines)
@@ -195,7 +230,9 @@ _PROBE_NOTES = (
 )
 
 
-def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str) -> str:
+def _probe_metric_page(
+    model: str, metric: str, dimension: str | None, key: str, dataset: str
+) -> str:
     """One policy-less native Metric page (spec0035 §5: no invented Policy)."""
     dimensions = f"    dimensions:\n      - {dimension}\n" if dimension else "    dimensions: []\n"
     return (
@@ -213,7 +250,7 @@ def _probe_metric_page(model: str, metric: str, dimension: str | None, key: str)
         "  version: 1\n"
         "  kind: metric\n"
         "  metric_ref:\n"
-        f"    model: {model}\n    metric: {metric}\n"
+        f"    model: {model}\n    metric: {dataset}.{metric}\n"
         "  required_policies: []\n"
         "  native:\n"
         "    type: metric\n"
@@ -268,10 +305,10 @@ def served(tmp_path_factory):
     models = project / "semantic_layer" / "models"
     models.mkdir(parents=True)
     # the same six probe models, qualified for the attached catalog
-    qualified = _MODELS
-    for table in ("groups3", "plain", "cells", "uni", "tricky", "enums"):
-        qualified = qualified.replace(f"source: {table}\n", f"source: demo.main.{table}\n")
-    (models / "probes.yml").write_text(qualified, encoding="utf-8")
+    for filename, text in _MODELS.items():
+        for table in ("groups3", "plain", "cells", "uni", "tricky", "enums"):
+            text = text.replace(f"source: {table}\n", f"source: demo.main.{table}\n")
+        (models / filename).write_text(text, encoding="utf-8")
     (project / "ariadne.yaml").write_text(
         f"sources:\n  - name: demo\n    type: sqlite\n    path: {db}\n",
         encoding="utf-8",
@@ -285,16 +322,16 @@ def served(tmp_path_factory):
         encoding="utf-8",
     )
     (kb / "references" / "probe-notes.md").write_text(_PROBE_NOTES, encoding="utf-8")
-    for model, metric, dimension, key in (
-        ("groups", "total", "grp", "grp"),
-        ("plain", "plain_total", None, "val"),
-        ("cellprobe", "n", "txt", "id"),
-        ("uniprobe", "u", "txt", "id"),
-        ("collisionprobe", "t", "__ariadne_cell_overflow_0", "id"),
-        ("enumprobe", "e", "label", "id"),
+    for model, dataset, metric, dimension, key in (
+        ("groups", "groups3", "total", "grp", "grp"),
+        ("plain", "plain", "plain_total", None, "val"),
+        ("cellprobe", "cells", "n", "txt", "id"),
+        ("uniprobe", "uni", "u", "txt", "id"),
+        ("collisionprobe", "tricky", "t", "__ariadne_cell_overflow_0", "id"),
+        ("enumprobe", "enums", "e", "label", "id"),
     ):
         (kb / "metrics" / f"{metric}.md").write_text(
-            _probe_metric_page(model, metric, dimension, key), encoding="utf-8"
+            _probe_metric_page(model, metric, dimension, key, dataset), encoding="utf-8"
         )
     (project / "context_integration.yaml").write_text(_PROBE_SELECTOR, encoding="utf-8")
     run_git(project, "init", "-q")

@@ -79,7 +79,7 @@ import calendar
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
@@ -99,10 +99,12 @@ from ariadne.query_results import (  # pyright: ignore[reportMissingImports] —
 )
 from ariadne.render import (  # pyright: ignore[reportMissingImports] — drift
     RenderError,
+    Slice,  # pyright: ignore[reportMissingImports] — drift
+    _agg_columns,
     _parse,
-    _resolve_fields,
     _source_subquery,
     _strip_qualifiers,
+    build_slice,
     render,
 )
 from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] — drift
@@ -110,6 +112,7 @@ from ariadne.semantic_graph import (  # pyright: ignore[reportMissingImports] �
     RelationshipEdge,
     SemanticGraph,
     WindowDecl,
+    resolve_metric,
 )
 
 _REQUEST_KEYS = frozenset(
@@ -190,13 +193,14 @@ class QueryPlan:
     conformed business time / windowed-metric lineage of issue #29)."""
 
     sql: str
-    metrics: tuple[str, ...]
+    metrics: tuple[str, ...]  # the request-level names; ``identities`` are their full forms
     dimensions: tuple[str, ...]
     branches: tuple[BranchPlan, ...]
     conformed_keys: tuple[str, ...]
     audits: tuple[AuditRecord, ...]
     relationship_audit: str  # passed | not-run (never silently passed)
     segments: tuple[str, ...] = ()
+    identities: tuple[str, ...] = ()  # ``<model>::<key>`` of each requested metric, same order
     time_dimension: str | None = None  # the conformed primary business time
     time_grain: str | None = None  # its requested grouping grain
     windows: tuple[str, ...] = ()  # requested metrics with a declared window
@@ -870,57 +874,28 @@ def _submodel(
     dataset: str,
     metric_names: list[str],
     time_key: _DimKey | None = None,
-) -> dict:
-    """The dataset's single-dataset envelope slice (one dataset + exactly the
-    metrics the branch aggregates) — the render() input shape. A conformed
-    business time key injects ONE synthetic field grouping by the truncation of
-    the dataset's native time member: the single-dataset renderer groups by
+) -> Slice:
+    """The dataset's single-dataset compile slice (one dataset + exactly the
+    metrics the branch aggregates) — the render() input shape. Measures were
+    lowered to source columns at load; derived metrics reference their
+    consumed measures by identity (their output column name). A conformed
+    business time key injects ONE synthetic field grouping by the truncation
+    of the dataset's native time member: the single-dataset renderer groups by
     field name, so the truncated key projects under the time key's output
     column while the native field keeps feeding the range predicate."""
     node = graph.datasets[dataset]
-    envelope = graph.models[node.model]
-    model = envelope["semantic_model"][0]
-    raw_metrics = {
-        metric.get("name"): metric
-        for metric in model.get("metrics") or []
-        if isinstance(metric, dict)
-    }
-    entry = next(
-        candidate
-        for candidate in model.get("datasets") or []
-        if isinstance(candidate, dict) and candidate.get("name") == dataset
-    )
-    fields = list(entry.get("fields") or [])
+    model = graph.models[node.model]
+    extra: dict[str, str] = {}
     if time_key is not None and time_key.grain is not None:
-        native = time_key.members[dataset]
-        fields.append(
-            {
-                "name": time_key.output(dataset),
-                "expression": {
-                    "dialects": [
-                        {
-                            "dialect": "ANSI_SQL",
-                            "expression": f"DATE_TRUNC('{time_key.grain}', {native})",
-                        }
-                    ]
-                },
-                "dimension": {},
-            }
-        )
-    return {
-        "version": envelope.get("version"),
-        "semantic_model": [
-            {
-                "name": node.model,
-                # a COPY of the dataset entry: the plain-filter path below
-                # overwrites this mapping's 'source' with filtered SQL, and the
-                # graph's own declaration must not change with any one request
-                # (mf-t3 review F1)
-                "datasets": [{**entry, "fields": fields}],
-                "metrics": [raw_metrics[name] for name in sorted(metric_names)],
-            }
-        ],
-    }
+        native = node.expressions[time_key.members[dataset]]
+        extra[time_key.output(dataset)] = f"DATE_TRUNC('{time_key.grain}', {native})"
+    return build_slice(
+        model,
+        dataset,
+        [graph.metrics[name].key for name in sorted(metric_names)],
+        aliases={graph.metrics[name].key: name for name in metric_names},
+        extra_fields=extra,
+    )
 
 
 def _ordered_edges(
@@ -942,26 +917,21 @@ def _ordered_edges(
 
 
 def resolved_target_keys(graph: SemanticGraph, edge: RelationshipEdge) -> tuple[str, ...]:
-    """The edge's target key as FULLY RESOLVED field expressions (fix pass
-    F3 + delta-recheck micro-fix): field substitution recurses exactly like
-    join lowering's ``lower()`` — a target field ``owner_key`` declaring
-    ``owner_ref + 0`` where ``owner_ref`` declares ``owner_id % 10`` keys on
-    ``owner_id % 10 + 0``. Joins and both live audits (planner recheck,
-    validate admission) use this one resolution, so the audit proves
+    """The edge's target key as FULLY RESOLVED source-level field expressions
+    (relationship columns are FIELDS in Ossie 0.3 and field expressions
+    reference source columns only). Joins and both live audits (planner
+    recheck, validate admission) use this one resolution, so the audit proves
     uniqueness of the SAME expression the generated join compares."""
     expressions = graph.datasets[edge.to_dataset].expressions
-    field_asts = {
-        name: _strip_qualifiers(_parse(sql, f"field {name!r} of dataset '{edge.to_dataset}'"))
-        for name, sql in expressions.items()
-    }
     resolved = []
     for field in edge.to_fields:
-        tree = field_asts.get(field)
-        if tree is None:
-            # no usable dialect declaration: the physical column itself
-            resolved.append(field)
-            continue
-        resolved.append(_resolve_fields(tree.copy(), field_asts, set()).sql(dialect="duckdb"))
+        sql = expressions.get(field)
+        if sql is None:
+            raise PlannerError(
+                "compile_failed",
+                f"relationship '{edge.name}': dataset '{edge.to_dataset}' has no field '{field}'",
+            )
+        resolved.append(_strip_qualifiers(_parse(sql, f"field {field!r}")).sql(dialect="duckdb"))
     return tuple(resolved)
 
 
@@ -1024,7 +994,7 @@ def _joined_branch_sql(
                     f"{context}: column '{column.name}' is not a declared field of "
                     f"dataset '{hop}' in branch '{dataset}'",
                 )
-            resolved = _resolve_fields(declared[column.name].copy(), declared, set())
+            resolved = declared[column.name].copy()
             for inner in resolved.find_all(exp.Column):
                 inner.set("table", exp.to_identifier(aliases[hop]))
             if column is tree:
@@ -1089,8 +1059,11 @@ def _joined_branch_sql(
                 "without the lookup dimension, or compute it post-aggregate with a "
                 "window declaration",
             )
-        tree = _parse(metric_node.expression, f"metric {metric_name!r}")
-        tree = lower(tree, dataset, f"metric {metric_name!r}")
+        # the measure is already lowered to the dataset's SOURCE columns: only
+        # the branch alias is added (several datasets share this FROM clause)
+        tree = _strip_qualifiers(_parse(metric_node.expression, f"metric {metric_name!r}"))
+        for inner in tree.find_all(exp.Column):
+            inner.set("table", exp.to_identifier(aliases[dataset]))
         select = select.select(exp.alias_(tree, metric_name, quoted=True))
     # row filters: routed predicates apply inside the branch, before grouping
     where = None
@@ -1140,7 +1113,7 @@ def _plain_predicates(
         member = key.members[dataset]
         tree = field_asts.get(member)
         column = (
-            _resolve_fields(tree.copy(), field_asts, set())
+            tree.copy()
             if tree is not None
             else exp.column(member)  # no usable dialect declaration: the column itself
         )
@@ -1164,7 +1137,7 @@ def _time_fetch_predicate(
     }
     tree = field_asts.get(member)
     column = (
-        _resolve_fields(tree.copy(), field_asts, set())
+        tree.copy()
         if tree is not None
         else exp.column(member)  # no usable dialect declaration: the column itself
     )
@@ -1222,7 +1195,7 @@ def _branch_sql(
         for condition in plain:
             where = condition if where is None else exp.And(this=where, expression=condition)
         filtered = filtered.where(where)
-        sub["semantic_model"][0]["datasets"][0]["source"] = filtered.sql(dialect="duckdb")
+        sub = replace(sub, source=filtered.sql(dialect="duckdb"))
     try:
         return (
             render(
@@ -1231,6 +1204,26 @@ def _branch_sql(
                 carry=[name for name in requested if name in metric_names],
             ),
             [],
+        )
+    except RenderError as exc:
+        raise PlannerError("compile_failed", str(exc)) from exc
+
+
+def _names_a_metric(graph: SemanticGraph, name: str) -> bool:
+    """Whether ``name`` is a metric identity, key or short name of the graph."""
+    return name in graph.metrics or any(name in (n.short, n.key) for n in graph.metrics.values())
+
+
+def _post_sql(graph: SemanticGraph, name: str) -> str:
+    """The metric's post-aggregate SQL: a derived metric's ``AGG(dataset.metric)``
+    terms become the aligned output columns of the consumed measures (named by
+    their identities); a measure keeps its lowered expression."""
+    node = graph.metrics[name]
+    if not node.derived:
+        return node.expression
+    try:
+        return _agg_columns(
+            node.expression, {graph.metrics[dep].key: dep for dep in node.deps}, f"metric {name!r}"
         )
     except RenderError as exc:
         raise PlannerError("compile_failed", str(exc)) from exc
@@ -1356,6 +1349,7 @@ def _final_sql(
     limit: int | None = None,
     parameters: dict[str, tuple[str, Any]] | None = None,
     stage: _PostStage | None = None,
+    display: dict[str, str] | None = None,
 ) -> str:
     """The ONE guarded SELECT: CTE per branch, a keys CTE unioning the branch
     group keys (UNION dedupes, NULL-inclusive), and an outer SELECT aligning
@@ -1481,6 +1475,16 @@ def _final_sql(
                     )
                 projection = projection.select(exp.alias_(expression, name, quoted=True))
             tree = projection.from_(exp.Subquery(this=tree))
+    if display and any(name != shown for name, shown in display.items()):
+        # internal columns carry metric identities; the request-level names are
+        # the OUTPUT columns, so result filters, ordering and limit address them
+        names_now = list(stage.output) if stage is not None else list(current)
+        renamed = exp.Select()
+        for name in names_now:
+            renamed = renamed.select(
+                exp.alias_(exp.column(name, quoted=True), display.get(name, name), quoted=True)
+            )
+        tree = renamed.from_(exp.Subquery(this=tree))
     if result_filters or order or limit:
         wrapper = exp.Select().select("*").from_(exp.Subquery(this=tree))
         where = None
@@ -1590,15 +1594,29 @@ def plan_query(
     live audits; without it the plan is compile-only and the relationship
     audit reports not-run. Refusals raise :class:`PlannerError` BEFORE any
     result SELECT could execute."""
-    metric_names, dimension_names = _parse_request(request)
-    unknown = [name for name in metric_names if name not in graph.metrics]
-    if unknown:
-        raise PlannerError(
-            "unknown_metric",
-            f"unknown metric(s) {unknown}",
-            candidates=tuple(sorted(graph.metrics)),
-        )
-    collisions = sorted(set(metric_names) & set(dimension_names))
+    requested, dimension_names = _parse_request(request)
+    # spec 0039 §6.4: a full identity resolves exactly, a short name only when
+    # unique across the project; ambiguity refuses listing the identities
+    display_of: dict[str, str] = {}
+    for name in requested:
+        identity, candidates = resolve_metric(graph, name)
+        if identity is None and candidates:
+            raise PlannerError(
+                "ambiguous_metric",
+                f"ambiguous metric name {name!r}; use one of the full identities: "
+                f"{', '.join(candidates)}",
+                candidates=tuple(candidates),
+            )
+        if identity is None:
+            raise PlannerError(
+                "unknown_metric",
+                f"unknown metric(s) {[name]}",
+                candidates=tuple(sorted(graph.metrics)),
+            )
+        display_of.setdefault(identity, name)
+    metric_names = list(display_of)  # identities: the planner's internal names
+    shown = [display_of[identity] for identity in metric_names]  # request-level names
+    collisions = sorted(set(shown) & set(dimension_names))
     if collisions:
         raise PlannerError(
             "name_collision",
@@ -1643,7 +1661,7 @@ def plan_query(
                 f"the time dimension {time_request.dimension!r} may not also be a "
                 "requested dimension — the aligned time key is one output column",
             )
-        if time_request.dimension in metric_names:
+        if time_request.dimension in shown:
             raise PlannerError(
                 "name_collision",
                 f"{time_request.dimension!r} names both the requested time dimension and "
@@ -1664,7 +1682,7 @@ def plan_query(
             f"metric(s) {time_frame} declare a time-frame window but the request "
             "declares no conformed primary business time — declare 'time' with the "
             "window's ordering axis",
-            candidates=tuple(sorted(metric_names)),
+            candidates=tuple(sorted(shown)),
         )
 
     dim_keys = [
@@ -1715,7 +1733,7 @@ def plan_query(
     parameters = _parse_parameters(request.get("parameters"))
     predicates, segment_names = _parse_predicates(request)
     order, limit = _parse_order_limit(request)
-    output_columns = set(metric_names) | set(dimension_names)
+    output_columns = set(shown) | set(dimension_names)
     if time_request is not None:
         output_columns.add(time_request.dimension)
     for field, _descending in order:
@@ -1734,7 +1752,7 @@ def plan_query(
         # and refuses instead of silently routing past grouping (spec rev 1,
         # "Query and result contract"); DIRECT result filters stay supported
         if predicate.origin != "filters" and (
-            predicate.field in metric_names or predicate.field in graph.metrics
+            predicate.field in shown or _names_a_metric(graph, predicate.field)
         ):
             raise PlannerError(
                 "filter_invalid",
@@ -1745,7 +1763,7 @@ def plan_query(
         is_field = predicate.field in conformed_by_name or any(
             predicate.field in node.fields for node in graph.datasets.values()
         )
-        if predicate.field in metric_names:
+        if predicate.field in shown:
             if is_field:
                 raise PlannerError(
                     "ambiguous_filter",
@@ -1754,12 +1772,12 @@ def plan_query(
                 )
             result_filters.append(predicate)  # on a selected aggregate: AFTER grouping
             continue
-        if predicate.field in graph.metrics:
+        if _names_a_metric(graph, predicate.field):
             raise PlannerError(
                 "unknown_filter",
                 f"filter field {predicate.field!r} names a declared metric that is not "
                 "part of this request — add it to 'metrics' to filter its aggregate",
-                candidates=tuple(metric_names),
+                candidates=tuple(shown),
             )
         row_filters.append(
             (
@@ -1845,7 +1863,7 @@ def plan_query(
     post_metrics = tuple(
         _PostMetric(
             name=name,
-            expression=graph.metrics[name].expression,
+            expression=_post_sql(graph, name),
             level=post_level(name),
             window=graph.metrics[name].window,
             base=owner_of[name] is not None,
@@ -1888,6 +1906,7 @@ def plan_query(
         limit,
         parameters,
         stage,
+        display_of,
     )
     statements = sqlglot.parse(sql)
     if len(statements) != 1:  # self-check: the guarded SELECT is one statement
@@ -1909,7 +1928,8 @@ def plan_query(
     audits.append(AuditRecord("relationship_audit", relationship_outcome, relationship_detail))
     return QueryPlan(
         sql=sql,
-        metrics=tuple(metric_names),
+        metrics=tuple(shown),
+        identities=tuple(metric_names),
         dimensions=tuple(dimension_names),
         branches=tuple(branch_plans),
         conformed_keys=tuple(key.conformed for key in dim_keys if key.conformed is not None),
@@ -1918,7 +1938,9 @@ def plan_query(
         segments=segment_names,
         time_dimension=time_request.dimension if time_request is not None else None,
         time_grain=time_request.grain if time_request is not None else None,
-        windows=tuple(name for name in metric_names if graph.metrics[name].window is not None),
+        windows=tuple(
+            display_of[name] for name in metric_names if graph.metrics[name].window is not None
+        ),
         fetch_bounds=(fetch_start, fetch_end) if time_request is not None else None,
     )
 
@@ -2083,7 +2105,7 @@ def plan_detail(
                     f"{context}: column '{column.name}' is not a declared field of "
                     f"dataset '{hop}' in the detail projection",
                 )
-            resolved_tree = _resolve_fields(declared[column.name].copy(), declared, set())
+            resolved_tree = declared[column.name].copy()
             for inner in resolved_tree.find_all(exp.Column):
                 inner.set("table", exp.to_identifier(aliases[hop]))
             if column is tree:

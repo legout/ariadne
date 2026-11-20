@@ -64,38 +64,30 @@ OFFICIAL_FULL_SHA256 = "7a82af5da8d18962031c3a01b2706b6991dce7bd111e5fb9e0a3b214
 # (1, 10.0, EMEA), (2, 20.0, AMER), (3, 30.0, EMEA) — COUNT 3, SUM 60.0,
 # zero NULLs — plus a second labels table as an in-registry join temptation.
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.main.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-    metrics:
-      - name: order_count
-        description: Count of all orders
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: orders.main.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  metrics:
+  - name: order_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all orders
 """
 
 TABLES_PAGE = (

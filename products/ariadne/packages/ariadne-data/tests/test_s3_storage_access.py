@@ -30,7 +30,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 import ariadne.sources  # noqa: E402
 from ariadne import admission as admission_module  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
-from tests import s3_fixture as fx  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     MODEL_YML,
@@ -42,38 +41,34 @@ from tests.test_git_authoring import (  # noqa: E402
     run_git,
 )
 
+from tests import s3_fixture as fx  # noqa: E402
+
 STATE = admission_module.proposals.ARIADNE_STATE_DIR
 CURRENT = STATE / "current.json"
 
 # One governed metric over the retail source (the test_sources.py minimal-OSI
 # pattern): SUM(amount) must come from storage A (60), never storage B (200).
 ORDERS_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: orders.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: total_amount
-        description: Sum of order amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: orders.orders
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: total_amount
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts
 """
 
 

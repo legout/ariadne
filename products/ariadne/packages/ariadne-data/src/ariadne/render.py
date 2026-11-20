@@ -1,66 +1,44 @@
-"""Own sqlglot compiler for the self-defined OSI envelope.
+"""Own sqlglot compiler for one dataset of an Ossie ``0.3.0.dev0`` model.
 
-Renders one model of the ``version: 0.2.0.dev0`` envelope — ``datasets`` (source,
-primary_key, fields with expression + dimension/is_time) and ``metrics``
-(expression, optionally the DATUS-derived ``custom_extensions`` marker) — to a
-single SQL SELECT:
+Renders one dataset slice — its ``source``, its fields (each an expression over
+SOURCE columns, Ossie 0.3 never chains fields) and the metrics lowered to that
+source (:mod:`ariadne.ossie`) — to a single SQL SELECT:
 
 - the dataset source becomes a wrapped subquery (a bare table name is wrapped in
   ``SELECT * FROM ...``, a SELECT/WITH passes through parenthesized);
-- aggregate metrics (expressions referencing no other metric) compile into one
-  inner ``SELECT dims..., metric AS name ... FROM (source) GROUP BY dims``;
-- derived metrics (expressions referencing other metrics; the DATUS
-  ``custom_extensions`` hint is validated but advisory — the expression itself is
-  authoritative) resolve RECURSIVELY: each dependency level becomes one outer
-  ``SELECT`` over the previous level, N levels deep, with explicit cycle
+- measures (dataset-scoped metrics, and model-scoped aggregates over one
+  dataset) compile into one inner ``SELECT dims..., measure AS name ... FROM
+  (source) GROUP BY dims``;
+- derived metrics (model-scoped compositions of ``AGG(dataset.metric)``) are
+  evaluated one level above their measures, N levels deep, with explicit cycle
   detection that names the cycle;
-- fields referenced by expressions resolve through the dataset's field
-  alias -> expression mapping (transitively, self-references exempt); table
-  qualifiers are stripped everywhere — the wrapped source knows no scan aliases
-  (the datus lowering contract, author prompt);
-- ``time_range`` ``{start, end}`` becomes a predicate on the model's ``is_time``
+- ``time_range`` ``{start, end}`` becomes a predicate on the dataset's time
   field, applied to the inner aggregate.
 
-Compile failures — malformed envelope, missing field, unknown metric or
-dimension, metric cycle, unparsable expression, DATUS extension data that is
-not strict ``{metric_kind, inputs}`` JSON — raise :class:`RenderError`, a
-``ValueError`` subclass, whose message is the compiler's verbatim reason (the
-spec §7 / mvp-2 verbatim-error contract). The result is re-parsed with
-``sqlglot.parse_one`` as a self-check before it is returned.
+Compile failures — malformed model, unknown metric or dimension, metric cycle,
+unparsable expression — raise :class:`RenderError`, a ``ValueError`` subclass,
+whose message is the compiler's verbatim reason (the spec §7 / mvp-2
+verbatim-error contract). The result is re-parsed with ``sqlglot.parse_one`` as
+a self-check before it is returned.
 """
 
 from __future__ import annotations
 
-import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 from sqlglot import exp  # pyright: ignore[reportMissingImports]
 
+from ariadne import ossie  # pyright: ignore[reportMissingImports] — new-module resolver drift
 from ariadne.query_results import (  # pyright: ignore[reportMissingImports] — drift
     classify_output_type,
 )
 
-# The DATUS extension hint (authoring contract, datus-spike.md §6.6): strictly
-# validated keys — a stray key must fail the compile, exactly like the datus
-# gate it replaces (tests/test_validate.py pins this contract).
-_DATUS_KEYS = {"metric_kind", "inputs"}
-
 
 class RenderError(ValueError):
     """Compiler failure; the message is the verbatim reason (spec §7 contract)."""
-
-
-def _dialect_expression(block: dict, context: str) -> str:
-    """The expression SQL from an ``expression.dialects`` block (ANSI_SQL preferred)."""
-    dialects = (block or {}).get("dialects") or []
-    for entry in dialects:
-        if entry.get("dialect") == "ANSI_SQL" and isinstance(entry.get("expression"), str):
-            return entry["expression"]
-    if dialects and isinstance(dialects[0].get("expression"), str):
-        return dialects[0]["expression"]
-    raise RenderError(f"{context}: expression block carries no usable dialect expression")
 
 
 def _parse(sql: str, context: str) -> Any:  # sqlglot exp node; untyped alias per house style
@@ -82,95 +60,104 @@ def _strip_qualifiers(tree):  # sqlglot exp node (runtime alias — not a static
     return tree
 
 
-def _model_entry(model_dict: dict) -> dict:
-    """The model entry from a full envelope (``semantic_model`` list, exactly one
-    entry) or a bare model dict — both input shapes are accepted."""
-    if not isinstance(model_dict, dict):
-        raise RenderError("model must be a dict")
-    if "semantic_model" not in model_dict:
-        return model_dict
-    models = model_dict.get("semantic_model")
-    if not isinstance(models, list) or not models:
-        raise RenderError("envelope must carry a non-empty semantic_model list")
-    if len(models) > 1:
-        raise RenderError(
-            f"envelope carries {len(models)} semantic_model entries; render compiles one model"
-        )
-    return models[0]
+@dataclass(frozen=True)
+class Slice:
+    """The single-dataset compile input: everything already lowered to the
+    dataset's source columns. ``fields`` maps a field name to its source-level
+    expression SQL, ``dimensions`` names the fields requests may group by,
+    ``time_fields`` the fields a ``time_range`` predicates (first wins) and
+    ``metrics`` maps an output name to its SQL — a measure over source columns,
+    or a derived metric whose ``AGG(...)`` terms were replaced by the quoted
+    output names of the metrics they consume (see :func:`build_slice`)."""
+
+    source: str
+    fields: dict[str, str]
+    dimensions: frozenset[str]
+    time_fields: tuple[str, ...]
+    metrics: dict[str, str]
+    name: str = "model"
 
 
-def _validate_datus_extensions(metric: dict) -> None:
-    """The DATUS custom_extensions hint must be strict JSON with known keys
-    (datus-spike.md §6.6 parity: a stray key is a compile error)."""
-    for extension in metric.get("custom_extensions") or []:
-        if extension.get("vendor_name") != "DATUS":
-            continue
-        data = extension.get("data")
-        if not isinstance(data, str):
-            continue  # structured (non-string) payloads pass through untouched
+def _agg_columns(sql: str, aliases: dict[str, str], context: str) -> str:
+    """A derived metric's SQL with every ``AGG(dataset.metric)`` replaced by the
+    quoted output name of the metric it consumes."""
+    tree = _parse(sql, context)
+    for call in list(tree.find_all(exp.Agg)):
         try:
-            parsed = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise RenderError(
-                f"metric {metric.get('name')!r}: DATUS custom_extensions data is not "
-                f"valid JSON: {exc}"
-            ) from exc
-        if isinstance(parsed, dict):
-            stray = sorted(set(parsed) - _DATUS_KEYS)
-            if stray:
-                raise RenderError(
-                    f"metric {metric.get('name')!r}: unsupported DATUS extension "
-                    f"hint keys: {', '.join(stray)}"
-                )
+            dataset, metric = ossie.agg_target(call, context)
+        except ossie.OssieError as exc:
+            raise RenderError(str(exc)) from exc
+        alias = aliases.get(f"{dataset}.{metric}")
+        if alias is None:
+            raise RenderError(f"{context}: AGG({dataset}.{metric}) is not part of this slice")
+        replacement = exp.column(alias, quoted=True)
+        if call is tree:
+            tree = replacement
+        else:
+            call.replace(replacement)
+    return tree.sql()
 
 
-def _model_parts(
-    model_dict: dict,
-) -> tuple[str, dict[str, Any], dict[str, str], dict[str, dict]]:
-    """(source, field alias -> expression AST, metric name -> expression SQL,
-    field name -> dimension flags) from the model entry — malformed envelopes
-    fail here, reason verbatim."""
-    model = _model_entry(model_dict)
-    datasets = model.get("datasets") or []
-    if len(datasets) != 1:
+def build_slice(
+    model: ossie.ParsedModel,
+    dataset: str,
+    keys: list[str],
+    aliases: dict[str, str] | None = None,
+    extra_fields: dict[str, str] | None = None,
+) -> Slice:
+    """The slice of ``dataset`` carrying the metrics ``keys`` of ``model``.
+    ``aliases`` maps a metric key to its output name (default: the key);
+    ``extra_fields`` adds synthetic dimension fields (conformed time keys)."""
+    node = model.datasets[dataset]
+    names = {key: (aliases or {}).get(key, key) for key in keys}
+    metrics: dict[str, str] = {}
+    for key in keys:
+        metric = model.metrics[key]
+        if metric.derived:
+            metrics[names[key]] = _agg_columns(metric.expression, names, f"metric {key!r}")
+        else:
+            metrics[names[key]] = metric.expression
+    fields = {name: f.sql for name, f in node.fields.items()}
+    # every declared field can group a result (the compiler never required the
+    # optional ``dimension`` marker); ``dimension`` only drives discovery listings
+    dimensions = set(node.fields)
+    for name, sql in (extra_fields or {}).items():
+        fields[name] = sql
+        dimensions.add(name)
+    return Slice(
+        source=node.source,
+        fields=fields,
+        dimensions=frozenset(dimensions),
+        time_fields=tuple(name for name, f in node.fields.items() if f.is_time),
+        metrics=metrics,
+        name=model.name,
+    )
+
+
+def slice_of(model: Any) -> Slice:
+    """The compile input of ``model``: a :class:`Slice`, or one Ossie document /
+    parsed model with exactly one dataset (every metric of that dataset and the
+    model-scoped metrics over it, keyed by their identity key)."""
+    if isinstance(model, Slice):
+        return model
+    if isinstance(model, dict):
+        try:
+            model = ossie.parse_model(ossie.validate_document(model, "model"), "model")
+        except ossie.OssieError as exc:
+            raise RenderError(str(exc)) from exc
+    if not isinstance(model, ossie.ParsedModel):
+        raise RenderError("model must be an Ossie document (dict)")
+    if len(model.datasets) != 1:
         raise RenderError(
-            f"model {model.get('name')!r}: render compiles exactly one dataset, got {len(datasets)}"
+            f"model {model.name!r}: render compiles exactly one dataset, got {len(model.datasets)}"
         )
-    dataset = datasets[0]
-    source = dataset.get("source")
-    if not isinstance(source, str) or not source.strip():
-        raise RenderError(f"dataset {dataset.get('name')!r}: missing source")
-    fields = dataset.get("fields") or []
-    metrics = model.get("metrics") or []
-    if not metrics:
-        raise RenderError(f"model {model.get('name')!r}: no metrics to render")
-
-    def context(name: Any) -> str:
-        return f"field {name!r}"
-
-    field_exprs = {
-        field.get("name"): _strip_qualifiers(
-            _parse(
-                _dialect_expression(field.get("expression") or {}, context(field.get("name"))),
-                context(field.get("name")),
-            )
-        )
-        for field in fields
-        if field.get("name")
-    }
-    for metric in metrics:
-        _validate_datus_extensions(metric)
-    metric_sqls = {
-        metric.get("name"): _dialect_expression(
-            metric.get("expression") or {}, f"metric {metric.get('name')!r}"
-        )
-        for metric in metrics
-        if metric.get("name")
-    }
-    dimension_flags = {
-        field.get("name"): (field.get("dimension") or {}) for field in fields if field.get("name")
-    }
-    return source.strip(), field_exprs, metric_sqls, dimension_flags
+    (dataset,) = model.datasets
+    keys = [k for k, m in model.metrics.items() if m.owner in (dataset, None)]
+    if not keys:
+        raise RenderError(f"model {model.name!r}: no metrics to render")
+    shorts = [model.metrics[k].name for k in keys]
+    aliases = {k: model.metrics[k].name for k in keys if shorts.count(model.metrics[k].name) == 1}
+    return build_slice(model, dataset, keys, aliases=aliases)
 
 
 def _source_subquery(source: str, context: str) -> exp.Subquery:
@@ -192,33 +179,6 @@ def _source_subquery(source: str, context: str) -> exp.Subquery:
     if isinstance(node, exp.Subquery):
         return node
     return exp.Subquery(this=node)
-
-
-def _resolve_fields(
-    tree,  # sqlglot exp node (runtime alias — not a static type)
-    field_exprs: dict[str, Any],
-    metric_names: set[str],
-    stack: tuple[str, ...] = (),
-):
-    """Recursively substitute field references with the field's expression
-    (alias -> expression mapping). Self-references are the source column and are
-    exempt; anything else cycles -> RenderError naming the chain."""
-    for column in list(tree.find_all(exp.Column)):
-        name = column.name
-        if name in metric_names or name not in field_exprs:
-            continue  # metric refs are resolved by layering; unknown refs bind later
-        if name in stack:
-            if name == stack[-1]:
-                continue  # self-reference: the field's expression IS the source column
-            chain = " -> ".join((*stack, name))
-            raise RenderError(f"field reference cycle: {chain}")
-        replacement = _resolve_fields(
-            field_exprs[name].copy(), field_exprs, metric_names, (*stack, name)
-        )
-        if column is tree:
-            return replacement
-        column.replace(replacement)
-    return tree
 
 
 def _metric_references(tree, metric_names: set[str]) -> set[str]:
@@ -269,25 +229,24 @@ def _closure(name: str, deps: dict[str, set[str]]) -> set[str]:
     return needed
 
 
-def _time_predicate(
-    field_exprs: dict[str, Any], dimension_flags: dict[str, dict], time_range: dict
-) -> Any | None:
-    """``{start, end}`` -> predicate on the model's is_time field (inclusive)."""
+def _time_predicate(spec: Slice, time_range: dict) -> Any | None:
+    """``{start, end}`` -> predicate on the dataset's time field (inclusive)."""
     start = time_range.get("start")
     end = time_range.get("end")
     if start is None and end is None:
         return None
-    time_fields = [name for name, flag in dimension_flags.items() if flag.get("is_time")]
-    if not time_fields:
+    if not spec.time_fields:
         raise RenderError(
             "time_range requires a field with dimension.is_time: true on the model's dataset"
         )
-    field = _resolve_fields(exp.column(time_fields[0]), field_exprs, set())
+    field_expr = _strip_qualifiers(_parse(spec.fields[spec.time_fields[0]], "time field"))
     conditions: list[Any] = []
     if start is not None:
-        conditions.append(exp.GTE(this=field.copy(), expression=exp.Literal.string(str(start))))
+        conditions.append(
+            exp.GTE(this=field_expr.copy(), expression=exp.Literal.string(str(start)))
+        )
     if end is not None:
-        conditions.append(exp.LTE(this=field.copy(), expression=exp.Literal.string(str(end))))
+        conditions.append(exp.LTE(this=field_expr.copy(), expression=exp.Literal.string(str(end))))
     predicate = conditions[0]
     for condition in conditions[1:]:
         predicate = exp.And(this=predicate, expression=condition)
@@ -295,29 +254,31 @@ def _time_predicate(
 
 
 def render(
-    model_dict: dict,
+    model: Any,
     dimensions: list[str] | None = None,
     time_range: dict | None = None,
     metric: str | None = None,
     carry: list[str] | tuple[str, ...] | None = None,
 ) -> str:
-    """Render the model to one SQL SELECT (DuckDB dialect).
+    """Render one dataset slice to one SQL SELECT (DuckDB dialect).
 
-    ``metric`` selects one metric (with its dependency closure); ``None`` renders
-    every metric of the model — aggregate metrics in the inner GROUP BY, each
-    derived level nested above the previous. ``dimensions`` must name dimension
-    fields of the model's dataset. ``carry`` names metrics whose outputs must
-    survive every derived layer (a branch that aggregates a base metric AND a
-    same-fact derived metric on top of it needs both, issue #27 fix pass F5);
-    the default keeps each level's own single-output shape. The rendered SQL is
-    re-parsed as a self-check.
+    ``model`` is a :class:`Slice`, or one Ossie document / parsed model with a
+    single dataset. ``metric`` selects one metric (with its dependency
+    closure); ``None`` renders every metric — measures in the inner GROUP BY,
+    each derived level nested above the previous. ``dimensions`` must name
+    dimension fields of the dataset. ``carry`` names metrics whose outputs must
+    survive every derived layer. The rendered SQL is re-parsed as a self-check.
     """
-    source, field_exprs, metric_sqls, dimension_flags = _model_parts(model_dict)
+    spec = slice_of(model)
+    source = spec.source
+    field_exprs = {
+        name: _strip_qualifiers(_parse(sql, f"field {name!r}")) for name, sql in spec.fields.items()
+    }
+    metric_sqls = spec.metrics
     dims = list(dimensions or [])
-    dimension_names = {name for name, flag in dimension_flags.items() if isinstance(flag, dict)}
     for dim in dims:
-        if dim not in dimension_names:
-            available = ", ".join(sorted(dimension_names))
+        if dim not in spec.dimensions:
+            available = ", ".join(sorted(spec.dimensions))
             raise RenderError(
                 f"unknown dimension {dim!r}; available dimensions: {available or '(none)'}"
             )
@@ -337,24 +298,23 @@ def render(
     stray = sorted(carried - wanted)
     if stray:
         raise RenderError(f"carried metric(s) {stray} are not part of the rendered set")
+    # metrics arrive lowered to source columns (ossie.parse_model): no field
+    # substitution happens here, only qualifier stripping for the wrapped source
     parsed = {
-        name: _resolve_fields(
-            _strip_qualifiers(_parse(sql, f"metric {name!r}")), field_exprs, metric_names
-        )
+        name: _strip_qualifiers(_parse(sql, f"metric {name!r}"))
         for name, sql in metric_sqls.items()
     }
 
     # Inner aggregate: dims + every wanted level-0 metric over the wrapped source.
     select = exp.Select()
     for dim in dims:
-        resolved = _resolve_fields(exp.column(dim), field_exprs, set())
-        select = select.select(exp.alias_(resolved, dim))
+        select = select.select(exp.alias_(field_exprs[dim].copy(), dim))
     for name in sorted(wanted):
         if levels[name] == 0:
             select = select.select(exp.alias_(parsed[name].copy(), name))
     select = select.from_(_source_subquery(source, "dataset source"))
     if time_range:
-        predicate = _time_predicate(field_exprs, dimension_flags, time_range)
+        predicate = _time_predicate(spec, time_range)
         if predicate is not None:
             select = select.where(predicate)
     if dims:

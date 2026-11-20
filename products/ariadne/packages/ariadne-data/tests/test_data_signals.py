@@ -88,33 +88,27 @@ ASSESS_NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 ORDERS = [(1, "NA", 100.0), (2, "NA", 200.0), (3, "EMEA", 400.0)]
 
 MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Orders model
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-    metrics:
-      - name: order_count
-        description: Count of all orders
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: orders
+description: Orders model
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  metrics:
+  - name: order_count
+    expression:
+      sql: COUNT(*)
+    description: Count of all orders
 """
 
 # The expired supplied report of the AC1/AC2 fixture: validity past, a FAILED
@@ -274,45 +268,35 @@ DATED_ORDERS = [
 ]
 
 DATED_MODEL_YML = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: orders
-    description: Dated orders model
-    datasets:
-      - name: orders
-        source: demo.main.orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_id
-          - name: region
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: region
-            dimension: {}
-          - name: order_date
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: order_date
-            dimension:
-              is_time: true
-          - name: amount
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: amount
-    metrics:
-      - name: order_count
-        description: Sum of order amounts at order grain
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
+version: 0.3.0.dev0
+name: orders
+description: Dated orders model
+datasets:
+- name: orders
+  source: demo.main.orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: order_date
+    expression:
+      sql: order_date
+    dimension:
+      is_time: true
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: order_count
+    expression:
+      sql: SUM(amount)
+    description: Sum of order amounts at order grain
 """
 
 # A dataset source that reads through a CTE: the alias is NOT a physical
@@ -557,7 +541,9 @@ def _write_files(project: Path, files: dict[str, str | bytes]) -> None:
         if isinstance(content, bytes):
             path.write_bytes(content)
         else:
-            path.write_text(content, encoding="utf-8", newline="\n")
+            # Path.write_text(newline=) exists only on Python 3.13+; open() works on 3.12
+            with path.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
 
 
 def _admit_project(tmp_path: Path, files: dict[str, str | bytes], *, name: str = "proj"):
@@ -1263,28 +1249,27 @@ _MF_DERIVED_METRIC = """\
 """
 
 _MF_REGIONS_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: regions
-    description: Region lookup
-    datasets:
-      - name: regions
-        source: demo.main.regions
-        primary_key: [region]
-        fields:
-          - name: region
-            expression: {dialects: [{dialect: ANSI_SQL, expression: region}]}
-          - name: zone
-            expression: {dialects: [{dialect: ANSI_SQL, expression: zone}]}
-            dimension: {}
-    metrics:
-      - name: region_count
-        dataset: regions
-        description: Count of regions
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: COUNT(*)
+version: 0.3.0.dev0
+name: regions
+description: Region lookup
+datasets:
+- name: regions
+  source: demo.main.regions
+  primary_key:
+  - region
+  fields:
+  - name: region
+    expression:
+      sql: region
+  - name: zone
+    expression:
+      sql: zone
+    dimension: {}
+  metrics:
+  - name: region_count
+    expression:
+      sql: COUNT(*)
+    description: Count of regions
 """
 
 _MF_GRAPH_YML = """\
@@ -1700,74 +1685,78 @@ def test_report_less_views_over_the_byte_ceiling_converge(tmp_path, monkeypatch)
 # --- the windowed consumed-range fixture (W1 fix3) ----------------------------
 
 _WINDOWED_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: dated_orders
-    description: Dated orders fact (W1 fix3 fixture)
-    datasets:
-      - name: dated_orders
-        source: demo.main.dated_orders
-        primary_key: [order_id]
-        fields:
-          - name: order_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}
-          - name: region
-            expression: {dialects: [{dialect: ANSI_SQL, expression: region}]}
-            dimension: {}
-          - name: ordered_on
-            expression: {dialects: [{dialect: ANSI_SQL, expression: ordered_on}]}
-            dimension:
-              is_time: true
-          - name: amount
-            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
-    metrics:
-      - name: orders_total
-        dataset: dated_orders
-        description: Sum of amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(amount)
-      - name: orders_value_1m
-        description: Value-window sum of orders_total, one grain period back
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: orders_total
-        window:
-          kind: value_window
-          size: 1
-          function: sum
+version: 0.3.0.dev0
+name: dated_orders
+description: Dated orders fact (W1 fix3 fixture)
+datasets:
+- name: dated_orders
+  source: demo.main.dated_orders
+  primary_key:
+  - order_id
+  fields:
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: region
+    expression:
+      sql: region
+    dimension: {}
+  - name: ordered_on
+    expression:
+      sql: ordered_on
+    dimension:
+      is_time: true
+  - name: amount
+    expression:
+      sql: amount
+  metrics:
+  - name: orders_total
+    expression:
+      sql: SUM(amount)
+    description: Sum of amounts
+metrics:
+- name: orders_value_1m
+  expression:
+    sql: AGG(dated_orders.orders_total)
+  description: Value-window sum of orders_total, one grain period back
+  nonportable_extensions:
+  - vendor_name: ARIADNE
+    data:
+      window:
+        kind: value_window
+        size: 1
+        function: sum
 """
 
 _WINDOWED_LINES_MODEL = """\
-version: 0.2.0.dev0
-semantic_model:
-  - name: dated_lines
-    description: Dated lines fact (the conformed time's second member)
-    datasets:
-      - name: dated_lines
-        source: demo.main.dated_lines
-        primary_key: [line_id]
-        fields:
-          - name: line_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: line_id}]}
-          - name: order_id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}
-          - name: shipped_on
-            expression: {dialects: [{dialect: ANSI_SQL, expression: shipped_on}]}
-            dimension:
-              is_time: true
-          - name: line_amount
-            expression: {dialects: [{dialect: ANSI_SQL, expression: line_amount}]}
-    metrics:
-      - name: lines_total
-        dataset: dated_lines
-        description: Sum of line amounts
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(line_amount)
+version: 0.3.0.dev0
+name: dated_lines
+description: Dated lines fact (the conformed time's second member)
+datasets:
+- name: dated_lines
+  source: demo.main.dated_lines
+  primary_key:
+  - line_id
+  fields:
+  - name: line_id
+    expression:
+      sql: line_id
+  - name: order_id
+    expression:
+      sql: order_id
+  - name: shipped_on
+    expression:
+      sql: shipped_on
+    dimension:
+      is_time: true
+  - name: line_amount
+    expression:
+      sql: line_amount
+  metrics:
+  - name: lines_total
+    expression:
+      sql: SUM(line_amount)
+    description: Sum of line amounts
 """
 
 _WINDOWED_GRAPH_YML = """\
