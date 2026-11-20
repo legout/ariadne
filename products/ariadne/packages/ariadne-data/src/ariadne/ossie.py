@@ -173,6 +173,20 @@ def parse_sql(sql: str, context: str) -> Any:
         ) from exc
 
 
+def refuse_relations(tree: Any, context: str) -> None:
+    """A field, metric or key expression is scalar/aggregate over its own row
+    source: a subquery, ``EXISTS``, ``IN (SELECT ...)``, a table function or a
+    table reference would read a relation the source authorization never sees."""
+    found = tree.find(exp.Query, exp.Exists, exp.Table, exp.UDTF)
+    if found is not None:
+        raise OssieError(
+            f"{context}: the expression contains a relational construct "
+            f"({found.sql()[:60]!r}) — subqueries, EXISTS, IN (SELECT ...), table functions "
+            "and table references are not allowed in a field or metric expression; read "
+            "other relations through the dataset `source`"
+        )
+
+
 def agg_calls(tree: Any) -> list[Any]:
     """Every ``AGG(...)`` call node of an expression (sqlglot reads it as
     ``exp.Agg``)."""
@@ -267,6 +281,7 @@ def _lower_field(entry: dict, siblings: dict[str, tuple[str, Any]], where: str) 
     name = entry["name"]
     sql = expression_sql(entry["expression"], f"{where} field '{name}'")
     tree = parse_sql(sql, f"{where} field '{name}'")
+    refuse_relations(tree, f"{where} field '{name}'")
     for column in tree.find_all(exp.Column):
         if column.table:
             continue  # a qualified source reference (e.g. a source alias)
@@ -296,6 +311,7 @@ def _lower_dataset_metric(
     context = f"{where} metric '{dataset.name}.{name}'"
     sql = expression_sql(entry["expression"], context)
     tree = parse_sql(sql, context)
+    refuse_relations(tree, context)
     if agg_calls(tree):
         raise OssieError(f"{context}: AGG is only valid in a model-scoped metric")
     source_is_field = "source" in dataset.fields
@@ -344,6 +360,7 @@ def _lower_model_metric(
     context = f"{where} metric '{name}'"
     sql = expression_sql(entry["expression"], context)
     tree = parse_sql(sql, context)
+    refuse_relations(tree, context)
     calls = agg_calls(tree)
     if calls:
         deps: list[str] = []

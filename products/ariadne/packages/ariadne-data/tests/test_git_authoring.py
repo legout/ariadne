@@ -1292,6 +1292,64 @@ def test_every_dataset_source_of_a_model_passes_the_source_access_boundary(
     assert any("events.second" in e and refusal in e for e in result["errors"]), result["errors"]
 
 
+def _validate_model_text(tmp_path, content):
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": "events", "content": content},
+    )
+    return api.validate_proposal(started["proposal"], edited["revision"])
+
+
+_SUBQUERY_METRIC = MODEL_YML.replace(
+    "      sql: COUNT(*)\n",
+    "      sql: COUNT(*) + (SELECT COUNT(*) FROM other_catalog.main.t)\n",
+)
+
+
+def test_a_relation_inside_a_metric_expression_is_refused_before_any_bind(tmp_path):
+    """A metric expression may not read a relation (subquery, EXISTS, IN (SELECT))
+    — refused at load, naming the metric, before validation binds anything."""
+    result = _validate_model_text(tmp_path, _SUBQUERY_METRIC)
+    assert result["ok"] is False
+    assert any("relational construct" in e and "event_count" in e for e in result["errors"])
+
+
+def test_the_compiled_sql_authorization_refuses_a_relation_when_the_load_check_is_gone(
+    tmp_path, monkeypatch
+):
+    """Scratch fault: with the load-time refusal removed, the pre-bind check over
+    the compiled SQL still refuses the unapproved catalog; and with the compiled
+    check removed, the load-time refusal still holds."""
+    from ariadne import authoring, ossie
+
+    with monkeypatch.context() as scratch:
+        scratch.setattr(ossie, "refuse_relations", lambda tree, context: None)
+        result = _validate_model_text(tmp_path / "a", _SUBQUERY_METRIC)
+        assert any("not an approved source registry identity" in e for e in result["errors"])
+    with monkeypatch.context() as scratch:
+        scratch.setattr(authoring, "_compiled_slices", lambda model: [])
+        result = _validate_model_text(tmp_path / "b", _SUBQUERY_METRIC)
+        assert any("relational construct" in e for e in result["errors"])
+
+
+def test_a_cte_name_exempts_a_table_only_inside_the_scope_that_defines_it(tmp_path):
+    """`t` is a CTE inside the inner subquery; the same name outside is a physical
+    unqualified table and is refused."""
+    source = (
+        "SELECT x.id AS id FROM (WITH t AS (SELECT 1 AS id) SELECT id FROM t) x "
+        "JOIN t ON t.id = x.id"
+    )
+    content = MODEL_YML.replace("source: events.events", f"source: {json.dumps(source)}")
+    result = _validate_model_text(tmp_path, content)
+    assert result["ok"] is False
+    assert any("table 't' is unqualified" in e for e in result["errors"]), result["errors"]
+
+
 def test_an_unparsable_draft_model_is_a_recoverable_validation_error(tmp_path):
     """The edit seam deliberately accepts invalid DRAFT content (spec §3), so a
     model whose YAML does not parse is a validation ERROR — never a crash of
