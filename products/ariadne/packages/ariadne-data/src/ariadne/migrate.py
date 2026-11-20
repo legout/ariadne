@@ -542,7 +542,7 @@ def rewrite_identities(text: str, conv: Conversion) -> str:
 def _read_revision(root: Path, revision: str) -> dict[str, str]:
     """The migratable artifacts of ``revision``: model documents, ``graph.yml``,
     knowledge pages and the selector — read from Git, never the checkout."""
-    from ariadne import proposals
+    from ariadne import proposals  # pyright: ignore[reportMissingImports] — resolver drift
 
     listing = proposals._git(
         [
@@ -616,14 +616,17 @@ def _example_problems(rel: str, meta: dict, identities: dict[str, tuple[str, str
     return [f"{rel}: recorded metric name {name!r} no longer resolves"]
 
 
-def _context_rewrites(files: dict[str, str], conv: Conversion) -> tuple[dict[str, str], list[str]]:
+def _context_rewrites(
+    files: dict[str, str], conv: Conversion, admitted: bool
+) -> tuple[dict[str, str], list[str]]:
     """Preflight of the Context half: every page rewrite and generated-page
     deletion, with every problem collected into ``conv`` (nothing is written)."""
-    from ariadne import context
+    from ariadne import context  # pyright: ignore[reportMissingImports] — resolver drift
 
     writes: dict[str, str] = {}
     deletes: list[str] = []
     attested: list[tuple[str, dict, str, str, str, str]] = []
+    cited: dict[str, list[str]] = {}  # Example page -> pages it cites
     identities = {f"{m}::{k}": (old, k) for (m, old), k in conv.metric_keys.items()}
     for rel, text in sorted(files.items()):
         if not (rel.startswith("knowledge/") and rel.endswith(".md")):
@@ -639,6 +642,12 @@ def _context_rewrites(files: dict[str, str], conv: Conversion) -> tuple[dict[str
         if kind == "answer_example":
             for reason in _example_problems(rel, meta, identities):
                 conv.problem(rel, reason)
+            ex_native = profile.get("native")
+            cited[rel] = [
+                f"knowledge/{c['path']}"
+                for c in (ex_native.get("citations") if isinstance(ex_native, dict) else None) or []
+                if isinstance(c, dict) and isinstance(c.get("path"), str)
+            ]
         elif kind == "metric" and isinstance(profile.get("metric_ref"), dict):
             ref = profile["metric_ref"]
             new = conv.metric_keys.get((ref.get("model"), ref.get("metric")))
@@ -689,6 +698,17 @@ def _context_rewrites(files: dict[str, str], conv: Conversion) -> tuple[dict[str
                 )
             elif key != old:
                 writes[rel] = page
+    if not admitted:
+        # an admitted baseline skips the historical citation check for unchanged
+        # Examples; without one, a citation of a rewritten page can never verify
+        for rel, paths in cited.items():
+            changed = sorted(p for p in paths if p in writes or p in deletes)
+            if changed:
+                conv.problem(
+                    rel,
+                    f"cites {changed}, which this migration rewrites, and no admitted baseline "
+                    "exists to keep the Example's historical citation check from running",
+                )
     return writes, deletes
 
 
@@ -703,7 +723,10 @@ def migrate_project(project: str | Path) -> dict:
     per-file report and writes nothing. Returns ``{"status": "already"}`` for
     a migrated revision, else ``{"status": "proposal", ...}``. Admission stays a
     separate, human-only step."""
-    from ariadne import admission, proposals
+    from ariadne import (  # pyright: ignore[reportMissingImports] — resolver drift
+        admission,
+        proposals,
+    )
 
     root = Path(project).resolve()
     current = admission.load_current(root)
@@ -720,7 +743,7 @@ def migrate_project(project: str | Path) -> dict:
     writes: dict[str, str] = dict(conv.files)
     deletes: list[str] = []
     if not conv.problems:
-        pages, deletes = _context_rewrites(files, conv)
+        pages, deletes = _context_rewrites(files, conv, current is not None)
         writes.update(pages)
         selector = files.get("context_integration.yaml")
         if selector is not None and rewrite_identities(selector, conv) != selector:
