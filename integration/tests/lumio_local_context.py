@@ -30,12 +30,10 @@ from integration.tests.lumio_metric_mvp import (
 )
 
 COMPLETED_METRIC = """\
-      - name: completed_orders
-        description: Count of orders not cancelled
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END)
+  - name: completed_orders
+    description: Count of orders not cancelled
+    expression:
+      sql: SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END)
 """
 
 GRAPH = """\
@@ -79,7 +77,7 @@ ariadne_profile:
   kind: metric
   metric_ref:
     model: "retail_sales"
-    metric: "completed_orders"
+    metric: "orders.completed_orders"
   required_policies: []
   native:
     type: metric
@@ -497,7 +495,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # list: every visible page, SDK-sorted by exact path; metadata only.
     listed = _typed_list(results["list"])
     assert [entry["path"] for entry in listed] == [
-        "computations/revenue.md",  # the finalize pass's generated page
+        "computations/orders-revenue.md",  # the finalize pass's generated page
         "metrics/retail-revenue.md",
         "policies/retail-return-policy.md",
         "references/fulfilment-glossary.md",
@@ -1471,7 +1469,7 @@ P1_LOOKUP_METRIC_PAGE = (
     "  kind: metric\n"
     "  metric_ref:\n"
     '    model: "status_lookup"\n'
-    '    metric: "label_count"\n'
+    '    metric: "order_status.label_count"\n'
     "  required_policies: []\n"
     "  native:\n"
     "    type: metric\n"
@@ -1487,7 +1485,7 @@ P1_LOOKUP_METRIC_PAGE = (
     # parent-dispositioned: the established native metadata vocabulary for a
     # semantic-definition provenance string (context._attach_metric_metadata);
     # non-policy, so the EMPTY typed closure stays consistent
-    '    governed_by: "semantic_layer status_lookup::label_count"\n'
+    '    governed_by: "semantic_layer status_lookup::order_status.label_count"\n'
     "    dimensions:\n"
     "      - status_label\n"
     "    grain:\n"
@@ -1529,12 +1527,11 @@ P1_LOOKUP_OKF_METRIC_PAGE = (
 # one dataset. The +1 oracle is hand-worked from the authored 150.0/0.0
 # revenue result, never from any product output.
 P1_DERIVED_METRIC = """\
-      - name: revenue_plus_one
-        description: Derived recognized revenue plus one
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: revenue + 1
+metrics:
+- name: revenue_plus_one
+  description: Derived recognized revenue plus one
+  expression:
+    sql: AGG(orders.revenue) + 1
 """
 
 # The derived metric's classic graph-admission page (issue #30: every graph
@@ -1675,7 +1672,7 @@ P1_UNUSED_METRIC_PAGE = (
     "  kind: metric\n"
     "  metric_ref:\n"
     '    model: "zz_unused_orders"\n'
-    '    metric: "unused_order_count"\n'
+    '    metric: "unused_orders.unused_order_count"\n'
     "  required_policies: []\n"
     "  native:\n"
     "    type: metric\n"
@@ -1688,7 +1685,7 @@ P1_UNUSED_METRIC_PAGE = (
     "    sources:\n"
     '      - id: "src-ops-unused"\n'
     '        title: "Operations unused-alias review, 2026-10-22"\n'
-    '    governed_by: "semantic_layer zz_unused_orders::unused_order_count"\n'
+    '    governed_by: "semantic_layer zz_unused_orders::unused_orders.unused_order_count"\n'
     "    dimensions:\n"
     "      - id\n"
     "    grain:\n"
@@ -1709,10 +1706,10 @@ version: 1
 relationships:
   - name: order_status_lookup
     cardinality: many_to_one
-    from_dataset: orders
-    from_fields: [status]
-    to_dataset: order_status
-    to_fields: [status]
+    from: orders
+    from_columns: [status]
+    to: order_status
+    to_columns: [status]
 conformed_dimensions: []
 """
 
@@ -1946,7 +1943,7 @@ def _p1_project(root: Path, bindings: dict, unused_alias: bool = False):
     # lookup collection lives in its own single-dataset status_lookup model.
     model = project / "semantic_layer" / "models" / "retail_sales.yml"
     model.write_text(
-        model.read_text().replace("WHEN status <> 'cancelled'", "WHEN orders.status <> 'cancelled'")
+        model.read_text().replace("WHEN status <> 'cancelled'", "WHEN source.status <> 'cancelled'")
         + P1_DERIVED_METRIC
     )
     (project / "semantic_layer" / "models" / "status_lookup.yml").write_text(P1_LOOKUP_MODEL)
@@ -1996,7 +1993,7 @@ def _p1_kb_candidate(
     )
     write_page(metric, meta, body)
     (tree / "knowledge/computations").mkdir(parents=True, exist_ok=True)
-    (tree / "knowledge/computations/revenue.md").write_text(_p1_computation_page())
+    (tree / "knowledge/computations/orders-revenue.md").write_text(_p1_computation_page())
     (tree / "knowledge/lumio.yaml").write_text(_p1_control())
     return reconcile_knowledge(project, started["proposal"], revision)
 
@@ -2515,13 +2512,34 @@ P1_REFUSAL_TOKENS = {
 # ownership spans the orders and order_status facts) whose native metric page
 # authors an EMPTY closure — the retained multi-fact governing-Policy
 # obligation must refuse regardless of the authored edge list.
-MULTIFACT_METRIC = """
-      - name: revenue_plus_labels
-        description: Cross-fact composed revenue and curated label count
-        expression:
-          dialects:
-            - dialect: ANSI_SQL
-              expression: revenue + label_count
+MULTIFACT_MODEL = """\
+version: 0.3.0.dev0
+name: composed
+description: Revenue facts and curated status labels composed in one model
+datasets:
+- name: composed_orders
+  source: orders.main.orders
+  primary_key: [id]
+  fields:
+  - {name: id, expression: {sql: id}}
+  - {name: amount, expression: {sql: amount}}
+  - {name: status, expression: {sql: status}, dimension: {}}
+  metrics:
+  - name: composed_revenue
+    expression: {sql: "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)"}
+- name: composed_labels
+  source: orders.main.order_status
+  primary_key: [status]
+  fields:
+  - {name: status, expression: {sql: status}, dimension: {}}
+  metrics:
+  - name: composed_label_count
+    expression: {sql: COUNT(*)}
+metrics:
+- name: revenue_plus_labels
+  description: Cross-fact composed revenue and curated label count
+  expression:
+    sql: AGG(composed_orders.composed_revenue) + AGG(composed_labels.composed_label_count)
 """
 
 MULTIFACT_METRIC_PAGE = (
@@ -2543,7 +2561,7 @@ MULTIFACT_METRIC_PAGE = (
     "  version: 1\n"
     "  kind: metric\n"
     "  metric_ref:\n"
-    '    model: "retail_sales"\n'
+    '    model: "composed"\n'
     '    metric: "revenue_plus_labels"\n'
     "  required_policies: []\n"
     "  native:\n"
@@ -2557,7 +2575,7 @@ MULTIFACT_METRIC_PAGE = (
     "    sources:\n"
     '      - id: "src-composed-metric"\n'
     '        title: "Composed metric review, 2026-10-22"\n'
-    '    governed_by: "semantic_layer retail_sales::revenue_plus_labels"\n'
+    '    governed_by: "semantic_layer composed::revenue_plus_labels"\n'
     "    dimensions: []\n"
     "    grain:\n"
     "      primary_key: []\n"
@@ -2630,12 +2648,16 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         validated = api.validate_proposal(started["proposal"], revision)
         assert validated["ok"] is True, validated["errors"]
         revision = validated["revision"]
-        from ariadne.render import render
+        from ariadne.render import build_slice, render
         from ariadne.semantic_graph import load_graph
 
         graph = load_graph(tree / "semantic_layer")
-        sanctioned = render(graph.models["retail_sales"], metric="revenue").strip()
-        comp = tree / "knowledge" / "computations" / "revenue.md"
+        keys = [k for k, m in graph.models["retail_sales"].metrics.items() if m.owner == "orders"]
+        spec = build_slice(
+            graph.models["retail_sales"], "orders", keys, aliases={k: k for k in keys}
+        )
+        sanctioned = render(spec, metric="orders.revenue").strip()
+        comp = tree / "knowledge" / "computations" / "orders-revenue.md"
         meta, body = page_parts(comp)
         meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
         del meta["ariadne_profile"]["native"]["attestation"]
@@ -2758,15 +2780,10 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         )
         tree = worktree_of(project, started["proposal"])
         revision = _p1_kb_candidate(project, api, started, revision)
-        model = tree / "semantic_layer" / "models" / "retail_sales.yml"
         revision = api.edit_proposal(
             started["proposal"],
             revision,
-            {
-                "kind": "model",
-                "name": "retail_sales",
-                "content": model.read_text() + MULTIFACT_METRIC,
-            },
+            {"kind": "model", "name": "composed", "content": MULTIFACT_MODEL},
         )["revision"]
         (tree / "knowledge" / "metrics" / "revenue-plus-labels.md").write_text(
             MULTIFACT_METRIC_PAGE
@@ -2807,7 +2824,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         )
         tree = worktree_of(project, started["proposal"])
         revision = _p1_kb_candidate(project, api, started, revision)
-        comp = tree / "knowledge" / "computations" / "revenue.md"
+        comp = tree / "knowledge" / "computations" / "orders-revenue.md"
         meta, body = page_parts(comp)
         meta["visibility"] = "restricted"
         meta["ariadne_profile"]["native"]["sources"] = [
@@ -2826,7 +2843,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
             runtime.con.close()
         leaked = json.dumps(explained)
         assert "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE" not in leaked, leaked
-        assert "computations/revenue.md" not in leaked
+        assert "computations/orders-revenue.md" not in leaked
         assert "attestation" not in explained["context"]
         return
 
@@ -2855,7 +2872,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         validated = api.validate_proposal(started["proposal"], revision)
         assert validated["ok"] is True, validated["errors"]
         revision = validated["revision"]  # the finalize batch advanced the candidate
-        comp = tree / "knowledge" / "computations" / "label_count.md"
+        comp = tree / "knowledge" / "computations" / "order_status-label_count.md"
         assert comp.is_file(), "the first validation must generate the Computation"
         # a human earns an independent attester on the generated page and adds
         # unrelated curated narrative; the sanctioned definition is unchanged
@@ -2881,7 +2898,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
                 "kind": "model",
                 "name": "status_lookup",
                 "content": P1_LOOKUP_MODEL.replace(
-                    "expression: COUNT(*)", "expression: COUNT(DISTINCT status)"
+                    "sql: COUNT(*)", "sql: COUNT(DISTINCT status)"
                 ),
             },
         )
@@ -3153,7 +3170,8 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     review = api.review_proposal(started["proposal"])
     assert review["revision"] == revision
     knowledge_paths = {item["resource"] for item in review["files"]}
-    assert {"context_integration.yaml", "knowledge/computations/revenue.md"} <= knowledge_paths
+    expected = {"context_integration.yaml", "knowledge/computations/orders-revenue.md"}
+    assert expected <= knowledge_paths
     assert any(path.startswith("knowledge/tables/") for path in knowledge_paths)
     assert any(path.startswith("knowledge/datasets/") for path in knowledge_paths)
 
@@ -3414,7 +3432,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         assert served["content"] == orders_page.read_text()
         assert served["citation"] == (f"{NAMESPACE} {served['entity_id']} v{revision} {orders_rel}")
         assert served["context_signals"]["warnings"] == []  # authored fresh stale_after
-        curated = asyncio.run(session.read_context_page("computations/revenue.md"))
+        curated = asyncio.run(session.read_context_page("computations/orders-revenue.md"))
         assert curated["content"] == _p1_computation_page()  # exact curated body preserved
         assert curated["context_signals"]["warnings"] != []  # authored advisory staleness
 

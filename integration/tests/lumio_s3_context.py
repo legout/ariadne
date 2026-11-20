@@ -148,8 +148,8 @@ JOURNEY_B_APPENDIX = (
 
 # Visible pages of this release, SDK-sorted by exact relative path.
 VISIBLE_PATHS = [
-    "computations/completed_orders.md",
-    "computations/revenue.md",
+    "computations/orders-completed_orders.md",
+    "computations/orders-revenue.md",
     "metrics/completed-orders.md",
     "metrics/retail-revenue.md",
     "policies/cancelled-orders.md",
