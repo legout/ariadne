@@ -29,8 +29,8 @@ name: trap_orders
 description: Naive orders-to-lines join (fan-out trap)
 datasets:
 - name: trap_join
-  source: SELECT o.order_id, o.region, o.amount, l.line_amount FROM demo.main.orders o JOIN demo.main.order_lines
-    l ON l.order_id = o.order_id
+  source: SELECT o.order_id, o.region, o.amount, l.line_amount FROM demo.main.orders o
+    JOIN demo.main.order_lines l ON l.order_id = o.order_id
   primary_key:
   - order_id
   fields:

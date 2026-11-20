@@ -25,6 +25,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
 from ariadne.query import (
     _QueryRuntimeSession as QueryRuntime,  # pyright: ignore[reportMissingImports] — internal fixture seam
 )

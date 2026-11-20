@@ -16,8 +16,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import ariadne
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
+import ariadne
 
 MODEL = """\
 version: 0.3.0.dev0

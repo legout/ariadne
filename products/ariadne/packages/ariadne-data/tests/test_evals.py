@@ -440,8 +440,8 @@ name: lines_many_to_one
 description: Lines joined many-to-one to orders (sanctioned direction)
 datasets:
 - name: lines_join
-  source: SELECT l.line_id, o.region, l.line_amount FROM demo.main.order_lines l JOIN demo.main.orders
-    o ON o.order_id = l.order_id
+  source: SELECT l.line_id, o.region, l.line_amount FROM demo.main.order_lines l
+    JOIN demo.main.orders o ON o.order_id = l.order_id
   primary_key:
   - line_id
   fields:

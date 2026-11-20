@@ -20,6 +20,7 @@ import asyncio
 import sqlite3
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
 from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime, _QueryRuntimeSession
 from ariadne.query_results import QueryResultError  # pyright: ignore[reportMissingImports] — drift

@@ -30,6 +30,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 import ariadne.sources  # noqa: E402
 from ariadne import admission as admission_module  # noqa: E402
 from ariadne.sources import build_connection, load_registry  # noqa: E402
+from tests import s3_fixture as fx  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     METRIC_PAGE,
     MODEL_YML,
@@ -40,8 +41,6 @@ from tests.test_git_authoring import (  # noqa: E402
     TABLES_PAGE,
     run_git,
 )
-
-from tests import s3_fixture as fx  # noqa: E402
 
 STATE = admission_module.proposals.ARIADNE_STATE_DIR
 CURRENT = STATE / "current.json"

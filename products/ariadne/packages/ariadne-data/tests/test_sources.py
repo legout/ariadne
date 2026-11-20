@@ -1156,6 +1156,7 @@ def test_canonical_resource_scheme_is_deterministic_and_credential_free():
     import json
 
     import pytest
+
     from ariadne.context import generated_page_filename
     from ariadne.sources import parse_resource, table_resource
 
