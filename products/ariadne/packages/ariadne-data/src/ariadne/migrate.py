@@ -13,7 +13,6 @@ route (``AuthoringProject``); it never edits an admitted snapshot in place.
 from __future__ import annotations
 
 import json
-import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -529,14 +528,35 @@ def _convert_graph(text: str, models: list[_Model], conv: Conversion) -> str | N
 
 
 def rewrite_identities(text: str, conv: Conversion) -> str:
-    """The new metric identities as ``model::metric`` tokens in
-    ``context_integration.yaml`` (Policy Binding subjects)."""
-    for (model, old), key in conv.metric_keys.items():
-        if key != old:
-            text = re.sub(
-                rf"\b{re.escape(model)}::{re.escape(old)}(?![\w.])", f"{model}::{key}", text
-            )
-    return text
+    """The selector with every Policy Binding metric identity mapped exactly
+    (``subject.identity``, ``enforcement.definition``/``dependencies``) from the old
+    ``model::metric`` to the new ``model::key``; parsed, never text-replaced. Returns
+    ``text`` unchanged when nothing maps."""
+    mapping = {f"{m}::{old}": f"{m}::{key}" for (m, old), key in conv.metric_keys.items()}
+    doc = yaml.safe_load(text)
+    bindings = (doc.get("policy_bindings") or {}).get("bindings") if isinstance(doc, dict) else None
+    changed = False
+
+    def remap(holder: dict, field_name: str) -> None:
+        nonlocal changed
+        value = holder.get(field_name)
+        if isinstance(value, str) and mapping.get(value, value) != value:
+            holder[field_name], changed = mapping[value], True
+
+    for binding in bindings or []:
+        if not isinstance(binding, dict):
+            continue
+        if isinstance(binding.get("subject"), dict):
+            remap(binding["subject"], "identity")
+        enforcement = binding.get("enforcement")
+        if isinstance(enforcement, dict):
+            remap(enforcement, "definition")
+            deps = enforcement.get("dependencies")
+            if isinstance(deps, list):
+                for i, dep in enumerate(deps):
+                    if mapping.get(dep, dep) != dep:
+                        deps[i], changed = mapping[dep], True
+    return _dump(doc) if changed else text
 
 
 def _read_revision(root: Path, revision: str) -> dict[str, str]:

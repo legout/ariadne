@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+import yaml  # pyright: ignore[reportMissingImports]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -79,7 +80,10 @@ def _add_context(project: Path, *, example_name: str = "revenue") -> None:
     migration does not touch)."""
     import hashlib
 
-    from integration.tests.lumio_metric_mvp import page_parts, write_page  # pyright: ignore[reportMissingImports] — needs PYTHONPATH=<repo root>
+    from integration.tests.lumio_metric_mvp import (  # pyright: ignore[reportMissingImports] — needs PYTHONPATH=<repo root>
+        page_parts,
+        write_page,
+    )
 
     from ariadne import answer_examples, context
 
@@ -343,3 +347,35 @@ def test_an_attested_computation_page_whose_sql_changes_refuses_and_writes_nothi
 def _proposal_branch(project: Path) -> str:
     refs = _git(project, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
     return next(ref for ref in refs if ref.startswith("ariadne/proposal/"))
+
+
+def test_policy_binding_identities_are_mapped_exactly_not_by_prefix():
+    """`sales` (on orders) and `sales-net` (on returns) become `retail::orders.sales` and
+    `retail::returns.sales-net`; a prefix replacement would turn the second into
+    `retail::orders.sales-net`."""
+    conv = migrate.Conversion(
+        metric_keys={
+            ("retail", "sales"): "orders.sales",
+            ("retail", "sales-net"): "returns.sales-net",
+        }
+    )
+    selector = (
+        "version: 1\nsupport_revision: 2\npolicy_bindings:\n  version: 1\n  bindings:\n"
+        "    - subject: {kind: metric, identity: 'retail::sales'}\n"
+        "      policy: {namespace: urn:x, entity_id: 'entity:p'}\n"
+        "      operations: [get_metric]\n      enforcement: null\n"
+        "    - subject: {kind: metric, identity: 'retail::sales-net'}\n"
+        "      policy: {namespace: urn:x, entity_id: 'entity:p'}\n"
+        "      operations: [get_metric]\n"
+        "      enforcement: {check: c, definition: 'retail::sales-net',\n"
+        "        dependencies: ['retail::sales']}\n"
+    )
+    out = yaml.safe_load(migrate.rewrite_identities(selector, conv))
+    first, second = out["policy_bindings"]["bindings"]
+    assert first["subject"]["identity"] == "retail::orders.sales"
+    assert second["subject"]["identity"] == "retail::returns.sales-net"
+    assert second["enforcement"] == {
+        "check": "c",
+        "definition": "retail::returns.sales-net",
+        "dependencies": ["retail::orders.sales"],
+    }
