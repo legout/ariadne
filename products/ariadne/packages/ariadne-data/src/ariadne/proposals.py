@@ -1145,9 +1145,7 @@ def edit_proposal(
                 "path": rel,
             }  # identical edit: no commit, candidate unchanged
         if not core_generated:
-            _refuse_forged_claims(
-                rel, content, base_content
-            )  # system-owned claims, content half
+            _refuse_forged_claims(rel, content, base_content)  # system-owned claims, content half
         _require_git_identity(project)
         _refuse_untracked_new_artifact(project, worktree_root, rel, current)
         _safe_write(worktree_root, rel, content)
@@ -1162,6 +1160,52 @@ def edit_proposal(
         record["candidate_revision"] = new_revision
         _store_record(project, record)
     return {"proposal": proposal, "revision": new_revision, "changed": True, "path": rel}
+
+
+def migration_commit(
+    project: str | Path,
+    proposal: str,
+    expected_revision: str,
+    writes: dict[str, str],
+    deletes: tuple[str, ...] = (),
+) -> dict:
+    """The MIGRATION-ONLY typed write (spec 0039 §7): rewrite and delete the
+    named artifacts of a proposal in exactly ONE commit, exact paths, no other
+    file touched. Used only by ``ariadne migrate``; it is not exported through
+    the authoring API, the CLI authoring commands or MCP. It exists because the
+    normal edit seam correctly refuses system-generated Computation pages, which
+    a one-time identity migration must delete or re-anchor. Every path must lie
+    in the user artifact scope; nothing is attested, nothing admitted."""
+    project = Path(project).resolve()
+    for rel in (*writes, *deletes):
+        if not _in_user_scope(rel):
+            raise ValueError(f"migration path {rel!r} is outside the proposal artifact scope")
+    worktree_root = project / WORKTREES_REL / proposal
+    with _file_lock(project / LOCKS_REL / f"{proposal}.lock"):
+        record = _load_record(project, proposal)
+        _check_coherent(project, record)
+        current = record["candidate_revision"]
+        if expected_revision != current:
+            raise ValueError(
+                f"stale revision: proposal {proposal} is at candidate {current}, the "
+                f"migration expected {expected_revision}; nothing was written"
+            )
+        _require_git_identity(project)
+        for rel in writes:
+            _safe_write(worktree_root, rel, writes[rel])
+        paths = [_literal(rel) for rel in (*writes, *deletes)]
+        for rel in deletes:
+            if _read_blob(project, current, rel) is None:
+                raise ValueError(f"migration deletes {rel!r}, which the candidate does not have")
+            _git(["rm", "-q", "--", _literal(rel)], worktree_root)
+        if writes:
+            _git(["add", "-f", "--", *[_literal(rel) for rel in writes]], worktree_root)
+        message = f"ariadne: migrate to Ossie 0.3 ({len(paths)} artifacts)"
+        _git(["commit", "-m", message, "--", *paths], worktree_root)
+        revision = _git(["rev-parse", "HEAD"], worktree_root).stdout.strip()
+        record["candidate_revision"] = revision
+        _store_record(project, record)
+    return {"proposal": proposal, "revision": revision, "changed": True}
 
 
 # ------------------------------------------------- native KB page batches

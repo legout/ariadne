@@ -154,6 +154,12 @@ def test_migrate_converts_the_joint_example_and_the_admitted_result_answers(tmp_
     finally:
         runtime.con.close()
 
+    # admitted through the normal route and NOT merged into the checkout: the checkout
+    # still holds the legacy files, the pinned revision does not — a second run reads
+    # the pinned revision and reports the project converted
+    assert "semantic_model" in _git(project, "show", "HEAD:semantic_layer/models/retail_sales.yml")
+    assert migrate.migrate_project(project) == {"status": "already", "message": "already Ossie 0.3"}
+
 
 def test_migrate_twice_is_a_noop_and_an_unconvertible_project_is_left_unchanged(tmp_path):
     migrated = _legacy_project(tmp_path / "ok", LEGACY_RETAIL_SALES)
@@ -189,6 +195,21 @@ def test_a_metric_owned_by_one_dataset_but_referencing_another_is_unconvertible(
     conv = migrate.convert_documents({"semantic_layer/models/retail_sales.yml": text})
     assert conv.files == {}
     assert "owned by dataset 'orders'" in "; ".join(conv.problems["retail_sales.yml"])
+
+
+def test_a_lone_yaml_suffix_model_is_migrated_in_place(tmp_path):
+    """sales.yaml is rewritten at the same path; no stray .yml appears beside it."""
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    _git(
+        project, "mv", "semantic_layer/models/retail_sales.yml", "semantic_layer/models/sales.yaml"
+    )
+    _git(project, "commit", "-q", "-m", "human: .yaml suffix")
+    result = migrate.migrate_project(project)
+    assert "semantic_layer/models/sales.yaml" in result["files"]
+    tree = _git(project, "ls-tree", "-r", "--name-only", result["revision"], "semantic_layer")
+    assert sorted(tree.split()) == ["semantic_layer/models/sales.yaml"]
+    migrated = _git(project, "show", f"{result['revision']}:semantic_layer/models/sales.yaml")
+    assert "version: 0.3.0.dev0" in migrated and "semantic_model" not in migrated
 
 
 def _proposal_branch(project: Path) -> str:

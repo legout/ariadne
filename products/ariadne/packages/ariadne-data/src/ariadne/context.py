@@ -161,37 +161,10 @@ def _model_index(staging: Path) -> tuple[dict[str, dict], bool]:
 _SQL_FENCE_RE = re.compile(r"```sql\n(.*?)\n```", re.DOTALL)
 
 
-def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
-    """The revision-2 native finalize derivation (spec0035 §6 C2 cutover): the
-    deterministic generated Computation content of the governed metric set as
-    producer-native ``knowledge/computations`` page specs for the ONE native
-    batch writer — no classic ``context_layer`` finalization, no classic index
-    generation. Evidence binding is DEFINITION- AND DEPENDENCY-COMPLETE for
-    authored and generated pages alike (owner-approved bounded completion of
-    the preserved classic ``_computation_matches``/source-only-attestation
-    principles): the CURRENT resolved sanctioned definition of every governed
-    metric comes from the EXISTING compiler (``render`` embeds the full
-    dependency closure, so a base-metric or field-mapping change reaches
-    derived metrics whose own expression string and dataset sources never
-    moved) — no new SQL/KB parser, no whole-tree digest, no data/source
-    access. A core-generated page still recording that exact resolved SQL and
-    dataset sources keeps its bytes verbatim, earned attestation included; a
-    generated page whose recorded definition no longer matches refreshes the
-    derived facts and clears the predecessor's obsolete attester/check down
-    to honest ``attestation: pending`` through the same atomic native batch,
-    preserving unrelated authored frontmatter and curated narrative. An
-    AUTHORED page is never rewritten by the finalize: one WITHOUT an
-    evidence claim (no attester, ``attestation`` absent/pending) claims
-    nothing and stays untouched, while one CARRYING an earned check that no
-    longer matches — or that never recorded — the current resolved definition
-    REFUSES validation with a named diagnostic for human resolution (an
-    unbound historical check is never quietly trusted). Unparseable model
-    drafts derive nothing — the validation gate owns the structural failure,
-    exactly like the classic pass. Returns ``(specs, errors)``; empty specs
-    is the no-op."""
-    models, all_parsed = _model_index(staging)
-    if not models or not all_parsed:
-        return [], []
+def sanctioned_sql(staging: Path, models: dict[str, dict]) -> dict[str, str]:
+    """The CURRENT resolved sanctioned SQL of every single-dataset governed
+    metric of the tree (``models`` is :func:`_model_index`'s index), from the
+    existing compiler; cross-fact and unresolvable metrics are absent."""
     from ariadne.render import render
     from ariadne.semantic_graph import load_graph
 
@@ -224,6 +197,41 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
                 rendered[name] = render(spec, metric=name).strip()
             except Exception:
                 continue  # the compile gate owns the structural failure
+    return rendered
+
+
+def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
+    """The revision-2 native finalize derivation (spec0035 §6 C2 cutover): the
+    deterministic generated Computation content of the governed metric set as
+    producer-native ``knowledge/computations`` page specs for the ONE native
+    batch writer — no classic ``context_layer`` finalization, no classic index
+    generation. Evidence binding is DEFINITION- AND DEPENDENCY-COMPLETE for
+    authored and generated pages alike (owner-approved bounded completion of
+    the preserved classic ``_computation_matches``/source-only-attestation
+    principles): the CURRENT resolved sanctioned definition of every governed
+    metric comes from the EXISTING compiler (``render`` embeds the full
+    dependency closure, so a base-metric or field-mapping change reaches
+    derived metrics whose own expression string and dataset sources never
+    moved) — no new SQL/KB parser, no whole-tree digest, no data/source
+    access. A core-generated page still recording that exact resolved SQL and
+    dataset sources keeps its bytes verbatim, earned attestation included; a
+    generated page whose recorded definition no longer matches refreshes the
+    derived facts and clears the predecessor's obsolete attester/check down
+    to honest ``attestation: pending`` through the same atomic native batch,
+    preserving unrelated authored frontmatter and curated narrative. An
+    AUTHORED page is never rewritten by the finalize: one WITHOUT an
+    evidence claim (no attester, ``attestation`` absent/pending) claims
+    nothing and stays untouched, while one CARRYING an earned check that no
+    longer matches — or that never recorded — the current resolved definition
+    REFUSES validation with a named diagnostic for human resolution (an
+    unbound historical check is never quietly trusted). Unparseable model
+    drafts derive nothing — the validation gate owns the structural failure,
+    exactly like the classic pass. Returns ``(specs, errors)``; empty specs
+    is the no-op."""
+    models, all_parsed = _model_index(staging)
+    if not models or not all_parsed:
+        return [], []
+    rendered = sanctioned_sql(staging, models)
     comps_dir = staging / "knowledge" / "computations"
     existing: dict[str, tuple[str, str]] = {}
     if comps_dir.is_dir():

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ import yaml
 from sqlglot import exp  # pyright: ignore[reportMissingImports]
 from sqlglot.errors import SqlglotError  # pyright: ignore[reportMissingImports]
 
-from ariadne import ossie
+from ariadne import ossie  # pyright: ignore[reportMissingImports] — resolver drift
 
 OLD_VERSION = "0.2.0.dev0"
 ALREADY = "already Ossie 0.3"
@@ -408,15 +409,19 @@ def _is_old(doc: Any) -> bool:
     return isinstance(doc, dict) and "semantic_model" in doc
 
 
-def is_migrated(semantic_dir: Path) -> bool:
-    """True when every model document is already Ossie 0.3 (and at least one exists)."""
-    models = Path(semantic_dir) / "models"
-    files = sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []
-    if not files:
+def is_migrated(sources: dict[str, str]) -> bool:
+    """True when every model document of ``{path: text}`` is already Ossie 0.3
+    (and at least one exists)."""
+    docs = [
+        text
+        for path, text in sources.items()
+        if Path(path).parent.name == "models" and Path(path).suffix in (".yml", ".yaml")
+    ]
+    if not docs:
         return False
-    for path in files:
+    for text in docs:
         try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            doc = yaml.safe_load(text)
         except yaml.YAMLError:
             return False
         if _is_old(doc) or not isinstance(doc, dict) or doc.get("version") != ossie.OSSIE_VERSION:
@@ -427,12 +432,13 @@ def is_migrated(semantic_dir: Path) -> bool:
 def convert_documents(files: dict[str, str]) -> Conversion:
     """Convert ``{relative path: text}`` of one semantic layer
     (``semantic_layer/models/*.yml`` and ``semantic_layer/graph.yml``). Paths
-    keep their names; a multi-model file is split (the first model keeps the
-    file, the others become ``<model>.yml``)."""
+    keep their exact names and suffixes; a multi-model file is split (the first
+    model keeps the file, the others become ``<model><suffix>`` where nothing
+    collides, else the file is reported)."""
     conv = Conversion()
     models: list[_Model] = []
     graph_text: str | None = None
-    taken = {Path(p).name for p in files}
+    taken = {Path(p).name for p in files}  # exact names; a stem collides under either suffix
     for path, text in sorted(files.items()):
         name = Path(path).name
         if name == "graph.yml":
@@ -457,8 +463,9 @@ def convert_documents(files: dict[str, str]) -> Conversion:
             if index == 0:
                 target = path
             else:
-                target = str(Path(path).with_name(f"{entry['name']}.yml"))
-                if Path(target).name in taken:
+                suffix = Path(path).suffix
+                target = str(Path(path).with_name(f"{entry['name']}{suffix}"))
+                if any(f"{entry['name']}{s}" in taken for s in (".yml", ".yaml")):
                     conv.problem(name, f"cannot split model {entry['name']!r}: {target} exists")
                     continue
                 taken.add(Path(target).name)
@@ -522,94 +529,214 @@ def _convert_graph(text: str, models: list[_Model], conv: Conversion) -> str | N
 
 
 def rewrite_identities(text: str, conv: Conversion) -> str:
-    """The new metric identities in one Lumio page or ``context_integration.yaml``:
-    ``model::metric`` tokens (Policy Binding subjects and definitions,
-    Computation ``core_ref``) and ``metric_ref`` pairs."""
+    """The new metric identities as ``model::metric`` tokens in
+    ``context_integration.yaml`` (Policy Binding subjects)."""
     for (model, old), key in conv.metric_keys.items():
-        if key == old:
-            continue
-        text = re.sub(rf"\b{re.escape(model)}::{re.escape(old)}(?![\w.])", f"{model}::{key}", text)
-        pattern = (
-            rf"(metric_ref:\s*\n(\s+)model:\s*['\"]?{re.escape(model)}['\"]?\s*\n"
-            rf"\2metric:\s*)(['\"]?){re.escape(old)}\3(?=\s*\n)"
-        )
-        text = re.sub(pattern, rf"\g<1>\g<3>{key}\g<3>", text)
+        if key != old:
+            text = re.sub(
+                rf"\b{re.escape(model)}::{re.escape(old)}(?![\w.])", f"{model}::{key}", text
+            )
     return text
 
 
+def _read_revision(root: Path, revision: str) -> dict[str, str]:
+    """The migratable artifacts of ``revision``: model documents, ``graph.yml``,
+    knowledge pages and the selector — read from Git, never the checkout."""
+    from ariadne import proposals
+
+    listing = proposals._git(
+        [
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            revision,
+            "--",
+            "semantic_layer",
+            "knowledge",
+            "context_integration.yaml",
+        ],  # fmt: skip
+        root,
+    ).stdout
+    out: dict[str, str] = {}
+    for rel in filter(None, listing.split("\0")):
+        pure = Path(rel)
+        wanted = (
+            (pure.parts[:2] == ("semantic_layer", "models") and pure.suffix in (".yml", ".yaml"))
+            or rel == "semantic_layer/graph.yml"
+            or (pure.parts[0] == "knowledge" and pure.suffix == ".md")
+            or rel == "context_integration.yaml"
+        )
+        blob = proposals._read_blob(root, revision, rel) if wanted else None
+        if blob is not None:
+            out[rel] = blob.decode("utf-8")
+    return out
+
+
+def _page(text: str, rel: str):
+    """``(frontmatter, body)`` of a Lumio page through the SDK parser; ``None``
+    for a file the SDK does not read as a page."""
+    from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports]
+    from lumio_wiki.knowledge_base import FrontmatterError  # pyright: ignore[reportMissingImports]
+
+    try:
+        meta, body, _line = parse_frontmatter(text, Path(rel))
+    except FrontmatterError:
+        return None
+    return meta, body
+
+
+def _render_page(meta: dict, body: str) -> str:
+    """The page with changed frontmatter, written like the other core page
+    writers (``yaml.safe_dump``); the body is carried over byte for byte."""
+    front = yaml.safe_dump(
+        meta, default_flow_style=False, sort_keys=False, allow_unicode=True
+    ).strip()
+    return f"---\n{front}\n---{body}"
+
+
+def _example_problems(rel: str, meta: dict, identities: dict[str, tuple[str, str]]) -> list[str]:
+    """An Answer Example is historical provenance and is never rewritten: its
+    recorded metric name must still resolve (spec 0039 §6.4) against the
+    migrated metric set — exactly or by a unique short name."""
+    native = (meta.get("ariadne_profile") or {}).get("native") or {}
+    method = native.get("method")
+    if not isinstance(method, dict) or method.get("operation") != "get_metric":
+        return []
+    name = (method.get("arguments") or {}).get("name")
+    if not isinstance(name, str):
+        return []
+    if "::" in name:
+        return [] if name in identities else [f"{rel}: recorded metric {name!r} no longer exists"]
+    matches = sorted(i for i, (short, key) in identities.items() if name in (short, key))
+    if len(matches) == 1:
+        return []
+    if matches:
+        return [f"{rel}: recorded metric name {name!r} becomes ambiguous: {', '.join(matches)}"]
+    return [f"{rel}: recorded metric name {name!r} no longer resolves"]
+
+
+def _context_rewrites(files: dict[str, str], conv: Conversion) -> tuple[dict[str, str], list[str]]:
+    """Preflight of the Context half: every page rewrite and generated-page
+    deletion, with every problem collected into ``conv`` (nothing is written)."""
+    from ariadne import context
+
+    writes: dict[str, str] = {}
+    deletes: list[str] = []
+    attested: list[tuple[str, dict, str, str, str, str]] = []
+    identities = {f"{m}::{k}": (old, k) for (m, old), k in conv.metric_keys.items()}
+    for rel, text in sorted(files.items()):
+        if not (rel.startswith("knowledge/") and rel.endswith(".md")):
+            continue
+        parsed = _page(text, rel)
+        if parsed is None:
+            continue
+        meta, body = parsed
+        profile = meta.get("ariadne_profile")
+        if not isinstance(profile, dict):
+            continue
+        kind = profile.get("kind")
+        if kind == "answer_example":
+            for reason in _example_problems(rel, meta, identities):
+                conv.problem(rel, reason)
+        elif kind == "metric" and isinstance(profile.get("metric_ref"), dict):
+            ref = profile["metric_ref"]
+            new = conv.metric_keys.get((ref.get("model"), ref.get("metric")))
+            if new is not None and new != ref["metric"]:
+                ref["metric"] = new
+                writes[rel] = _render_page(meta, body)
+        elif kind == "computation" and isinstance(profile.get("core_ref"), dict):
+            core = profile["core_ref"]
+            model, sep, old = str(core.get("id")).partition("::")
+            key = conv.metric_keys.get((model, old)) if sep else None
+            if core.get("kind") != "semantic" or key is None:
+                continue
+            raw_native = profile.get("native")
+            native: dict = raw_native if isinstance(raw_native, dict) else {}
+            claims = "attester" in native or native.get("attestation") not in (None, "pending")
+            generated = any(
+                isinstance(s, dict) and s.get("id") == f"model-{model}"
+                for s in native.get("sources") or []
+            )
+            if claims:
+                attested.append((rel, meta, body, model, old, key))
+            elif key != old and generated:
+                deletes.append(rel)  # regenerated under the new identity by the finalize pass
+            elif key != old:
+                core["id"] = f"{model}::{key}"
+                writes[rel] = _render_page(meta, body)
+    if attested:
+        with tempfile.TemporaryDirectory(prefix="ariadne-migrate-") as tmp:
+            for rel, text in conv.files.items():
+                (Path(tmp) / rel).parent.mkdir(parents=True, exist_ok=True)
+                (Path(tmp) / rel).write_text(text, encoding="utf-8")
+            index, _ok = context._model_index(Path(tmp))
+            sanctioned = context.sanctioned_sql(Path(tmp), index)
+        for rel, meta, body, model, old, key in attested:
+            meta["ariadne_profile"]["core_ref"]["id"] = f"{model}::{key}"
+            page = _render_page(meta, body)
+            state, refusal = (
+                context._native_computation_state(page, key, index[key], sanctioned.get(key))
+                if key in index
+                else ("stale", "the metric no longer resolves")
+            )
+            if refusal is not None or state == "stale":
+                conv.problem(
+                    rel,
+                    f"attested Computation page for {model}::{old} binds SQL that changes "
+                    "under Ossie 0.3 — it needs re-attestation "
+                    f"({refusal or 'sanctioned SQL differs'})",
+                )
+            elif key != old:
+                writes[rel] = page
+    return writes, deletes
+
+
 def migrate_project(project: str | Path) -> dict:
-    """Open an Authoring Proposal holding the rewritten artifacts.
+    """Convert a project atomically into ONE Authoring Proposal revision.
 
-    Returns ``{"status": "already", ...}`` when the project is migrated,
-    ``{"status": "proposal", "proposal": ..., "revision": ..., "files": [...]}``
-    after writing, and raises :class:`MigrationError` (project unchanged) with
-    the per-file report when a construct cannot be converted."""
+    Everything is read from the pinned revision the proposal opens from (the
+    admitted commit when one exists, else ``HEAD``) and fully preflighted —
+    models, graph, metric pages, Computation pages, the selector and Answer
+    Examples. Only when no problem remains is the proposal started and one
+    commit written; any problem raises :class:`MigrationError` with the
+    per-file report and writes nothing. Returns ``{"status": "already"}`` for
+    a migrated revision, else ``{"status": "proposal", ...}``. Admission stays a
+    separate, human-only step."""
     from ariadne import admission, proposals
-    from ariadne.authoring import AuthoringProject  # local: authoring imports a lot
 
-    root = Path(project)
-    semantic = root / "semantic_layer"
-    models = semantic / "models"
-    if is_migrated(semantic):
+    root = Path(project).resolve()
+    current = admission.load_current(root)
+    revision = current["commit"] if current is not None else proposals._current_head(root)
+    if revision is None:
+        raise MigrationError(f"{root}: no commits to migrate from")
+    files = _read_revision(root, revision)
+    sources = {r: t for r, t in files.items() if r.startswith("semantic_layer/")}
+    if is_migrated(sources):
         return {"status": "already", "message": ALREADY}
-    sources: dict[str, str] = {}
-    for path in sorted((*models.glob("*.yml"), *models.glob("*.yaml"))) if models.is_dir() else []:
-        sources[str(path.relative_to(root))] = path.read_text(encoding="utf-8")
-    if (semantic / "graph.yml").is_file():
-        sources["semantic_layer/graph.yml"] = (semantic / "graph.yml").read_text(encoding="utf-8")
     if not sources:
         raise MigrationError(f"{root}: no semantic_layer/models documents to migrate")
     conv = convert_documents(sources)
+    writes: dict[str, str] = dict(conv.files)
+    deletes: list[str] = []
+    if not conv.problems:
+        pages, deletes = _context_rewrites(files, conv)
+        writes.update(pages)
+        selector = files.get("context_integration.yaml")
+        if selector is not None and rewrite_identities(selector, conv) != selector:
+            writes["context_integration.yaml"] = rewrite_identities(selector, conv)
     if conv.problems:
         report = "; ".join(f"{f}: {'; '.join(r)}" for f, r in sorted(conv.problems.items()))
         raise MigrationError(f"project left unchanged — unconvertible construct(s): {report}")
-    pages: dict[str, str] = {}
-    for base in ("knowledge", "context_integration.yaml"):
-        target = root / base
-        for path in [target] if target.is_file() else sorted(target.rglob("*.md")):
-            old = path.read_text(encoding="utf-8")
-            new = rewrite_identities(old, conv)
-            if new != old:
-                pages[str(path.relative_to(root))] = new
-    api = AuthoringProject(root)
-    started = api.start_proposal()
-    revision = started["candidate_revision"]
-    written: list[str] = []
-    for rel, text in sorted(conv.files.items()):
-        if rel == "semantic_layer/graph.yml":
-            edit = {"kind": "graph", "content": text}
-        else:
-            edit = {"kind": "model", "name": Path(rel).stem, "content": text}
-        result = api.edit_proposal(started["proposal"], revision, edit)
-        revision = result["revision"]
-        written.append(rel)
-    batch = [
-        {"path": rel, "content": t} for rel, t in pages.items() if rel.startswith("knowledge/")
-    ]
-    if batch:
-        revision = api.edit_pages_batch(started["proposal"], revision, batch)["revision"]
-        written.extend(page["path"] for page in batch)
-    if "context_integration.yaml" in pages:
-        # no typed edit kind carries the selector: commit it in the proposal's own
-        # worktree and record the commit like a human reconcile (admission stays a
-        # separate, human-only step)
-        tree = root / ".ariadne" / "worktrees" / started["proposal"]
-        (tree / "context_integration.yaml").write_text(
-            pages["context_integration.yaml"], encoding="utf-8"
-        )
-        for args in (
-            ("add", "--", "context_integration.yaml"),
-            ("commit", "-q", "-m", "migrate: Ossie 0.3 metric identities in the selector"),
-        ):
-            proposals._git(list(args), tree)
-        head = proposals._git(["rev-parse", "HEAD"], tree).stdout.strip()
-        admission.reconcile(root, started["proposal"], revision, head)
-        revision = head
-        written.append("context_integration.yaml")
+    started = proposals.start_proposal(root, base_revision=revision)
+    result = proposals.migration_commit(
+        root, started["proposal"], started["candidate_revision"], writes, tuple(deletes)
+    )
     return {
         "status": "proposal",
         "proposal": started["proposal"],
-        "revision": revision,
-        "files": written,
+        "revision": result["revision"],
+        "files": sorted(writes),
+        "deleted": sorted(deletes),
         "notes": conv.notes,
     }
