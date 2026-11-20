@@ -209,10 +209,15 @@ def agg_target(call: Any, context: str) -> tuple[str, str]:
 
 
 def _grouped(tree: Any) -> Any:
-    """A substituted field expression keeps its grouping: anything that is not
-    self-delimiting is parenthesized (``price = a + b`` in ``price * units``)."""
-    atomic = (exp.Column, exp.Literal, exp.Paren, exp.Func, exp.Null, exp.Boolean)
-    return tree if isinstance(tree, atomic) else exp.Paren(this=tree)
+    """A substituted field expression keeps its grouping: it stays bare only when
+    provably atomic (column, literal, NULL, boolean, parenthesized, cast or a
+    plain function call); every operator node, ``AND``/``OR`` included, is
+    parenthesized (``price = a + b`` in ``price * units``)."""
+    operator = (exp.Binary, exp.Unary, exp.Connector)
+    atomic = (exp.Column, exp.Literal, exp.Paren, exp.Cast, exp.Null, exp.Boolean, exp.Func)
+    if isinstance(tree, atomic) and not isinstance(tree, operator):
+        return tree
+    return exp.Paren(this=tree)
 
 
 def _strip_qualifiers(tree: Any) -> Any:

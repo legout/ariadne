@@ -135,6 +135,28 @@ def test_a_substituted_field_expression_keeps_its_grouping():
         con.close()
 
 
+def test_a_substituted_boolean_field_keeps_its_grouping():
+    """eligible = a AND b over (a, b) = (true, false): COUNT of rows where
+    NOT eligible is 1 (NOT (a AND b)), not 0 (NOT a AND b) — in both scopes."""
+    model = _model(
+        [_metric("scoped", "SUM(CASE WHEN NOT eligible THEN 1 ELSE 0 END)")],
+        [_field("eligible", "a AND b")],
+        source="t",
+    )
+    model["metrics"] = [
+        {
+            "name": "model_scoped",
+            "expression": {"sql": "SUM(CASE WHEN NOT orders.eligible THEN 1 ELSE 0 END)"},
+        }
+    ]
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT 1 AS order_id, true AS a, false AS b")
+        assert con.sql(render(model, [])).fetchall() == [(1, 1)]
+    finally:
+        con.close()
+
+
 def test_a_metric_named_like_a_source_column_is_not_its_own_dependency(tmp_path):
     """`total = SUM(source.total)` has no field `total`: it is a plain measure.
     The served catalog loads, the metric compiles and answers 2 + 3 = 5, and a
