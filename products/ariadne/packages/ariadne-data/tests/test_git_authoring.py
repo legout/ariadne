@@ -1350,6 +1350,42 @@ def test_a_cte_name_exempts_a_table_only_inside_the_scope_that_defines_it(tmp_pa
     assert any("table 't' is unqualified" in e for e in result["errors"]), result["errors"]
 
 
+@pytest.mark.parametrize(
+    ("source", "refusal"),
+    [
+        # non-recursive: a CTE does not see its own name, so `events` is the physical table
+        ("WITH events AS (SELECT * FROM events) SELECT id FROM events", "is unqualified"),
+        # an earlier CTE does not see a later sibling's name
+        (
+            "WITH a AS (SELECT * FROM b), b AS (SELECT 1 AS id) SELECT id FROM a",
+            "table 'b' is unqualified",
+        ),
+        # a literal path is refused even when the name matches a CTE
+        (
+            "WITH \"/etc/x.parquet\" AS (SELECT 1 AS id) SELECT id FROM \"/etc/x.parquet\"",
+            "scans '/etc/x.parquet' directly",
+        ),
+    ],
+    ids=["self-reference", "earlier-sibling", "literal-path"],
+)
+def test_cte_visibility_follows_duckdb_order_and_literal_paths_are_always_refused(
+    tmp_path, source, refusal
+):
+    content = MODEL_YML.replace("source: events.events", f"source: {json.dumps(source)}")
+    result = _validate_model_text(tmp_path, content)
+    assert result["ok"] is False
+    assert any(refusal in e for e in result["errors"]), result["errors"]
+
+
+def test_a_path_named_like_a_cte_is_refused_in_the_compiled_sql_check():
+    from ariadne import authoring
+
+    with pytest.raises(ValueError, match="scans '/x.csv' directly"):
+        authoring._authorize_statement(
+            "m.d", "WITH \"/x.csv\" AS (SELECT 1) SELECT * FROM \"/x.csv\"", {"events"}
+        )
+
+
 def test_an_unparsable_draft_model_is_a_recoverable_validation_error(tmp_path):
     """The edit seam deliberately accepts invalid DRAFT content (spec §3), so a
     model whose YAML does not parse is a validation ERROR — never a crash of

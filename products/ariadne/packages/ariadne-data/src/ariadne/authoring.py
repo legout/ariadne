@@ -163,14 +163,31 @@ def _authorize_statement(name: str, sql: str, approved: set[str]) -> None:
     names = ", ".join(sorted(approved)) or "none approved yet"
 
     def walk(node: Any, ctes: frozenset[str]) -> None:
-        # a CTE name exempts an unqualified table only inside the scope defining it
+        # DuckDB visibility: a CTE name is visible to the main query and to LATER
+        # sibling definitions only — not to its own (non-recursive) body nor to
+        # earlier siblings. A recursive self-reference is refused outright.
         clause = node.args.get("with_") or node.args.get("with")
+        main = ctes
         if clause is not None:
-            ctes = ctes | {cte.alias_or_name for cte in clause.expressions}
+            recursive = bool(clause.args.get("recursive"))
+            visible = ctes
+            for cte in clause.expressions:
+                if recursive and any(
+                    t.name == cte.alias_or_name and not t.db and not t.catalog
+                    for t in cte.this.find_all(exp.Table)
+                ):
+                    raise ValueError(
+                        f"model '{name}': the CTE '{cte.alias_or_name}' refers to itself — "
+                        "recursive CTEs are not allowed in a dataset source"
+                    )
+                walk(cte.this, visible)
+                visible = visible | {cte.alias_or_name}
+            main = visible
         if isinstance(node, exp.Table):
             _authorize_table(name, node, ctes, approved, names)
         for child in node.iter_expressions():
-            walk(child, ctes)
+            if child is not clause:
+                walk(child, main)
 
     walk(statements[0], frozenset())
 
@@ -194,14 +211,14 @@ def _authorize_table(
                 f"identity (approved: {names}) — validation never opens "
                 "locations outside the approved registry"
             )
-    elif table.name in ctes:
-        return
     elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
         raise ValueError(
             f"model '{name}': the dataset source scans {table.name!r} directly "
             "— only SELECT/joins over approved registry tables enter validation; "
             "direct file/URI scans are refused before any execution"
         )
+    elif table.name in ctes:
+        return
     else:
         raise ValueError(
             f"model '{name}': table '{table.name}' is unqualified — qualify "
