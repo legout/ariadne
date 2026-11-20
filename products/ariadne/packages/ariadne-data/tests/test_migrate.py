@@ -173,6 +173,24 @@ def test_migrate_twice_is_a_noop_and_an_unconvertible_project_is_left_unchanged(
     assert (_git(broken, "rev-parse", "HEAD"), _git(broken, "status", "--porcelain")) == before
 
 
+def test_a_metric_owned_by_one_dataset_but_referencing_another_is_unconvertible():
+    """`dataset: orders` with SUM(orders.amount + customers.amount) would silently become
+    SUM(source.amount + source.amount) on orders: it is reported, with the file named."""
+    text = LEGACY_RETAIL_SALES.replace(
+        "    metrics:\n",
+        "      - name: customers\n        source: customers.main.customers\n"
+        "        fields:\n          - name: amount\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n"
+        "    metrics:\n      - name: mixed\n        dataset: orders\n        expression:\n"
+        "          dialects:\n            - dialect: ANSI_SQL\n"
+        "              expression: SUM(orders.amount + customers.amount)\n",
+        1,
+    )
+    conv = migrate.convert_documents({"semantic_layer/models/retail_sales.yml": text})
+    assert conv.files == {}
+    assert "owned by dataset 'orders'" in "; ".join(conv.problems["retail_sales.yml"])
+
+
 def _proposal_branch(project: Path) -> str:
     refs = _git(project, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
     return next(ref for ref in refs if ref.startswith("ariadne/proposal/"))

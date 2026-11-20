@@ -232,6 +232,14 @@ class _Model:
                         f"{sorted(homes)}"
                     )
             if explicit:
+                others = sorted(referenced - {explicit})
+                if others:
+                    self.fail(
+                        f"metric {name!r} is owned by dataset {explicit!r} but references "
+                        f"{others}; Ossie 0.3 refuses a multi-dataset raw aggregate — split it "
+                        "into dataset-scoped metrics combined with AGG"
+                    )
+                    continue
                 owner[name] = explicit
             elif len(referenced) == 1:
                 owner[name] = next(iter(referenced))
