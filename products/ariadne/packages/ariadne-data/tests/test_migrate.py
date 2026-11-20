@@ -44,12 +44,25 @@ semantic_model:
           dialects:
             - dialect: ANSI_SQL
               expression: SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)
+      - name: completed_orders
+        description: Count of orders not cancelled
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(CASE WHEN status <> 'cancelled' THEN 1 ELSE 0 END)
 """
 
 # the same model plus a metric with no expression: no mechanical conversion exists
 # (spec 0039 §7.3), so the whole project must be left unchanged
 UNCONVERTIBLE = LEGACY_RETAIL_SALES + (
     "      - name: no_expression\n        description: declares no expression at all\n"
+)
+
+
+# the baseline Policy page the joint fixture already carries (no new Policy is invented)
+_RETURN_POLICY = (
+    "required_policies:\n    - namespace: urn:demo:retail\n"
+    "      entity_id: entity:retail-return-policy"
 )
 
 
@@ -61,6 +74,7 @@ def _git(project: Path, *args: str) -> str:
 
 def _legacy_project(root: Path, model_text: str) -> Path:
     """The joint example's project in its pre-0.3 shape, committed to Git."""
+    from integration.tests.lumio_local_context import KB_COMPLETED
     from integration.tests.lumio_metric_mvp import content_project, page_parts, write_page
 
     project = content_project(root)
@@ -71,6 +85,19 @@ def _legacy_project(root: Path, model_text: str) -> Path:
     selector = project / "context_integration.yaml"
     selector.write_text(
         selector.read_text().replace("retail_sales::orders.revenue", "retail_sales::revenue")
+    )
+    (project / "knowledge" / "metrics" / "completed-orders.md").write_text(
+        KB_COMPLETED.replace('"orders.completed_orders"', '"completed_orders"')
+        .replace("required_policies: []", _RETURN_POLICY)
+        .replace("policies/cancelled-orders.md", "policies/retail-return-policy.md"),
+        encoding="utf-8",
+    )
+    selector.write_text(
+        selector.read_text()
+        + "    - subject: {kind: metric, identity: retail_sales::completed_orders}\n"
+        "      policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}\n"
+        "      operations: [get_metric, query_metrics]\n"
+        "      enforcement: null\n"
     )
     # the joint fixture's glossary page cites a catalog source outside this registry;
     # the joint journeys strip that profile as a visible edit (supported_candidate)
@@ -122,6 +149,8 @@ def test_migrate_converts_the_joint_example_and_the_admitted_result_answers(tmp_
         assert answer["rows"] == [{"revenue": 150.0}]  # 100 + 50; cancelled 25 excluded
         by_short_name = asyncio.run(runtime.get_metric("revenue"))
         assert by_short_name["rows"] == [{"revenue": 150.0}]
+        completed = asyncio.run(runtime.get_metric("completed_orders"))
+        assert completed["rows"] == [{"completed_orders": 2}]  # orders 1 and 2; 3 is cancelled
     finally:
         runtime.con.close()
 
