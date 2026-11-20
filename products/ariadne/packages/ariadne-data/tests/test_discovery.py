@@ -191,3 +191,44 @@ def test_mcp_discovery_starts_source_free_for_every_registration(tmp_path, monke
             assert set(report["groups"]) == {"metrics", "pages", "terms", "examples", "contracts"}
             assert report["groups"]["contracts"]["status"] == "unavailable"
             assert "no admitted snapshot" in report["groups"]["contracts"]["reason"]
+
+
+def test_ai_context_is_returned_as_read_only_guidance_and_never_changes_the_sql(tmp_path):
+    """An authored `ai_context` with synonyms is surfaced in the metric listing that
+    discovery serves; the compiled SQL is identical with and without it."""
+    from ariadne.query import _QueryRuntimeSession
+    from ariadne.render import render
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "vals.csv").write_text("v\n2\n3\n", encoding="utf-8")
+    (tmp_path / "context_layer").mkdir()
+    (tmp_path / "ariadne.yaml").write_text(
+        f"sources:\n  - name: vals\n    type: csv\n    path: {tmp_path / 'data' / 'vals.csv'}\n",
+        encoding="utf-8",
+    )
+    models = tmp_path / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    plain = (
+        "version: 0.3.0.dev0\nname: m\ndatasets:\n- name: vals\n  source: vals.vals\n"
+        "  fields:\n  - name: v\n    expression:\n      sql: v\n"
+        "  metrics:\n  - name: total\n    expression:\n      sql: SUM(v)\n"
+        "    description: sum\n"
+    )
+    guided = plain + "    ai_context:\n      synonyms: [sum of values, grand total]\n"
+
+    def listing(text):
+        (models / "m.yml").write_text(text, encoding="utf-8")
+        runtime = _QueryRuntimeSession(
+            models.parent, tmp_path / "context_layer", None, sources=str(tmp_path / "ariadne.yaml")
+        )
+        try:
+            sql = render(runtime._metric_slice("m::vals.total")[0])
+            return asyncio.run(runtime.list_metrics())[0], sql
+        finally:
+            runtime.con.close()
+
+    plain_entry, plain_sql = listing(plain)
+    guided_entry, guided_sql = listing(guided)
+    assert "ai_context" not in plain_entry
+    assert guided_entry["ai_context"] == {"metric": {"synonyms": ["sum of values", "grand total"]}}
+    assert guided_sql == plain_sql

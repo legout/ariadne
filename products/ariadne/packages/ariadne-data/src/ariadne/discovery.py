@@ -141,6 +141,7 @@ class _DiscoverySession:
                         "key": key,
                         "short": metric.name,
                         "owner": metric.owner,
+                        "ai_context": ossie.ai_guidance(parsed, key),
                     }
             except (OSError, ValueError, TypeError, AttributeError) as exc:
                 if not report_read_errors:
@@ -539,6 +540,7 @@ class _DiscoverySession:
                 "name": name,
                 "description": meta["description"],
                 "dimensions": meta["dimensions"],
+                **({"ai_context": meta["ai_context"]} if meta["ai_context"] else {}),
             }
             for name, meta in self._metrics.items()
         ]

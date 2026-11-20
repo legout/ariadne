@@ -553,6 +553,49 @@ def _with_extension(metric: ParsedMetric, data: dict, where: str) -> ParsedMetri
     return replace(metric, fill=fill, window=data.get("window"))
 
 
+def ai_guidance(model: ParsedModel, key: str) -> dict:
+    """The authored ``ai_context`` (Ossie: instructions, synonyms, examples or a
+    plain string) around one metric, as read-only guidance: the model, the
+    dataset(s) the metric reads, those datasets' fields and the metric itself.
+    It is returned as context metadata only — never SQL, a join or Policy input."""
+    doc = model.doc
+    metric = model.metrics[key]
+    owners = [metric.owner] if metric.owner is not None else list(model.datasets)
+    out: dict = {}
+    if doc.get("ai_context"):
+        out["model"] = doc["ai_context"]
+    datasets: dict = {}
+    fields: dict = {}
+    for entry in doc["datasets"]:
+        if entry["name"] not in owners:
+            continue
+        if entry.get("ai_context"):
+            datasets[entry["name"]] = entry["ai_context"]
+        for f in entry.get("fields") or []:
+            if f.get("ai_context"):
+                fields[f"{entry['name']}.{f['name']}"] = f["ai_context"]
+    raw = next(
+        (
+            m
+            for scope in (
+                [e for e in doc["datasets"] if e["name"] == metric.declared_on]
+                if metric.declared_on
+                else [doc]
+            )
+            for m in scope.get("metrics") or []
+            if m["name"] == metric.name
+        ),
+        None,
+    )
+    if raw and raw.get("ai_context"):
+        out["metric"] = raw["ai_context"]
+    if datasets:
+        out["datasets"] = datasets
+    if fields:
+        out["fields"] = fields
+    return out
+
+
 def metric_identity(model: str, key: str) -> str:
     """``<model>::<metric>`` or ``<model>::<dataset>.<metric>`` (spec §6.1)."""
     return f"{model}::{key}"

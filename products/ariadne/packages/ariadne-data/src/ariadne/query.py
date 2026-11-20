@@ -422,6 +422,9 @@ class _QueryRuntimeSession(_DiscoverySession):
             self._metrics[name]["model_name"],
             self._metrics[name]["key"],
         )
+        if self._metrics[name]["ai_context"]:
+            # authored model guidance: read-only context, never SQL/joins/Policy input
+            required_context["ai_context"] = self._metrics[name]["ai_context"]
         query_results.account_rows(self._limits, {"context": required_context}, [])
         query_results.finalize_response(
             self._limits, {"context": required_context}, response_measure=self._measure
@@ -662,6 +665,8 @@ class _QueryRuntimeSession(_DiscoverySession):
                 meta["key"],
                 _now=now,
             )
+            if meta["ai_context"]:
+                resolved[identity]["ai_context"] = meta["ai_context"]
         envelope = {"context": resolved}
         query_results.account_rows(self._limits, envelope, [])
         query_results.finalize_response(self._limits, envelope, response_measure=self._measure)
