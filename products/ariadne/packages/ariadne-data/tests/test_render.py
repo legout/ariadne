@@ -115,6 +115,26 @@ def test_field_expression_is_the_dimension_and_inlined_into_dataset_metrics():
     assert "CASE WHEN region_code = 'EMEA' THEN 1 ELSE 0 END" in sql
 
 
+def test_a_substituted_field_expression_keeps_its_grouping():
+    """price = a + b, units = 2 over (a, b) = (5, 3): SUM(price * units) is
+    (5 + 3) * 2 = 16 — in a dataset-scoped and in a model-scoped metric."""
+    model = _model(
+        [_metric("scoped", "SUM(price * units)")],
+        [_field("price", "a + b"), _field("units", "units")],
+        source="t",
+    )
+    model["metrics"] = [
+        {"name": "model_scoped", "expression": {"sql": "SUM(orders.price * orders.units)"}}
+    ]
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT 1 AS order_id, 5 AS a, 3 AS b, 2 AS units")
+        sql = render(model, [])
+        assert con.sql(sql).fetchall() == [(16, 16)]  # sql is render() compile output
+    finally:
+        con.close()
+
+
 def test_a_field_referencing_another_field_is_refused():
     """Ossie 0.3 (spec 0039 §5.3.1): a field expression names source columns only."""
     model = _model(

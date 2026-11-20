@@ -194,6 +194,13 @@ def agg_target(call: Any, context: str) -> tuple[str, str]:
     return column.table, column.name
 
 
+def _grouped(tree: Any) -> Any:
+    """A substituted field expression keeps its grouping: anything that is not
+    self-delimiting is parenthesized (``price = a + b`` in ``price * units``)."""
+    atomic = (exp.Column, exp.Literal, exp.Paren, exp.Func, exp.Null, exp.Boolean)
+    return tree if isinstance(tree, atomic) else exp.Paren(this=tree)
+
+
 def _strip_qualifiers(tree: Any) -> Any:
     for column in tree.find_all(exp.Column):
         column.set("table", None)
@@ -303,7 +310,7 @@ def _lower_dataset_metric(
                     "`source.<column>`; other datasets belong in a model-scoped metric"
                 )
         elif column.name in field_trees:
-            replacement = field_trees[column.name].copy()
+            replacement = _grouped(field_trees[column.name].copy())
         else:
             raise OssieError(
                 f"{context}: '{column.name}' is not a declared field of dataset "
@@ -400,7 +407,7 @@ def _lower_model_metric(
         owners = list(datasets)
     owner = owners[0]
     for column in list(tree.find_all(exp.Column)):
-        replacement = field_trees[owner][column.name].copy()
+        replacement = _grouped(field_trees[owner][column.name].copy())
         if column is tree:
             tree = replacement
         else:
