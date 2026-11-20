@@ -520,6 +520,81 @@ def test_legacy_envelope_and_unknown_ariadne_key_are_refused(tmp_path):
     ]
 
 
+def test_ossie_schema_violation_is_refused_naming_the_file(tmp_path):
+    # spec 0039 §5.1: a document failing the pinned schema (here a dataset without
+    # its required `source`) is refused, and the message names the file.
+    bad = _edit(DOMAIN_YML, lambda d: _dataset(d, "orders").pop("source"))
+    with pytest.raises(GraphError, match=r"sales\.yml.*pinned Ossie"):
+        load_graph(_staging(tmp_path / "bad", {"sales.yml": bad}) / "semantic_layer")
+
+
+def test_ac4_keys_and_model_metrics_name_fields_and_dataset_metrics(tmp_path):
+    # AC4: a primary key naming a source column that has no field is refused (keys
+    # name FIELDS); a model-scoped aggregate over fields of two datasets is refused
+    # with a message that points at dataset-scoped metrics and AGG.
+    bad_key = _edit(DOMAIN_YML, lambda d: _dataset(d, "orders").update(primary_key=["o_orderkey"]))
+    with pytest.raises(GraphError, match="o_orderkey.*not a declared"):
+        load_graph(_staging(tmp_path / "key", {"sales.yml": bad_key}) / "semantic_layer")
+
+    mixed = _edit(
+        DOMAIN_YML,
+        lambda d: d.setdefault("metrics", []).append(
+            {
+                "name": "amount_per_line",
+                "expression": {"sql": "SUM(orders.amount) / COUNT(DISTINCT order_lines.line_id)"},
+            }
+        ),
+    )
+    with pytest.raises(GraphError, match=r"dataset-scoped metric.*AGG"):
+        load_graph(_staging(tmp_path / "mixed", {"sales.yml": mixed}) / "semantic_layer")
+
+
+def test_ac6_ariadne_one_to_one_extension_sets_edge_cardinality(tmp_path):
+    # AC6: a relationship carrying ARIADNE {cardinality: one_to_one} is a one-to-one
+    # edge; the same relationship without it keeps the Ossie many-to-one default.
+    plain = load_graph(_domain_staging(tmp_path / "plain") / "semantic_layer")
+    assert [e.cardinality for e in plain.relationships] == ["many_to_one"]
+
+    def one_to_one(doc):
+        rel = doc["relationships"][0]
+        rel["nonportable_extensions"] = [
+            {"vendor_name": "ARIADNE", "data": {"cardinality": "one_to_one"}}
+        ]
+
+    graph = load_graph(
+        _staging(tmp_path / "o2o", {"sales.yml": _edit(DOMAIN_YML, one_to_one)}) / "semantic_layer"
+    )
+    assert [e.cardinality for e in graph.relationships] == ["one_to_one"]
+
+
+def test_ac7_metric_identities_resolve_full_or_unique_short_names_only(tmp_path):
+    # AC7: the full identity and a project-unique short name resolve to the same
+    # metric; a short name shared by two models refuses and lists both identities.
+    registry = build_source_fixture(tmp_path / "src")
+    twin = ORDERS_SOURCE_YML.replace("name: orders\n", "name: sales_copy\n", 1).replace(
+        "- name: orders\n  source", "- name: copy_orders\n  source", 1
+    )
+    graph = load_graph(
+        _staging(tmp_path / "twins", {"sales.yml": DOMAIN_YML, "copy.yml": twin}) / "semantic_layer"
+    )
+    con = _duck_connection(registry)
+    request = {"metrics": ["sales::orders.orders_total"]}
+    assert plan_query(graph, request, con).identities == ("sales::orders.orders_total",)
+
+    with pytest.raises(PlannerError) as ambiguous:
+        plan_query(graph, {"metrics": ["orders_total"]}, con)
+    assert ambiguous.value.code == "ambiguous_metric"
+    assert set(ambiguous.value.candidates) == {
+        "sales::orders.orders_total",
+        "sales_copy::copy_orders.orders_total",
+    }
+
+    single = load_graph(_domain_staging(tmp_path / "one") / "semantic_layer")
+    assert plan_query(single, {"metrics": ["orders_total"]}, con).identities == (
+        "sales::orders.orders_total",
+    )
+
+
 # --- Digest-bound report -------------------------------------------------------
 
 
