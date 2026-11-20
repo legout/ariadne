@@ -47,7 +47,7 @@ NEW_ORIGINAL_DIGEST = "f2c5e1f6b876265dd960ec3ba18ea48fd005e5c36996e3e525ec06328
 
 # the cited model source is retained like any original: genuine bytes, artifact-derived digest
 MODEL_SOURCE = "model-retail_sales"
-COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
+COMPUTATION_ENTITY = "entity:retail-sales-orders-revenue-computation"
 
 BASELINE_PAGE = """---
 id: "entity:managed-baseline"

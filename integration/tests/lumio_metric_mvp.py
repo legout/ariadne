@@ -812,7 +812,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
             m.setattr(DuckDBExecution, "__init__", no_execution)
             catalog = asyncio.run(discovery.list_metrics())
             assert isinstance(catalog, list) and isinstance(catalog[0], dict)
-            assert catalog[0]["name"] == "revenue"
+            assert catalog[0]["name"] == "retail_sales::orders.revenue"
             assert (
                 catalog[0]["bound_release"]
                 == json.loads(current_bytes(project))["bound_release"]["digest"]
@@ -847,7 +847,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                 ):
                     asyncio.run(getattr(deferred, name)(*args))
             assert cli(["list-metrics", "--project", str(project)]) == 0
-            assert json.loads(capsys.readouterr().out)[0]["name"] == "revenue"
+            assert json.loads(capsys.readouterr().out)[0]["name"] == "retail_sales::orders.revenue"
         # Q2 (spec0029 §1.2): the superseded refusals serve natively where
         # their native admission exists. This fixture pins no multi-fact
         # graph, so query_metrics now keeps the GRAPH-specific refusal (never

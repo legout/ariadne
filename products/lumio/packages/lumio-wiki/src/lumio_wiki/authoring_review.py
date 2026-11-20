@@ -1394,8 +1394,8 @@ def review_knowledge_changes(
         pages=page_changes,
         review_digest="",
     )
-    object.__setattr__(review, "review_digest", _record_digest(review, "review_digest"))
-    return review
+    # msgspec.structs.replace: frozen Structs reject object.__setattr__ on CPython 3.12
+    return msgspec.structs.replace(review, review_digest=_record_digest(review, "review_digest"))
 
 
 def review_authoring_candidate(
@@ -1452,8 +1452,8 @@ def review_authoring_candidate(
         knowledge=knowledge,
         review_digest="",
     )
-    object.__setattr__(review, "review_digest", _record_digest(review, "review_digest"))
-    return review
+    # msgspec.structs.replace: frozen Structs reject object.__setattr__ on CPython 3.12
+    return msgspec.structs.replace(review, review_digest=_record_digest(review, "review_digest"))
 
 
 def load_authoring_review_report(path: str | Path) -> AuthoringReview:

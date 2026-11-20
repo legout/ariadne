@@ -159,10 +159,9 @@ class ReviewService:
             knowledge=knowledge,
             review_digest="",
         )
-        object.__setattr__(
-            authoring,
-            "review_digest",
-            _record_digest(authoring, "review_digest"),
+        # msgspec.structs.replace: frozen Structs reject object.__setattr__ on CPython 3.12
+        authoring = msgspec.structs.replace(
+            authoring, review_digest=_record_digest(authoring, "review_digest")
         )
         checked = check_authoring_commit(task_kb, authoring, candidate)
         if not checked.matches_reviewed_candidate:
