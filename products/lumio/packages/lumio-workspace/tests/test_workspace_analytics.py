@@ -55,11 +55,11 @@ support_revision: 2
 policy_bindings:
   version: 1
   bindings:
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
       operations: [get_metric, query_metrics]
       enforcement: null
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:cancelled-orders}
       operations: [get_metric, query_metrics]
       enforcement: null
@@ -205,7 +205,7 @@ ariadne_profile:
   kind: metric
   metric_ref:
     model: retail_sales
-    metric: revenue
+    metric: orders.revenue
   required_policies:
     - namespace: urn:demo:retail
       entity_id: entity:retail-return-policy
@@ -281,7 +281,7 @@ def _git(cwd: Path, *arguments: str) -> str:
 
 
 MODEL_SOURCE = "model-retail_sales"
-COMPUTATION_ENTITY = "entity:retail-sales-revenue-computation"
+COMPUTATION_ENTITY = "entity:retail-sales-orders-revenue-computation"
 MODEL_DIGEST = hashlib.sha256(MODEL.encode("utf-8")).hexdigest()
 
 
