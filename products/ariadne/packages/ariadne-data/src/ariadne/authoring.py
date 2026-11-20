@@ -73,7 +73,6 @@ from ariadne.context import (  # noqa: F401 — the K1 generated-page seam (issu
     validate_inspection_candidate,
 )
 from ariadne.contract_inspection import _quote
-from ariadne.render import render
 from ariadne.semantic_graph import load_graph, metric_owners
 from ariadne.sources import _URI_SCHEME_RE, collection_resource, parse_resource, table_resource
 from ariadne.validate import (
@@ -112,53 +111,55 @@ def _authorize_dataset_sources(tree: Path, approved: set[str]) -> None:
     functions, direct file/URI scans, unqualified tables and identities outside
     the approved set never reach validation's source connection.
     """
-    for name, model in _model_entries(tree):
-        if len(model.datasets) > 1:
+    for model_name, model in _model_entries(tree):
+        for dataset in model.datasets.values():
+            _authorize_source(f"{model_name}.{dataset.name}", dataset.source, approved)
+
+
+def _authorize_source(name: str, source: str, approved: set[str]) -> None:
+    """One dataset source's table references against the approved registry."""
+    try:
+        statements = sqlglot.parse(
+            source if re.match(r"(?is)\s*(select|with)\b", source) else f"SELECT * FROM {source}",
+            dialect="duckdb",
+        )
+    except Exception as exc:
+        raise ValueError(f"model '{name}': the dataset source does not parse: {exc}") from exc
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError(f"model '{name}': the dataset source must be exactly one SELECT or table")
+    parsed = statements[0]
+    ctes = {cte.alias_or_name for cte in parsed.find_all(exp.CTE)}
+    names = ", ".join(sorted(approved)) or "none approved yet"
+    for table in parsed.find_all(exp.Table):
+        this = table.this
+        if not isinstance(this, exp.Identifier):
             raise ValueError(
-                f"model '{name}': multi-dataset (domain-layout) models are refused "
-                "at the source-access boundary until authorization understands the "
-                "normalized graph — submit one dataset per model"
+                f"model '{name}': the dataset source uses the table function "
+                f"{this.name or type(this).__name__}(...) — only SELECT/joins over "
+                f"approved registry tables ({names}) enter validation; raw scans "
+                "of server files or object URIs are refused before any execution"
             )
-        try:
-            rendered = render(model)
-        except Exception:  # RenderError et al.: the compile gate owns the error
+        ref = table.sql(dialect="duckdb")
+        if table.catalog or table.db:
+            if (table.catalog or table.db) not in approved:
+                raise ValueError(
+                    f"model '{name}': {ref} is not an approved source registry "
+                    f"identity (approved: {names}) — validation never opens "
+                    "locations outside the approved registry"
+                )
+        elif table.name in ctes:
             continue
-        try:
-            parsed = sqlglot.parse_one(rendered, dialect="duckdb")
-        except Exception:
-            continue  # render() re-parses its output; unreachable in practice
-        ctes = {cte.alias_or_name for cte in parsed.find_all(exp.CTE)}
-        names = ", ".join(sorted(approved)) or "none approved yet"
-        for table in parsed.find_all(exp.Table):
-            this = table.this
-            if not isinstance(this, exp.Identifier):
-                raise ValueError(
-                    f"model '{name}': the dataset source uses the table function "
-                    f"{this.name or type(this).__name__}(...) — only SELECT/joins over "
-                    f"approved registry tables ({names}) enter validation; raw scans "
-                    "of server files or object URIs are refused before any execution"
-                )
-            ref = table.sql(dialect="duckdb")
-            if table.catalog or table.db:
-                if (table.catalog or table.db) not in approved:
-                    raise ValueError(
-                        f"model '{name}': {ref} is not an approved source registry "
-                        f"identity (approved: {names}) — validation never opens "
-                        "locations outside the approved registry"
-                    )
-            elif table.name in ctes:
-                continue
-            elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
-                raise ValueError(
-                    f"model '{name}': the dataset source scans {table.name!r} directly "
-                    "— only SELECT/joins over approved registry tables enter validation; "
-                    "direct file/URI scans are refused before any execution"
-                )
-            else:
-                raise ValueError(
-                    f"model '{name}': table '{table.name}' is unqualified — qualify "
-                    f"tables with an approved source name ({names})"
-                )
+        elif "/" in table.name or _URI_SCHEME_RE.match(table.name):
+            raise ValueError(
+                f"model '{name}': the dataset source scans {table.name!r} directly "
+                "— only SELECT/joins over approved registry tables enter validation; "
+                "direct file/URI scans are refused before any execution"
+            )
+        else:
+            raise ValueError(
+                f"model '{name}': table '{table.name}' is unqualified — qualify "
+                f"tables with an approved source name ({names})"
+            )
 
 
 def _graph_citation_errors(tree: Path) -> list[str]:
