@@ -559,7 +559,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         coverage."""
         edge_targets = {edge.name: edge.to_dataset for edge in graph.relationships}
         dependencies: dict[str, list[str | None]] = {}
-        for name, identity in zip(plan.metrics, plan.identities, strict=True):
+        for identity in plan.identities:
             members = set(_closure(graph, identity))
             datasets: list[str] = []
             for branch in plan.branches:
@@ -571,14 +571,14 @@ class _QueryRuntimeSession(_DiscoverySession):
                         if target is not None and target not in datasets:
                             datasets.append(target)
             if not datasets:
-                dependencies[name] = [None]  # no provable branch correspondence
+                dependencies[identity] = [None]  # no provable branch correspondence
                 continue
             resolved: list[str | None] = []
             for dataset in datasets:
                 for resource in self._dataset_resources(graph.datasets[dataset].source):
                     if resource not in resolved:
                         resolved.append(resource)
-            dependencies[name] = resolved
+            dependencies[identity] = resolved
         return dependencies
 
     def _admitted(self) -> tuple[SemanticGraph, dict]:

@@ -302,28 +302,28 @@ datasets:
 # A dataset source that reads through a CTE: the alias is NOT a physical
 # dependency — the resolved dependency is exactly demo's orders table.
 CTE_MODEL_YML = MODEL_YML.replace(
-    "        source: demo.main.orders\n",
-    "        source: WITH recent AS (SELECT order_id, region, amount FROM"
+    "  source: demo.main.orders\n",
+    "  source: WITH recent AS (SELECT order_id, region, amount FROM"
     " demo.main.orders) SELECT order_id, region, amount FROM recent\n",
 )
 
 # A same-named CTE over the OTHER source's same-named table: scope-aware
 # resolution must return archive's asset, never demo's same-named orders.
 CTE_SHADOW_MODEL_YML = MODEL_YML.replace(
-    "        source: demo.main.orders\n",
-    "        source: WITH orders AS (SELECT order_id, region, amount FROM"
+    "  source: demo.main.orders\n",
+    "  source: WITH orders AS (SELECT order_id, region, amount FROM"
     " archive.main.orders) SELECT order_id, region, amount FROM orders\n",
 ).replace(
-    "        expression: COUNT(*)\n",
-    "        expression: SUM(amount)\n",
+    "      sql: COUNT(*)\n",
+    "      sql: SUM(source.amount)\n",
 )
 
 # Fix 1: a predicate-subquery read is a physical dependency. The archive
 # table's ids filter the answer, so its asset — and only its asset — carries
 # its report; the IN-subquery table is exactly the second dependency.
 SUBQUERY_MODEL_YML = MODEL_YML.replace(
-    "        source: demo.main.orders\n",
-    "        source: SELECT order_id, region, amount FROM demo.main.orders"
+    "  source: demo.main.orders\n",
+    "  source: SELECT order_id, region, amount FROM demo.main.orders"
     " WHERE order_id IN (SELECT order_id FROM archive.main.orders)\n",
 )
 
@@ -1287,16 +1287,16 @@ version: 1
 relationships:
   - name: live_region
     cardinality: many_to_one
-    from_dataset: live_orders
-    from_fields: [region]
-    to_dataset: regions
-    to_fields: [region]
+    from: live_orders
+    from_columns: [region]
+    to: regions
+    to_columns: [region]
   - name: archive_region
     cardinality: many_to_one
-    from_dataset: archive_orders
-    from_fields: [region]
-    to_dataset: regions
-    to_fields: [region]
+    from: archive_orders
+    from_columns: [region]
+    to: regions
+    to_columns: [region]
 conformed_dimensions:
   - name: region
     members:
@@ -1430,15 +1430,15 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     # metric lists exactly its own fact's canonical asset
     metrics = {entry["name"]: entry for entry in signals["metrics"]}
     assert set(metrics) == {
-        "live_orders_total",
-        "archive_orders_total",
-        "combined_orders_total",
+        "facts::live_orders.live_orders_total",
+        "facts::archive_orders.archive_orders_total",
+        "facts::combined_orders_total",
     }
-    assert metrics["live_orders_total"]["assets"] == [demo_resource]
-    assert metrics["archive_orders_total"]["assets"] == [archive_resource]
+    assert metrics["facts::live_orders.live_orders_total"]["assets"] == [demo_resource]
+    assert metrics["facts::archive_orders.archive_orders_total"]["assets"] == [archive_resource]
     # the derived metric's closure provably spans exactly its two facts (the
     # plan's sorted branch order), never the shared lookup or anything else
-    assert metrics["combined_orders_total"]["assets"] == [archive_resource, demo_resource]
+    assert metrics["facts::combined_orders_total"]["assets"] == [archive_resource, demo_resource]
     assert all(entry["coverage"] == "unknown" for entry in metrics.values())
 
     # EXACT IDENTITY (AC3): the archive report stays on archive's asset and
@@ -1476,8 +1476,11 @@ def test_query_metrics_associates_each_metric_with_its_own_facts_exact_identity(
     assert zone_rows["north"]["live_orders_total"] == 300.0  # hand-derived
     assert zone_rows["south"]["archive_orders_total"] == 1300.0
     zone_metrics = {entry["name"]: entry for entry in zone["data_signals"]["metrics"]}
-    assert zone_metrics["live_orders_total"]["assets"] == [demo_resource, regions_resource]
-    assert zone_metrics["archive_orders_total"]["assets"] == [
+    assert zone_metrics["facts::live_orders.live_orders_total"]["assets"] == [
+        demo_resource,
+        regions_resource,
+    ]
+    assert zone_metrics["facts::archive_orders.archive_orders_total"]["assets"] == [
         archive_resource,
         regions_resource,
     ]
@@ -1584,7 +1587,7 @@ def _bounds_project(tmp_path: Path, *, with_reports: bool):
     runtime, _project = _admit_project(tmp_path, files)
     snapshot = runtime._context_snapshot
     dependencies: dict[str, list[str | None]] = {
-        f"{name}_count": [resource] for name, resource in resources.items()
+        f"{name}::{name}.{name}_count": [resource] for name, resource in resources.items()
     }
     return snapshot, dependencies, resources
 
@@ -1610,11 +1613,18 @@ def test_reader_bounds_truncate_explicitly_never_silently_narrowing(tmp_path, mo
     # coverage degrades to partial with the elision counted under omitted
     monkeypatch.setattr(context, "DATA_SIGNALS_MAX_REPORTS", 3)
     view = context.data_signals_pinned(snapshot, dependencies)
-    assert [entry["name"] for entry in view["metrics"]] == ["ta_count", "tb_count", "tc_count"]
+    assert [entry["name"] for entry in view["metrics"]] == [
+        "ta::ta.ta_count",
+        "tb::tb.tb_count",
+        "tc::tc.tc_count",
+    ]
     metrics = {entry["name"]: entry for entry in view["metrics"]}
-    assert metrics["tc_count"]["assets"] == [None] and metrics["tc_count"]["coverage"] == "partial"
-    assert metrics["tb_count"]["coverage"] == "partial"
-    assert metrics["ta_count"]["coverage"] == "unknown"  # no applicability was established
+    assert (
+        metrics["tc::tc.tc_count"]["assets"] == [None]
+        and metrics["tc::tc.tc_count"]["coverage"] == "partial"
+    )
+    assert metrics["tb::tb.tb_count"]["coverage"] == "partial"
+    assert metrics["ta::ta.ta_count"]["coverage"] == "unknown"  # no applicability was established
     assets = {entry["resource"]: entry for entry in view["assets"]}
     assert set(assets) == {resources["ta"], resources["tb"]}
     assert len(assets[resources["tb"]]["reports"]) == 1  # the second was elided
@@ -1629,7 +1639,7 @@ def test_reader_bounds_truncate_explicitly_never_silently_narrowing(tmp_path, mo
     # (c) the total byte ceiling: re-assessing under a budget one byte below
     # the full view's size must elide trailing reports until it fits — the
     # same explicit truncation contract, never a silent narrowing
-    single: dict[str, list[str | None]] = {"ta_count": [resources["ta"]]}
+    single: dict[str, list[str | None]] = {"ta::ta.ta_count": [resources["ta"]]}
     one = context.data_signals_pinned(snapshot, single)
     assert one["truncated"] is False and len(one["assets"][0]["reports"]) == 2
     size = len(json.dumps(one, ensure_ascii=False).encode("utf-8"))
