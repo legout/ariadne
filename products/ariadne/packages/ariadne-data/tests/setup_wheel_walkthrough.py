@@ -61,7 +61,7 @@ def native_page(kind, title, resource, body):
         policy_extra = (
             "  metric_ref:\n"
             "    model: events\n"
-            f"    metric: {title}\n"
+            f"    metric: events.{title}\n"
             "  required_policies:\n"
             '    - namespace: "urn:uuid:wheel-walkthrough"\n'
             '      entity_id: "entity:all-events-count"\n'
@@ -392,7 +392,7 @@ def main():
             "--confirm",
         )
         metrics = command("ariadne", "list-metrics", "--project", str(project), structured=True)
-        assert any(m["name"] == "event_count" for m in metrics)
+        assert metrics[0]["name"] == "events::events.event_count"  # spec 0039 §6 identity
         result = command(
             "ariadne", "get-metric", "event_count", "--project", str(project), structured=True
         )

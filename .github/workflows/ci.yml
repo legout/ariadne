@@ -141,9 +141,13 @@ jobs:
           cd /tmp
           /tmp/smoke/bin/python \
             "$GITHUB_WORKSPACE/products/ariadne/packages/ariadne-data/tests/setup_wheel_walkthrough.py"
-      - name: Lumio installed-wheel check
+      - name: Lumio installed-wheel check (SDK-only venv, as in release.yml)
         run: |
-          /tmp/smoke/bin/python -I products/lumio/scripts/verify_lumio_wiki_wheel.py \
+          uv venv --python 3.13 /tmp/smoke-wiki
+          uv pip install --python /tmp/smoke-wiki/bin/python \
+            dist/sdk/lumio_wiki-*.whl
+          /tmp/smoke-wiki/bin/python -I \
+            products/lumio/scripts/verify_lumio_wiki_wheel.py \
             dist/sdk/lumio_wiki-*.whl products/lumio/tests/fixtures/valid products/lumio/tests/fixtures/categorized_kb
 
   # Issue #180, AC6: run the canonical onboarding journey
