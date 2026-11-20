@@ -504,6 +504,13 @@ def parse_model(doc: dict, file: str) -> ParsedModel:
     for m in doc.get("metrics") or []:
         mwhere = f"{where} metric '{m['name']}'"
         data = extension_data(m, "metric", mwhere)
+        if m["name"] in dataset_metrics:
+            raise OssieError(
+                f"{where}: the model-scoped metric '{m['name']}' and the dataset-scoped metric "
+                f"'{dataset_metrics[m['name']].declared_on}' → '{dataset_metrics[m['name']].name}' "
+                "share the identity "
+                f"'{metric_identity(model_name, m['name'])}'; rename one of them"
+            )
         parsed = _lower_model_metric(m, datasets, dataset_metrics, field_trees, where)
         metrics[parsed.key] = _with_extension(parsed, data, mwhere)
     relationships: list[dict] = []

@@ -170,6 +170,15 @@ def test_a_metric_named_like_a_source_column_is_not_its_own_dependency(tmp_path)
         runtime.con.close()
 
 
+def test_a_model_metric_named_like_a_dataset_metric_identity_is_refused():
+    """Model metric `orders.revenue` and dataset `orders` metric `revenue` share the
+    identity `orders::orders.revenue`: the model is refused naming both."""
+    model = _model([_metric("revenue", "SUM(x)")], [_field("x", "x")], source="t")
+    model["metrics"] = [{"name": "orders.revenue", "expression": {"sql": "SUM(orders.x)"}}]
+    with pytest.raises(ValueError, match=r"orders.revenue.*orders.*revenue.*share the identity"):
+        render(model, [])
+
+
 def test_a_field_referencing_another_field_is_refused():
     """Ossie 0.3 (spec 0039 §5.3.1): a field expression names source columns only."""
     model = _model(
