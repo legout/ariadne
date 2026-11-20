@@ -194,6 +194,32 @@ def test_derived_metric_composes_aggregates_and_executes():
         con.close()
 
 
+def test_governed_arithmetic_divides_truly_and_rounds_half_away_from_zero():
+    """AC5, hand-worked: a = 2, 3 and b = 1, 1 give SUM(a) / SUM(b) = 5 / 2 = 2.5
+    (true division of integer sums); ROUND(-2.5) = -3 and ROUND(2.5) = 3."""
+    model = _model(
+        [
+            _metric("ratio", "SUM(a) / SUM(b)"),
+            _metric("rounded_neg", "ROUND(SUM(n))"),
+            _metric("rounded_pos", "ROUND(SUM(p))"),
+        ],
+        [_field("a", "a"), _field("b", "b"), _field("n", "n"), _field("p", "p")],
+        source="t",
+    )
+    con = duckdb.connect()
+    try:
+        con.execute(
+            "CREATE TABLE t AS SELECT * FROM (VALUES (1, 2, 1, -2.5, 2.5), (2, 3, 1, 0.0, 0.0))"
+            " v(order_id, a, b, n, p)"
+        )
+        sql = render(model, [])
+        row = con.sql(sql).fetchall()[0]  # sql is render() compile output
+        columns = [c[0] for c in con.sql(sql).description]
+        assert dict(zip(columns, row)) == {"ratio": 2.5, "rounded_neg": -3.0, "rounded_pos": 3.0}
+    finally:
+        con.close()
+
+
 def test_derived_metric_reusing_one_measure_twice_keeps_it_once():
     model = _model(
         [_metric("base", "SUM(x)")],

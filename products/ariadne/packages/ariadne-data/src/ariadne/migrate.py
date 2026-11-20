@@ -536,6 +536,7 @@ def migrate_project(project: str | Path) -> dict:
     ``{"status": "proposal", "proposal": ..., "revision": ..., "files": [...]}``
     after writing, and raises :class:`MigrationError` (project unchanged) with
     the per-file report when a construct cannot be converted."""
+    from ariadne import admission, proposals
     from ariadne.authoring import AuthoringProject  # local: authoring imports a lot
 
     root = Path(project)
@@ -575,20 +576,27 @@ def migrate_project(project: str | Path) -> dict:
         revision = result["revision"]
         written.append(rel)
     batch = [
-        {"path": rel.removeprefix("knowledge/"), "content": t}
-        for rel, t in pages.items()
-        if rel.startswith("knowledge/")
+        {"path": rel, "content": t} for rel, t in pages.items() if rel.startswith("knowledge/")
     ]
     if batch:
         revision = api.edit_pages_batch(started["proposal"], revision, batch)["revision"]
-        written.extend(f"knowledge/{p['path']}" for p in batch)
+        written.extend(page["path"] for page in batch)
     if "context_integration.yaml" in pages:
-        result = api.edit_proposal(
-            started["proposal"],
-            revision,
-            {"kind": "context_integration", "content": pages["context_integration.yaml"]},
+        # no typed edit kind carries the selector: commit it in the proposal's own
+        # worktree and record the commit like a human reconcile (admission stays a
+        # separate, human-only step)
+        tree = root / ".ariadne" / "worktrees" / started["proposal"]
+        (tree / "context_integration.yaml").write_text(
+            pages["context_integration.yaml"], encoding="utf-8"
         )
-        revision = result["revision"]
+        for args in (
+            ("add", "--", "context_integration.yaml"),
+            ("commit", "-q", "-m", "migrate: Ossie 0.3 metric identities in the selector"),
+        ):
+            proposals._git(list(args), tree)
+        head = proposals._git(["rev-parse", "HEAD"], tree).stdout.strip()
+        admission.reconcile(root, started["proposal"], revision, head)
+        revision = head
         written.append("context_integration.yaml")
     return {
         "status": "proposal",
