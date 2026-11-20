@@ -286,7 +286,7 @@ def _bound_release(root: Path):
     selector = yaml.safe_load(selector_path.read_text())
     selector["policy_bindings"]["bindings"].extend(
         {
-            "subject": {"kind": "metric", "identity": f"retail_sales::{metric}"},
+            "subject": {"kind": "metric", "identity": f"retail_sales::orders.{metric}"},
             "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
             "operations": ["get_metric", "query_metrics"],
             "enforcement": None,

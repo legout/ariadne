@@ -17,7 +17,7 @@ ariadne_profile:
   kind: metric
   metric_ref:
     model: "retail_sales"
-    metric: "revenue"
+    metric: "orders.revenue"
   required_policies:
     - namespace: "urn:demo:retail"
       entity_id: "entity:retail-return-policy"

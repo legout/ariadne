@@ -180,13 +180,13 @@ def multi_metric_release(root: Path):
     selector["policy_bindings"]["bindings"].extend(
         [
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
             },
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::completed_orders"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.completed_orders"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
@@ -969,7 +969,7 @@ def t2_reference_candidate(root: Path):
     selector = yaml.safe_load((tree / "context_integration.yaml").read_text())
     selector["policy_bindings"]["bindings"].append(
         {
-            "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+            "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
             "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
             "operations": ["get_metric", "query_metrics"],
             "enforcement": None,
@@ -1787,23 +1787,23 @@ def _p1_bindings(orders_resource: str, status_resource: str) -> dict:
         "version": 1,
         "bindings": [
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:retail-return-policy"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
             },
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["query_metrics"],
                 "enforcement": {
                     "check": "graph.relationship_audit",
-                    "definition": "retail_sales::revenue",
+                    "definition": "retail_sales::orders.revenue",
                     "dependencies": [orders_resource],
                 },
             },
             {
-                "subject": {"kind": "computation", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "computation", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
@@ -1835,7 +1835,7 @@ def _p1_computation_page() -> str:
         "  kind: computation\n"
         "  core_ref:\n"
         "    kind: semantic\n"
-        '    id: "retail_sales::revenue"\n'
+        '    id: "retail_sales::orders.revenue"\n'
         "  required_policies:\n"
         f'    - namespace: "{NAMESPACE}"\n'
         '      entity_id: "entity:cancelled-orders"\n'
@@ -2033,7 +2033,7 @@ def _p1_refusal_bindings(case: str, bindings: dict) -> dict:
     elif case == "invented-obligation":
         mutated["bindings"].append(
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {
                     "namespace": NAMESPACE,
                     "entity_id": "entity:order-label-hygiene",
@@ -3300,7 +3300,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         # planner contract (the issue #29 post-aggregate design) refuses the
         # exact request with the STABLE PlannerError code before any result
         # SQL; only window-declared post-aggregate metrics take that shape.
-        # The derived metric still consumes retail_sales::revenue, so the
+        # The derived metric still consumes retail_sales::orders.revenue, so the
         # binding obligation itself is exercised by the derived-only leg below
         with pytest.raises(PlannerError) as caught:
             asyncio.run(
@@ -3319,7 +3319,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         assert "relationship audit 'not-run'" in str(caught.value)  # the audit-not-passed leg
 
         # F3: the derived-only request carries no executable binding of its
-        # own, but it CONSUMES retail_sales::revenue — the obligation must be
+        # own, but it CONSUMES retail_sales::orders.revenue — the obligation must be
         # attested for the consumed dependency even though the requested
         # name alone appears nowhere in the binding inventory, refusing
         # before any result SQL while the audit is not-run

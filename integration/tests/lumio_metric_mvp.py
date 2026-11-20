@@ -78,7 +78,7 @@ support_revision: 2
 policy_bindings:
   version: 1
   bindings:
-    - subject: {kind: metric, identity: retail_sales::revenue}
+    - subject: {kind: metric, identity: retail_sales::orders.revenue}
       policy: {namespace: urn:demo:retail, entity_id: entity:retail-return-policy}
       operations: [get_metric, query_metrics]
       enforcement: null
@@ -377,7 +377,7 @@ def supported_candidate(root):
     selector["policy_bindings"]["bindings"].extend(
         [
             {
-                "subject": {"kind": "metric", "identity": "retail_sales::revenue"},
+                "subject": {"kind": "metric", "identity": "retail_sales::orders.revenue"},
                 "policy": {"namespace": NAMESPACE, "entity_id": "entity:cancelled-orders"},
                 "operations": ["get_metric", "query_metrics"],
                 "enforcement": None,
