@@ -25,7 +25,7 @@ a self-check before it is returned.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import sqlglot  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -76,6 +76,9 @@ class Slice:
     time_fields: tuple[str, ...]
     metrics: dict[str, str]
     name: str = "model"
+    # output name -> output names of the metrics it consumes through AGG; carried
+    # from the resolved AGG references, never inferred from column names
+    deps: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 def _agg_columns(sql: str, aliases: dict[str, str], context: str) -> str:
@@ -111,10 +114,12 @@ def build_slice(
     node = model.datasets[dataset]
     names = {key: (aliases or {}).get(key, key) for key in keys}
     metrics: dict[str, str] = {}
+    deps: dict[str, frozenset[str]] = {}
     for key in keys:
         metric = model.metrics[key]
         if metric.derived:
             metrics[names[key]] = _agg_columns(metric.expression, names, f"metric {key!r}")
+            deps[names[key]] = frozenset(names[dep] for dep in metric.deps)
         else:
             metrics[names[key]] = metric.expression
     fields = {name: f.sql for name, f in node.fields.items()}
@@ -131,6 +136,7 @@ def build_slice(
         time_fields=tuple(name for name, f in node.fields.items() if f.is_time),
         metrics=metrics,
         name=model.name,
+        deps=deps,
     )
 
 
@@ -181,20 +187,11 @@ def _source_subquery(source: str, context: str) -> exp.Subquery:
     return exp.Subquery(this=node)
 
 
-def _metric_references(tree, metric_names: set[str]) -> set[str]:
-    """Metric names referenced by an expression (columns that name a metric)."""
-    return {column.name for column in tree.find_all(exp.Column)} & metric_names
-
-
-def _metric_levels(metric_sqls: dict[str, str]) -> tuple[dict[str, int], dict[str, set[str]]]:
-    """Dependency level per metric (0 = aggregate) plus the dependency map.
-    Recursive resolution with explicit cycle detection naming the cycle."""
-    parsed: dict[str, Any] = {
-        name: _strip_qualifiers(_parse(sql, f"metric {name!r}"))
-        for name, sql in metric_sqls.items()
-    }
-    metric_names = set(metric_sqls)
-    deps = {name: _metric_references(tree, metric_names) for name, tree in parsed.items()}
+def _metric_levels(spec: Slice) -> tuple[dict[str, int], dict[str, set[str]]]:
+    """Dependency level per metric (0 = aggregate) plus the dependency map, from
+    the slice's resolved ``AGG`` dependencies. Recursive resolution with explicit
+    cycle detection naming the cycle."""
+    deps = {name: set(spec.deps.get(name, ())) & set(spec.metrics) for name in spec.metrics}
     levels: dict[str, int] = {}
 
     def visit(name: str, stack: list[str]) -> int:
@@ -211,7 +208,7 @@ def _metric_levels(metric_sqls: dict[str, str]) -> tuple[dict[str, int], dict[st
         levels[name] = level
         return level
 
-    for name in sorted(metric_sqls):
+    for name in sorted(spec.metrics):
         visit(name, [])
     return levels, deps
 
@@ -286,7 +283,7 @@ def render(
         raise RenderError(
             f"unknown metric {metric!r}; available metrics: {', '.join(sorted(metric_sqls))}"
         )
-    levels, deps = _metric_levels(metric_sqls)
+    levels, deps = _metric_levels(spec)
     metric_names = set(metric_sqls)
     wanted = _closure(metric, deps) if metric is not None else metric_names
     carried = set(carry or ())

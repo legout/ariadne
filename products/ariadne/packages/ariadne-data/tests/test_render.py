@@ -135,6 +135,41 @@ def test_a_substituted_field_expression_keeps_its_grouping():
         con.close()
 
 
+def test_a_metric_named_like_a_source_column_is_not_its_own_dependency(tmp_path):
+    """`total = SUM(source.total)` has no field `total`: it is a plain measure.
+    The served catalog loads, the metric compiles and answers 2 + 3 = 5, and a
+    sibling metric still answers (row count 2)."""
+    from ariadne.query import _QueryRuntimeSession
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "vals.csv").write_text("total\n2\n3\n", encoding="utf-8")
+    models = tmp_path / "semantic_layer" / "models"
+    models.mkdir(parents=True)
+    (models / "m.yml").write_text(
+        "version: 0.3.0.dev0\nname: m\ndatasets:\n- name: vals\n  source: vals.vals\n"
+        "  fields:\n  - name: n\n    expression:\n      sql: total\n"
+        "  metrics:\n  - name: total\n    expression:\n      sql: SUM(source.total)\n"
+        "  - name: rows\n    expression:\n      sql: COUNT(*)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "context_layer").mkdir()
+    registry = tmp_path / "ariadne.yaml"
+    registry.write_text(
+        f"sources:\n  - name: vals\n    type: csv\n    path: {tmp_path / 'data' / 'vals.csv'}\n",
+        encoding="utf-8",
+    )
+    runtime = _QueryRuntimeSession(
+        models.parent, tmp_path / "context_layer", None, sources=str(registry)
+    )
+    try:
+        spec, _alias = runtime._metric_slice("m::vals.total")
+        cursor = runtime.con.sql(render(spec))  # sql is render() output
+        row = dict(zip(cursor.columns, cursor.fetchall()[0]))
+        assert row == {"rows": 2, "total": 5}
+    finally:
+        runtime.con.close()
+
+
 def test_a_field_referencing_another_field_is_refused():
     """Ossie 0.3 (spec 0039 §5.3.1): a field expression names source columns only."""
     model = _model(
