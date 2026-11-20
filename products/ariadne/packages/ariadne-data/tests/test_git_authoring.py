@@ -1258,7 +1258,41 @@ def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
     assert error["type"] == "ValueError" and "stale" in error["message"]
 
 
-def test_an_unparseable_draft_model_is_a_recoverable_validation_error(tmp_path):
+@pytest.mark.parametrize(
+    ("second_source", "refusal"),
+    [
+        ("elsewhere.main.t", "not an approved source registry identity"),
+        ("read_parquet('/etc/x.parquet')", "table function"),
+    ],
+    ids=["unapproved-catalog", "table-function"],
+)
+def test_every_dataset_source_of_a_model_passes_the_source_access_boundary(
+    tmp_path, second_source, refusal
+):
+    """A two-dataset model: the first dataset reads the approved registry, the
+    second reads outside it. The boundary checks EVERY dataset's own source and
+    names the offending dataset, before any audit execution."""
+    two_datasets = MODEL_YML + (
+        "- name: second\n"
+        f"  source: {second_source}\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n  - name: id\n    expression:\n      sql: id\n"
+    )
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": "events", "content": two_datasets},
+    )
+    result = api.validate_proposal(started["proposal"], edited["revision"])
+    assert result["ok"] is False
+    assert any("events.second" in e and refusal in e for e in result["errors"]), result["errors"]
+
+
+def test_an_unparsable_draft_model_is_a_recoverable_validation_error(tmp_path):
     """The edit seam deliberately accepts invalid DRAFT content (spec §3), so a
     model whose YAML does not parse is a validation ERROR — never a crash of
     the finalize pass — leaving the proposal repairable with actionable
