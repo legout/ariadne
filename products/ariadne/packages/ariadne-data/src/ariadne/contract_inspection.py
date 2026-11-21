@@ -1155,6 +1155,7 @@ def observe_contracts(
             ),
             budget=budget,
             selected_assets=[binding.asset for binding in pending],
+            locked=True,
         )
     except ValueError as exc:
         # DeadlineExhausted (its subclass) or a redacted setup refusal — the

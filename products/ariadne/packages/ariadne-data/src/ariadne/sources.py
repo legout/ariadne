@@ -995,9 +995,7 @@ def plan(registry: Registry, read_only: bool = True) -> tuple[list[str], list[st
                     "approval before any open; rotating credentials alone is not a "
                     "destination change"
                 )
-            statements.append(
-                f"ATTACH '{_noquotes(dsn)}' AS {src.name} (TYPE POSTGRES{suffix})"
-            )
+            statements.append(f"ATTACH '{_noquotes(dsn)}' AS {src.name} (TYPE POSTGRES{suffix})")
         elif src.type == "delta":
             _want(loads, "delta")
             if _is_remote(src.path):
@@ -1041,6 +1039,7 @@ def build_connection(
     *,
     deadline: float | None = None,
     selected_assets: list[dict] | None = None,
+    locked: bool = False,
 ) -> tuple[duckdb.DuckDBPyConnection, list[dict]]:
     """The one DuckDB session for all commands: executes
     :func:`plan` verbatim and returns ``(connection, catalog)``. The catalog
@@ -1115,6 +1114,8 @@ def build_connection(
             else {"name": src.name, "type": src.type, "tables": []}
             for src in requested
         ]
+        if locked:
+            lock_down(con, registry)
     except Exception as exc:
         # a failing setup CLOSES the connection it
         # opened — no leaked session/read survives the refused setup (the
@@ -1128,6 +1129,106 @@ def build_connection(
         if timer is not None:
             timer.cancel()  # setup ended: no background interrupt keeps running
     return con, catalog
+
+
+def _local(path: str) -> list[str]:
+    """The lexical and the symlink-resolved absolute form of one local path."""
+    return sorted({os.path.abspath(path), os.path.realpath(path)})
+
+
+_SCAN_FUNCTIONS = {
+    "read_parquet", "read_csv", "read_csv_auto", "read_json", "read_json_auto",
+    "delta_scan", "iceberg_scan",
+}  # fmt: skip
+
+
+def _catalog_backing(con: duckdb.DuckDBPyConnection, catalog: str) -> list[str]:
+    """The literal paths/URIs read by the views of one ATTACHED approved native
+    catalog. A view whose backing access is not a literal (dynamic SQL, an
+    unknown table function, a non-literal argument) contributes nothing, so it
+    stays locked and fails with the engine's permission error at audit."""
+    import sqlglot
+    from sqlglot import exp
+
+    found: list[str] = []
+    rows = con.execute(
+        "SELECT sql FROM duckdb_views() WHERE database_name = ? AND NOT internal", [catalog]
+    ).fetchall()
+    for (view_sql,) in rows:
+        try:
+            tree = sqlglot.parse_one(view_sql, dialect="duckdb")
+        except Exception:
+            continue
+        for table in tree.find_all(exp.Table):
+            node = table.this
+            if isinstance(node, exp.Identifier):
+                if node.args.get("quoted") and (
+                    "/" in node.name or _URI_SCHEME_RE.match(node.name)
+                ):
+                    found.append(node.name)
+                continue
+            fname = node.sql_name().lower() if hasattr(node, "sql_name") else ""
+            if fname == "anonymous":
+                fname = str(node.name).lower()
+            if fname not in _SCAN_FUNCTIONS:
+                continue
+            args = node.expressions
+            first = args[0] if args else None
+            literals = (
+                first.expressions if isinstance(first, exp.Array) else [first] if first else []
+            )
+            if literals and all(isinstance(x, exp.Literal) and x.is_string for x in literals):
+                found.extend(x.name for x in literals)
+    return found
+
+
+def lock_down(con: duckdb.DuckDBPyConnection, registry: Registry) -> None:
+    """Seal a fully set-up session (attaches, views and secrets are in place)
+    so it can read only what the APPROVED registry names: exact local files via
+    ``allowed_paths``, folder-shaped sources (Delta/Iceberg tables, glob
+    parents, the folders backing native catalogs and DuckLake data) and the S3
+    scopes of the used storage profiles via ``allowed_directories``; then
+    external access is disabled and the configuration locked. A parse-tree
+    guard is still needed for statements (spec 0037 B); this is the
+    defense-in-depth layer."""
+    paths: set[str] = set()
+    directories: set[str] = set()
+
+    def allow(raw: str, folder: bool = False) -> None:
+        if raw.startswith(("s3://", "s3a://", "s3n://")):
+            return  # covered by the used profiles' scopes below
+        if _is_remote(raw):
+            directories.add(raw.rsplit("/", 1)[0] + "/")
+        elif folder or any(c in raw for c in GLOB_CHARS):
+            base = raw
+            while any(c in base for c in GLOB_CHARS):
+                base = str(Path(base).parent)
+            directories.update(_local(base if folder else str(Path(base))))
+        else:
+            paths.update(_local(raw))
+
+    for src in registry.sources:
+        raw = src.path
+        if not raw or src.type == "postgres":
+            continue
+        if src.type == "ducklake":
+            raw = raw.removeprefix("ducklake:")
+        allow(raw, folder=src.type in {"delta", "iceberg"})
+        if src.type in {"duckdb", "ducklake"}:
+            directories.update(_local(str(Path(raw).parent)))
+        if src.type == "duckdb":
+            # ADR-0022: a native catalog is an operator-approved trusted source
+            # definition; the literal files its own views read are part of it.
+            for backing in _catalog_backing(con, src.name):
+                allow(backing, folder=backing.endswith("/"))
+    for profile in used_profiles(registry).values():
+        directories.update(profile.scopes)
+    for setting, values in (("allowed_paths", paths), ("allowed_directories", directories)):
+        if values:
+            literal = "[" + ", ".join(_sql_literal(v) for v in sorted(values)) + "]"
+            con.execute(f"SET {setting} = {literal}")
+    con.execute("SET enable_external_access = false")
+    con.execute("SET lock_configuration = true")
 
 
 def _redact(dsn: str) -> str:

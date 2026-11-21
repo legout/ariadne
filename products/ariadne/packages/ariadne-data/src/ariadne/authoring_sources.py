@@ -597,6 +597,7 @@ def inputs(
             selector=selector,
             budget=execution.DeadlineBudget(limits["execution_seconds"]),
             payload_bytes=limits["response_bytes"],
+            locked=True,
         )
     seed_notes = None
     notes_blob = proposals._read_blob(project, revision, authoring_inputs.SEED_NOTES_REL.as_posix())

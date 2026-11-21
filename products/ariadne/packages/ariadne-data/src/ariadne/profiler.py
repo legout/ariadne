@@ -632,6 +632,7 @@ def profile(
     selector: tuple[str, str] | None = None,
     budget=None,
     payload_bytes: int | None = None,
+    locked: bool = False,
 ) -> dict:
     """Profile every table of every source, or one exact ``(source, table)``
     selector (shapes documented in the module docstring): the legacy
@@ -676,7 +677,7 @@ def profile(
         raise ValueError("profile requires db_path, sources_path or registry")
     if selector is not None and selector[0] not in {source.name for source in reg.sources}:
         raise ValueError("selector source is not present in the approved registry")
-    execution = DuckDBExecution(reg, budget=budget)
+    execution = DuckDBExecution(reg, budget=budget, locked=locked)
     con, catalog = execution.con, execution.catalog
     try:
         if selector is not None:

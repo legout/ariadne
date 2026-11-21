@@ -202,9 +202,9 @@ def _audit_execution(
     Git Authoring path; internal numerical callers may supply a registry path
     or a single SQLite database."""
     if registry is not None:
-        return DuckDBExecution(registry)
+        return DuckDBExecution(registry, locked=True)
     if sources_path is not None:
-        return DuckDBExecution(load_registry(sources_path))
+        return DuckDBExecution(load_registry(sources_path), locked=True)
     if db_path is None:
         raise ValueError("live audit requires an explicit source registry or database connection")
     return DuckDBExecution.legacy_sqlite(db_path)

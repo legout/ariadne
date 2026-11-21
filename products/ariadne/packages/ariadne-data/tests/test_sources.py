@@ -1030,17 +1030,17 @@ _SOURCES_NOTES = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: reference\n"
     "  native:\n"
     "    type: reference\n"
     '    title: "Registry notes"\n'
-    '    description: The registry fixtures governing notes.\n'
+    "    description: The registry fixtures governing notes.\n"
     "    tags:\n      - registry\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "---\n\n# Registry notes\n\nThe registry-backed orders fixtures.\n"
 )
 _SOURCES_METRIC_PAGE = (
@@ -1053,7 +1053,7 @@ _SOURCES_METRIC_PAGE = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: metric\n"
@@ -1067,7 +1067,7 @@ _SOURCES_METRIC_PAGE = (
     '    description: "Sum of order amounts."\n'
     "    tags: [metric]\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "    dimensions: []\n"
     "    governed_by: references/notes.md\n"
     "    grain:\n"
@@ -1162,10 +1162,9 @@ def test_canonical_resource_scheme_is_deterministic_and_credential_free():
 
     resource = table_resource("retail", None, "main", "orders")
     payload = json.dumps(["retail", None, "main", "orders"], separators=(",", ":"))
-    expected = (
-        "ariadne://table/"
-        + base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
-    )
+    expected = "ariadne://table/" + base64.urlsafe_b64encode(payload.encode("utf-8")).decode(
+        "ascii"
+    ).rstrip("=")
     assert resource == expected  # deterministic compact unpadded form
     kind, parts = parse_resource(resource)
     assert kind == "table" and parts == ["retail", None, "main", "orders"]
@@ -1193,3 +1192,82 @@ def test_canonical_resource_scheme_is_deterministic_and_credential_free():
     assert digest == hashlib.sha256(a.encode("utf-8")).hexdigest()  # digest identity
     assert len(digest) == 64
     assert filename_a != filename_b  # the digest preserves distinction
+
+
+def test_a_locked_connection_reads_approved_sources_and_nothing_else(tmp_path, sqlite_db):
+    """lock_down seals the session to the approved registry: parquet (exact file),
+    csv glob, sqlite attach and a native catalog whose view reads a file in a
+    SIBLING folder all still answer; an unapproved file next to the single-file
+    source, a file elsewhere, and any configuration change are refused."""
+    single, globs, backing, cats, outside = (
+        tmp_path / name for name in ("single", "globs", "backing", "cats", "outside")
+    )
+    for folder in (single, globs, backing, cats, outside):
+        folder.mkdir()
+    setup = duckdb.connect()
+    for target, value in (
+        (single / "one.parquet", 1),
+        (single / "unapproved.parquet", 2),
+        (outside / "secret.parquet", 3),
+        (backing / "b.parquet", 5),
+    ):
+        setup.execute(f"COPY (SELECT {value} AS n) TO '{target}' (FORMAT PARQUET)")
+    (globs / "part1.csv").write_text("n\n4\n", encoding="utf-8")
+    catalog = cats / "catalog.duckdb"
+    cat = duckdb.connect(str(catalog))
+    cat.execute(f"CREATE VIEW main.v AS SELECT * FROM read_parquet('{backing / 'b.parquet'}')")
+    cat.close()
+    registry = load_registry(
+        write_registry(
+            tmp_path,
+            [
+                {"name": "one", "type": "parquet", "path": str(single / "one.parquet")},
+                {"name": "parts", "type": "csv", "path": str(globs / "part*.csv"), "table": "p"},
+                {"name": "sq", "type": "sqlite", "path": str(sqlite_db)},
+                {"name": "cat", "type": "duckdb", "path": str(catalog)},
+            ],
+        )
+    )
+    con, _ = build_connection(registry, locked=True)
+    try:
+        assert con.execute("SELECT n FROM one.one").fetchall() == [(1,)]
+        assert con.execute("SELECT n FROM parts.p").fetchall() == [(4,)]
+        assert con.execute("SELECT count(*) FROM sq.orders").fetchall() == [(3,)]
+        assert con.execute("SELECT n FROM cat.v").fetchall() == [(5,)]
+        for path in (outside / "secret.parquet", single / "unapproved.parquet"):
+            with pytest.raises(duckdb.Error):
+                con.execute("SELECT * FROM read_parquet(?)", [str(path)])
+        with pytest.raises(duckdb.Error):
+            con.execute("SET enable_external_access = true")
+    finally:
+        con.close()
+
+
+def test_a_locked_native_catalog_reads_only_the_files_its_own_views_name(tmp_path):
+    """A native catalog view over a local parquet in a folder the registry never
+    names stays readable under lock (ADR-0022: the catalog's own definition is
+    approved); a view through an unrecognised scan function and any file outside
+    registry and catalog definitions stay unreadable."""
+    backing, other, cats = tmp_path / "backing", tmp_path / "other", tmp_path / "cats"
+    for folder in (backing, other, cats):
+        folder.mkdir()
+    setup = duckdb.connect()
+    setup.execute(f"COPY (SELECT 5 AS n) TO '{backing / 'b.parquet'}' (FORMAT PARQUET)")
+    setup.execute(f"COPY (SELECT 6 AS n) TO '{other / 'o.parquet'}' (FORMAT PARQUET)")
+    catalog = cats / "catalog.duckdb"
+    cat = duckdb.connect(str(catalog))
+    cat.execute(f"CREATE VIEW main.v AS SELECT * FROM read_parquet('{backing / 'b.parquet'}')")
+    cat.execute(f"CREATE VIEW main.dyn AS SELECT * FROM parquet_scan('{other / 'o.parquet'}')")
+    cat.close()
+    registry = load_registry(
+        write_registry(tmp_path, [{"name": "cat", "type": "duckdb", "path": str(catalog)}])
+    )
+    con, _ = build_connection(registry, locked=True)
+    try:
+        assert con.execute("SELECT n FROM cat.v").fetchall() == [(5,)]
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT n FROM cat.dyn").fetchall()
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT * FROM read_parquet(?)", [str(other / "o.parquet")])
+    finally:
+        con.close()

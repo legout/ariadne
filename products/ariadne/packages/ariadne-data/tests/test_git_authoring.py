@@ -1365,8 +1365,16 @@ def test_a_cte_name_exempts_a_table_only_inside_the_scope_that_defines_it(tmp_pa
             'WITH "/etc/x.parquet" AS (SELECT 1 AS id) SELECT id FROM "/etc/x.parquet"',
             "scans '/etc/x.parquet' directly",
         ),
+        # a quoted relative file name is a file scan unless it is a visible CTE
+        ('SELECT id FROM "secret.csv"', "scans 'secret.csv' directly"),
+        # WITH RECURSIVE is refused outright, in any case
+        (
+            "With ReCuRsIvE r AS (SELECT 1 AS id UNION ALL SELECT id FROM r WHERE id < 0) "
+            "SELECT id FROM r",
+            "WITH RECURSIVE is not allowed",
+        ),
     ],
-    ids=["self-reference", "earlier-sibling", "literal-path"],
+    ids=["self-reference", "earlier-sibling", "literal-path", "quoted-relative-file", "recursive"],
 )
 def test_cte_visibility_follows_duckdb_order_and_literal_paths_are_always_refused(
     tmp_path, source, refusal
@@ -1375,6 +1383,25 @@ def test_cte_visibility_follows_duckdb_order_and_literal_paths_are_always_refuse
     result = _validate_model_text(tmp_path, content)
     assert result["ok"] is False
     assert any(refusal in e for e in result["errors"]), result["errors"]
+
+
+def test_the_validation_connection_is_locked_when_the_parse_check_is_gone(tmp_path, monkeypatch):
+    """Scratch fault: with the source-access parse check disabled, a dataset source
+    that scans a file outside the approved registry still cannot read it — the
+    validation connection itself is locked down."""
+    from ariadne import authoring
+
+    secret = tmp_path / "secret.parquet"
+    duckdb.connect().execute(f"COPY (SELECT 1 AS id) TO '{secret}' (FORMAT PARQUET)")
+    source = f"SELECT id FROM read_parquet('{secret}')"
+    content = MODEL_YML.replace("source: events.events", f"source: {json.dumps(source)}")
+    with monkeypatch.context() as scratch:
+        scratch.setattr(authoring, "_authorize_statement", lambda *a, **k: None)
+        result = _validate_model_text(tmp_path / "p", content)
+    assert result["ok"] is False
+    assert any("file system operations are disabled" in e for e in result["errors"]), result[
+        "errors"
+    ]
 
 
 def test_a_path_named_like_a_cte_is_refused_in_the_compiled_sql_check():

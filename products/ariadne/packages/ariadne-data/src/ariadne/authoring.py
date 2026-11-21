@@ -164,24 +164,19 @@ def _authorize_statement(name: str, sql: str, approved: set[str]) -> None:
 
     def walk(node: Any, ctes: frozenset[str]) -> None:
         # DuckDB visibility: a CTE name is visible to the main query and to LATER
-        # sibling definitions only — not to its own (non-recursive) body nor to
-        # earlier siblings. A recursive self-reference is refused outright.
+        # sibling definitions only (compared case-insensitively, as DuckDB binds
+        # names). WITH RECURSIVE is refused outright.
         clause = node.args.get("with_") or node.args.get("with")
         main = ctes
         if clause is not None:
-            recursive = bool(clause.args.get("recursive"))
+            if clause.args.get("recursive"):
+                raise ValueError(
+                    f"model '{name}': WITH RECURSIVE is not allowed in a dataset source"
+                )
             visible = ctes
             for cte in clause.expressions:
-                if recursive and any(
-                    t.name == cte.alias_or_name and not t.db and not t.catalog
-                    for t in cte.this.find_all(exp.Table)
-                ):
-                    raise ValueError(
-                        f"model '{name}': the CTE '{cte.alias_or_name}' refers to itself — "
-                        "recursive CTEs are not allowed in a dataset source"
-                    )
                 walk(cte.this, visible)
-                visible = visible | {cte.alias_or_name}
+                visible = visible | {cte.alias_or_name.lower()}
             main = visible
         if isinstance(node, exp.Table):
             _authorize_table(name, node, ctes, approved, names)
@@ -204,6 +199,16 @@ def _authorize_table(
             "of server files or object URIs are refused before any execution"
         )
     ref = table.sql(dialect="duckdb")
+    qualified = bool(table.catalog or table.db)
+    visible_cte = not qualified and table.name.lower() in ctes
+    if this.args.get("quoted") and not qualified and not visible_cte:
+        # a quoted name that is no visible CTE may be a file or literal relation
+        # (DuckDB reads `"secret.csv"` and 's3://...' as files)
+        raise ValueError(
+            f"model '{name}': the dataset source scans {table.name!r} "
+            "directly — only SELECT/joins over approved registry tables enter "
+            "validation; direct file/URI scans are refused before any execution"
+        )
     if table.catalog or table.db:
         if (table.catalog or table.db) not in approved:
             raise ValueError(
@@ -217,7 +222,7 @@ def _authorize_table(
             "— only SELECT/joins over approved registry tables enter validation; "
             "direct file/URI scans are refused before any execution"
         )
-    elif table.name in ctes:
+    elif visible_cte:
         return
     else:
         raise ValueError(
@@ -2234,6 +2239,7 @@ def refresh_schema(
     owned = execution.DuckDBExecution(
         authoring_sources.identity_registry(approval["sources"], storage_bindings),
         budget=profiling_budget,
+        locked=True,
     )
     try:
         con, catalog = owned.con, owned.catalog
@@ -3154,6 +3160,7 @@ def inspect_mapping(
     owned = execution.DuckDBExecution(
         authoring_sources.identity_registry(approval["sources"], approval.get("storage_bindings")),
         budget=budget,
+        locked=True,
     )
     try:
         con, catalog = owned.con, owned.catalog
@@ -3605,7 +3612,9 @@ def _finalize_mapping_evidence(
         return revision, []
     asset_columns: dict[str, list[dict]] = {}
     if approval is not None:
-        owned = execution.DuckDBExecution(authoring_sources.identity_registry(approval["sources"]))
+        owned = execution.DuckDBExecution(
+            authoring_sources.identity_registry(approval["sources"]), locked=True
+        )
         try:
             asset_columns = _current_asset_columns(owned.catalog)
         finally:
