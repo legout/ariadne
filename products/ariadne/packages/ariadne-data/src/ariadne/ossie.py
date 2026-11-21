@@ -210,12 +210,10 @@ def agg_target(call: Any, context: str) -> tuple[str, str]:
 
 def _grouped(tree: Any) -> Any:
     """A substituted field expression keeps its grouping: it stays bare only when
-    provably atomic (column, literal, NULL, boolean, parenthesized, cast or a
-    plain function call); every operator node, ``AND``/``OR`` included, is
-    parenthesized (``price = a + b`` in ``price * units``)."""
-    operator = (exp.Binary, exp.Unary, exp.Connector)
-    atomic = (exp.Column, exp.Literal, exp.Paren, exp.Cast, exp.Null, exp.Boolean, exp.Func)
-    if isinstance(tree, atomic) and not isinstance(tree, operator):
+    it is a column, literal, NULL, boolean or already parenthesized; everything
+    else (functions, casts, CASE, operators) is parenthesized because the target
+    dialect may render a function-shaped node infix (``DATE_ADD`` as ``a + b``)."""
+    if isinstance(tree, (exp.Column, exp.Literal, exp.Paren, exp.Null, exp.Boolean)):
         return tree
     return exp.Paren(this=tree)
 

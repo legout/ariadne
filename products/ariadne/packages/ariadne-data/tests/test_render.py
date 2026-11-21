@@ -157,6 +157,37 @@ def test_a_substituted_boolean_field_keeps_its_grouping():
         con.close()
 
 
+def test_a_substituted_date_function_field_keeps_its_grouping():
+    """shifted = DATE_ADD(event_date, INTERVAL 1 DAY) renders infix in DuckDB.
+    For event_date = 2024-01-01, shifted is 2024-01-02, so 2024-01-05 - shifted is
+    3 days and the count of rows matching a three-day interval is 1 — in both scopes."""
+    model = _model(
+        [
+            _metric(
+                "scoped",
+                "SUM(CASE WHEN DATE '2024-01-05' - shifted = INTERVAL 3 DAY THEN 1 ELSE 0 END)",
+            )
+        ],
+        [_field("shifted", "DATE_ADD(event_date, INTERVAL 1 DAY)")],
+        source="t",
+    )
+    model["metrics"] = [
+        {
+            "name": "model_scoped",
+            "expression": {
+                "sql": "SUM(CASE WHEN DATE '2024-01-05' - orders.shifted = INTERVAL 3 DAY"
+                " THEN 1 ELSE 0 END)"
+            },
+        }
+    ]
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE t AS SELECT 1 AS order_id, DATE '2024-01-01' AS event_date")
+        assert con.sql(render(model, [])).fetchall() == [(1, 1)]
+    finally:
+        con.close()
+
+
 def test_a_metric_named_like_a_source_column_is_not_its_own_dependency(tmp_path):
     """`total = SUM(source.total)` has no field `total`: it is a plain measure.
     The served catalog loads, the metric compiles and answers 2 + 3 = 5, and a
