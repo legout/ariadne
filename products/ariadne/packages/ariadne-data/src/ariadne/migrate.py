@@ -534,29 +534,38 @@ def rewrite_identities(text: str, conv: Conversion) -> str:
     ``text`` unchanged when nothing maps."""
     mapping = {f"{m}::{old}": f"{m}::{key}" for (m, old), key in conv.metric_keys.items()}
     doc = yaml.safe_load(text)
-    bindings = (doc.get("policy_bindings") or {}).get("bindings") if isinstance(doc, dict) else None
-    changed = False
+    section = doc.get("policy_bindings") if isinstance(doc, dict) else None
+    bindings = section.get("bindings") if isinstance(section, dict) else None
+    if not isinstance(bindings, list):
+        return text
 
-    def remap(holder: dict, field_name: str) -> None:
-        nonlocal changed
-        value = holder.get(field_name)
-        if isinstance(value, str) and mapping.get(value, value) != value:
-            holder[field_name], changed = mapping[value], True
+    def mapped(value: Any) -> Any:
+        return mapping.get(value, value) if isinstance(value, str) else value
 
-    for binding in bindings or []:
+    # New objects only: YAML aliases share one parsed node between bindings, so
+    # nothing is mutated in place and every ORIGINAL value maps exactly once.
+    rebuilt = []
+    for binding in bindings:
         if not isinstance(binding, dict):
+            rebuilt.append(binding)
             continue
-        if isinstance(binding.get("subject"), dict):
-            remap(binding["subject"], "identity")
+        new = dict(binding)
+        subject = binding.get("subject")
+        if isinstance(subject, dict):
+            new["subject"] = {**subject, "identity": mapped(subject.get("identity"))}
         enforcement = binding.get("enforcement")
         if isinstance(enforcement, dict):
-            remap(enforcement, "definition")
+            new_enforcement = dict(enforcement)
+            if "definition" in enforcement:
+                new_enforcement["definition"] = mapped(enforcement["definition"])
             deps = enforcement.get("dependencies")
             if isinstance(deps, list):
-                for i, dep in enumerate(deps):
-                    if mapping.get(dep, dep) != dep:
-                        deps[i], changed = mapping[dep], True
-    return _dump(doc) if changed else text
+                new_enforcement["dependencies"] = [mapped(dep) for dep in deps]
+            new["enforcement"] = new_enforcement
+        rebuilt.append(new)
+    if rebuilt == bindings:
+        return text
+    return _dump({**doc, "policy_bindings": {**section, "bindings": rebuilt}})
 
 
 def _read_revision(root: Path, revision: str) -> dict[str, str]:

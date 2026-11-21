@@ -381,6 +381,39 @@ def test_policy_binding_identities_are_mapped_exactly_not_by_prefix():
     }
 
 
+def test_a_selector_subject_shared_through_a_yaml_anchor_maps_once():
+    """Two bindings share one `retail::sales` subject through an anchor; a third
+    names the dotted legacy metric `retail::orders.sales`. With sales ->
+    orders.sales and orders.sales -> returns.orders.sales, the shared subject is
+    `retail::orders.sales` in BOTH bindings (mapped once) and the third becomes
+    `retail::returns.orders.sales`."""
+    conv = migrate.Conversion(
+        metric_keys={
+            ("retail", "sales"): "orders.sales",
+            ("retail", "orders.sales"): "returns.orders.sales",
+        }
+    )
+    selector = (
+        "version: 1\nsupport_revision: 2\npolicy_bindings:\n  version: 1\n  bindings:\n"
+        "    - subject: &shared {kind: metric, identity: 'retail::sales'}\n"
+        "      policy: {namespace: urn:x, entity_id: 'entity:p'}\n"
+        "      operations: [get_metric]\n"
+        "    - subject: *shared\n"
+        "      policy: {namespace: urn:x, entity_id: 'entity:q'}\n"
+        "      operations: [get_metric]\n"
+        "    - subject: {kind: metric, identity: 'retail::orders.sales'}\n"
+        "      policy: {namespace: urn:x, entity_id: 'entity:p'}\n"
+        "      operations: [get_metric]\n"
+    )
+    out = yaml.safe_load(migrate.rewrite_identities(selector, conv))
+    identities = [b["subject"]["identity"] for b in out["policy_bindings"]["bindings"]]
+    assert identities == [
+        "retail::orders.sales",
+        "retail::orders.sales",
+        "retail::returns.orders.sales",
+    ]
+
+
 def _attested(project: Path, name: str, info: dict, sql: str, *, generated: bool) -> Path:
     """A Computation page under the old identity carrying an independent attestation."""
     from ariadne import context
