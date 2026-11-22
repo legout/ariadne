@@ -123,10 +123,11 @@ sources with `governed:false` and state what the answer rests on.
 
    - `discover`, `list_metrics`, `search_context`, `list_context_pages`,
      `read_context_page`, `get_metric`, `list_datasets`, `query_metrics`, `query_detail`,
-     `save_example`, `search_examples`;
+     `save_example`, `search_examples`, `resolve_term`;
    - authoring: `authoring_read_artifact`, `authoring_edit_proposal` (now acting on the
      active draft without IDs), `authoring_inputs`, `authoring_refresh_schema`,
-     `authoring_inspect_mapping`.
+     `authoring_inspect_mapping`, `authoring_resolve_term` (also on the active draft,
+     without a proposal ID).
 
    B1 **adds** `draft_status` and `preview`. B1 **removes** `authoring_propose_sources`;
    agents propose a source by writing the same typed source edit through
