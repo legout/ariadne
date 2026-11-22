@@ -1,0 +1,372 @@
+"""The one active Draft: a project-wide compare-and-set slot (spec 0040 §3.3).
+
+``.ariadne/draft.json`` holds ``{generation, proposal, candidate_revision,
+base_served_revision}`` under the project lock. The CLI, the MCP authoring tools
+and ``migrate`` all mutate through this module; the proposal engine
+(:mod:`ariadne.proposals`) stays underneath as the internal one-proposal-per-
+generation machinery, and proposal IDs never appear in the arguments here.
+
+Rules enforced here:
+
+- **First write.** ``expected=None`` means "no active draft": the call creates the
+  slot and refuses with a stale message if one exists. Two concurrent first writes
+  produce exactly one draft.
+- **Every mutation states what it read.** ``expected`` is the ``(generation,
+  candidate_revision)`` the caller read; a mismatch refuses before anything is
+  written. A refused first write leaves no slot, worktree or branch behind.
+- **Discard** retires the slot (the generation number is never reused), moves the
+  branch to ``ariadne/discarded/<generation>`` and removes the worktree. A write that
+  still names the discarded generation refuses; only an ``expected=None`` first write
+  opens a NEW generation.
+- **Stale drafts.** The draft is stale once the served revision moved past
+  ``base_served_revision``; ``validate`` refuses until :func:`rebase` succeeds.
+- **Rebase** is a real ``git rebase`` of the clean draft in its worktree. On conflict
+  it aborts and the draft is exactly as before.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from ariadne import proposals
+
+DRAFT_REL = proposals.ARIADNE_STATE_DIR / "draft.json"
+DISCARDED_BRANCH_PREFIX = "ariadne/discarded/"
+
+# (generation, candidate_revision) the caller read; ``None`` = "no active draft".
+Expected = tuple[int, str] | None
+
+
+# ------------------------------------------------------------------ slot file
+
+
+def _load_slot(project: Path) -> dict | None:
+    """The slot file ({} shape when never created → None). Operator-owned state:
+    non-regular, unreadable or malformed content is a human-resolution failure."""
+    path = project / DRAFT_REL
+    entry = proposals._lstat(path)
+    if entry is None:
+        return None
+    if not stat.S_ISREG(entry.st_mode):
+        raise ValueError(f"{path}: refusing a non-regular draft slot — inspect it by hand")
+    try:
+        slot = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{path}: unreadable draft slot ({exc}) — this needs human resolution"
+        ) from None
+    if (
+        not isinstance(slot, dict)
+        or not isinstance(slot.get("generation"), int)
+        or slot.get("state") not in ("active", "retired")
+    ):
+        raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
+    if slot["state"] == "active" and not (
+        isinstance(slot.get("proposal"), str)
+        and isinstance(slot.get("candidate_revision"), str)
+        and "base_served_revision" in slot
+    ):
+        raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
+    return slot
+
+
+def _store_slot(project: Path, slot: dict) -> None:
+    path = project / DRAFT_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(slot, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    proposals._fsync_path(path.parent)
+
+
+def _served_revision(project: Path) -> str | None:
+    from ariadne import admission  # lazy: admission imports proposals at load
+
+    current = admission.load_current(project)
+    return None if current is None else current["commit"]
+
+
+def _view(project: Path, slot: dict | None) -> dict | None:
+    if slot is None or slot["state"] != "active":
+        return None
+    served = _served_revision(project)
+    return {
+        "generation": slot["generation"],
+        "candidate_revision": slot["candidate_revision"],
+        "base_served_revision": slot["base_served_revision"],
+        "served_revision": served,
+        "stale": served != slot["base_served_revision"],
+    }
+
+
+def status(project: str | Path) -> dict | None:
+    """The active draft's identity and staleness, or ``None`` without one.
+    Read-only: it takes no lock and never mutates."""
+    project = Path(project).resolve()
+    return _view(project, _load_slot(project))
+
+
+def proposal_of(project: str | Path, expected: Expected) -> str:
+    """The active draft's proposal ID, verified against ``expected`` (internal: for
+    callers that already hold the generation they read, e.g. approval)."""
+    project = Path(project).resolve()
+    slot = _check_expected(_load_slot(project), expected)
+    assert slot is not None
+    return slot["proposal"]
+
+
+def _check_expected(slot: dict | None, expected: Expected) -> dict | None:
+    """Compare-and-set precondition. Returns the active slot (``expected`` given) or
+    ``None`` (first write allowed); raises a stale refusal otherwise."""
+    active = slot if slot is not None and slot["state"] == "active" else None
+    if expected is None:
+        if active is not None:
+            raise ValueError(
+                f"stale: a draft already exists (generation {active['generation']}, "
+                f"candidate {active['candidate_revision'][:12]}) — reread the draft "
+                "and retry against it; nothing was written"
+            )
+        return None
+    generation, revision = expected
+    if active is None:
+        retired = slot["generation"] if slot is not None else None
+        raise ValueError(
+            f"stale: no active draft (generation {generation} was "
+            f"{'discarded' if retired == generation else 'never opened or was retired'}) "
+            "— a later write never resurrects a discarded draft; nothing was written"
+        )
+    if active["generation"] != generation or active["candidate_revision"] != revision:
+        raise ValueError(
+            f"stale: the draft is at generation {active['generation']}, candidate "
+            f"{active['candidate_revision'][:12]}; the call read generation {generation}, "
+            f"candidate {revision[:12]} — reread and retry; nothing was written"
+        )
+    return active
+
+
+def _coherent(project: Path, slot: dict) -> dict:
+    """The slot and its proposal record must name the same candidate; otherwise an
+    interrupted transition needs human resolution."""
+    record = proposals._load_record(project, slot["proposal"])
+    if record["candidate_revision"] != slot["candidate_revision"]:
+        raise ValueError(
+            f"the draft slot names candidate {slot['candidate_revision'][:12]} but its "
+            f"proposal record names {record['candidate_revision'][:12]}"
+            + proposals._HUMAN_RESOLUTION
+        )
+    return record
+
+
+def _preflight(project: Path) -> None:
+    proposals._require_repo(project)
+    proposals.refuse_unsupported_project(project)
+    proposals._refuse_symlinked_component(project, proposals.ARIADNE_STATE_DIR)
+
+
+# ------------------------------------------------------------------- mutation
+
+
+def _abandon(project: Path, proposal: str, previous: bytes | None) -> None:
+    """Undo a draft this very call created (its first write refused): nothing a
+    refused first write opened survives."""
+    record = proposals._load_record(project, proposal)
+    worktree = project / proposals.WORKTREES_REL / proposal
+    proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
+    proposals._git(["branch", "-D", record["branch"]], project, check=False)
+    (project / proposals.PROPOSALS_REL / f"{proposal}.json").unlink(missing_ok=True)
+    path = project / DRAFT_REL
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_bytes(previous)
+
+
+def mutate(
+    project: str | Path, expected: Expected, op: Callable[[str, str], Any], *, needs_fresh=False
+) -> tuple[Any, dict]:
+    """Run ``op(proposal, candidate_revision)`` against the draft under the project
+    lock, compare-and-set on ``expected``. ``expected=None`` creates the draft first
+    (and removes it again when ``op`` refuses). Afterwards the slot's candidate
+    revision follows the proposal record (finalize and refresh commits move it).
+    Returns ``(op result, draft view)``."""
+    project = Path(project).resolve()
+    _preflight(project)
+    proposals._require_git_identity(project)
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        slot_before = _load_slot(project)
+        previous = (project / DRAFT_REL).read_bytes() if (project / DRAFT_REL).is_file() else None
+        active = _check_expected(slot_before, expected)
+        created: str | None = None
+        if active is None:
+            started = proposals.start_proposal(project, _lock_held=True)
+            created = started["proposal"]
+            generation = (slot_before["generation"] if slot_before else 0) + 1
+            active = {
+                "state": "active",
+                "generation": generation,
+                "proposal": created,
+                "candidate_revision": started["candidate_revision"],
+                "base_served_revision": _served_revision(project),
+            }
+            _store_slot(project, active)
+        try:
+            record = _coherent(project, active)
+            if needs_fresh and _view(project, active)["stale"]:  # type: ignore[index]
+                raise ValueError(
+                    "the draft is stale: the served revision moved past the draft's "
+                    "base — run 'draft rebase' first; nothing was written"
+                )
+            result = op(active["proposal"], active["candidate_revision"])
+        except BaseException:
+            if created is not None:
+                _abandon(project, created, previous)
+            raise
+        record = proposals._load_record(project, active["proposal"])
+        if record["candidate_revision"] != active["candidate_revision"]:
+            active = {**active, "candidate_revision": record["candidate_revision"]}
+            _store_slot(project, active)
+        return result, _view(project, active)  # type: ignore[return-value]
+
+
+def edit_artifact(
+    project: str | Path, expected: Expected, rel: str, content: str, *, core_generated=False
+) -> dict:
+    """One complete artifact edit into the draft (the typed edit kinds resolve ``rel``
+    in :mod:`ariadne.authoring_edits`)."""
+    project = Path(project).resolve()
+    result, view = mutate(
+        project,
+        expected,
+        lambda proposal, revision: proposals.edit_proposal(
+            project, proposal, revision, rel, content, core_generated=core_generated
+        ),
+    )
+    return {**result, "draft": view}
+
+
+def edit_pages(project: str | Path, expected: Expected, pages: list) -> dict:
+    """One complete native knowledge-page batch into the draft."""
+    project = Path(project).resolve()
+    result, view = mutate(
+        project,
+        expected,
+        lambda proposal, revision: proposals.edit_page_batch(project, proposal, revision, pages),
+    )
+    return {**result, "draft": view}
+
+
+def apply_migration(
+    project: str | Path, expected: Expected, writes: dict[str, str], deletes: tuple[str, ...]
+) -> dict:
+    """The migration commit (spec 0039 §7) written into the active draft."""
+    project = Path(project).resolve()
+    proposals.check_migration_set(writes, deletes)  # boundary before any state exists
+    result, view = mutate(
+        project,
+        expected,
+        lambda proposal, revision: proposals.migration_commit(
+            project, proposal, revision, writes, deletes
+        ),
+    )
+    return {**result, "draft": view}
+
+
+def validate(project: str | Path, expected: Expected) -> dict:
+    """Validate the draft at its current generation (refuses a stale draft)."""
+    from ariadne import authoring
+
+    project = Path(project).resolve()
+    if expected is None:
+        raise ValueError("validate needs an existing draft: nothing to validate")
+    result, view = mutate(
+        project,
+        expected,
+        lambda proposal, revision: authoring.validate_proposal(project, proposal, revision),
+        needs_fresh=True,
+    )
+    return {**result, "draft": view}
+
+
+# --------------------------------------------------------------- discard, rebase
+
+
+def discard(project: str | Path, expected: Expected) -> dict:
+    """Retire the draft: the slot is written FIRST (so a crash can never leave a live
+    discarded draft), then the branch moves to ``ariadne/discarded/<generation>``
+    and the worktree goes. The generation number is never reused."""
+    project = Path(project).resolve()
+    if expected is None:
+        raise ValueError("discard needs the draft's generation and candidate revision")
+    _preflight(project)
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        slot = _check_expected(_load_slot(project), expected)
+        assert slot is not None
+        record = proposals._load_record(project, slot["proposal"])
+        branch = f"{DISCARDED_BRANCH_PREFIX}{slot['generation']}"
+        _store_slot(
+            project,
+            {
+                "state": "retired",
+                "generation": slot["generation"],
+                "discarded_branch": branch,
+                "discarded_candidate": slot["candidate_revision"],
+            },
+        )
+        worktree = project / proposals.WORKTREES_REL / slot["proposal"]
+        proposals._git(["branch", "-m", record["branch"], branch], project)
+        proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
+    return {"discarded": True, "generation": slot["generation"], "branch": branch}
+
+
+def rebase(project: str | Path, expected: Expected) -> dict:
+    """Rebase the clean draft onto the served revision (spec 0040 §3.3.4). On success
+    the new candidate and base are recorded, the generation increments and every
+    validation of the old revision stops binding. On conflict the rebase is aborted
+    and the draft, its branch and its slot stay exactly as before; the conflicting
+    files are named. Conflicts are never auto-resolved."""
+    from ariadne import admission
+
+    project = Path(project).resolve()
+    if expected is None:
+        raise ValueError("rebase needs the draft's generation and candidate revision")
+    _preflight(project)
+    proposals._require_git_identity(project)
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        slot = _check_expected(_load_slot(project), expected)
+        assert slot is not None
+        record = _coherent(project, slot)
+        proposals._check_coherent(project, record)  # clean worktree on the recorded branch
+        served = _served_revision(project)
+        if served is None or served == slot["base_served_revision"]:
+            raise ValueError("the draft is not stale: nothing to rebase onto")
+        worktree = project / proposals.WORKTREES_REL / slot["proposal"]
+        proc = proposals._git(["rebase", served], worktree, check=False)
+        if proc.returncode != 0:
+            files = proposals._git(
+                ["diff", "--name-only", "--diff-filter=U"], worktree, check=False
+            ).stdout.split()
+            proposals._git(["rebase", "--abort"], worktree, check=False)
+            raise ValueError(
+                "rebase conflict — the draft is unchanged; resolve by editing the "
+                f"draft: conflicting files: {', '.join(sorted(files)) or '(unknown)'}"
+            )
+        head = proposals._git(["rev-parse", "HEAD"], worktree).stdout.strip()
+        admission.reconcile(project, slot["proposal"], slot["candidate_revision"], head)
+        new = {
+            **slot,
+            "generation": slot["generation"] + 1,
+            "candidate_revision": head,
+            "base_served_revision": served,
+        }
+        _store_slot(project, new)
+        return {"rebased": True, "draft": _view(project, new)}
