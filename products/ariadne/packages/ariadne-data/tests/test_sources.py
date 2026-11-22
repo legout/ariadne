@@ -1259,6 +1259,7 @@ def test_a_locked_native_catalog_reads_only_the_files_its_own_views_name(tmp_pat
     cat.execute(f"CREATE VIEW main.v AS SELECT * FROM read_parquet('{backing / 'b.parquet'}')")
     cat.execute(f"CREATE VIEW main.dyn AS SELECT * FROM parquet_scan('{other / 'o.parquet'}')")
     cat.close()
+    setup.execute(f"COPY (SELECT 8 AS n) TO '{cats / 'sibling.parquet'}' (FORMAT PARQUET)")
     registry = load_registry(
         write_registry(tmp_path, [{"name": "cat", "type": "duckdb", "path": str(catalog)}])
     )
@@ -1269,5 +1270,40 @@ def test_a_locked_native_catalog_reads_only_the_files_its_own_views_name(tmp_pat
             con.execute("SELECT n FROM cat.dyn").fetchall()
         with pytest.raises(duckdb.Error):
             con.execute("SELECT * FROM read_parquet(?)", [str(other / "o.parquet")])
+        # the catalog's own directory is never granted: a sibling stays sealed
+        granted = str(con.execute("SELECT current_setting('allowed_directories')").fetchall())
+        assert str(cats) not in granted
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT * FROM read_parquet(?)", [str(cats / "sibling.parquet")])
+    finally:
+        con.close()
+
+
+def test_a_locked_ducklake_grants_only_its_metadata_file_and_reported_data_path(tmp_path):
+    """A DuckLake source reads its table under lock while a sibling file of the
+    metadata catalog stays sealed; the grant is the metadata file plus the
+    DATA_PATH DuckDB reports, not the metadata file's directory."""
+    meta, data = tmp_path / "meta", tmp_path / "data"
+    meta.mkdir()
+    data.mkdir()
+    catalog = meta / "lake.ducklake"
+    setup = duckdb.connect()
+    setup.execute("LOAD ducklake")
+    setup.execute(f"ATTACH 'ducklake:{catalog}' AS fx (DATA_PATH '{data}/')")
+    setup.execute("CREATE TABLE fx.t AS SELECT 9 AS n")
+    setup.execute("DETACH fx")
+    setup.execute(f"COPY (SELECT 8 AS n) TO '{meta / 'sibling.parquet'}' (FORMAT PARQUET)")
+    registry = load_registry(
+        write_registry(
+            tmp_path, [{"name": "dl", "type": "ducklake", "path": str(catalog)}]
+        )
+    )
+    con, _ = build_connection(registry, locked=True)
+    try:
+        assert con.execute("SELECT n FROM dl.t").fetchall() == [(9,)]
+        granted = str(con.execute("SELECT current_setting('allowed_directories')").fetchall())
+        assert str(meta) not in granted
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT * FROM read_parquet(?)", [str(meta / "sibling.parquet")])
     finally:
         con.close()

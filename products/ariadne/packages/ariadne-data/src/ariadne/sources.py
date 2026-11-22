@@ -1214,8 +1214,13 @@ def lock_down(con: duckdb.DuckDBPyConnection, registry: Registry) -> None:
         if src.type == "ducklake":
             raw = raw.removeprefix("ducklake:")
         allow(raw, folder=src.type in {"delta", "iceberg"})
-        if src.type in {"duckdb", "ducklake"}:
-            directories.update(_local(str(Path(raw).parent)))
+        if src.type == "ducklake":
+            # only the metadata file (above) and the DATA_PATH DuckDB reports
+            row = con.execute(
+                "SELECT data_path FROM ducklake_settings(?)", [src.name]
+            ).fetchone()
+            if row and row[0]:
+                allow(row[0], folder=True)
         if src.type == "duckdb":
             # ADR-0022: a native catalog is an operator-approved trusted source
             # definition; the literal files its own views read are part of it.
