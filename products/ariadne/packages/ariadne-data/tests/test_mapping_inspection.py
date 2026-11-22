@@ -1052,93 +1052,29 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
         )
 
 
-# ------------------------------------------------ [7]: the local CLI adapter
+# ------------------------------------------- [7]: the operation's refusal contract
 
 
-def test_cli_inspect_mapping_roundtrip_matches_the_core(tmp_path, capsys):
-    """Issue #43 [7]: the shared operation is wired to the local CLI with the
-    same one-JSON-value contract — the request file carries the candidate (or
-    the {candidate, limits} object form), and the printed envelope is the
-    core's receipt with its retained evidence path."""
-    from ariadne.authoring_cli import main as authoring_cli
-
+def test_inspect_mapping_refuses_a_request_that_raises_an_operator_ceiling(tmp_path):
+    """Issue #43 [7] (spec 0040: the MCP tool ``authoring_inspect_mapping``): the
+    operation returns the core receipt with its retained evidence path, and a request
+    may only LOWER the operator's ceilings — raising one refuses."""
     project, api, started = approved_project(tmp_path)
-    request = tmp_path / "candidate.json"
-    request.write_text(
-        json.dumps({"candidate": prefix_candidate(), "limits": {"sample_rows": 3}}),
-        encoding="utf-8",
-    )
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(request),
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    out = json.loads(capsys.readouterr().out)
-    receipt = out["receipt"]
-    twin = api.inspect_mapping(
+    out = api.inspect_mapping(
         started["proposal"],
         started["candidate_revision"],
         prefix_candidate(),
         limits={"sample_rows": 3},
     )
-    assert out["receipt_id"] == receipt["receipt_id"]
-    assert receipt["counts"] == twin["receipt"]["counts"]
-    assert receipt["coverage"] == twin["receipt"]["coverage"]
-    assert receipt["sample_rows"] == 3
+    assert out["receipt"]["sample_rows"] == 3
     assert Path(out["evidence"]).is_file()
-    # refusals keep the one-JSON-error-object contract
-    capsys.readouterr()
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(request),
-                "--project",
-                str(project),
-            ]
+    with pytest.raises(ValueError, match="RAISE the operator ceiling"):
+        api.inspect_mapping(
+            started["proposal"],
+            started["candidate_revision"],
+            prefix_candidate(),
+            limits={"sample_rows": 1001},
         )
-        == 0
-    )
-    capsys.readouterr()
-    raising = tmp_path / "raised.json"
-    raising.write_text(
-        json.dumps({"candidate": prefix_candidate(), "limits": {"sample_rows": 1001}}),
-        encoding="utf-8",
-    )
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(raising),
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
-    error = json.loads(capsys.readouterr().err)
-    assert "RAISE the operator ceiling" in error["error"]["message"]
 
 
 def test_deadline_guard_interrupts_and_refuses_uncancellable_execution():
