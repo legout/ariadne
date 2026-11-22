@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+
 from ariadne.init import main
 
 CONSOLE_SCRIPTS = ("ariadne",)  # spec 0040 §3.1.1: ONE console script

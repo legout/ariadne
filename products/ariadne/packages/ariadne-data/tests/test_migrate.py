@@ -81,12 +81,12 @@ def _add_context(project: Path, *, example_name: str = "revenue") -> None:
     migration does not touch)."""
     import hashlib
 
-    from ariadne import answer_examples, context
-
     from integration.tests.lumio_metric_mvp import (  # pyright: ignore[reportMissingImports] — needs PYTHONPATH=<repo root>
         page_parts,
         write_page,
     )
+
+    from ariadne import answer_examples, context
 
     page = project / "knowledge" / "metrics" / "retail-revenue.md"
     page.write_text(
@@ -186,10 +186,10 @@ def _legacy_project(root: Path, model_text: str, *, context: bool = False) -> Pa
 
 
 def test_migrate_converts_the_joint_example_and_the_admitted_result_answers(tmp_path, monkeypatch):
+    from integration.tests.lumio_metric_mvp import activate, preview
+
     from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
     from tests.test_git_authoring import approved
-
-    from integration.tests.lumio_metric_mvp import activate, preview
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES, context=True)

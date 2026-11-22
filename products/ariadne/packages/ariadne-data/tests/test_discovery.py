@@ -20,11 +20,12 @@ from tests.test_git_authoring import complete_bundle_project  # noqa: E402
 
 
 def _source_free_guards(monkeypatch):
+    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+
     import ariadne.execution as execution
     import ariadne.query as query
     import ariadne.render as render
     import ariadne.validate as validate
-    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
     def forbidden(*args, **kwargs):
         raise AssertionError("discovery must not connect, render, execute, or use network")
