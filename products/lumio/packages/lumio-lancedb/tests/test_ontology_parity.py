@@ -14,6 +14,7 @@ the zero-index MessagePack projection and the LanceDB ``entities`` /
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from lumio_lancedb.graph import (
@@ -184,7 +185,7 @@ def test_identical_traversal_across_projections(
 
 def test_identical_shortest_paths_across_projections(corpus_kb, tmp_path):
     for _label, kb in _projections(corpus_kb, tmp_path):
-        both = {"direction": GRAPH_DIRECTION_BOTH}
+        both: dict[str, Any] = {"direction": GRAPH_DIRECTION_BOTH}
         # Canonical: obstore -> LanceDB travels through Lumio.
         assert kb.shortest_path("obstore", "LanceDB", **both) == ["obstore", "Lumio", "LanceDB"]
         # Discovery-only: Sage Wiki reaches Knowledge Graph through Lumio's body link.

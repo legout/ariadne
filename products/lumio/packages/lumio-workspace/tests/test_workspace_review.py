@@ -773,6 +773,7 @@ def test_continuation_review_shows_complete_effective_changes(tmp_path: Path, mo
         assert review.status_code == 200, review.text
         assert ANCESTOR_BODY in review.text
         assert CONTINUATION_BODY in review.text
+        assert fixture.published_revision is not None
         assert fixture.published_revision in review.text
         assert continuation["native_base"] in review.text
         assert continuation["native_candidate"] in review.text

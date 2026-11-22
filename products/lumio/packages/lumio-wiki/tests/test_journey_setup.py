@@ -372,6 +372,7 @@ def test_git_check_redacts_credential_bearing_auth_failures(tmp_path: Path, monk
     # The controlled failed-auth response: classified, redacted, unverified.
     assert report.remote.read == "failed"
     assert report.remote.failure_code == "authentication_failed"
+    assert report.remote.failure_message is not None
     assert "SECRETTOKEN" not in report.remote.failure_message
     assert "[redacted]" in report.remote.failure_message
     assert "SECRETTOKEN" not in json.dumps(msgspec.to_builtins(report))

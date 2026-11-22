@@ -207,7 +207,9 @@ def test_export_journey(tmp_path: Path):
     #    which binds the record digest to the exported branch/commit.
     assert _tree_state(store) == before
     receipt_state = _tree_state(store, include_receipts=True)
-    receipt = json.loads(receipt_state["migration-receipts/exportme0001.json"])
+    receipt_bytes = receipt_state["migration-receipts/exportme0001.json"]
+    assert receipt_bytes is not None
+    receipt = json.loads(receipt_bytes)
     assert receipt["record_sha256"] == record_digest
     assert receipt["branch"] == "legacy/export-a" and receipt["commit"] == result.commit
     assert receipt["baseline"] == baseline

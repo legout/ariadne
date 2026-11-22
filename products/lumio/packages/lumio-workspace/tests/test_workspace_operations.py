@@ -215,6 +215,7 @@ def test_remote_original_backup_restores_without_remote_store(tmp_path: Path, mo
         _login(reviewer, fixture.reviewer_browser)
         _approve(reviewer, fixture, task_alpha["task_id"])
         version_a = PublishedFilesystemLocation(config.published_path).read_pointer()
+        assert version_a is not None
         assert version_a == task_alpha["native_candidate"]
         task_beta = _contribute_bytes(
             contributor,
@@ -228,6 +229,7 @@ def test_remote_original_backup_restores_without_remote_store(tmp_path: Path, mo
         )
         _approve(reviewer, fixture, task_beta["task_id"])
         version_b = PublishedFilesystemLocation(config.published_path).read_pointer()
+        assert version_b is not None
         assert version_b == task_beta["native_candidate"]
         # A pending candidate prepared before the backup: its outstanding
         # browser action must never activate after the restore.
@@ -307,6 +309,7 @@ def test_remote_original_backup_restores_without_remote_store(tmp_path: Path, mo
 
     second_root = tmp_path / "restored-data-root"
     restored = restore(backup_root, second_root, replace(config, published_version=None))
+    assert restored.authoring_path is not None
     assert restored.state_path == second_root / "state.sqlite3"
     assert restored.private_root == second_root / "private"
     assert restored.authoring_path == second_root / "authoring-repo" / "kb"
@@ -493,6 +496,7 @@ def test_remote_original_backup_restores_without_remote_store(tmp_path: Path, mo
         )
         _approve(reviewer2, fixture, task_gamma["task_id"])
         version_c = PublishedFilesystemLocation(restored.published_path).read_pointer()
+        assert version_c is not None
         assert version_c == task_gamma["native_candidate"]
         assert restored_store.get_artifact(source_id=GAMMA_SOURCE, content_hash=GAMMA_HASH) == (
             GAMMA_ORIGINAL
@@ -563,6 +567,7 @@ def test_restore_and_revocation_preserve_admitted_only_access(
         approved_a = _decision(reviewer, task_a["task_id"], digest_a, "approve")
         assert approved_a.status_code == 200, approved_a.text
         version_a = PublishedFilesystemLocation(config.published_path).read_pointer()
+        assert version_a is not None
         assert version_a == task_a["native_candidate"]
         # An outstanding browser review action exists for the pending candidate B.
         outstanding = _digest(reviewer.get(f"/review/{task_b['task_id']}").text)
@@ -572,6 +577,7 @@ def test_restore_and_revocation_preserve_admitted_only_access(
     backup_root = quiesced_backup(config, tmp_path / "workspace-backup")
     second_root = tmp_path / "second-data-root"
     restored = restore(backup_root, second_root, replace(config, published_version=None))
+    assert restored.authoring_path is not None
     assert restored.state_path == second_root / "state.sqlite3"
     assert restored.private_root == second_root / "private"
     assert restored.authoring_path == second_root / "authoring-repo" / "kb"
@@ -1037,6 +1043,7 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
 
     second_root = tmp_path / "restored-data-root"
     restored = restore(backup_root, second_root, replace(config, published_version=None))
+    assert restored.authoring_path is not None
     # The analytics project must resolve INTO the single restored repository
     # — never into a second materialized copy that advances independently.
     assert restored.analytics_project_path == second_root / "authoring-repo"
@@ -1275,6 +1282,7 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
     # failure — recovery selection is only for an imported LOCAL destination
     # DIFFERENT from this restored destination (the offline ORIGINAL case).
     current_pointer = PublishedFilesystemLocation(restored.published_path).read_pointer()
+    assert current_pointer is not None
     assert current_pointer == published["native_candidate"]
     current_manifest = json.loads(
         (restored.published_path / VERSIONS_DIR_NAME / current_pointer / "manifest.json").read_text(
@@ -1542,6 +1550,7 @@ def test_native_source_preparation_preserves_publication_corruption(
     # Corrupt ONE actual published canonical file (append bytes): the real
     # SDK size/digest verification failure becomes SnapshotUnavailableError.
     pointer = PublishedFilesystemLocation(destination).read_pointer()
+    assert pointer is not None
     assert pointer == native_review["revision"]
     manifest = json.loads(
         (destination / VERSIONS_DIR_NAME / pointer / "manifest.json").read_text(encoding="utf-8")

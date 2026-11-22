@@ -15,11 +15,13 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, S3ArtifactStore
 from lumio_wiki.cli import main
 from lumio_wiki.private_profile import (
+    PrivateLocalStore,
     PrivateProfileError,
     ResolvedS3Exchange,
     load_private_profile,
@@ -223,6 +225,7 @@ def test_profile_selection_is_explicit_and_operation_scoped(tmp_path):
     registry_root = (tmp_path / "private" / "registry").resolve()
     artifacts_root = (tmp_path / "private" / "artifacts").resolve()
     assert profile.source_registry == registry_root
+    assert isinstance(profile.artifact_store, PrivateLocalStore)
     assert profile.artifact_store.root == artifacts_root
     assert profile.retention == "required"
     assert profile.exchange is not None and profile.exchange.bucket == "jp-test-exchange"
@@ -773,7 +776,7 @@ def test_profile_s3_connection_ignores_ambient_selection(tmp_path, monkeypatch):
             },
         )
         assert isinstance(resolved.exchange, ResolvedS3Exchange)
-        obstore.head(resolved.exchange.store, "probe-object")
+        obstore.head(cast(Any, resolved.exchange.store), "probe-object")
     finally:
         for server in servers:
             server.shutdown()
