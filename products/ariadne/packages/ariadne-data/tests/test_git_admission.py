@@ -708,9 +708,9 @@ def test_managed_sources_resolve_through_operator_identity_not_snapshot_paths(
     opened: list[list[str | None]] = []
     real = ariadne.sources.build_connection
 
-    def spy(registry, read_only=True, deadline=None):  # S1 #56: bounded setup passes its deadline
+    def spy(registry, read_only=True, **options):  # deadline/locked ride through unchanged
         opened.append([src.path for src in registry.sources])
-        return real(registry, read_only, deadline=deadline)
+        return real(registry, read_only, **options)
 
     monkeypatch.setattr(ariadne.sources, "build_connection", spy)
 

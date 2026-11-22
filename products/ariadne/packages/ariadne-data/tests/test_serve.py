@@ -689,7 +689,8 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(tmp_path):
     }
     # ... while signals identify each page by its bundle-relative path (spec0011 §4).
     expected_citations = {
-        path: path for path in (*(p for p, _ in cited_pages), "computations/gross_margin.md")
+        path: path
+        for path in (*(p for p, _ in cited_pages), "computations/orders--gross_margin.md")
     }
     signals = result["context"]["context_signals"]
     views = {page["path"]: page for page in signals["pages"]}
@@ -715,7 +716,7 @@ def test_get_metric_discloses_expired_and_deprecated_policy_signals(tmp_path):
         "state": "stale",
     }
     assert views[expected_citations["policies/emea-currency-cutover.md"]]["status"] == "deprecated"
-    assert views[expected_citations["computations/gross_margin.md"]]["status"] == "draft"
+    assert views[expected_citations["computations/orders--gross_margin.md"]]["status"] == "draft"
     assert {page: page.read_bytes() for page in before} == before
 
 

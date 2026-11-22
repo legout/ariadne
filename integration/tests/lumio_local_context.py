@@ -495,7 +495,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # list: every visible page, SDK-sorted by exact path; metadata only.
     listed = _typed_list(results["list"])
     assert [entry["path"] for entry in listed] == [
-        "computations/orders-revenue.md",  # the finalize pass's generated page
+        "computations/retail_sales--orders-revenue.md",  # the finalize pass's generated page
         "metrics/retail-revenue.md",
         "policies/retail-return-policy.md",
         "references/fulfilment-glossary.md",
@@ -1993,7 +1993,9 @@ def _p1_kb_candidate(
     )
     write_page(metric, meta, body)
     (tree / "knowledge/computations").mkdir(parents=True, exist_ok=True)
-    (tree / "knowledge/computations/orders-revenue.md").write_text(_p1_computation_page())
+    (tree / "knowledge/computations/retail_sales--orders-revenue.md").write_text(
+        _p1_computation_page()
+    )
     (tree / "knowledge/lumio.yaml").write_text(_p1_control())
     return reconcile_knowledge(project, started["proposal"], revision)
 
@@ -2657,7 +2659,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
             graph.models["retail_sales"], "orders", keys, aliases={k: k for k in keys}
         )
         sanctioned = render(spec, metric="orders.revenue").strip()
-        comp = tree / "knowledge" / "computations" / "orders-revenue.md"
+        comp = tree / "knowledge" / "computations" / "retail_sales--orders-revenue.md"
         meta, body = page_parts(comp)
         meta["ariadne_profile"]["native"]["attester"] = "an-independent-oracle"
         del meta["ariadne_profile"]["native"]["attestation"]
@@ -2713,7 +2715,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         first = api.validate_proposal(started["proposal"], revision)
         assert first["ok"] is True, first["errors"]
         revision = first["revision"]
-        comp = tree / "knowledge" / "computations" / "revenue_plus_one.md"
+        comp = tree / "knowledge" / "computations" / "retail_sales--revenue_plus_one.md"
         assert comp.is_file(), "the finalize must generate the derived Computation"
         assert (
             "CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END" in comp.read_text()
@@ -2824,7 +2826,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         )
         tree = worktree_of(project, started["proposal"])
         revision = _p1_kb_candidate(project, api, started, revision)
-        comp = tree / "knowledge" / "computations" / "orders-revenue.md"
+        comp = tree / "knowledge" / "computations" / "retail_sales--orders-revenue.md"
         meta, body = page_parts(comp)
         meta["visibility"] = "restricted"
         meta["ariadne_profile"]["native"]["sources"] = [
@@ -2843,7 +2845,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
             runtime.con.close()
         leaked = json.dumps(explained)
         assert "DISTINCTIVE-HIDDEN-COMPUTATION-PROVENANCE" not in leaked, leaked
-        assert "computations/orders-revenue.md" not in leaked
+        assert "computations/retail_sales--orders-revenue.md" not in leaked
         assert "attestation" not in explained["context"]
         return
 
@@ -2872,7 +2874,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         validated = api.validate_proposal(started["proposal"], revision)
         assert validated["ok"] is True, validated["errors"]
         revision = validated["revision"]  # the finalize batch advanced the candidate
-        comp = tree / "knowledge" / "computations" / "order_status-label_count.md"
+        comp = tree / "knowledge" / "computations" / "status_lookup--order_status-label_count.md"
         assert comp.is_file(), "the first validation must generate the Computation"
         # a human earns an independent attester on the generated page and adds
         # unrelated curated narrative; the sanctioned definition is unchanged
@@ -3170,7 +3172,10 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
     review = api.review_proposal(started["proposal"])
     assert review["revision"] == revision
     knowledge_paths = {item["resource"] for item in review["files"]}
-    expected = {"context_integration.yaml", "knowledge/computations/orders-revenue.md"}
+    expected = {
+        "context_integration.yaml",
+        "knowledge/computations/retail_sales--orders-revenue.md",
+    }
     assert expected <= knowledge_paths
     assert any(path.startswith("knowledge/tables/") for path in knowledge_paths)
     assert any(path.startswith("knowledge/datasets/") for path in knowledge_paths)
@@ -3432,7 +3437,9 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         assert served["content"] == orders_page.read_text()
         assert served["citation"] == (f"{NAMESPACE} {served['entity_id']} v{revision} {orders_rel}")
         assert served["context_signals"]["warnings"] == []  # authored fresh stale_after
-        curated = asyncio.run(session.read_context_page("computations/orders-revenue.md"))
+        curated = asyncio.run(
+            session.read_context_page("computations/retail_sales--orders-revenue.md")
+        )
         assert curated["content"] == _p1_computation_page()  # exact curated body preserved
         assert curated["context_signals"]["warnings"] != []  # authored advisory staleness
 

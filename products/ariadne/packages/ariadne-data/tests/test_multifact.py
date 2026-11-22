@@ -3046,7 +3046,7 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         assert [page["path"].rsplit(" ", 1)[-1] for page in signals["pages"]] == [
             f"metrics/{name}.md",
             "policies/region-rollup.md",
-            f"computations/{dataset}-{name}.md",  # identity key <dataset>.<metric>
+            f"computations/{dataset}--{dataset}-{name}.md",  # <model>--<key, dots as dashes>
         ]
         assert signals["warnings"] == []
         policy_view = signals["pages"][1]

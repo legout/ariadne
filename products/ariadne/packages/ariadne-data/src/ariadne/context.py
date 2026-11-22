@@ -260,7 +260,9 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
             if sanctioned is not None:
                 specs.append(
                     {
-                        "path": f"knowledge/computations/{name.replace('.', '-')}.md",
+                        # full identity, filesystem-safe: <model>--<key, dots as dashes>
+                        "path": "knowledge/computations/"
+                        f"{info['model']}--{name.replace('.', '-')}.md",
                         "content": _build_native_computation_page(name, info, sanctioned),
                     }
                 )
