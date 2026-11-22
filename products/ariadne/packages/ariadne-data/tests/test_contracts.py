@@ -853,7 +853,7 @@ def test_contract_source_and_sql_authority_precedes_execution(tmp_path, connecti
 
     # missing permission refuses BEFORE inspection: nothing opens at all
     revision = contracted(api, started)
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.validate_proposal(started["proposal"], revision)
     assert connection_spy == []
 

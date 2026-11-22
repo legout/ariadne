@@ -41,8 +41,7 @@ def isolated(tmp_path, monkeypatch, capsys):
         pytest.fail("setup invoked a human-only operation or network/source access")
 
     for module, names in (
-        (authoring_sources, ("approve_sources",)),
-        (authoring.AuthoringProject, ("approve_sources",)),
+        (authoring_sources, ("record_grants", "grant_candidate")),
         (admission, ("admit_revision", "reconcile")),
     ):
         for name in names:
@@ -316,7 +315,7 @@ def test_managed_typed_declaration_exact_handoff_and_idempotent_resume(tmp_path,
     assert "NOT source approval" in output and "Source approval pending" in output
     assert "Resolved source digest: " + digest in output
     assert (project / "ariadne.yaml").read_bytes() == original
-    assert not (project / ".ariadne/source-approvals.json").exists()
+    assert not (project / ".ariadne/source_grants.json").exists()
     assert run_setup(project, "accept\n\nyes\n") == 0
     assert records(project) == [record]  # same proposal and candidate, no replacement commit
     candidate = subprocess.check_output(
@@ -521,17 +520,18 @@ def test_interrupted_intake_reports_completed_steps_and_still_installs_selected_
     assert (project / ".pi/skills/ariadne").is_symlink() and not records(project)
 
 
-def test_existing_proposal_operator_selection_reuses_only_chosen_id(tmp_path, capsys):
+def test_setup_reuses_the_one_active_draft_and_never_replaces_it(tmp_path, capsys):
+    """Spec 0040 §3.3: there is one active draft; setup writes into it instead of
+    asking which of several proposals to use."""
     project = tmp_path / "managed"
     scaffold(project)
     api = authoring.AuthoringProject(project)
-    first, second = api.start_proposal(), api.start_proposal()
+    first = api.start_proposal()
     answer = '{"name":"events","type":"csv","path":"events.csv"}\n\nyes\n'
-    assert run_setup(project, answer + second["proposal"] + "\n") == 0
-    entries = {r["id"]: r for r in records(project)}
-    assert len(entries) == 2
-    assert entries[first["proposal"]]["candidate_revision"] == first["candidate_revision"]
-    assert entries[second["proposal"]]["candidate_revision"] != second["candidate_revision"]
+    assert run_setup(project, answer) == 0
+    (entry,) = records(project)
+    assert entry["id"] == first["proposal"]
+    assert entry["candidate_revision"] != first["candidate_revision"]
 
 
 def test_filename_scan_skips_links_reports_unreadable_metadata_and_is_bounded(

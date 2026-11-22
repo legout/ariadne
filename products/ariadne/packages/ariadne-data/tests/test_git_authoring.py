@@ -44,7 +44,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import proposals  # noqa: E402
+from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.authoring_sources import candidate_sources  # noqa: E402
@@ -587,12 +587,20 @@ def record_of(project: Path, proposal: str) -> dict:
     )
 
 
+def grant_sources(api: AuthoringProject, proposal: str, revision: str, digest: str) -> dict:
+    """The operator's source grant for the candidate's exact resolved identity (the
+    human step of spec 0040 §3.4; the library call the approval command makes)."""
+    return authoring_sources.grant_candidate(
+        api.project, proposal, revision, digest, by="human:test-operator"
+    )
+
+
 def approved(api: AuthoringProject, project: Path, started: dict) -> None:
     """The operator's approval of the candidate's exact resolved source identity
     (the G3 human step): the profile/audit connection opens only after this."""
     resolved, digest = candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(started["proposal"], started["candidate_revision"], digest)
+    grant_sources(api, started["proposal"], started["candidate_revision"], digest)
 
 
 def commit_paths(project: Path, revision: str) -> set[str]:
@@ -795,7 +803,7 @@ def test_validation_runs_only_through_the_approved_source_identity(tmp_path):
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
-    with pytest.raises(ValueError, match="NO operator approval") as excinfo:
+    with pytest.raises(ValueError, match="NO grant") as excinfo:
         api.validate_proposal(started["proposal"], started["candidate_revision"])
     assert "approve-sources" in str(excinfo.value)
     # no validation evidence exists and no finalize commit was created
@@ -2426,7 +2434,7 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     started2 = api.start_proposal(base_revision=legacy_commit)
     resolved2, source_digest2 = candidate_sources(project, started2["candidate_revision"])
     assert resolved2 is not None and source_digest2 is not None
-    api.approve_sources(started2["proposal"], started2["candidate_revision"], source_digest2)
+    grant_sources(api, started2["proposal"], started2["candidate_revision"], source_digest2)
     edited2 = api.edit_proposal(
         started2["proposal"],
         started2["candidate_revision"],

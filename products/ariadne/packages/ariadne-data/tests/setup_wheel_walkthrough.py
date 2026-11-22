@@ -247,7 +247,7 @@ def main():
             f"--proposal {pid}" in resumed
             and f"--source-digest {declared['source_digest']}" in resumed
         )
-        assert not (project / ".ariadne/source-approvals.json").exists()
+        assert not (project / ".ariadne/source_grants.json").exists()
         command(
             "ariadne-authoring",
             "approve-sources",

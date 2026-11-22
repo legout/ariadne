@@ -487,7 +487,7 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
     revision = review["revision"]
     evidence_path = project / STATE / "validation" / proposal / f"{revision}.json"
     original = evidence_path.read_text(encoding="utf-8")
-    approvals_path = project / STATE / "source-approvals.json"
+    approvals_path = project / STATE / "source_grants.json"
     approvals_original = approvals_path.read_text(encoding="utf-8")
     native_profile = ["--context-private-profile", str(profile)]
 
@@ -527,7 +527,7 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
 
     # a withdrawn operator approval (the identity is no longer approved)
     approvals_path.write_text("{}", encoding="utf-8")
-    refuse("NO operator approval")
+    refuse("NO grant")
     approvals_path.write_text(approvals_original, encoding="utf-8")
 
     # A real retained-source update changes the native manifest and candidate.
@@ -645,7 +645,7 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     snapshot = project / record["snapshot"]
     page = snapshot / NATIVE_METRIC_REL
     original_page = page.read_text(encoding="utf-8")
-    approvals = project / STATE / "source-approvals.json"
+    approvals = project / STATE / "source_grants.json"
     original_approvals = approvals.read_text(encoding="utf-8")
 
     # bytes staleness at open: a hand-edited snapshot file never serves
@@ -966,7 +966,7 @@ def test_supplied_admission_record_revalidates_approval_before_open(tmp_path, mo
         return real_registry(selected)
 
     monkeypatch.setattr(admission_module, "approved_registry", registry_spy)
-    (project / STATE / "source-approvals.json").write_text("{}", encoding="utf-8")
+    (project / STATE / "source_grants.json").write_text("{}", encoding="utf-8")
     with pytest.raises(ValueError, match="operator's approval"):
         QueryRuntime.open_project(project, admission_record=record)
     assert registry_calls == []

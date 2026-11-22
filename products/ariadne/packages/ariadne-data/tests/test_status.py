@@ -473,8 +473,6 @@ def test_status_labels_effective_storage_approval_without_credential_reads(tmp_p
     # a CURRENT grant under the resolved binding flips the label
     from ariadne.authoring_sources import (  # noqa: E402 — local for the grant
         _resolved_entries,
-        approval_digest,
-        resolved_digest,
     )
     from ariadne.sources import load_registry  # noqa: E402
 
@@ -488,12 +486,24 @@ def test_status_labels_effective_storage_approval_without_credential_reads(tmp_p
             "scopes": ["s3://retail/"],
         }
     }
-    declaration = resolved_digest(resolved)
-    grant = approval_digest(declaration, bindings)
-    approvals = project / ".ariadne" / "source-approvals.json"
+    approvals = project / ".ariadne" / "source_grants.json"
     approvals.parent.mkdir(parents=True, exist_ok=True)
     approvals.write_text(
-        json.dumps({grant: {"sources": resolved, "source_digest": declaration}}),
+        json.dumps(
+            {
+                "version": 1,
+                "grants": [
+                    {
+                        "source": entry,
+                        "binding": bindings["local"],
+                        "postgres_binding": None,
+                        "by": "human:test",
+                        "at": "2026-11-22T00:00:00+00:00",
+                    }
+                    for entry in resolved
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"STATUS_S3_ENDPOINT": "http://127.0.0.1:9000"}, clear=True):

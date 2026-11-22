@@ -26,6 +26,7 @@ from ariadne import (  # noqa: E402 — inputs: the moved evidence seam (#35)
 )
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from tests.test_git_authoring import grant_sources  # noqa: E402
 
 # ---------------------------------------------------------------- fixtures
 
@@ -123,7 +124,7 @@ def test_operator_document_reference_converts_to_stable_identity_evidence(tmp_pa
         started["candidate_revision"],
         [{"name": "events", "type": "parquet", "path": str(parquet)}],
     )
-    api.approve_sources(proposed["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, proposed["proposal"], proposed["revision"], proposed["source_digest"])
     inputs = api.inputs(started["proposal"], documents=["pricing.md"])
     (source,) = inputs["profile"]["sources"]
     assert source["name"] == "events"  # the measured, approved source

@@ -6,7 +6,7 @@ propose_sources/inputs/reference-based document evidence).
 Source approval and artifact admission are distinct decisions: a source entry
 committed in a proposal's candidate registry never opens anything until the
 separate HUMAN-ONLY approve-sources records the exact RESOLVED identity in the
-operator-owned ``.ariadne/source-approvals.json`` (outside Git artifacts).
+operator-owned ``.ariadne/source_grants.json`` (outside Git artifacts).
 The canary spies on the REAL shared connection builder
 (``ariadne.sources.build_connection``, the one chokepoint
 :class:`ariadne.execution.DuckDBExecution` resolves through its module) to
@@ -37,6 +37,7 @@ import ariadne.sources  # noqa: E402
 from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from tests.test_git_authoring import grant_sources  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 
@@ -150,17 +151,12 @@ def test_committed_registry_cannot_open_source_until_operator_approval(
     parquet = write_parquet(project / "data" / "events.parquet", rows=3)
     api = AuthoringProject(project)
     a = api.start_proposal()
-    b = api.start_proposal()
-    assert a["proposal"] != b["proposal"]
-    # decoys at the SAME relative path inside BOTH worktrees: a worktree-
-    # relative resolution would open one of these instead (9 rows, so the
-    # profile's row count tells them apart)
-    for started in (a, b):
-        write_parquet(worktree_of(project, started["proposal"]) / "data" / "events.parquet", rows=9)
+    # a decoy at the SAME relative path inside the draft worktree: a worktree-
+    # relative resolution would open it instead (9 rows, so the profile's row
+    # count tells them apart)
+    write_parquet(worktree_of(project, a["proposal"]) / "data" / "events.parquet", rows=9)
 
     proposed_a = api.propose_sources(a["proposal"], a["candidate_revision"], [EVENTS_ENTRY])
-    proposed_b = api.propose_sources(b["proposal"], b["candidate_revision"], [dict(EVENTS_ENTRY)])
-    assert proposed_a["source_digest"] == proposed_b["source_digest"]  # one resolved identity
     assert len(proposed_a["source_digest"]) == 64
     # the resolved identity is the HOST project root's file, never a worktree
     assert proposed_a["sources"][0]["path"] == str(parquet)
@@ -171,48 +167,30 @@ def test_committed_registry_cannot_open_source_until_operator_approval(
 
     # before approval NOTHING opens: inputs is an explicit error in BOTH
     # worktrees, and the shared builder is never called
-    for started in (a, b):
-        with pytest.raises(ValueError, match="approval"):
-            api.inputs(started["proposal"])
+    with pytest.raises(ValueError, match="approval"):
+        api.inputs(a["proposal"])
     assert connection_spy == []
 
     # the human-only CLI records the exact resolved identity outside Git
-    assert (
-        authoring_cli(
-            [
-                "approve-sources",
-                "--proposal",
-                a["proposal"],
-                "--revision",
-                proposed_a["revision"],
-                "--source-digest",
-                proposed_a["source_digest"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
+    approved = grant_sources(
+        api, a["proposal"], proposed_a["revision"], proposed_a["source_digest"]
     )
-    approved = json.loads(capsys.readouterr().out)
     assert approved["source_digest"] == proposed_a["source_digest"]
-    approvals = json.loads(
-        (project / ".ariadne" / "source-approvals.json").read_text(encoding="utf-8")
-    )
-    (record,) = approvals.values()
-    assert record["sources"][0]["path"] == str(parquet)
+    grants = json.loads((project / ".ariadne" / "source_grants.json").read_text(encoding="utf-8"))
+    (record,) = grants["grants"]
+    assert record["source"]["path"] == str(parquet)
+    assert record["by"] == "human:test-operator"
     # approval edited NO Git artifact: the candidate revision is unchanged
     assert branch_of(project, a["proposal"]) == proposed_a["revision"]
     assert tracked_dirty(project, a["proposal"]) == ""
 
-    # after approval BOTH proposals read the HOST identity (identity-keyed
-    # grant, shared by the concurrent proposal — never a worktree decoy)
-    for started in (a, b):
-        result = api.inputs(started["proposal"])
-        (source,) = result["profile"]["sources"]
-        assert source["name"] == "events"
-        assert source["tables"]["events"]["row_count"] == 3  # the HOST file
-        assert result["revision"] == branch_of(project, started["proposal"])
-    assert connection_spy == [[str(parquet)], [str(parquet)]]
+    # after the grant the draft reads the HOST identity — never the worktree decoy
+    result = api.inputs(a["proposal"])
+    (source,) = result["profile"]["sources"]
+    assert source["name"] == "events"
+    assert source["tables"]["events"]["row_count"] == 3  # the HOST file
+    assert result["revision"] == branch_of(project, a["proposal"])
+    assert connection_spy == [[str(parquet)]]
 
     # a NATIVE catalog entry is the same human gate (spec 0022 AC6): the
     # proposal opens nothing until the operator approves the exact new identity
@@ -220,25 +198,12 @@ def test_committed_registry_cannot_open_source_until_operator_approval(
     native_entry = {"name": "warehouse", "type": "duckdb", "path": "data/warehouse.duckdb"}
     reproposed = api.propose_sources(a["proposal"], proposed_a["revision"], [native_entry])
     assert reproposed["source_digest"] != proposed_a["source_digest"]
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(a["proposal"])
-    assert connection_spy == [[str(parquet)], [str(parquet)]]  # still nothing new
+    assert connection_spy == [[str(parquet)]]  # still nothing new
 
-    assert (
-        authoring_cli(
-            [
-                "approve-sources",
-                "--proposal",
-                a["proposal"],
-                "--revision",
-                reproposed["revision"],
-                "--source-digest",
-                reproposed["source_digest"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
+    approved = grant_sources(
+        api, a["proposal"], reproposed["revision"], reproposed["source_digest"]
     )
     capsys.readouterr()
     profile = api.inputs(a["proposal"])["profile"]["sources"]
@@ -264,7 +229,7 @@ def test_changed_source_entry_after_approval_cannot_grant_access(tmp_path, conne
     proposed = api.propose_sources(
         started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
     )
-    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
     assert api.inputs(started["proposal"])["profile"]["sources"][0]["name"] == "events"
     assert connection_spy == [[str(events)]]
 
@@ -276,18 +241,16 @@ def test_changed_source_entry_after_approval_cannot_grant_access(tmp_path, conne
         [{"name": "other", "type": "parquet", "path": "data/other.parquet"}],
     )
     assert changed["source_digest"] != proposed["source_digest"]
-    with pytest.raises(ValueError, match="NO operator approval") as excinfo:
+    with pytest.raises(ValueError, match="NO grant") as excinfo:
         api.inputs(started["proposal"])
     assert changed["source_digest"] in str(excinfo.value)  # the error names the new identity
     assert connection_spy == [[str(events)]]  # nothing new was opened
 
     # the earlier record is still there (no revocation); approving the exact
     # new identity restores access through the approved registry only
-    api.approve_sources(started["proposal"], changed["revision"], changed["source_digest"])
-    approvals = json.loads(
-        (project / ".ariadne" / "source-approvals.json").read_text(encoding="utf-8")
-    )
-    assert set(approvals) == {proposed["source_digest"], changed["source_digest"]}
+    grant_sources(api, started["proposal"], changed["revision"], changed["source_digest"])
+    grants = json.loads((project / ".ariadne" / "source_grants.json").read_text(encoding="utf-8"))
+    assert [g["source"]["name"] for g in grants["grants"]] == ["events", "events", "other"]
     profile = api.inputs(started["proposal"])["profile"]["sources"]
     assert {s["name"] for s in profile} == {"events", "other"}
     assert profile[1]["tables"]["other"]["row_count"] == 7
@@ -340,11 +303,11 @@ def test_proposed_widened_document_configuration_cannot_widen_input_roots(tmp_pa
     )
 
     # pre-approval: the changed/unapproved source never reaches the reader
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(started["proposal"], documents=["../extra/wide.md"])
     assert connection_spy == []
 
-    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
     # the committed (widened) setting granted nothing: the escaping reference
     # is refused against the operator's CURRENT roots — after approval too
     with pytest.raises(ValueError, match="escapes the operator-configured input roots"):
@@ -369,25 +332,25 @@ def test_git_approve_sources_binds_the_exact_candidate_and_digest(tmp_path):
         started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
     )
     for bad in (
-        lambda: api.approve_sources(
-            started["proposal"], started["candidate_revision"], proposed["source_digest"]
+        lambda: grant_sources(
+            api, started["proposal"], started["candidate_revision"], proposed["source_digest"]
         ),  # stale: the candidate moved with the registry edit
-        lambda: api.approve_sources(
-            started["proposal"], proposed["revision"], "0" * 64
+        lambda: grant_sources(
+            api, started["proposal"], proposed["revision"], "0" * 64
         ),  # wrong digest
-        lambda: api.approve_sources(started["proposal"], proposed["revision"], "not-a-digest"),
-        lambda: api.approve_sources(
-            "p-00000000000000-000000", proposed["revision"], proposed["source_digest"]
+        lambda: grant_sources(api, started["proposal"], proposed["revision"], "not-a-digest"),
+        lambda: grant_sources(
+            api, "p-00000000000000-000000", proposed["revision"], proposed["source_digest"]
         ),
     ):
         with pytest.raises(ValueError):
             bad()
-    assert not (project / ".ariadne" / "source-approvals.json").exists()
+    assert not (project / ".ariadne" / "source_grants.json").exists()
     assert (project / "ariadne.yaml").read_text(encoding="utf-8") == "# registry template\n"
     assert branch_of(project, started["proposal"]) == proposed["revision"]
     # the exact arguments record the permission
-    approved = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved["source_digest"] == proposed["source_digest"]
 
@@ -479,7 +442,7 @@ def test_inputs_selected_table_is_bounded_and_approved(tmp_path):
         started["candidate_revision"],
         [EVENTS_ENTRY, {"name": "other", "type": "parquet", "path": "data/other.parquet"}],
     )
-    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
 
     measured = api.inputs(started["proposal"], selector=("events", "events"), sample_rows=2)
 
@@ -498,7 +461,7 @@ def test_inputs_expected_revision_preflights_and_default_is_unchanged(tmp_path, 
     proposed = api.propose_sources(
         started["proposal"], started["candidate_revision"], [EVENTS_ENTRY]
     )
-    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
 
     baseline = api.inputs(started["proposal"])
     pinned = api.inputs(started["proposal"], expected_revision=proposed["revision"])
@@ -575,23 +538,13 @@ def test_cli_git_mode_propose_approve_and_inputs_roundtrip(tmp_path, capsys):
     error = json.loads(capsys.readouterr().err)["error"]
     assert "approval" in error["message"]
 
-    assert (
-        authoring_cli(
-            [
-                "approve-sources",
-                "--proposal",
-                started["proposal"],
-                "--revision",
-                proposed["revision"],
-                "--source-digest",
-                proposed["source_digest"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
+    granted = grant_sources(
+        AuthoringProject(project),
+        started["proposal"],
+        proposed["revision"],
+        proposed["source_digest"],
     )
-    assert json.loads(capsys.readouterr().out)["source_digest"] == proposed["source_digest"]
+    assert granted["source_digest"] == proposed["source_digest"]
 
     assert (
         authoring_cli(
@@ -747,14 +700,14 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
 
     # DB-A: the operator approves under the CURRENT destination.
     monkeypatch.setenv(_PG_ENV, dsn_a)
-    approved_a = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_a = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
 
     # DB-B under the SAME env name: the historical DB-A grant must refuse
     # BEFORE any open — a changed destination is a changed effective identity.
     monkeypatch.setenv(_PG_ENV, dsn_b)
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(started["proposal"])
     assert opened == []  # the builder boundary was never reached
 
@@ -763,15 +716,15 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # (S3 profile keys stay plain slugs; colons occur in neither namespace).
     assert approved_a["approval_digest"] != approved_a["source_digest"]
     assert set(approved_a["storage_bindings"]) == {"postgres:pg"}
-    record_text = (project / ".ariadne" / "source-approvals.json").read_text(encoding="utf-8")
+    record_text = (project / ".ariadne" / "source_grants.json").read_text(encoding="utf-8")
     assert "pgsecret" not in record_text  # no plaintext DSN/credential in the grant
     assert "db-a.internal" in record_text  # the destination itself is recorded
 
     # Credential rotation at the SAME destination: same effective approval
     # identity — no new destination grant is minted (spec 0025 §4).
     monkeypatch.setenv(_PG_ENV, dsn_rotated)
-    approved_rotated = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_rotated = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_rotated["approval_digest"] == approved_a["approval_digest"]
 
@@ -796,12 +749,12 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # variable VALUE never changed — it must refuse before any open.
     monkeypatch.setenv("PGHOST", "db-a.internal")
     monkeypatch.setenv(_PG_ENV, implicit_dsn)
-    approved_implicit = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_implicit = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_implicit["approval_digest"] != approved_a["approval_digest"]
     monkeypatch.setenv("PGHOST", "db-b.internal")
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(started["proposal"])
     assert opened == []
 
@@ -811,7 +764,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     monkeypatch.delenv("PGHOST", raising=False)
     monkeypatch.setenv(_PG_ENV, "service=prod dbname=app")
     with pytest.raises(ValueError, match="service") as service_error:
-        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+        grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
     assert _PG_ENV in str(service_error.value)
     assert "prod" not in str(service_error.value)  # never the service VALUE
     assert opened == []  # nothing was opened for the refused form either
@@ -822,7 +775,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     monkeypatch.setenv("PGSERVICE", "prod")
     monkeypatch.setenv(_PG_ENV, "dbname=app user=owner")
     with pytest.raises(ValueError, match="PGSERVICE") as env_service_error:
-        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+        grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
     assert "prod" not in str(env_service_error.value)
     assert opened == []
     monkeypatch.delenv("PGSERVICE")
@@ -835,13 +788,13 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
         monkeypatch.setenv(hint, "ariadne-decoy-user")
     effective_user = pwd.getpwuid(os.geteuid()).pw_name
     monkeypatch.setenv(_PG_ENV, "host=db-a.internal dbname=app")
-    approved_os = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_os = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_os["storage_bindings"]["postgres:pg"]["user"] == effective_user
     monkeypatch.setenv("PGUSER", "ariadne-decoy-user")
-    approved_pguser = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_pguser = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_pguser["approval_digest"] != approved_os["approval_digest"]
     monkeypatch.delenv("PGUSER")
@@ -852,7 +805,7 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # the password.
     monkeypatch.setenv(_PG_ENV, "postgresql://owner:pgsecret@db／a/app")
     with pytest.raises(ValueError, match="not a valid connection URI") as nfkc_error:
-        api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+        grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
     assert "pgsecret" not in str(nfkc_error.value)
     assert opened == []
 
@@ -864,16 +817,16 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # effective dbname/user binding).
     monkeypatch.setenv(_PG_ENV, "host=db-a.internal user=owner")
     monkeypatch.setenv("PGDATABASE", "app")
-    approved_db = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_db = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_db["storage_bindings"]["postgres:pg"]["dbname"] == "app"
     monkeypatch.setenv("PGDATABASE", "app ")  # one significant trailing space
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(started["proposal"])  # the 'app' grant does not cover 'app '
     assert opened == []
-    approved_db_ws = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_db_ws = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_db_ws["storage_bindings"]["postgres:pg"]["dbname"] == "app "
     assert approved_db_ws["approval_digest"] != approved_db["approval_digest"]
@@ -882,12 +835,12 @@ def test_postgres_destination_change_under_same_env_name_needs_its_own_approval(
     # fresh approval records it verbatim and no earlier grant covers it
     monkeypatch.setenv(_PG_ENV, "host=db-a.internal dbname=app")
     monkeypatch.setenv("PGUSER", "owner ")
-    approved_user_ws = api.approve_sources(
-        started["proposal"], proposed["revision"], proposed["source_digest"]
+    approved_user_ws = grant_sources(
+        api, started["proposal"], proposed["revision"], proposed["source_digest"]
     )
     assert approved_user_ws["storage_bindings"]["postgres:pg"]["user"] == "owner "
     monkeypatch.setenv("PGUSER", "other-role")
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api.inputs(started["proposal"])  # no grant covers dbname 'app ' + 'other-role'
     assert opened == []
 
@@ -968,7 +921,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connec
         "content"
     ]
     assert "sample_rows: 1000000" in candidate_registry  # the widened candidate claim
-    api.approve_sources(started["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, started["proposal"], proposed["revision"], proposed["source_digest"])
 
     # the operator narrows the host working config to NO profiling section:
     # built-in defaults govern from here on, never the candidate's claim
@@ -1095,7 +1048,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connec
             {"name": "wide", "type": "parquet", "path": "data/wide.parquet"},
         ],
     )
-    api.approve_sources(started["proposal"], reproposed["revision"], reproposed["source_digest"])
+    grant_sources(api, started["proposal"], reproposed["revision"], reproposed["source_digest"])
     settled_revision = reproposed["revision"]
 
     # --- Unicode ACTUAL CLI accounting (independent oracle: authoring_cli.py
@@ -1124,7 +1077,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connec
         settled_revision,
         [{"name": "warehouse", "type": "duckdb", "path": "data/warehouse.duckdb"}],
     )
-    api.approve_sources(started["proposal"], nat["revision"], nat["source_digest"])
+    grant_sources(api, started["proposal"], nat["revision"], nat["source_digest"])
     settled_revision = nat["revision"]
     native_measured = api.inputs(started["proposal"], selector=("warehouse", "orders"))
     native_row = native_measured["profile"]["sources"][0]["tables"]["orders"]
@@ -1212,7 +1165,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connec
         settled_revision,
         [{"name": "flat", "type": "parquet", "path": "data/flat.parquet"}],
     )
-    api.approve_sources(started["proposal"], flat["revision"], flat["source_digest"])
+    grant_sources(api, started["proposal"], flat["revision"], flat["source_digest"])
     settled_revision = flat["revision"]
 
     class _TransferObserver:

@@ -530,7 +530,7 @@ def test_stale_revision_and_unapproved_or_unknown_participation_refuse(tmp_path)
     project2 = mapping_project(tmp_path / "unapproved")
     api2 = AuthoringProject(project2)
     started2 = api2.start_proposal()
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api2.inspect_mapping(started2["proposal"], started2["candidate_revision"], candidate)
     # a participating source outside the approved registry identity
     decoy = table_resource("decoy", None, "decoy", "orders")

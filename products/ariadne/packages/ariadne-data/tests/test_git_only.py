@@ -566,7 +566,7 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
     assert commands == []
     assert not fresh.exists()
     assert not (fresh / ".git").exists()
-    assert not (fresh / ".ariadne" / "source-approvals.json").exists()
+    assert not (fresh / ".ariadne" / "source_grants.json").exists()
     assert not (fresh / ".ariadne" / "current.json").exists()
     assert not list((fresh / ".ariadne" / "proposals").glob("*.json"))
 
