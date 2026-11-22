@@ -139,7 +139,11 @@ sources with `governed:false` and state what the answer rests on.
    prompts once and sets a repository-local identity. With `--yes` and no identity, it
    refuses and prints the exact `git config` commands.
 2. It generates a random `urn:uuid` namespace and writes the private profile to
-   `~/.config/ariadne/<uuid>.json`. The profile is mode 0600 and holds:
+   `~/.config/ariadne/<uuid>.json` (the Lumio private-profile schema, unchanged), plus
+   an Ariadne-owned sibling `~/.config/ariadne/<uuid>.ariadne.json`. Both are mode 0600,
+   created atomically; the sibling has a strict schema, and both paths are recorded under
+   `.ariadne/`. (Clarified during B1 execution on 2026-11-22: the Lumio SDK profile
+   refuses unknown keys, and B makes no SDK change.) The Ariadne sibling holds:
    - the publication destination (default `~/.local/share/ariadne/published/<uuid>/`);
    - the default Visibility Scope `public`;
    - the run-log settings.
