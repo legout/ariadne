@@ -1,11 +1,10 @@
 # Specification 0040: One CLI, simple governance, guarded ad-hoc SQL (B1 + B2)
 
-**Status:** proposed, revision 3, 2026-11-22. The r2 recheck
+**Status:** owner-approved, revision 3, 2026-11-22 ("freigabe" after presentation of r3). Approval authorizes the B1 plan and supervised B1 execution in an isolated candidate; integration/publication still need the owner. The r2 recheck
 (`s0040-review/recheck.md`) returned five bounded clarifications, all incorporated in
 r3: a source grant is separate from release activation, the workspace callers, the r4
 upgrade outcome, log refusals carry no text, and the warning example. This is sub-spec B of the
-[approved umbrella spec 0037 r2](2026-11-18-0037-simple-ariadne.md). It is not
-approved yet.
+[approved umbrella spec 0037 r2](2026-11-18-0037-simple-ariadne.md).
 
 Revision 1 received a design review from `openai-codex/gpt-6.2-sol`, and the verdict
 was "revise first". The review is stored at
