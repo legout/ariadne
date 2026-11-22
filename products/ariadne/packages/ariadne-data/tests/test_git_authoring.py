@@ -1466,6 +1466,68 @@ def test_dash_and_colon_lookalike_identities_get_distinct_pages(tmp_path):
     proposals.check_page_batch(specs)
 
 
+def test_an_over_long_computation_page_name_is_bounded_and_validates(tmp_path):
+    """A valid hyphenated model with a model-scoped metric whose injective page
+    name exceeds 200 bytes gets a bounded path that the real candidate gate
+    accepts; the full identity stays in the page's core_ref."""
+    project = complete_bundle_project(tmp_path)
+    model = "-".join(["seg"] * 20)
+    metric = "m" + "x" * 90  # encoded name: 117 + 2 + 3 + 91 + 3 bytes, over 200
+    identity = f"{model}::rows.{metric}"
+    content = (
+        f"version: 0.3.0.dev0\nname: {model}\ndatasets:\n- name: rows\n"
+        f"  source: events.events\n  primary_key: [id]\n  fields:\n"
+        f"  - name: id\n    expression:\n      sql: id\n"
+        f"  - name: label\n    expression:\n      sql: label\n    dimension: {{}}\n"
+        f"  metrics:\n  - name: {metric}\n    expression:\n      sql: COUNT(*)\n"
+    )
+    selector = project / "context_integration.yaml"
+    selector.write_text(
+        selector.read_text(encoding="utf-8")
+        + f'    - subject: {{kind: metric, identity: "{identity}"}}\n'
+        "      policy: {namespace: urn:uuid:authoring-fixture,"
+        " entity_id: entity:all-events-count}\n"
+        "      operations: [get_metric, query_metrics]\n"
+        "      enforcement: null\n",
+        encoding="utf-8",
+    )
+    run_git(project, "add", "context_integration.yaml")
+    run_git(project, "commit", "-q", "-m", "bind the long metric")
+    metric_page = (
+        NATIVE_METRIC_PAGE.replace("entity:event-count", "entity:long-metric")
+        .replace('title: "event_count"', f'title: "{metric}"')
+        .replace("title: event_count", f"title: {metric}")
+        .replace(
+            "    model: events\n    metric: events.event_count\n",
+            f"    model: {model}\n    metric: rows.{metric}\n",
+        )
+    )
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    approved(api, project, started)
+    edited = api.edit_proposal(
+        started["proposal"],
+        started["candidate_revision"],
+        {"kind": "model", "name": model, "content": content},
+    )
+    paged = api.edit_pages_batch(
+        started["proposal"],
+        edited["revision"],
+        [{"path": "knowledge/metrics/long-metric.md", "content": metric_page}],
+    )
+    result = api.validate_proposal(started["proposal"], paged["revision"])
+    assert result["ok"] is True, result["errors"]
+    long_pages = [
+        path
+        for path in result["artifact_files"]
+        if path.startswith("knowledge/computations/") and "--h" in path
+    ]
+    assert len(long_pages) == 1, [p for p in result["artifact_files"] if "computations" in p]
+    assert len(long_pages[0].rpartition("/")[2].encode()) <= 200
+    page = proposals._read_blob(project, result["revision"], long_pages[0])
+    assert page is not None and identity.encode() in page
+
+
 def test_a_new_page_never_takes_a_path_an_anchored_page_holds(tmp_path):
     """A page anchored to beta::volume sits at the path alpha::volume would get:
     finalize refuses the generated write, naming both identities, and leaves it."""

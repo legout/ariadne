@@ -261,7 +261,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
         page = existing.get(identity)
         if page is None:
             if sanctioned is not None:
-                file = f"{_path_part(info['model'])}--{_path_part(name)}.md"
+                file = _page_file(identity, info["model"], name)
                 if file in occupied:
                     errors.append(
                         f"knowledge/computations/{file}: the page for {identity} would take"
@@ -288,6 +288,16 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
                 }
             )
     return specs, errors
+
+
+def _page_file(identity: str, model: str, key: str) -> str:
+    """Page file name ``<model>--<key>.md``; past 200 bytes (filesystem limit) it
+    is the first 120 bytes of that encoded name + ``--h`` + 16 hex of sha256(identity)."""
+    file = f"{_path_part(model)}--{_path_part(key)}.md"
+    if len(file) <= 200:  # the encoding is pure ASCII: characters are bytes
+        return file
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"{file[:120]}--h{digest}.md"
 
 
 def _path_part(text: str) -> str:
