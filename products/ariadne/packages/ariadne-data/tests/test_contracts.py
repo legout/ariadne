@@ -708,6 +708,16 @@ def contract_inspection_static_contract(api: AuthoringProject, started: dict) ->
 # ------------------------------------------------------ [3] schema drift
 
 
+def _next_draft(api, project):
+    """One active draft per project (spec 0040): retire the current draft, open the next."""
+    from ariadne import draft
+
+    active = draft.status(project)
+    if active is not None:
+        draft.discard(project, (active["generation"], active["candidate_revision"]))
+    return api.start_proposal()
+
+
 def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
     """AC3: the independently declared fixture passes; a removed column, an
     integer→string change and a NULL in a required column are actionable
@@ -749,7 +759,7 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
         {"id": "INTEGER", "region": "VARCHAR"},
         [(1, "EMEA"), (2, "AMER"), (3, "EMEA")],
     )
-    removed = api.start_proposal()
+    removed = _next_draft(api, project)
     approved(api, project, removed)
     removed_result = api.validate_proposal(removed["proposal"], contracted(api, removed))
     assert removed_result["ok"] is False
@@ -772,7 +782,7 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
         {"id": "VARCHAR", "amount": "DOUBLE", "region": "VARCHAR"},
         [("1", 10.0, "EMEA"), ("2", 20.0, "AMER"), ("3", 30.0, "EMEA")],
     )
-    retyped = api.start_proposal()
+    retyped = _next_draft(api, project)
     approved(api, project, retyped)
     retyped_result = api.validate_proposal(retyped["proposal"], contracted(api, retyped))
     assert retyped_result["ok"] is False
@@ -791,7 +801,7 @@ def test_bound_schema_and_required_null_drift_are_explicit(tmp_path):
         {"id": "INTEGER", "amount": "DOUBLE", "region": "VARCHAR"},
         [(1, 10.0, "EMEA"), (2, None, "AMER"), (3, 30.0, "EMEA")],
     )
-    nulled = api.start_proposal()
+    nulled = _next_draft(api, project)
     approved(api, project, nulled)
     nulled_result = api.validate_proposal(nulled["proposal"], contracted(api, nulled))
     assert nulled_result["ok"] is False

@@ -475,7 +475,6 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
 
     from integration.tests.legacy_cli_support import main as cli_main
 
-    from ariadne import proposals
     from ariadne.authoring import AuthoringProject
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
@@ -538,38 +537,20 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
 
     # Retired selectors and commands fail during argument parsing, before writes.
     for argv in (
-        ["list-metrics", "--project", str(project), "--served", str(project)],
+        ["metrics", "--project", str(project), "--served", str(project)],
         ["save-example", "--project", str(project), "--staging", str(tmp_path / "staging")],
         ["promote", "--project", str(project)],
-        ["setup", "--project", str(project), "--legacy", "--no-input"],
     ):
         assert cli_main(argv, stdin=io.StringIO("")) == 1
         assert "error" in json.loads(capsys.readouterr().err)
     assert not (tmp_path / "staging").exists()
 
-    # Setup reports operator commands but never initializes/configures Git,
-    # records source permission, admits state or starts an implicit proposal.
-    fresh = tmp_path / "setup-only"
-    git = proposals._git
-    commands = []
-
-    def observe_git(argv, *args, **kwargs):
-        commands.append(argv)
-        assert argv[:1] != ["init"]
-        assert argv[:1] != ["config"] or argv[1:2] == ["--get"]
-        return git(argv, *args, **kwargs)
-
-    monkeypatch.setattr(proposals, "_git", observe_git)
-    assert cli_main(["setup", "--project", str(fresh), "--no-input"]) == 0
-    output = capsys.readouterr().out
-    assert "--namespace" in output and "--private-profile" in output
-    assert "source approval" in output and "Git Review Admission" in output
-    assert commands == []
+    # `init` is the only project-creating command and an unrelated, uninitialized directory
+    # is never touched by a read-only command (spec 0040 §3.2).
+    fresh = tmp_path / "never-initialized"
+    assert cli_main(["status", "--project", str(fresh), "--json"]) == 1
+    capsys.readouterr()
     assert not fresh.exists()
-    assert not (fresh / ".git").exists()
-    assert not (fresh / ".ariadne" / "source_grants.json").exists()
-    assert not (fresh / ".ariadne" / "current.json").exists()
-    assert not list((fresh / ".ariadne" / "proposals").glob("*.json"))
 
 
 def test_deferred_server_resolves_first_admission(tmp_path, capsys, monkeypatch):
