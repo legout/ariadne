@@ -536,9 +536,7 @@ def test_every_documented_subcommand_has_working_help(capsys):
 
     commands = [c for c in _TABLE if c != "preview"]  # preview lands with T7
     for command in commands:
-        with pytest.raises(
-            Exception
-        ) as exc:  # argparse prints help then exits via UsageError/SystemExit
+        with pytest.raises(SystemExit) as exc:  # argparse prints the help, then exits 0
             build_parser().parse_args([command, "--help"])
-        assert isinstance(exc.value, SystemExit)
+        assert exc.value.code == 0
         assert command in capsys.readouterr().out
