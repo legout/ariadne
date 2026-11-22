@@ -68,7 +68,6 @@ from typing import NoReturn, cast
 
 from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env lacks site-packages
     authoring,
-    draft,
     authoring_inputs,
     authoring_sources,
     context,
@@ -1158,7 +1157,6 @@ def admit_revision(
                 proposals._store_record(project, record)
             except OSError:
                 pass
-            draft.consume(project, proposal)  # the approved generation is consumed (spec 0040)
     return {
         "route": ADMISSION_ROUTE,
         "project": str(project),
