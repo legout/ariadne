@@ -1,6 +1,9 @@
 # Specification 0040: One CLI, simple governance, guarded ad-hoc SQL (B1 + B2)
 
-**Status:** proposed, revision 2, 2026-11-22. This is sub-spec B of the
+**Status:** proposed, revision 3, 2026-11-22. The r2 recheck
+(`s0040-review/recheck.md`) returned five bounded clarifications, all incorporated in
+r3: a source grant is separate from release activation, the workspace callers, the r4
+upgrade outcome, log refusals carry no text, and the warning example. This is sub-spec B of the
 [approved umbrella spec 0037 r2](2026-11-18-0037-simple-ariadne.md). It is not
 approved yet.
 
@@ -204,11 +207,30 @@ sources with `governed:false` and state what the answer rests on.
    4. On "yes", recheck the exact identity against the displayed one. Then open each
       new source **inside the approval transaction** for the bounded live checks
       (attach, catalog enumeration, existing containment checks).
-   5. Only after all checks pass, activate atomically. That means a new served
-      revision whose admission record binds the approved source identities. From then
-      on, profiling, inspection, refresh and preview may read these sources.
-   6. On any failure, the served state and every grant stay as before. **No profiling
-      grant is created by a failed or refused approval.**
+   5. Only after all checks pass, record the **source grant** atomically in
+      `.ariadne/source_grants.json`. That file is project-locked and append-only by
+      generation. It holds each exact approved identity with its attribution, time and
+      approved digest.
+
+      A source grant is **not** a release activation:
+      - the served Bound Release, its calculations and its pinned source bindings stay
+        unchanged;
+      - it authorizes bounded **reads for authoring only**: profiling, inspection,
+        schema refresh and preview.
+   6. The approved draft generation is **consumed**. The source declarations it
+      contains are committed to the project as the new *approved source baseline*. The
+      next edit starts a new draft generation on top of it, so a calculation draft sees
+      the granted sources as already approved.
+   7. **A changed identity never repoints served calculations.** If a granted identity
+      replaces the identity of a source that an admitted metric uses (a changed
+      endpoint, DSN destination or path), governed `query`/`detail` keep using the
+      identity bound by the **served release** until a calculation approval admits a
+      release bound to the new identity. Preview uses the new identity.
+   8. On any failure, the served state and every grant stay as before. **No grant is
+      created by a failed or refused approval.**
+   9. Postgres sources are declared with a `connection_env` reference (ADR-0010).
+      `add` never accepts an inline DSN with credentials; it refuses them and names the
+      variable form.
 3. **Calculation approval:**
    1. Validate the exact draft generation on locked connections over approved sources,
       reusing a matching cached validation.
@@ -218,10 +240,13 @@ sources with `governed:false` and state what the answer rests on.
       selections and the composite digest), print it and ask on the TTY.
    4. On "yes", admit exactly the displayed generation, revision and digest with the
       existing `admit_revision` guarantees, and activate atomically.
-4. **Profiling and inspection read only sources bound by the current served
-   approval.** `authoring_inputs`, `refresh_schema`, `inspect_mapping` and `profile`
-   resolve their grant from the served admission record, not from a proposal-local
-   approval file. The separate `approve_sources` record and its grant are removed.
+4. **Profiling, inspection and preview read only granted sources:** the identities
+   bound by the served release, plus those in `source_grants.json`.
+   `authoring_inputs`, `refresh_schema`, `inspect_mapping`, `profile` and `preview`
+   resolve their grant from these two records, not from a proposal-local approval file.
+   A calculation approval admits a release whose bound sources must all be granted;
+   admission revalidates against exactly those identities. The proposal-local
+   `approve_sources` record and its grant are removed.
 5. **Mapping confirmations.** The former `--confirm-mapping` appears as a numbered list
    in the summary and is confirmed with `approve --confirm-mapping SEL…`, under the
    same rules as before. A hypothesis is never confirmable.
@@ -264,7 +289,25 @@ sources with `governed:false` and state what the answer rests on.
    `served_revision`. It is never stored as an Answer Example and never cached.
 4. A draft that does not validate, or a stale draft, refuses with the reasons.
 
-### 3.7 Removals in B1, and the guarantees they keep
+### 3.7 Workspace callers (`lumio-workspace` analytics)
+
+The workspace analytics adapter calls `AuthoringProject.approve_sources` and checks
+its grant before the caller's separate data grant (`analytics.py` around lines
+938–967). It also dispatches `query_records` and `define_metric` (around lines
+704–744).
+
+B1 **cuts these callers over in the same candidate**:
+
+- the browser-reviewed source request records the source grant (§3.4.2), using the
+  existing reviewer capability and one-use action;
+- the per-caller data grant stays separate and is checked as before.
+
+B2 removes the two query dispatches from the adapter in the same candidate that removes
+the operations, and reports them as unsupported. B adds **no** workspace `sql`. The
+existing workspace journeys are rerun as the boundary check: role separation, private
+originals and curated scope (shared ADR-0028).
+
+### 3.8 Removals in B1, and the guarantees they keep
 
 The following are removed, along with code and tests that serve only these surfaces:
 
@@ -354,6 +397,17 @@ The guarantees these surfaces protected stay tested through `approve`:
    - An existing Policy Binding naming `define_metric`/`query_records` is **not**
      silently moved. `approve` on a revision-5 selector refuses bindings that name
      removed operations, and the message names them.
+   - **Upgrading an existing revision-4 project to the B2 build:**
+     - Its served release was admitted under the old execution build identity.
+       `verify_release` checks that identity, so the new build refuses to serve that
+       release, as it does today for any build change.
+     - `ariadne status` names the cause.
+     - The fix is the normal path: `ariadne migrate` (when needed), then a draft that
+       moves the selector to `support_revision` 5 and removes or replaces bindings that
+       name removed operations, then `validate`, then `approve`.
+     - Calls to the removed operations report `operation_removed`, naming `sql` as the
+       replacement. They are never silently routed to `sql`.
+     - Nothing runs a revision-4 release on the new build.
 2. For each table read, `sql` discloses the Policies bound, under the served release,
    to the dataset or resource subjects whose **physical source identity** equals that
    table's resource identity. These are disclosed as **advisory**.
@@ -373,6 +427,10 @@ The guarantees these surfaces protected stay tested through `approve`:
 | `fanout` | A join along a declared one-to-many relationship whose many side feeds an aggregate of the one side |
 | `grain_unknown` | An aggregate over a join whose grain cannot be determined from declared relationships |
 | `policy_unknown` | §4.2.2 |
+
+An aggregate over an undeclared join returns its rows with both `undeclared_join` and
+`grain_unknown`. A join along a declared one-to-many relationship into an aggregate
+returns `fanout`. Both are distinct from the cap refusal.
 
 Each warning names the relation or relationship. Cap exhaustion is a refusal (§4.1.5),
 not a warning.
@@ -405,9 +463,18 @@ not a warning.
    - the relations read;
    - outcome (`ok`, a refusal class, or `error` with a classified error code);
    - warning classes, row count and duration.
-3. **SQL text is stored only if DuckDB parses it.** It is stored as DuckDB's normalized
-   SQL with every literal replaced by `?`. Unparseable or refused-before-parse SQL
-   stores no text, only the refusal class.
+3. **Refusals never store caller text,** whether the refusal happens before or after
+   parsing. A refusal record stores only the refusal class and the relation names that
+   the guard resolved.
+
+   **A successful query stores normalized SQL only when it is safe to keep:**
+   - the text is DuckDB's normalized form;
+   - literals are replaced by `?`;
+   - comments are removed;
+   - every alias and CTE name is replaced by a positional placeholder (`a1`, `c1`, …).
+
+   Only approved relation names and allow-listed function names survive verbatim. If
+   this normalization cannot be produced, no text is stored.
 4. **What is never stored:**
    - the question text (only its length and a SHA-256);
    - raw caller text;
@@ -441,16 +508,18 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
 2. `preview`, `sql` and `context` always return `governed:false`.
 3. No shipped agent interface can approve, discard, grant a source or confirm a
    mapping.
-4. No source is read before the source approval that binds it. A failed approval
-   creates no grant.
-5. Every connection over approved sources outside the governed query is locked, and it
-   is built only from identities bound by the current served approval. This covers
-   validation, preview, `sql`, profiling and inspection.
+4. No source is read before the source approval that grants it. A failed approval
+   creates no grant. A source grant never changes the served release or repoints a
+   served calculation.
+5. Every connection over approved sources outside the governed query is locked.
+   - Authoring connections (validation, preview, profiling, inspection) are built only
+     from granted identities: the served release's bindings plus the source grants.
+   - `sql` and `context` use only the served release's bindings.
 6. The governed query keeps its compiler-only SQL path and its existing guards.
 7. Credentials, literal values and engine messages never reach the run log. Redaction
    holds in every new message.
-8. The served state changes only through `approve`. Activation is atomic, and a failure
-   leaves the previous state and grants intact.
+8. The served state changes only through a calculation `approve`. Activation is atomic,
+   and a failure leaves the previous state and grants intact.
 
 ## 6. Acceptance examples
 
@@ -469,9 +538,16 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
    - A refused prompt also leaves no grant.
 3. **Mixed drafts.** `approve` of a draft that adds a source **and** a model refuses and
    asks the user to approve the source first.
-4. **Changed source identity.** A changed endpoint or DSN destination of an approved
-   source requires a new source approval. Until that approval, preview and profiling
-   refuse that source.
+4. **Changed source identity.** Take a source that an admitted metric uses and change
+   its endpoint or DSN destination.
+   - It requires a new source approval. Until then, preview and profiling refuse the
+     new identity.
+   - After the source approval, governed `query` of that metric still reads the
+     **old** identity bound by the served release, while `preview` uses the new one.
+   - Only after a calculation approval does `query` use the new identity.
+   - `add` refuses an inline Postgres DSN with credentials and names the
+     `connection_env` form.
+   - A sources-only approval leaves the served release digest byte-identical.
 5. **No TTY.** `approve` without a TTY refuses and changes nothing. MCP lists no
    approve, discard, source-grant or mapping-confirmation tool. The removed executables
    are absent from the installed wheel.
@@ -495,6 +571,13 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
 11. **`init` in an existing repository** with unrelated staged and unstaged work commits
     only its own files and leaves the rest untouched. A conflicting existing file
     refuses.
+11a. **Workspace cutover.** The existing workspace analytics journeys pass:
+    - a source request goes through browser review and grants the source;
+    - the separate caller data grant is still required;
+    - role separation and private originals are unchanged.
+
+    After B2, the workspace dispatch of the removed operations reports
+    `operation_removed`.
 
 ### B2
 
@@ -519,9 +602,12 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
 13. **Supported queries answer.** A `FROM`-first query and a window-function cohort
     query over approved sources answer with `governed:false`, `tables` and advisory
     `policies`.
-14. **Fan-out.** A join that fans a one-to-many relationship into a `SUM` returns rows
-    plus a `fanout` warning that names the relationship. An exhausted row cap returns
-    the typed refusal.
+14. **Warnings and caps.**
+    - A join that fans a declared one-to-many relationship into a `SUM` returns rows
+      plus a `fanout` warning naming the relationship.
+    - An aggregate over an undeclared join returns rows plus `undeclared_join` and
+      `grain_unknown`.
+    - An exhausted row cap returns the typed refusal, not rows.
 15. **Policy applicability.** A table backing two datasets with different Policies
     returns `policy_applicability: unknown` with both candidates. No result is labeled
     as enforced.
@@ -537,16 +623,28 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
     A separate local test shows the lock refuses a supported-shape read of a file
     outside approved paths when the relation guard is bypassed by a scratch fault.
     S3 containment is **not** claimed from the lock.
-17. **Run-log privacy.** A refused `sql` containing an inline DSN with a password, and a
-    `context` question containing a personal name, leave no DSN, password, name or
-    literal in `.ariadne/runs.duckdb`. A successful query stores only normalized SQL
-    with `?` placeholders. The file mode is 0600. When the log is unavailable, the query
-    result is still returned with `run_log: unavailable`.
+17. **Run-log privacy.** None of the following inputs leaves a DSN, password, name,
+    alias, comment or literal in `.ariadne/runs.duckdb`:
+    - a refused `sql` before parsing, with an inline DSN and password;
+    - a refused `sql` after parsing, for example an unapproved table, with a personal
+      name in a column alias and in a comment;
+    - a successful `sql` with a personal name in an alias, a CTE name and a comment;
+    - a `context` question with a personal name.
+
+    The successful query stores normalized SQL with `?`, `a1`/`c1` placeholders and no
+    comments. The file mode is 0600. When the log is unavailable, the query result is
+    still returned with `run_log: unavailable`.
 18. **Context pack.** `ariadne context` returns a pack within budget with the relevant
     dataset, relationship, observed values marked with their age, and an Answer Example
     with SQL. Omissions are disclosed. No source is opened.
-19. **Operation migration.** A revision-4 project keeps working. An attempt to `approve`
-    a revision-5 selector that still binds `define_metric` refuses with the names.
+19. **Revision-4 upgrade.** An existing revision-4 project with a Policy Binding on
+    `define_metric`, after installing the B2 build:
+    - `status` names the build-identity refusal, and governed queries refuse with it;
+    - the removed operations report `operation_removed`;
+    - a draft moving to `support_revision` 5 that still binds `define_metric` is refused
+      by `approve`, with the name;
+    - after the binding is removed, `validate` and `approve` admit a revision-5 release,
+      and governed queries and `sql` work.
 
 ## 7. Artifact reconciliation
 
@@ -562,6 +660,8 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
   of history):
   - umbrella 0037 §1 "four commands" and §4 B's first-source preview-before-approval
     (replaced by §3.4 here);
+  - umbrella 0037 §4 B run log: "stores … question" and "SQL" (replaced by §4.5
+    here);
   - 0037 §4 B "tier K" (moved to the B3 spec);
   - spec 0039 §7.1 "migrate opens its own proposal" (now the active draft);
   - specs 0009, 0014, 0027 and 0032 in their CLI, ad-hoc and record parts;
