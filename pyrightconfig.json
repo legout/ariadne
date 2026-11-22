@@ -1,0 +1,23 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "standard",
+  "include": ["products", "integration", "tests"],
+  "exclude": [
+    "**/build",
+    "**/.venv",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/examples/trace-data",
+    "products/lumio/experiments"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "products/ariadne/packages/ariadne-data",
+      "extraPaths": ["products/ariadne/packages/ariadne-data/src", ".", "products/ariadne/packages/ariadne-data"]
+    },
+    { "root": "integration", "extraPaths": [".", "products/ariadne/packages/ariadne-data"] },
+    { "root": "products/lumio", "extraPaths": ["products/lumio", "."] },
+    { "root": "tests", "extraPaths": ["."] }
+  ]
+}
