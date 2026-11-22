@@ -1178,8 +1178,7 @@ def admit_revision(
                 proposals._store_record(project, record)
             except OSError:
                 pass
-            if draft_pin is not None:
-                draft.consume(project, proposal)  # the approved generation is consumed
+            draft.consume(project, proposal)  # the approved generation is consumed (spec 0040)
     return {
         "route": ADMISSION_ROUTE,
         "project": str(project),
