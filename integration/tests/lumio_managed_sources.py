@@ -12,7 +12,6 @@ import os
 
 import pytest
 from ariadne import admission, lumio_context
-from ariadne.admission import main as admission_main
 from ariadne.discovery import DiscoveryRuntime
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
 from lumio_wiki.location import PublishedFilesystemLocation
@@ -24,6 +23,7 @@ from lumio_wiki.source_references import (
 from lumio_wiki.source_registry import SourceRegistry
 from tests.test_git_authoring import worktree_of
 
+from integration.tests.admit_support import admit_cli as admission_main
 from integration.tests.lumio_metric_mvp import (
     NAMESPACE,
     current_bytes,

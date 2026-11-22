@@ -37,12 +37,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from integration.tests.admit_support import admit_cli  # noqa: E402
+
 from ariadne import (  # noqa: E402
     admission,
     proposals,
 )
 from ariadne import context as context_module  # noqa: E402
-from ariadne.admission import main as admit_cli  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402

@@ -571,6 +571,17 @@ class AuthoringProject:
         )
         return result
 
+    def resolve_term_in_draft(self, request: str | dict, *, part: int = 1) -> dict:
+        """:meth:`resolve_term` against the ACTIVE draft — no proposal ID (spec 0040
+        §3.1.3, the same shape as the other authoring tools)."""
+        active = draft.status(self.project)
+        if active is None:
+            raise ValueError("there is no active draft to resolve terms against")
+        proposal = draft.proposal_of(
+            self.project, (active["generation"], active["candidate_revision"])
+        )
+        return self.resolve_term(proposal, request, part=part)
+
     # --------------- K3: bounded mapping inspection + receipts
 
     def inspect_mapping(

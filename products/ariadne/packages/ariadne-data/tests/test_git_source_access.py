@@ -27,7 +27,6 @@ from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-import yaml  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
@@ -36,7 +35,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 import ariadne.sources  # noqa: E402
 from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from ariadne.cli import main as ariadne_cli  # noqa: E402
 from tests.test_git_authoring import grant_sources  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
@@ -485,84 +484,36 @@ def test_inputs_expected_revision_preflights_and_default_is_unchanged(tmp_path, 
     assert len(connection_spy) == 2
 
 
-def test_cli_git_mode_propose_approve_and_inputs_roundtrip(tmp_path, capsys):
-    """The Git-aware CLI surface: propose-sources commits into the candidate
-    and returns the resolved digest; approve-sources records the permission;
-    inputs measures the approved identity plus operator-bound documents — one
-    JSON value per call, and the pre-approval refusal is one JSON error."""
+def test_cli_add_grant_and_inputs_roundtrip(tmp_path, capsys):
+    """The CLI journey of spec 0040: `add` declares a source in the active draft (opens
+    nothing, takes no credential), the inputs read refuses until the source grant, and
+    after the grant the bounded measured inputs arrive."""
     project = git_project(tmp_path)
-    write_parquet(project / "data" / "events.parquet")
-    (project / "data" / "docs").mkdir()
+    write_parquet(project / "data" / "events.parquet", rows=2)
+    (project / "data" / "docs").mkdir(parents=True, exist_ok=True)
     (project / "data" / "docs" / "policy.md").write_text("# Policy\n", encoding="utf-8")
-    intake = tmp_path / "proposed.yaml"
-    intake.write_text(
-        yaml.safe_dump({"sources": [EVENTS_ENTRY]}, sort_keys=False), encoding="utf-8"
-    )
-
-    assert authoring_cli(["start", "--project", str(project)]) == 0
-    started = json.loads(capsys.readouterr().out)
 
     assert (
-        authoring_cli(
-            [
-                "propose-sources",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(intake),
-                "--project",
-                str(project),
-            ]
+        ariadne_cli(
+            ["add", "data/events.parquet", "--name", "events", "--project", str(project), "--json"]
         )
         == 0
     )
     proposed = json.loads(capsys.readouterr().out)
-    assert proposed["source_digest"] and proposed["revision"] != started["candidate_revision"]
+    assert proposed["source_digest"] and proposed["draft"]["generation"] == 1
+    api = AuthoringProject(project)
+    started = {"proposal": proposed["proposal"], "candidate_revision": proposed["revision"]}
 
-    assert (
-        authoring_cli(
-            [
-                "inputs",
-                "--proposal",
-                started["proposal"],
-                "--document",
-                "policy.md",
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )  # unapproved: one JSON error object
-    error = json.loads(capsys.readouterr().err)["error"]
-    assert "approval" in error["message"]
+    with pytest.raises(ValueError, match="approval") as error:  # ungranted: nothing opened
+        api.inputs(started["proposal"], documents=["policy.md"])
+    assert "ariadne approve" in str(error.value)
 
     granted = grant_sources(
-        AuthoringProject(project),
-        started["proposal"],
-        proposed["revision"],
-        proposed["source_digest"],
+        api, started["proposal"], started["candidate_revision"], proposed["source_digest"]
     )
     assert granted["source_digest"] == proposed["source_digest"]
 
-    assert (
-        authoring_cli(
-            [
-                "inputs",
-                "--proposal",
-                started["proposal"],
-                "--document",
-                "policy.md",
-                "--sample-rows",
-                "2",
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    measured = json.loads(capsys.readouterr().out)
+    measured = api.inputs(started["proposal"], documents=["policy.md"], sample_rows=2)
     table = measured["profile"]["sources"][0]["tables"]["events"]
     assert table["row_count"] == 2 and table["sampled"] is True
     assert measured["documents"][0]["title"] == "policy.md"

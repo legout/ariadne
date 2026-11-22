@@ -526,8 +526,6 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     admitted example reports total 1 / admitted 1 (hand-derived oracle: one
     visible answer_example page exists in the pinned release; the retired
     dict-shape probe always reported zero)."""
-    import io
-    import json
 
     from tests.test_answer_examples import _SMALL_RESULT, _example_release, _submission
     from tests.test_git_authoring import approved
@@ -539,23 +537,14 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     # one explicit Example saved into a fresh candidate, validated, admitted
     started = api.start_proposal()
     approved(api, project, started)
-    from ariadne.cli import main as ariadne_cli
+    from ariadne.discovery import DiscoveryRuntime
 
-    capsys.readouterr()
-    code = ariadne_cli(
-        [
-            "save-example",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            started["candidate_revision"],
-        ],
-        stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT, sources=[]))),
+    # an explicit Example is saved into the active draft (an MCP tool in spec 0040)
+    saved = DiscoveryRuntime.open_project(project).save_example(
+        _submission(_SMALL_RESULT, sources=[]),
+        proposal=started["proposal"],
+        expected_revision=started["candidate_revision"],
     )
-    assert code == 0
-    saved = json.loads(capsys.readouterr().out)
     validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     example_review = api.review_proposal(saved["proposal"])

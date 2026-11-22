@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
 import yaml
 from ariadne import admission, lumio_context  # pyright: ignore[reportAttributeAccessIssue]
-from ariadne.admission import main as admission_main
 from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli
 from ariadne.query import QueryRuntime
@@ -35,6 +34,7 @@ from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
 from tests.test_discovery import _source_free_guards
 from tests.test_git_authoring import approved, run_git, worktree_of
 
+from integration.tests.admit_support import admit_cli as admission_main
 from integration.tests.lumio_local_context import (
     COMPLETED_METRIC,
     GRAPH,

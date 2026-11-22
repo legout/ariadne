@@ -25,7 +25,6 @@ native role tools; no network, no live connector.
 """
 
 import asyncio
-import io
 import json
 import os
 import subprocess
@@ -41,8 +40,6 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
-from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     RESOLVE_TERM_LIMIT,
     RESOLVE_TERM_MAX_BYTES,
@@ -823,56 +820,37 @@ def test_local_cli_serves_resolve_term_over_the_pinned_admission(tmp_path, capsy
     malformed request."""
     project, review = admitted_with_reference(tmp_path / "admitted")
     capsys.readouterr()  # the admission journey prints; clear before the CLI calls
-    code = cli(["resolve-term", "order number", "--project", str(project)])
-    assert code == 0
-    served = json.loads(capsys.readouterr().out)
+    # `resolve-term` is an MCP tool in spec 0040 (not a CLI command): the same core
+    # envelope comes from the pinned discovery session
+    import asyncio
+
+    from ariadne.discovery import DiscoveryRuntime
+
+    session = DiscoveryRuntime.open_project(project)
+    served = asyncio.run(session.resolve_term("order number"))
     assert [match["representation"] for match in served["matches"]] == [
         "local-order-number",
         "global-order-number",
     ]
     assert served["admission"]["revision"] == review["revision"]
 
-    # the exact-field form through --file (stdin convention of the other
-    # request-carrying commands)
-    request = tmp_path / "field.json"
-    request.write_text(
-        json.dumps({"resource": orders_resource(), "column": "global_order_number"}),
-        encoding="utf-8",
+    field = asyncio.run(
+        session.resolve_term({"resource": orders_resource(), "column": "global_order_number"})
     )
-    code = cli(["resolve-term", "--project", str(project), "--file", str(request)])
-    assert code == 0
-    field = json.loads(capsys.readouterr().out)
     assert [match["representation"] for match in field["matches"]] == ["global-order-number"]
 
-    code = cli(["resolve-term", "--project", str(project), "--file", "-"], stdin=io.StringIO("{}"))
-    assert code == 1
-    error = json.loads(capsys.readouterr().err)
-    assert "error" in error
+    with pytest.raises(ValueError):
+        asyncio.run(session.resolve_term({}))
 
-    # the Authoring CLI resolves an explicitly selected proposal (read-only)
-    cand_project, _api, candidate = candidate_with_reference(tmp_path / "cand")
-    capsys.readouterr()  # clear the candidate journey's own output
-    code = authoring_cli(
-        [
-            "resolve-term",
-            "--proposal",
-            candidate["proposal"],
-            "--project",
-            str(cand_project),
-            "order number",
-        ]
-    )
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
+    # the draft resolves terms through the Authoring API (read-only)
+    cand_project, api, candidate = candidate_with_reference(tmp_path / "cand")
+    payload = api.resolve_term(candidate["proposal"], "order number")
     assert payload["candidate"] is True
     assert payload["revision"] == candidate["revision"]
     assert payload["total_matches"] == 2
 
-    code = authoring_cli(
-        ["resolve-term", "--proposal", "p-nonexistent", "--project", str(cand_project), "x"]
-    )
-    assert code == 1
-    assert "error" in json.loads(capsys.readouterr().err)
+    with pytest.raises(ValueError):
+        api.resolve_term("p-nonexistent", "x")
 
 
 def test_mcp_resolve_term_routes_share_the_core(tmp_path):

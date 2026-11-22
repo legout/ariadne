@@ -341,7 +341,14 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         )
         return _emit(asyncio.run(runtime.list_datasets()), args)
     if command == "search":
-        return _emit(asyncio.run(discovery.discover(args.text, limit=args.limit)), args)
+        report = asyncio.run(discovery.discover(args.text, limit=args.limit))
+        if args.json:
+            return _emit(report, args)
+        print("Discovery only — use --json for full native payloads; no answer is executed.")
+        for kind, group in report["groups"].items():
+            print(f"{kind.title()} — {group['status']}")
+            print(json.dumps(group, default=_json_default, indent=2))
+        return 0
     if command == "page":
         return _emit(asyncio.run(discovery.read_context_page(args.path)), args)
     raise UsageError(f"unknown command {command!r}")
