@@ -235,6 +235,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
     rendered = sanctioned_sql(staging, models)
     comps_dir = staging / "knowledge" / "computations"
     existing: dict[str, tuple[str, str]] = {}
+    occupied: dict[str, str] = {}  # page file -> whose it is, anchored or authored
     if comps_dir.is_dir():
         from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
             parse_frontmatter,
@@ -242,6 +243,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
 
         for page in sorted(comps_dir.glob("*.md")):
             raw = page.read_text(encoding="utf-8")
+            occupied[page.name] = f"an authored page ({page.name})"
             try:
                 full, _body, _start = parse_frontmatter(raw, page.name)
             except Exception:  # noqa: BLE001 — the producer/page gate owns malformed pages
@@ -250,6 +252,7 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
             core_ref = profile.get("core_ref") if isinstance(profile, dict) else None
             if isinstance(core_ref, dict) and core_ref.get("kind") == "semantic":
                 existing[str(core_ref.get("id"))] = (page.name, raw)
+                occupied[page.name] = str(core_ref.get("id"))
     specs: list[dict] = []
     errors: list[str] = []
     for identity, info in sorted(models.items()):
@@ -258,11 +261,17 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
         page = existing.get(identity)
         if page is None:
             if sanctioned is not None:
+                file = f"{_path_part(info['model'])}--{_path_part(name)}.md"
+                if file in occupied:
+                    errors.append(
+                        f"knowledge/computations/{file}: the page for {identity} would take"
+                        f" the path already held by {occupied[file]}; resolve it by hand"
+                    )
+                    continue
+                occupied[file] = identity
                 specs.append(
                     {
-                        # full identity, filesystem-safe: <model>--<key, dots as dashes>
-                        "path": "knowledge/computations/"
-                        f"{info['model']}--{name.replace('.', '-')}.md",
+                        "path": f"knowledge/computations/{file}",
                         "content": _build_native_computation_page(name, info, sanctioned),
                     }
                 )
@@ -279,6 +288,16 @@ def finalize_native_candidate(staging: Path) -> tuple[list[dict], list[str]]:
                 }
             )
     return specs, errors
+
+
+def _path_part(text: str) -> str:
+    """Injective, filesystem-safe encoding of a model or key: ``[A-Za-z0-9_]``
+    stay; every other UTF-8 byte (``-`` and ``.`` included) becomes ``-<hex>``,
+    so the ``--`` that joins model and key never occurs inside either part."""
+    return "".join(
+        chr(b) if chr(b).isascii() and (chr(b).isalnum() or b == 0x5F) else f"-{b:02x}"
+        for b in text.encode("utf-8")
+    )
 
 
 def _native_computation_state(
