@@ -805,7 +805,7 @@ def test_validation_runs_only_through_the_approved_source_identity(tmp_path):
     started = api.start_proposal()
     with pytest.raises(ValueError, match="NO grant") as excinfo:
         api.validate_proposal(started["proposal"], started["candidate_revision"])
-    assert "approve-sources" in str(excinfo.value)
+    assert "ariadne approve" in str(excinfo.value)
     # no validation evidence exists and no finalize commit was created
     assert not (project / ".ariadne" / "validation").exists()
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
@@ -1195,23 +1195,9 @@ def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
     started = json.loads(capsys.readouterr().out)
     resolved, digest = candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    assert (
-        authoring_cli(
-            [
-                "approve-sources",
-                "--proposal",
-                started["proposal"],
-                "--revision",
-                started["candidate_revision"],
-                "--source-digest",
-                digest,
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
+    grant_sources(
+        AuthoringProject(project), started["proposal"], started["candidate_revision"], digest
     )
-    capsys.readouterr()
 
     assert (
         authoring_cli(
@@ -2473,6 +2459,11 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
 
     # AC7 positive control: the refusal never blocks the project itself — the
     # native KB stays authorable (no blanket refusal from unrelated state)
+    from ariadne import draft
+
+    active = draft.status(project)
+    if active is not None:  # one active draft (spec 0040): retire the earlier one first
+        draft.discard(project, (active["generation"], active["candidate_revision"]))
     assert api.start_proposal()["proposal"].startswith("p-")
 
 
