@@ -197,7 +197,7 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     proposal carries the generated Table profile (``refresh_schema``), full
     native validation and the composite human admission."""
     from ariadne import admission
-    from ariadne.init import main as init_main
+    from ariadne.init import main as init_main  # the library scaffold init_project builds on
 
     root.mkdir(parents=True, exist_ok=True)
     run_git(root, "init", "-q")
@@ -306,7 +306,7 @@ def served(tmp_path_factory):
 
 def run_cli(served, _unused_path, *args, stdin=None):
     project, _db = served
-    return cli([*args, "--project", str(project)], stdin=stdin)
+    return cli([*args, "--project", str(project), "--json"], stdin=stdin)
 
 
 def error_payload(err: str):
@@ -331,7 +331,7 @@ def project_refs(served):
 
 
 def test_list_metrics_matches_runtime_one_json_value(served, tmp_path, capsys):
-    code = run_cli(served, tmp_path / "staging", "list-metrics")
+    code = run_cli(served, tmp_path / "staging", "metrics")
     assert code == 0
     out = capsys.readouterr().out
     assert out.endswith("\n") and out.count("\n") == 1  # exactly one JSON value + newline
@@ -339,34 +339,15 @@ def test_list_metrics_matches_runtime_one_json_value(served, tmp_path, capsys):
 
 
 def test_list_datasets_matches_runtime(served, tmp_path, capsys):
-    code = run_cli(served, tmp_path / "staging", "list-datasets")
+    code = run_cli(served, tmp_path / "staging", "datasets")
     assert code == 0
     assert json.loads(capsys.readouterr().out) == asyncio.run(
         make_runtime(served, tmp_path / "staging").list_datasets()
     )
 
 
-def test_search_context_matches_runtime_and_honors_limit(served, tmp_path, capsys):
-    code = run_cli(served, tmp_path / "staging", "search-context", "gross margin", "--limit", "1")
-    assert code == 0
-    hits = json.loads(capsys.readouterr().out)
-    assert len(hits) == 1  # the existing limit behavior
-    expected = asyncio.run(
-        make_runtime(served, tmp_path / "staging").search_context("gross margin", 1)
-    )
-    assert hits == expected
-    assert hits[0]["draft"] is False  # admitted snapshot content, never a candidate
-    # rank order across the full admitted snapshot (generated pages included)
-    # is not pinned; the metric's own page stays discoverable
-    assert run_cli(served, tmp_path / "staging", "search-context", "gross margin") == 0
-    paths = [hit["path"] for hit in json.loads(capsys.readouterr().out)]
-    assert "metrics/gross_margin.md" in paths
-
-
 def test_get_metric_matches_runtime_including_context(served, tmp_path, capsys):
-    code = run_cli(
-        served, tmp_path / "staging", "get-metric", "gross_margin", "--dimension", "region"
-    )
+    code = run_cli(served, tmp_path / "staging", "query", "gross_margin", "--by", "region")
     assert code == 0
     result = json.loads(capsys.readouterr().out)
     expected = asyncio.run(
@@ -392,11 +373,11 @@ def test_get_metric_repeats_dimensions(served, tmp_path, capsys):
     code = run_cli(
         served,
         tmp_path / "staging",
-        "get-metric",
+        "query",
         "order_count",
-        "--dimension",
+        "--by",
         "region",
-        "--dimension",
+        "--by",
         "status",
     )
     assert code == 0
@@ -405,29 +386,8 @@ def test_get_metric_repeats_dimensions(served, tmp_path, capsys):
     assert result["rows"] and {"region", "status"} <= set(result["rows"][0])
 
 
-def test_get_metric_range_start_end(served, tmp_path, capsys):
-    code = run_cli(
-        served,
-        tmp_path / "staging",
-        "get-metric",
-        "order_count",
-        "--dimension",
-        "region",
-        "--start",
-        "2025-01-01",
-        "--end",
-        "2026-12-31",
-    )
-    assert code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert "2025-01-01" in result["sql"] and "2026-12-31" in result["sql"]
-    assert 0 < sum(row["order_count"] for row in result["rows"])
-
-
 def test_get_metric_serializes_temporal_values_as_iso(served, tmp_path, capsys):
-    code = run_cli(
-        served, tmp_path / "staging", "get-metric", "order_count", "--dimension", "order_date"
-    )
+    code = run_cli(served, tmp_path / "staging", "query", "order_count", "--by", "order_date")
     assert code == 0
     result = json.loads(capsys.readouterr().out)
     dates = [row["order_date"] for row in result["rows"]]
@@ -435,7 +395,7 @@ def test_get_metric_serializes_temporal_values_as_iso(served, tmp_path, capsys):
 
 
 def test_get_metric_unknown_metric_error_shape(served, tmp_path, capsys):
-    code = run_cli(served, tmp_path / "staging", "get-metric", "nonexistent")
+    code = run_cli(served, tmp_path / "staging", "query", "nonexistent")
     assert code == 1
     captured = capsys.readouterr()
     assert captured.out == ""  # no success value on stdout
@@ -443,144 +403,7 @@ def test_get_metric_unknown_metric_error_shape(served, tmp_path, capsys):
     assert error["type"] == "ValueError"
     # §7/§8.12: unknown-metric message verbatim — available metrics + ad-hoc route
     assert "unknown metric" in error["message"]
-    assert "gross_margin" in error["message"] and "define_metric" in error["message"]
-
-
-# --- define-metric: stdin/file definitions, serialization, side effects --------
-
-
-def _definition(name):
-    return {
-        "name": name,
-        "description": "CLI ad-hoc probe with a distinctive description",
-        "source": "demo.main.orders",
-        "expression": "SUM(CASE WHEN NOT status IN ('CANCELLED', 'RETURNED') THEN amount END)",
-        "dimensions": ["status"],
-    }
-
-
-def test_define_metric_from_stdin_is_ephemeral(served, tmp_path, capsys):
-    refs_before = project_refs(served)
-    staging = tmp_path / "staging"
-    definition = _definition("cli_probe_metric")
-    code = run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition)))
-    assert code == 0
-    out = capsys.readouterr().out
-    assert out.endswith("\n") and out.count("\n") == 1
-    result = json.loads(out)
-    assert result["governed"] is False
-    assert result["rows"]
-    assert result["persistence"] == {"status": "not_saved"}
-    assert "staged_as" not in result and "staged_context_as" not in result
-    assert project_refs(served) == refs_before
-
-
-def test_define_metric_does_not_create_a_cwd_relative_store(served, tmp_path, monkeypatch, capsys):
-    """A successful ephemeral query does not create the legacy CWD store."""
-    scratch = tmp_path / "scratch-cwd"
-    scratch.mkdir()
-    monkeypatch.chdir(scratch)
-    root, _db = served
-    refs_before = project_refs(served)
-    code = cli(
-        ["define-metric", "--project", str(root)],
-        stdin=io.StringIO(json.dumps(_definition("cli_default_staging_metric"))),
-    )
-    assert code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["persistence"] == {"status": "not_saved"}
-    assert not (scratch / "staging").exists()
-    assert project_refs(served) == refs_before
-
-
-def test_define_metric_from_file(served, tmp_path, capsys):
-    refs_before = project_refs(served)
-    staging = tmp_path / "staging"
-    definition = _definition("cli_file_metric")
-    path = tmp_path / "definition.json"
-    path.write_text(json.dumps(definition), encoding="utf-8")
-    code = run_cli(served, staging, "define-metric", "--file", str(path))
-    assert code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["metric"] == "cli_file_metric"
-    assert result["governed"] is False and result["rows"]
-    assert result["persistence"] == {"status": "not_saved"}
-    assert project_refs(served) == refs_before
-
-
-def test_define_metric_serializes_decimals_as_strings(served, tmp_path, capsys):
-    refs_before = project_refs(served)
-    staging = tmp_path / "staging"
-    definition = {
-        **_definition("cli_decimal_metric"),
-        "expression": "SUM(CAST(amount AS DECIMAL(12,2)))",
-        "dimensions": [],
-    }
-    code = run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition)))
-    assert code == 0
-    result = json.loads(capsys.readouterr().out)
-    (value,) = [row["cli_decimal_metric"] for row in result["rows"]]
-    assert isinstance(value, str) and re.fullmatch(r"-?\d+\.\d{2}", value)  # no precision loss
-    assert project_refs(served) == refs_before
-
-
-def test_search_context_does_not_surface_ephemeral_definition(served, tmp_path, capsys):
-    refs_before = project_refs(served)
-    staging = tmp_path / "staging"
-    description = "ephemeral definition discovery probe cli_lane"
-    definition = {
-        "name": "cli_draft_metric",
-        "description": description,
-        "source": "demo.main.orders",
-        "expression": "SUM(amount)",
-        "dimensions": [],
-    }
-    assert run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition))) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["persistence"] == {"status": "not_saved"}
-    assert run_cli(served, staging, "search-context", description, "--limit", "10") == 0
-    hits = json.loads(capsys.readouterr().out)
-    assert hits
-    assert not any(hit["path"] == "metrics/cli_draft_metric.md" for hit in hits)
-    assert not any(hit["draft"] for hit in hits)
-    assert any(hit["path"] == "metrics/gross_margin.md" and hit["draft"] is False for hit in hits)
-    assert project_refs(served) == refs_before
-
-
-def test_define_metric_malformed_json_is_rejected_before_project_open(tmp_path, capsys):
-    # The project does not exist, so JSON parsing must fail before the runtime
-    # attempts admission or opens a source.
-    code = cli(
-        ["define-metric", "--project", str(tmp_path / "missing-project")],
-        stdin=io.StringIO("definitely not json"),
-    )
-    assert code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""  # no success value on stdout
-    error = error_payload(captured.err)
-    assert error["type"] == "JSONDecodeError"
-    assert "Expecting" in error["message"]
-    assert not (tmp_path / "missing-project").exists()
-
-
-def test_rejected_ephemeral_definition_does_not_change_git_state(served, tmp_path, capsys):
-    refs_before = project_refs(served)
-    staging = tmp_path / "staging"
-    definition = {
-        **_definition("cli_broken_metric"),
-        "expression": "SUM(nonexistent_col)",
-    }
-    code = run_cli(served, staging, "define-metric", stdin=io.StringIO(json.dumps(definition)))
-    assert code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""  # no success value on stdout
-    error = error_payload(captured.err)
-    assert error["type"] == "ValueError"
-    assert "nonexistent_col" in error["message"]  # binder message verbatim
-    assert project_refs(served) == refs_before
-
-
-# --- Base packaging: no MCP import in the local chain --------------------------
+    assert "gross_margin" in error["message"]
 
 
 def test_local_cli_runs_with_mcp_import_blocked(served, tmp_path):
@@ -597,7 +420,8 @@ def test_local_cli_runs_with_mcp_import_blocked(served, tmp_path):
             sys.executable,
             "-c",
             code,
-            "list-metrics",
+            "metrics",
+            "--json",
             "--project",
             str(root),
         ],
@@ -661,68 +485,11 @@ def test_serve_main_startup_failure_not_masked_as_missing_mcp(tmp_path, monkeypa
     assert "error:" in err  # the runtime startup failure itself
 
 
-def test_query_records_cli_success_and_refusal_contract(served, tmp_path, capsys):
-    """Issue #57/S2 (spec 0014 §3): ``query-records`` takes the JSON record
-    request from stdin or --file under the admitted project route —
-    one JSON success on stdout (governed: false, requested-top-N
-    completeness), or one bounded JSON error on stderr with a nonzero exit."""
-    served_dir, db = served
-    request = {
-        "dataset": "demo.main.orders",
-        "fields": ["order_id", "status"],
-        "order": [{"field": "order_id"}],
-        "limit": 2,
-    }
-    code = cli(
-        ["query-records", "--project", str(served_dir)],
-        io.StringIO(json.dumps(request)),
-    )
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["governed"] is False
-    assert payload["result"]["scope"] == "requested_top_n"
-    assert payload["result"]["requested_limit"] == 2
-    assert len(payload["rows"]) == 2
-    assert [row["order_id"] for row in payload["rows"]] == sorted(
-        row["order_id"] for row in payload["rows"]
-    )
-    assert payload["result"]["has_more_matching"] is True  # the seeded demo orders
-    # the --file form reads the same request
-    capsys.readouterr()
-    request_file = tmp_path / "records-request.json"
-    request_file.write_text(json.dumps(request), encoding="utf-8")
-    code = cli(
-        [
-            "query-records",
-            "--file",
-            str(request_file),
-            "--project",
-            str(served_dir),
-        ],
-        io.StringIO(""),
-    )
-    assert code == 0
-    assert json.loads(capsys.readouterr().out)["rows"] == payload["rows"]
-    # a refusal keeps the §4 contract: one bounded JSON error, nonzero exit,
-    # no success value on stdout
-    code = cli(
-        ["query-records", "--project", str(served_dir)],
-        io.StringIO(json.dumps({**request, "dataset": "nope.x"})),
-    )
-    assert code == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    error = json.loads(captured.err)
-    assert error["error"]["type"] == "PlannerError"
-    assert error["error"]["code"] == "unknown_dataset"
-
-
 def test_query_metrics_without_admission_errors_per_the_json_contract(tmp_path, capsys):
     """A project without a human admission fails closed with one JSON error."""
     project = tmp_path / "no-admission"
     code = cli(
-        ["query-metrics", "--project", str(project)],
-        io.StringIO('{"metrics": ["gross_margin"]}'),
+        ["query", "gross_margin", "--project", str(project), "--json"],
     )
     assert code == 1
     captured = capsys.readouterr()
@@ -730,3 +497,48 @@ def test_query_metrics_without_admission_errors_per_the_json_contract(tmp_path, 
     error = json.loads(captured.err)
     assert error["error"]["type"] == "ValueError"
     assert "admission" in error["error"]["message"].lower()
+
+
+# --- the one CLI: the exhaustive command table and the removals (spec 0040 §3.1) --
+
+_TABLE = (
+    "init add draft validate diff preview approve status query detail metrics datasets "
+    "search page serve skill profile migrate"
+).split()
+
+
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "list-metrics",
+        "list-datasets",
+        "get-metric",
+        "define-metric",
+        "query-metrics",
+        "query-detail",
+        "query-records",
+        "search-context",
+        "search-examples",
+        "save-example",
+        "resolve-term",
+        "review",
+        "setup",
+    ],
+)
+def test_removed_commands_have_no_alias(removed, capsys):
+    assert cli([removed]) == 1
+    error = error_payload(capsys.readouterr().err)
+    assert error["type"] == "UsageError"
+
+
+def test_every_documented_subcommand_has_working_help(capsys):
+    from ariadne.cli import build_parser
+
+    commands = [c for c in _TABLE if c != "preview"]  # preview lands with T7
+    for command in commands:
+        with pytest.raises(
+            Exception
+        ) as exc:  # argparse prints help then exits via UsageError/SystemExit
+            build_parser().parse_args([command, "--help"])
+        assert isinstance(exc.value, SystemExit)
+        assert command in capsys.readouterr().out

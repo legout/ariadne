@@ -46,8 +46,8 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.authoring_sources import candidate_sources  # noqa: E402
+from ariadne.cli import main as ariadne_cli  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 
@@ -1186,73 +1186,30 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
 # --------------------------------------------------------------- the CLI seam
 
 
-def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
-    """The public CLI journey: ``validate`` returns the finalized revision with
-    its report, ``review --proposal`` returns the review envelope, and a stale
-    expected revision writes exactly one JSON error object."""
+def test_cli_validate_and_diff_the_active_draft(tmp_path, capsys):
+    """The public CLI journey (spec 0040 §3.1.2): `validate` returns the finalized
+    revision with its report, `diff` summarizes the draft against the served state, and
+    a draft edit carrying nothing stale writes one JSON object."""
     project = complete_bundle_project(tmp_path)
-    assert authoring_cli(["start", "--project", str(project)]) == 0
-    started = json.loads(capsys.readouterr().out)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
     resolved, digest = candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    grant_sources(
-        AuthoringProject(project), started["proposal"], started["candidate_revision"], digest
-    )
+    grant_sources(api, started["proposal"], started["candidate_revision"], digest)
+    capsys.readouterr()
 
-    assert (
-        authoring_cli(
-            [
-                "validate",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
+    assert ariadne_cli(["validate", "--project", str(project), "--json"]) == 0
     validated = json.loads(capsys.readouterr().out)
     assert validated["ok"] is True
     assert validated["revision"] != started["candidate_revision"]
     assert validated["revision"] == branch_of(project, started["proposal"])
+    assert validated["draft"]["candidate_revision"] == validated["revision"]
 
-    assert (
-        authoring_cli(
-            [
-                "review",
-                "--proposal",
-                started["proposal"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    review = json.loads(capsys.readouterr().out)
-    assert review["revision"] == validated["revision"]
-    assert review["report"]["ok"] is True
-
-    # a stale expected revision: one JSON error object, exit 1
-    assert (
-        authoring_cli(
-            [
-                "validate",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    error = json.loads(captured.err)["error"]
-    assert error["type"] == "ValueError" and "stale" in error["message"]
+    assert ariadne_cli(["diff", "--project", str(project), "--json"]) == 0
+    diff = json.loads(capsys.readouterr().out)
+    assert diff["validation"] == "validated"
+    assert diff["approval_kind"] == "calculation"
+    assert diff["draft"]["generation"] == 1
 
 
 @pytest.mark.parametrize(
@@ -3105,44 +3062,17 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     assert deselected["changed"] is True
 
 
-def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
-    """C6 fix R6/C4 (native recovery of the deleted CLI roundtrip, issue #41
-    [6]): the local ``ariadne-authoring refresh-schema`` surface returns the
-    same JSON envelope as the core operation — generated page identities and
-    schema-change flags — and the second identical call reports the no-op."""
+def test_refresh_schema_returns_pages_and_the_identical_retry_is_a_noop(tmp_path):
+    """spec 0010 §4 ([6]): refresh returns the generated page identities and
+    schema-change flags, and the second identical call reports the no-op (the CLI
+    surface of this operation is the MCP tool, spec 0040 §3.1.3)."""
     project = _evolution_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    request = tmp_path / "assets.json"
-    request.write_text(json.dumps([SALES_ASSET]), encoding="utf-8")
 
-    from ariadne.authoring_cli import main as authoring_cli
-
-    capsys.readouterr()
-    code = authoring_cli(
-        [
-            "refresh-schema",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            started["candidate_revision"],
-            "--file",
-            str(request),
-        ]
-    )
-    assert code == 0
-    first = json.loads(capsys.readouterr().out)
-    # the first CLI refresh COMMITTED the generated pages: the core call and
-    # every later refresh address the RETURNED candidate revision, never the
-    # started one (a stale revision refuses — authoring.py's coherence gate)
-    core = api.refresh_schema(started["proposal"], first["revision"], [SALES_ASSET])
-    assert first["revision"] == core["revision"]
-    assert {(p["resource"], p["kind"]) for p in first["pages"]} == {
-        (p["resource"], p["kind"]) for p in core["pages"]
-    }
+    first = api.refresh_schema(started["proposal"], started["candidate_revision"], [SALES_ASSET])
+    assert first["revision"] != started["candidate_revision"]
     sales_entry = next(p for p in first["pages"] if p["kind"] == "table")
     assert sales_entry["changes"] == {
         "added": ["amount", "order_id"],  # sorted column identity (plan §2)
@@ -3150,22 +3080,7 @@ def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
         "type_changed": [],
     }
 
-    capsys.readouterr()
-    code = authoring_cli(
-        [
-            "refresh-schema",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            first["revision"],
-            "--file",
-            str(request),
-        ]
-    )
-    assert code == 0
-    second = json.loads(capsys.readouterr().out)
+    second = api.refresh_schema(started["proposal"], first["revision"], [SALES_ASSET])
     assert second["changed"] is False  # the identical retry is the no-op
     assert second["revision"] == first["revision"]
 
