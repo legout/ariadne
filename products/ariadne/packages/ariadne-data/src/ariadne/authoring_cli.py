@@ -64,31 +64,6 @@ def build_parser() -> _Parser:
         "--project", default=".", help="project root holding ariadne.yaml (default: .)"
     )
 
-    approve = sub.add_parser(
-        "approve-sources",
-        help="record permission for an exact proposal identity (HUMAN-ONLY, server host)",
-    )
-    approve.add_argument(
-        "--proposal",
-        required=True,
-        help="the proposal whose candidate registry is approved "
-        "(requires --revision and --source-digest; records the permission in "
-        ".ariadne/source-approvals.json without editing the candidate)",
-    )
-    approve.add_argument(
-        "--revision",
-        default=None,
-        help="Git mode: the proposal's CURRENT candidate revision",
-    )
-    approve.add_argument(
-        "--source-digest",
-        default=None,
-        help="Git mode: the resolved source digest propose-sources returned",
-    )
-    approve.add_argument(
-        "--project", default=".", help="project root holding ariadne.yaml (default: .)"
-    )
-
     inputs = sub.add_parser(
         "inputs",
         help="measured harness inputs (harness-invocable, no model): approved-source "
@@ -553,10 +528,8 @@ def main(argv: list[str] | None = None) -> int:
             result = AuthoringProject(args.project).edit_pages_batch(
                 args.proposal, args.expected_revision, pages
             )
-        else:  # approve-sources is the human-only exact Git source permission
-            result = AuthoringProject(args.project).approve_sources(
-                args.proposal, args.revision, args.source_digest
-            )
+        else:
+            raise UsageError(f"unknown command {args.command!r}")
     except Exception as exc:  # one JSON error object, message verbatim
         print(
             json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),

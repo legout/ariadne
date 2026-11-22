@@ -190,26 +190,11 @@ def _managed_declare(root: Path, selected: list[dict], report: dict, stdin: Any)
         revision, digest = result["revision"], result["source_digest"]
     assert digest is not None  # a confirmed nonempty declaration resolves to a source identity
     print(f"Proposal: {pid}\nRevision: {revision}\nResolved source digest: {digest}")
-    if digest not in authoring_sources._load_approvals(root):
-        print("Source approval pending. HUMAN ONLY — run exactly:")
-        print(
-            shlex.join(
-                [
-                    "ariadne-authoring",
-                    "approve-sources",
-                    "--project",
-                    str(root),
-                    "--proposal",
-                    pid,
-                    "--revision",
-                    revision,
-                    "--source-digest",
-                    digest,
-                ]
-            )
-        )
+    resolved, _digest = authoring_sources.candidate_sources(root, revision)
+    if not authoring_sources.approval_state(root, resolved, digest)["approved"]:
+        print("Source approval pending. HUMAN ONLY — run exactly: ariadne approve")
     else:
-        print("Source approval already recorded for this exact identity/revision.")
+        print("Source grant already recorded for this exact identity.")
 
 
 def _report(root: Path, args: argparse.Namespace) -> dict:

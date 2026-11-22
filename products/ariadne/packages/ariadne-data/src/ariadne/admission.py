@@ -425,13 +425,15 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
     evidence["source_identity"] = resolved or []
     evidence["storage_bindings"] = bindings
     evidence["approval_digest"] = effective
-    if effective not in authoring_sources._load_approvals(project):
+    if (
+        resolved
+        and not authoring_sources.approval_state(project, resolved, source_digest)["approved"]
+    ):
         raise ValueError(
-            f"the source identity of {revision[:12]} ({effective}) carries NO "
-            "operator approval for its effective storage binding — source "
-            "approval is a separate human decision (spec §5, spec 0025 §4): "
-            f"re-approve the exact identity with ariadne-authoring approve-sources; "
-            "nothing was activated"
+            f"the source identity of {revision[:12]} ({effective}) carries NO source "
+            "grant for its effective storage binding — a source approval is a separate "
+            "decision made first (spec 0040 §3.4): run 'ariadne approve' on a "
+            "sources-only draft; nothing was activated"
         )
     # the contracted-model admission gate —
     # every binding of the exact validated revision needs a COMPLETE,
@@ -1377,11 +1379,11 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             "re-admission of a reviewed/validated revision, never a fallback"
         )
     refuse_unsupported_admission_snapshot(project, record)
-    if not approval_present(project, record["source_digest"]):
+    if not approval_present(project, record):
         raise ValueError(
-            "the admitted source identity no longer carries the operator's approval — "
-            "re-approve the exact resolved identity (ariadne-authoring approve-sources) "
-            "before serving; the runtime never opens an unapproved identity"
+            "the admitted source identity is no longer granted — approve the exact "
+            "resolved identity again (ariadne approve) before serving; the runtime "
+            "never opens an ungranted identity"
         )
     # The pinned effective storage binding must be COMPLETE, internally
     # consistent AND still be the binding the CURRENT environment resolves
@@ -1451,10 +1453,16 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
     return validate_admission_record(project, record)
 
 
-def approval_present(project: str | Path, source_digest: str) -> bool:
-    """True when the operator's approval of one resolved source identity is
-    still on record (the session's bound source identity recheck)."""
-    return source_digest in authoring_sources._load_approvals(Path(project))
+def approval_present(project: str | Path, record: dict) -> bool:
+    """True when every source the admitted release binds is still granted (the
+    served release's own binding or a source grant) — the session's bound source
+    identity recheck."""
+    sources_ = record.get("sources") or []
+    if not sources_:
+        return True
+    return authoring_sources.approval_state(
+        Path(project), sources_, authoring_sources.resolved_digest(sources_)
+    )["approved"]
 
 
 def approved_registry(record: dict) -> Registry:

@@ -334,7 +334,7 @@ class AuthoringProject:
     This slice (G2) owns proposal lifecycle and complete artifact edits;
     ``validate_proposal``/``review_proposal`` are G4. Source proposals,
     operator approval and measured inputs are G3, routed through
-    :mod:`ariadne.authoring_sources` (``propose_sources``/``approve_sources``/
+    :mod:`ariadne.authoring_sources` (``propose_sources``/source grants/
     ``inputs``) and :mod:`ariadne.authoring_inputs` (``document_evidence``).
     """
 
@@ -429,14 +429,6 @@ class AuthoringProject:
         return authoring_sources.propose_sources(
             self.project, proposal, expected_revision, sources, storages
         )
-
-    def approve_sources(self, proposal: str, revision: str, source_digest: str) -> dict:
-        """HUMAN-ONLY (the CLI command; never an MCP/Agent tool): record the
-        operator's permission for the EXACT resolved source identity of the
-        proposal's current candidate revision, outside Git artifacts under
-        ``.ariadne/source-approvals.json`` — without editing the
-        already-committed candidate."""
-        return authoring_sources.approve_sources(self.project, proposal, revision, source_digest)
 
     def inputs(
         self,

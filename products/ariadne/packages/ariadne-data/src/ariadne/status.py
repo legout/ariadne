@@ -113,7 +113,7 @@ def _entries_view(entries: list[dict] | None) -> list[dict]:
 
 def _approvals(root: Path) -> dict | None:
     try:
-        return authoring_sources._load_approvals(root)
+        return {g["source"]["name"]: g for g in authoring_sources._load_grants(root)}
     except Exception:
         return None
 
