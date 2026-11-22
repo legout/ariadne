@@ -246,7 +246,8 @@ def main():
                 "  bindings: []\n",
                 "  bindings:\n"
                 "    - subject: {kind: metric, identity: events::events.event_count}\n"
-                f"      policy: {{namespace: {out['namespace']}, entity_id: entity:all-events-count}}\n"
+                f"      policy: {{namespace: {out['namespace']},"
+                " entity_id: entity:all-events-count}\n"
                 "      operations: [get_metric, query_metrics]\n"
                 "      enforcement: null\n",
             ),
