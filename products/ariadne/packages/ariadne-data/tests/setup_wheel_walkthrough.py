@@ -49,7 +49,7 @@ datasets:
 """
 
 
-def native_page(kind, title, resource, body):
+def native_page(kind, title, resource, body, namespace=""):
     """One producer-native knowledge page in the accepted conventions (typed
     Entity identity, producer envelope, KB-relative citations). The TABLE page
     anchors its canonical ``core_ref`` resource identity WITHOUT the
@@ -67,7 +67,7 @@ def native_page(kind, title, resource, body):
             "    model: events\n"
             f"    metric: events.{title}\n"
             "  required_policies:\n"
-            '    - namespace: "urn:uuid:wheel-walkthrough"\n'
+            f'    - namespace: "{namespace}"\n'
             '      entity_id: "entity:all-events-count"\n'
         )
     elif kind == "policy":
@@ -240,6 +240,25 @@ def main():
         conn.execute("COPY events TO ? (FORMAT PARQUET)", [str(project / "data/events.parquet")])
         conn.close()
 
+        selector = project / "context_integration.yaml"
+        selector.write_text(
+            selector.read_text(encoding="utf-8").replace(
+                "  bindings: []\n",
+                "  bindings:\n"
+                "    - subject: {kind: metric, identity: events::events.event_count}\n"
+                f"      policy: {{namespace: {out['namespace']}, entity_id: entity:all-events-count}}\n"
+                "      operations: [get_metric, query_metrics]\n"
+                "      enforcement: null\n",
+            ),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "context_integration.yaml"], cwd=project, env=env, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "human: bind the metric Policy"],
+            cwd=project,
+            env=env,
+            check=True,
+        )
         added = cli("add", "data/events.parquet", "--name", "events")
         assert added["draft"]["generation"] == 1 and "source_digest" in added
         assert not (project / ".ariadne/source_grants.json").exists()  # nothing granted yet
@@ -257,28 +276,39 @@ def main():
         # the model draft, native pages and validation
         from ariadne.sources import table_resource
 
+        namespace = out["namespace"]
         events_table_uri = table_resource("events", None, "events", "events")
         pages = [
             {
                 "path": "knowledge/tables/events.md",
-                "content": native_page("table", "events", events_table_uri, "One row per event."),
+                "content": native_page(
+                    "table", "events", events_table_uri, "One row per event.", namespace
+                ),
             },
             {
                 "path": "knowledge/references/event-rule.md",
                 "content": native_page(
-                    "reference", "Event rule", "data/seed_notes.md", "All events count."
+                    "reference", "Event rule", "data/seed_notes.md", "All events count.", namespace
                 ),
             },
             {
                 "path": "knowledge/policies/all-events-count.md",
                 "content": native_page(
-                    "policy", "All events count", "data/seed_notes.md", "Count every event once."
+                    "policy",
+                    "All events count",
+                    "data/seed_notes.md",
+                    "Count every event once.",
+                    namespace,
                 ),
             },
             {
                 "path": "knowledge/metrics/event-count.md",
                 "content": native_page(
-                    "metric", "event_count", "policies/all-events-count.md", "Count all events."
+                    "metric",
+                    "event_count",
+                    "policies/all-events-count.md",
+                    "Count all events.",
+                    namespace,
                 ),
             },
         ]

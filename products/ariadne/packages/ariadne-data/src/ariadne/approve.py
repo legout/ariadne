@@ -208,7 +208,9 @@ def approve_calculation(
         expected_current=expected_current,
         scope=tuple(settings["visibility_scope"]),
         confirm_mappings=confirm_mappings,
-        private_profile=settings["lumio_profile"],
+        # Open decision (r1-report): the Lumio private profile is NOT passed. It would
+        # demand registered original-source retention for every citation, which today's
+        # default admission (no --context-private-profile) never required.
     )
     stdout.write("\n".join(_summary(review, composite, confirm_mappings)) + "\n")
     by = attribution(project)
@@ -223,7 +225,6 @@ def approve_calculation(
         confirm_mappings=confirm_mappings,
         overall_preview=composite,
         confirmed_overall_digest=composite["digest"],
-        private_profile=settings["lumio_profile"],
         draft_pin={
             "generation": view["generation"],
             "base_served_revision": view["base_served_revision"],
