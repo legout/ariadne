@@ -19,7 +19,6 @@ agent-specific dirs only point at it, so one install serves every agent.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import os
 import shutil
@@ -121,27 +120,3 @@ def _status() -> int:
         note = " (symlink)" if target.is_symlink() else ""
         print(f"{state}{note}  {target}")
     return 0
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="ariadne-skill",
-        description="Install/status the packaged ariadne agent skill (ADR-0011).",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("path", help="print the packaged skill directory")
-    install = sub.add_parser("install", help="install the skill (idempotent refresh)")
-    install.add_argument("--scope", choices=("user", "project"), default="user")
-    install.add_argument("--agent", choices=tuple(sorted(AGENT_DIRS)), default=None)
-    sub.add_parser("status", help="report per-target drift against the packaged skill")
-    args = parser.parse_args(argv)
-    if args.command == "path":
-        print(ASSETS)
-        return 0
-    if args.command == "install":
-        return _install(args.scope, args.agent)
-    return _status()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -660,7 +660,3 @@ def _symlink_under(target: Path, rel: str) -> str | None:
         if path.is_symlink():
             return str(path)
     return None
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -359,6 +359,39 @@ class AuthoringProject:
             "candidate_revision": record["candidate_revision"],
         }
 
+    def apply_edit(self, edit: dict) -> dict:
+        """Apply ONE typed edit to the ACTIVE draft (spec 0040 §3.1.3): no proposal or
+        base IDs cross this call. The generation and candidate revision are read from
+        the slot, so a competing writer between read and write makes the loser refuse
+        as stale; with no draft the call is the first write that creates it. Kinds: the
+        typed artifact kinds, ``{kind: "sources", entries: [...], storages?}`` (a typed
+        source edit; inert, never a grant) and ``{kind: "pages", pages: [...]}``."""
+        if not isinstance(edit, dict):
+            raise ValueError("an edit is a typed JSON object")
+        active = draft.status(self.project)
+        expected = None if active is None else (active["generation"], active["candidate_revision"])
+        kind = edit.get("kind")
+        if kind == "sources":
+            proposals.check_edit_keys(edit, frozenset({"kind", "entries", "storages"}))
+            result = authoring_sources.add_sources(
+                self.project, expected, edit["entries"], edit.get("storages")
+            )
+        elif kind == "pages":
+            proposals.check_edit_keys(edit, frozenset({"kind", "pages"}))
+            result = draft.edit_pages(self.project, expected, edit["pages"])
+        elif kind in EDIT_KINDS:
+            proposal = None if active is None else draft.proposal_of(self.project, expected)
+            rel, content = authoring_edits.resolve_edit(
+                edit, project=self.project, proposal=proposal
+            )
+            result = draft.edit_artifact(self.project, expected, rel, content)
+        else:
+            raise ValueError(
+                f"an edit is a typed object with kind one of {[*EDIT_KINDS, 'sources', 'pages']}, "
+                f"got kind {kind!r}"
+            )
+        return result
+
     def read_artifact(self, proposal: str, identity: dict, *, part: int = 1) -> dict:
         """Read one artifact of the proposal's current candidate revision —
         inherited from the base when never edited — addressed by a typed

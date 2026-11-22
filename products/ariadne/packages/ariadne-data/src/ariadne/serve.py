@@ -1518,30 +1518,5 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _fixed_toolset_main(toolset: str, argv: list[str] | None) -> int:
-    """The ``ariadne-analyst-mcp``/``ariadne-authoring-mcp`` console entries:
-    the same adapter with the registration fixed at the entry point (spec §6,
-    issue #38). An explicit ``--toolset`` is refused — the entry IS the choice."""
-    args = sys.argv[1:] if argv is None else list(argv)
-    if "--toolset" in args or any(arg.startswith("--toolset=") for arg in args):
-        print(
-            f"error: this entry point fixes --toolset {toolset}; launch "
-            "ariadne-serve to select a toolset",
-            file=sys.stderr,
-        )
-        return 2
-    return main([f"--toolset={toolset}", *args])
-
-
-def analyst_main(argv: list[str] | None = None) -> int:
-    """``ariadne-analyst-mcp``: the adapter with the Analyst toolset fixed."""
-    return _fixed_toolset_main("analyst", argv)
-
-
-def authoring_main(argv: list[str] | None = None) -> int:
-    """``ariadne-authoring-mcp``: the adapter with the Authoring toolset fixed."""
-    return _fixed_toolset_main("authoring", argv)
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

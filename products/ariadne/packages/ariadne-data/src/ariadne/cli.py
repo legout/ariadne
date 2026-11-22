@@ -1,56 +1,15 @@
-"""Local JSON CLI: the five Ariadne operations as flat subcommands (spec
-2026-09-23-0001 §4, ADR-0012).
+"""The one ``ariadne`` CLI (spec 0040 §3.1). The command table below is exhaustive:
+there are no aliases for removed executables or flags. Every command prints text by
+default and exactly one JSON value with ``--json``; every failure writes one
+``{"error": {"type", "message"}}`` object to stderr and exits 1.
 
-A thin adapter over :class:`ariadne.query.QueryRuntime` — this module owns
-argument parsing, project selection, and the JSON wire contract only; all
-query behavior (compilation, execution, context and grain) stays in the runtime:
-
-    ariadne list-metrics
-    ariadne list-datasets
-    ariadne search-context QUERY [--limit N]
-    ariadne get-metric NAME [--dimension NAME ...] [--start VALUE] [--end VALUE]
-    ariadne define-metric [--file PATH]        (stdin when --file is absent)
-    ariadne query-metrics [--file PATH]        (the admitted multi-fact graph,
-                                               issue #30; stdin when absent)
-    ariadne query-detail [--file PATH]         (root-dataset projection, no fan-out)
-    ariadne query-records [--file PATH]        (bounded record selection over one
-                                               known table, spec 0014 §3; stdin
-                                               when absent; governed: false,
-                                               no durable write)
-    ariadne save-example [--file PATH]          (stdin when absent; issue #19 —
-                                               explicit answer-example submission)
-    ariadne search-examples QUERY [--limit N] [--include-history]
-                                               [--include-sql] (issue #68: opt-in "
-                                               "sql_provenance per hit, spec 0023)
-    ariadne resolve-term [TERM] [--file PATH] [--part N]   (issue #42: shared
-                                               terminology resolution; the exact
-                                               {resource, column} field form
-                                               arrives through --file)
-    ariadne migrate [--project DIR]            (spec 0039 §7: Ossie 0.2 -> 0.3 as an
-                                               Authoring Proposal; the operator
-                                               admits it as usual)
-    ariadne status [--json]                   (spec 0016: read-only project
-                                               readiness diagnostics — human-
-                                               first text, one JSON object with
-                                               --json; never constructs the
-                                               query runtime)
-
-Every successful invocation writes exactly one JSON value plus a newline to
-stdout and nothing else; temporal values serialize as ISO-8601 strings and
-decimal values as strings (no precision loss). Every failed invocation writes
-exactly one ``{"error": {"type", "message"}}`` object to stderr, exits nonzero,
-and writes no success value to stdout — runtime messages stay verbatim.
-
-The optional MCP transport (``ariadne-serve`` and its fixed-toolset aliases
-``ariadne-analyst-mcp``/``ariadne-authoring-mcp``, issue #38/G6) registers
-these same QueryRuntime operations as tools; this local CLI needs no MCP
-installation and its behavior is unchanged by the toolset split.
-
-Every public operation is bound to the current Git project (``--project DIR``,
-default ``.``). Governed queries require its exact valid human admission; no
-plain artifact-root or mutable-candidate fallback exists. Request payloads are
-parsed before the admitted runtime opens a source.
+This module owns argument parsing and output only. Behavior lives in the library
+modules it reuses (``query``, ``discovery``, ``draft``, ``approve``, ``init``,
+``status``, ``skill``, ``migrate``, ``profiler``, ``serve``). Approval and discard are
+interactive human commands: they require a terminal and no flag skips the prompt.
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -64,7 +23,7 @@ from typing import Any, NoReturn
 from ariadne import (
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy
 )
-from ariadne.discovery import DiscoveryRuntime, _DiscoverySession
+from ariadne.discovery import DiscoveryRuntime
 from ariadne.execution import DeadlineBudget  # pyright: ignore[reportMissingImports] — drift
 from ariadne.planner import PlannerError
 from ariadne.query import QueryRuntime  # pyright: ignore[reportMissingImports] — drift
@@ -72,21 +31,18 @@ from ariadne.query_results import QueryResultError  # pyright: ignore[reportMiss
 
 
 class UsageError(ValueError):
-    """An invocation the CLI itself rejects (argparse-level) — reported through
-    the same one-JSON-error-object contract as runtime failures."""
+    """An invocation the CLI itself rejects (argparse-level)."""
 
 
 class _Parser(argparse.ArgumentParser):
-    """argparse that fails through UsageError instead of exiting with usage
-    text, so a malformed invocation still writes exactly one JSON error object
-    to stderr."""
+    """argparse that fails through UsageError, so a malformed invocation still writes
+    exactly one JSON error object to stderr."""
 
     def error(self, message: str) -> NoReturn:
         raise UsageError(message)
 
 
 def _json_default(value: Any) -> Any:
-    """Spec §4 serialization: temporal -> ISO-8601 strings, Decimal -> strings."""
     if isinstance(value, (date, time)):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -94,406 +50,326 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"{type(value).__name__} is not JSON-serializable")
 
 
-def _read_definition(file: str | None, stdin: Any, what: str = "definition") -> dict:
-    """One JSON object from --file PATH or stdin. Parsed before the
-    runtime is constructed, so malformed input prevents source opening or execution
-    (spec §9)."""
+def _text(value: Any, indent: int = 0) -> str:
+    """A small human rendering of a JSON-shaped result."""
+    pad = "  " * indent
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            if isinstance(item, (dict, list)) and item:
+                lines.append(f"{pad}{key}:")
+                lines.append(_text(item, indent + 1))
+            else:
+                lines.append(f"{pad}{key}: {_scalar(item)}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{pad}-")
+                lines.append(_text(item, indent + 1))
+            else:
+                lines.append(f"{pad}- {_scalar(item)}")
+        return "\n".join(lines)
+    return f"{pad}{_scalar(value)}"
+
+
+def _scalar(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, default=_json_default)
+    return "null" if value is None else str(value)
+
+
+def _emit(result: Any, args: argparse.Namespace) -> int:
+    if getattr(args, "json", False):
+        print(json.dumps(result, default=_json_default))
+    else:
+        print(_text(result))
+    return 0
+
+
+def _read_json(file: str | None, stdin: Any, what: str) -> Any:
     try:
         text = Path(file).read_text(encoding="utf-8") if file else stdin.read()
     except OSError as exc:
         raise ValueError(f"cannot read {what}: {exc}") from exc
-    # pi-lens-ignore: unchecked-throwing-call-python
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"{what} is not valid JSON: {exc}") from exc
 
 
 def build_parser() -> _Parser:
     common = _Parser(add_help=False)
-    common.add_argument(
-        "--project",
-        default=".",
-        help="Git data project; governed calls use its exact human-admitted snapshot (default: .)",
-    )
-    parser = _Parser(
-        prog="ariadne",
-        description="Local JSON interface to the Ariadne governed-metric runtime.",
-    )
+    common.add_argument("--project", default=".", help="the project directory (default: .)")
+    common.add_argument("--json", action="store_true", help="print one JSON value")
+    parser = _Parser(prog="ariadne", description="Governed metrics for agents and people.")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
-    sub.add_parser("list-metrics", parents=[common], help="list governed metrics")
-    sub.add_parser("list-datasets", parents=[common], help="list queryable tables")
+    p = sub.add_parser("init", parents=[common], help="create a project in DIR (default: .)")
+    p.add_argument("dir", nargs="?", default=None)
+    p.add_argument(
+        "--yes", action="store_true", help="never prompt (refuse without a Git identity)"
+    )
 
-    discover = sub.add_parser(
-        "search",
-        parents=[common],
-        help="discover metrics, pages, terms, examples and contracts without opening sources",
+    p = sub.add_parser("add", parents=[common], help="declare a source in the active draft")
+    p.add_argument(
+        "target", help="a file path, URL, or (postgres) the env variable NAME of the DSN"
     )
-    discover.add_argument("query")
-    discover.add_argument("--limit", type=int, default=5)
-    discover.add_argument("--json", action="store_true", help="emit one grouped report object")
+    p.add_argument("--name")
+    p.add_argument("--type")
+    p.add_argument("--storage", help="a declared storage profile name")
 
-    search = sub.add_parser("search-context", parents=[common], help="search OKF pages")
-    search.add_argument("query")
-    search.add_argument("--limit", type=int, default=10)
+    draft_cmd = sub.add_parser("draft", help="the active draft")
+    draft_sub = draft_cmd.add_subparsers(dest="draft_command", required=True, parser_class=_Parser)
+    draft_sub.add_parser("status", parents=[common], help="the active draft's state")
+    p = draft_sub.add_parser("edit", parents=[common], help="apply one typed edit file")
+    p.add_argument("file", help="JSON edit file ('-' for stdin)")
+    draft_sub.add_parser("rebase", parents=[common], help="rebase the draft onto the served state")
+    p = draft_sub.add_parser("discard", parents=[common], help="discard the active draft")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation (not for approve)")
 
-    get = sub.add_parser("get-metric", parents=[common], help="query a governed metric")
-    get.add_argument("name")
-    get.add_argument("--dimension", action="append", help="repeatable group-by dimension")
-    get.add_argument("--start", help="range start on the primary date dimension")
-    get.add_argument("--end", help="range end on the primary date dimension")
+    sub.add_parser("validate", parents=[common], help="validate the active draft")
+    sub.add_parser("diff", parents=[common], help="the draft against the served state")
+    p = sub.add_parser("approve", parents=[common], help="approve the draft (interactive)")
+    p.add_argument("--confirm-mapping", action="append", default=[], metavar="SEL")
+    sub.add_parser("status", parents=[common], help="served revision, approval, draft state")
 
-    define = sub.add_parser("define-metric", parents=[common], help="run an unsaved ad-hoc metric")
-    define.add_argument("--file", help="JSON definition file (stdin when absent)")
+    p = sub.add_parser("query", parents=[common], help="governed metric query")
+    p.add_argument("metric")
+    p.add_argument("--by", action="append", default=[], metavar="DIM")
+    p.add_argument("--filter", action="append", default=[], metavar="F")
+    p = sub.add_parser("detail", parents=[common], help="governed detail query (JSON request)")
+    p.add_argument("--file", help="request JSON file (stdin when absent)")
 
-    metrics = sub.add_parser(
-        "query-metrics", parents=[common], help="query the admitted multi-fact graph"
-    )
-    metrics.add_argument("--file", help="JSON request file (stdin when absent)")
+    sub.add_parser("metrics", parents=[common], help="list governed metrics")
+    sub.add_parser("datasets", parents=[common], help="list queryable datasets")
+    p = sub.add_parser("search", parents=[common], help="discover metrics, pages, terms, examples")
+    p.add_argument("text")
+    p.add_argument("--limit", type=int, default=5)
+    p = sub.add_parser("page", parents=[common], help="read one context page")
+    p.add_argument("path")
 
-    detail = sub.add_parser(
-        "query-detail",
-        parents=[common],
-        help="project one root dataset's fields through safe lookup paths",
-    )
-    detail.add_argument("--file", help="JSON request file (stdin when absent)")
+    p = sub.add_parser("serve", help="the MCP server (optional extra)")
+    p.add_argument("--toolset", choices=("analyst", "authoring", "combined"), default="combined")
+    p.add_argument("--project", default=".")
+    p.add_argument("--http", action="store_true")
+    p.add_argument("--http-host", default="127.0.0.1")
+    p.add_argument("--http-port", type=int, default=8000)
+    p.add_argument("--http-container", action="store_true")
+    p.add_argument("--http-allowed-host", action="append", default=[])
+    p.add_argument("--http-allowed-origin", action="append", default=[])
 
-    records = sub.add_parser(
-        "query-records",
-        parents=[common],
-        help="bounded record selection over one known table: {dataset, fields, "
-        "filters?, timestamp?, order, limit?} — no aggregation, no staging, "
-        "governed: false (spec 0014 §3)",
-    )
-    records.add_argument("--file", help="JSON record request file (stdin when absent)")
+    skill_cmd = sub.add_parser("skill", help="the packaged agent skill")
+    skill_sub = skill_cmd.add_subparsers(dest="skill_command", required=True, parser_class=_Parser)
+    skill_sub.add_parser("path")
+    p = skill_sub.add_parser("install")
+    p.add_argument("--scope", choices=("user", "project"), default="user")
+    p.add_argument("--agent", default=None)
+    skill_sub.add_parser("status")
 
-    save = sub.add_parser(
-        "save-example",
-        parents=[common],
-        help="save an explicit answer-example draft (issue #19)",
-    )
-    save.add_argument("--file", help="JSON submission file (stdin when absent)")
-    save.add_argument("--proposal", help="existing Git authoring proposal ID")
-    save.add_argument("--expected-revision", help="current candidate revision for --proposal")
-
-    examples = sub.add_parser(
-        "search-examples", parents=[common], help="search saved answer examples"
-    )
-    examples.add_argument("query")
-    examples.add_argument("--limit", type=int, default=10)
-    examples.add_argument(
-        "--include-history",
-        action="store_true",
-        help="include stale/superseded/rejected records as labeled history",
-    )
-    examples.add_argument(
-        "--include-sql",
-        action="store_true",
-        help="include each hit's stored sql_provenance as provenance.sql — the exact "
-        "submitted result SQL as historical evidence (null when the record has no "
-        "stored SQL); never executed, never a ranking input",
-    )
-    examples.add_argument("--proposal", help="explicitly browse one Git authoring proposal")
-    examples.add_argument("--revision", help="recorded current candidate revision for --proposal")
-    resolve = sub.add_parser(
-        "resolve-term",
-        parents=[common],
-        help="resolve a shared business term or an exact field lookup against the "
-        "served context (issue #42: bounded matches with exact bindings, scope, "
-        "ambiguity and claim status; issue #44: confirmed only with recorded "
-        "human admission evidence — a context-only admitted project serves this "
-        "without a metric catalog; read-only)",
-    )
-    resolve.add_argument(
-        "term",
-        nargs="?",
-        help="the term to resolve (whole aliases/phrases, case-insensitive)",
-    )
-    resolve.add_argument(
-        "--file",
-        help="resolve request JSON from a file or stdin ('-'): the exact field "
-        "form of the request; a positional TERM is the plain term form",
-    )
-    resolve.add_argument(
-        "--part", type=int, default=1, help="which bounded part of the matches (default 1)"
-    )
-    status_cmd = sub.add_parser(
-        "status",
-        parents=[common],
-        help=(
-            "read-only Git project readiness, proposal and admission diagnostics — "
-            "no source connection; the local HEAD is reported separately from the "
-            "admitted bound release"
-        ),
-    )
-    status_cmd.add_argument(
-        "--json",
-        action="store_true",
-        help="emit exactly one structured report object instead of human text "
-        "(the spec-0001 usability amendment, this command only)",
-    )
-    migrate_cmd = sub.add_parser(
-        "migrate",
-        parents=[common],
-        help="convert a project from the retired Ossie 0.2 envelope to Ossie 0.3 as a proposal",
-    )
-    migrate_cmd.set_defaults(command="migrate")
-    review_cmd = sub.add_parser("review", help="operator-only review walkthrough for Git proposals")
-    review_cmd.add_argument("--project", default=".", help="Git project root")
-    review_cmd.add_argument(
-        "--proposal", default=None, help="one proposal; default lists pending proposals"
-    )
-    setup_cmd = sub.add_parser(
-        "setup", help="operator onboarding wizard (human gates are handoffs)"
-    )
-    setup_cmd.add_argument("--project", default=".", help="directory to scaffold or resume")
-    setup_cmd.add_argument("--no-input", action="store_true", help="scaffold/detect/report only")
-    setup_cmd.add_argument(
-        "--namespace",
-        default=None,
-        help="explicit native Knowledge Base namespace; with --private-profile, "
-        "initializes a fresh project once through the public initializer",
-    )
-    setup_cmd.add_argument(
-        "--private-profile",
-        type=Path,
-        default=None,
-        help="machine-local private profile file outside the repository; "
-        "required together with --namespace to initialize a fresh project",
-    )
-    setup_cmd.add_argument(
-        "--agents", action="store_true", help="install the selected packaged skill"
-    )
-    setup_cmd.add_argument("--agent", choices=("universal", "pi", "claude", "hermes"))
-    setup_cmd.add_argument("--scope", choices=("project", "user"), default="project")
+    sub.add_parser("profile", parents=[common], help="profile the approved served sources")
+    sub.add_parser("migrate", parents=[common], help="Ossie 0.2 -> 0.3 into the active draft")
     return parser
 
 
-def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
-    # Parse selectors and payloads before constructing an admitted runtime, which
-    # is the only public path that opens a source connection.
-    if args.command == "review":
-        from ariadne import review
+def _expected(project: Path) -> tuple[int, str] | None:
+    from ariadne import draft
 
-        return review.run(args, stdin)
-    if args.command == "setup":
-        from ariadne import setup
+    view = draft.status(project)
+    return None if view is None else (view["generation"], view["candidate_revision"])
 
-        return setup.run(args, stdin)
-    if args.command == "migrate":
-        from ariadne import migrate
 
-        result = migrate.migrate_project(args.project)
-        print(json.dumps(result))
-        return 0
-    if args.command == "status":
-        from ariadne import status as status_module
+def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
+    from ariadne import draft
+    from ariadne.authoring import AuthoringProject
 
-        return status_module.run(args)
-    if args.command == "save-example" and (args.proposal is None) != (
-        args.expected_revision is None
-    ):
-        raise ValueError("--proposal and --expected-revision are required together")
-    if args.command == "search-examples" and (args.proposal is None) != (args.revision is None):
-        raise ValueError("--proposal and --revision are required together")
-    if args.command == "search-examples" and args.proposal is not None:
-        from ariadne import answer_examples
+    project = Path(args.project).resolve()
+    if args.draft_command == "status":
+        view = draft.status(project)
+        return _emit(view if view is not None else {"draft": None}, args)
+    if args.draft_command == "edit":
+        edit = _read_json(None if args.file == "-" else args.file, stdin, "the edit file")
+        result = AuthoringProject(project).apply_edit(edit)
+        return _emit(result, args)
+    expected = _expected(project)
+    if expected is None:
+        raise ValueError("there is no active draft")
+    if args.draft_command == "rebase":
+        return _emit(draft.rebase(project, expected), args)
+    if not args.yes:
+        from ariadne import approve
 
-        result = answer_examples.search_candidate(
-            args.project,
-            args.query,
-            proposal=args.proposal,
-            revision=args.revision,
-            limit=args.limit,
-            include_history=args.include_history,
-            include_sql=args.include_sql,
-        )
-        print(json.dumps(result, default=_json_default))
-        return 0
+        approve.require_tty(sys.stdin, sys.stdout)
+        if not approve.ask(sys.stdin, sys.stdout, "Discard the active draft?"):
+            raise ValueError("refused at the prompt — nothing was changed")
+    return _emit(draft.discard(project, expected), args)
 
-    definition = None
-    if args.command in (
-        "define-metric",
-        "save-example",
-        "query-metrics",
-        "query-detail",
-        "query-records",
-    ):
-        definition = _read_definition(
-            args.file,
-            stdin,
-            "submission" if args.command == "save-example" else "request",
-        )
-    resolve_request = None
-    if args.command == "resolve-term":
-        if args.file is not None:
-            data = _read_definition(
-                args.file if args.file != "-" else None, stdin, "resolve-term request"
-            )
-            resolve_request = data["term"] if isinstance(data, dict) and "term" in data else data
-        elif args.term is not None:
-            resolve_request = args.term
-        else:
-            raise ValueError("resolve-term needs a TERM argument or --file with the request JSON")
 
-    if args.command == "search":
-        return _print_discovery(DiscoveryRuntime.open_project(args.project), args)
-    discovery = DiscoveryRuntime.open_project(args.project)
-    if args.command == "list-metrics" and discovery._context_snapshot is not None:
-        print(json.dumps(asyncio.run(discovery.list_metrics()), default=_json_default))
-        return 0
-    if args.command == "search-context":
-        # context navigation is source-free discovery —
-        # the query runtime (the only public path that opens a source
-        # connection) is never constructed for it.
-        result = asyncio.run(discovery.search_context(args.query, limit=args.limit))
-        print(json.dumps(result, default=_json_default))
-        return 0
-    if args.command == "resolve-term" and discovery._context_snapshot is not None:
-        # INTEGRATED term resolution is
-        # source-free — the pinned discovery session serves it; the query
-        # runtime (and any source connection) is never constructed for it.
-        # The standalone route keeps its exact native runtime path below.
-        assert resolve_request is not None
-        result = asyncio.run(discovery.resolve_term(resolve_request, part=args.part))
-        print(json.dumps(result, default=_json_default))
-        return 0
-    if args.command in ("save-example", "search-examples"):
-        # source-free Example authoring/discovery — the
-        # query runtime (the only public path that opens a source connection)
-        # is never constructed for Example save/search; the explicit candidate
-        # preview already returned above without any runtime.
-        if args.command == "save-example":
-            assert definition is not None
-            result = discovery.save_example(
-                definition,
-                proposal=args.proposal,
-                expected_revision=args.expected_revision,
-            )
-        else:
-            result = asyncio.run(
-                discovery.search_examples(
-                    args.query,
-                    limit=args.limit,
-                    include_history=args.include_history,
-                    include_sql=args.include_sql,
-                )
-            )
-        print(json.dumps(result, default=_json_default))
-        return 0
-    discovery._refuse_unsupported(args.command.replace("-", "_"))
+def _diff(project: Path) -> dict:
+    from ariadne import approve, authoring, draft, proposals
+
+    view = draft.status(project)
+    if view is None:
+        raise ValueError("there is no active draft")
+    record = proposals._load_record(project, draft.proposal_of(project, _pair(view)))
+    review = authoring.review_proposal(project, record["id"])
+    kind = approve.classify(project, view, record)["kind"] if not view["stale"] else "stale"
+    return {
+        "approval_kind": kind,
+        "draft": view,
+        "changes": review["changes"],
+        "validation": (review["report"] or {}).get("status", "unvalidated"),
+        "validation_stale": review["validation_stale"],
+    }
+
+
+def _pair(view: dict) -> tuple[int, str]:
+    return (view["generation"], view["candidate_revision"])
+
+
+def _query(args: argparse.Namespace) -> dict:
     limits = query_results.load_host_query_limits(args.project)
+    discovery = DiscoveryRuntime.open_project(args.project)
+    discovery._refuse_unsupported("get_metric")
     runtime = QueryRuntime.open_project(
         args.project,
         deadline_budget=DeadlineBudget(limits["execution_seconds"]),
         discovery=discovery if discovery._managed is not None else None,
     )
-    if args.command == "list-metrics":
-        result = asyncio.run(runtime.list_metrics())
-    elif args.command == "list-datasets":
-        result = asyncio.run(runtime.list_datasets())
-    elif args.command == "search-context":
-        result = asyncio.run(runtime.search_context(args.query, limit=args.limit))
-    elif args.command == "resolve-term":
-        assert resolve_request is not None
-        result = asyncio.run(runtime.resolve_term(resolve_request, part=args.part))
-    elif args.command == "get-metric":
-        time_range = {
-            key: value
-            for key, value in (("start", args.start), ("end", args.end))
-            if value is not None
-        }
-        result = asyncio.run(runtime.get_metric(args.name, args.dimension, time_range or None))
-    elif args.command == "save-example":
-        assert definition is not None
-        result = asyncio.run(
-            runtime.save_example(
-                definition, proposal=args.proposal, expected_revision=args.expected_revision
-            )
-        )
-    elif args.command == "search-examples":
-        result = asyncio.run(
-            runtime.search_examples(
-                args.query,
-                limit=args.limit,
-                include_history=args.include_history,
-                include_sql=args.include_sql,
-            )
-        )
-    elif args.command == "query-metrics":
-        assert definition is not None
-        result = asyncio.run(runtime.query_metrics(definition))
-    elif args.command == "query-detail":
-        assert definition is not None
-        result = asyncio.run(runtime.query_detail(definition))
-    elif args.command == "query-records":
-        assert definition is not None
-        result = asyncio.run(runtime.query_records(definition))
-    else:
-        assert definition is not None
-        result = asyncio.run(runtime.define_metric(definition))
-    print(json.dumps(result, default=_json_default))
-    return 0
+    if args.filter:
+        request = {"metrics": [args.metric], "dimensions": args.by, "filters": args.filter}
+        return asyncio.run(runtime.query_metrics(request))
+    return asyncio.run(runtime.get_metric(args.metric, args.by or None))
 
 
-def _print_discovery(runtime: _DiscoverySession, args: argparse.Namespace) -> int:
-    report = asyncio.run(runtime.discover(args.query, limit=args.limit))
-    if args.json:
-        print(json.dumps(report, default=_json_default))
-    else:
-        print("Discovery only — use --json for full native payloads; no answer is executed.")
-        for kind, group in report["groups"].items():
-            print(f"{kind.title()} — {group['status']}")
-            summary = group
-            if kind == "pages" and group["status"] == "available":
-                # Summarize passages without substituting them for the full rule bodies.
-                summary = {
-                    **group,
-                    "items": [
-                        {key: value for key, value in hit.items() if key != "content"}
-                        for hit in group["items"]
-                    ],
-                }
-            print(json.dumps(summary, default=_json_default, indent=2))
-    return 0
+def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
+    command = args.command
+    if command == "serve":
+        from ariadne import serve
+
+        argv = ["--project", args.project, "--toolset", args.toolset]
+        if args.http:
+            argv += ["--http", "--http-host", args.http_host, "--http-port", str(args.http_port)]
+            argv += ["--http-container"] if args.http_container else []
+            for host in args.http_allowed_host:
+                argv += ["--http-allowed-host", host]
+            for origin in args.http_allowed_origin:
+                argv += ["--http-allowed-origin", origin]
+        return serve.main(argv)
+    if command == "skill":
+        from ariadne import skill
+
+        return skill.main(
+            [args.skill_command]
+            + (
+                ["--scope", args.scope] + (["--agent", args.agent] if args.agent else [])
+                if args.skill_command == "install"
+                else []
+            )
+        )
+    if command == "init":
+        from ariadne import init
+
+        result = init.init_project(
+            args.dir or args.project, assume_yes=args.yes, stdin=stdin, stdout=sys.stdout
+        )
+        return _emit(result, args)
+    project = Path(args.project).resolve()
+    if command == "add":
+        from ariadne import authoring_sources
+
+        entry = authoring_sources.source_entry(
+            args.target, name=args.name, type=args.type, storage=args.storage
+        )
+        active = _expected(project)
+        result = authoring_sources.add_sources(project, active, [entry])
+        return _emit({k: v for k, v in result.items() if k != "sources"}, args)
+    if command == "draft":
+        return _draft_commands(args, stdin)
+    if command == "validate":
+        from ariadne import draft
+
+        expected = _expected(project)
+        if expected is None:
+            raise ValueError("there is no active draft to validate")
+        result = draft.validate(project, expected)
+        return _emit({k: result[k] for k in ("ok", "status", "errors", "revision", "draft")}, args)
+    if command == "diff":
+        return _emit(_diff(project), args)
+    if command == "approve":
+        from ariadne import approve
+
+        return _emit(
+            approve.approve(
+                project, confirm_mappings=args.confirm_mapping, stdin=sys.stdin, stdout=sys.stdout
+            ),
+            args,
+        )
+    if command == "status":
+        from ariadne import status as status_module
+
+        return status_module.run(args)
+    if command == "migrate":
+        from ariadne import migrate
+
+        return _emit(migrate.migrate_project(project), args)
+    if command == "profile":
+        from ariadne import profiler
+
+        return _emit(profiler.profile_served(project), args)
+    # read side: governed queries and discovery
+    if command == "query":
+        return _emit(_query(args), args)
+    if command == "detail":
+        request = _read_json(args.file, stdin, "the detail request")
+        limits = query_results.load_host_query_limits(args.project)
+        discovery = DiscoveryRuntime.open_project(args.project)
+        discovery._refuse_unsupported("query_detail")
+        runtime = QueryRuntime.open_project(
+            args.project,
+            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
+            discovery=discovery if discovery._managed is not None else None,
+        )
+        return _emit(asyncio.run(runtime.query_detail(request)), args)
+    discovery = DiscoveryRuntime.open_project(args.project)
+    if command == "metrics":
+        return _emit(asyncio.run(discovery.list_metrics()), args)
+    if command == "datasets":
+        limits = query_results.load_host_query_limits(args.project)
+        runtime = QueryRuntime.open_project(
+            args.project,
+            deadline_budget=DeadlineBudget(limits["execution_seconds"]),
+            discovery=discovery if discovery._managed is not None else None,
+        )
+        return _emit(asyncio.run(runtime.list_datasets()), args)
+    if command == "search":
+        return _emit(asyncio.run(discovery.discover(args.text, limit=args.limit)), args)
+    if command == "page":
+        return _emit(asyncio.run(discovery.read_context_page(args.path)), args)
+    raise UsageError(f"unknown command {command!r}")
 
 
 def _effective_error_budget(args: argparse.Namespace | None) -> float:
-    """The EFFECTIVE host response budget for bounding generic CLI errors
-    (fix pass 2, finding 2a): the route the invocation selected — the managed
-    --project root (the CLI's current-directory default) — with the built-in default
-    when no invocation was parsed or the host config itself is unusable."""
     try:
-        root = args.project if args is not None and args.project is not None else Path.cwd()
+        root = args.project if args is not None and getattr(args, "project", None) else Path.cwd()
         return query_results.load_host_query_limits(root)["response_bytes"]
     except Exception:
         return query_results.DEFAULT_QUERY_LIMITS["response_bytes"]
 
 
 def main(argv: list[str] | None = None, stdin: Any = None) -> int:
-    """Console-script entry point. Returns the process exit code: 0 on success,
-    1 after writing exactly one JSON error object to stderr."""
+    """Console-script entry point: 0 on success, 1 after one JSON error object on stderr."""
     args = None
     try:
         args = build_parser().parse_args(argv)
         return _dispatch(args, sys.stdin if stdin is None else stdin)
     except QueryResultError as exc:
-        # one bounded structured refusal on
-        # stderr with a nonzero exit — never a successful partial on stdout.
-        # The refusal body is fixed-size by construction and was validated to
-        # fit the effective bounds when the host ceilings were loaded.
         print(json.dumps(exc.refusal(), default=_json_default), file=sys.stderr)
         return 1
     except Exception as exc:  # one JSON error object, message verbatim
-        # Fix pass 2, finding 2a: a FITTING error keeps its
-        # verbatim fields; an oversized error representation is replaced by
-        # the bounded explicit refusal under the EFFECTIVE host budgets —
-        # every appended field (stable code, planner candidates) accounted.
         error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, PlannerError):
-            # mf-t5 fix F4 (spec rev 1 "Failure and compatibility behavior"):
-            # the planner's stable failure fields ride the envelope for the new
-            # query-metrics/query-detail operations — code, plus candidates
-            # when the refusal carries retry guidance. Legacy commands raise
-            # plain errors and keep the {type, message} shape unchanged.
             error["code"] = exc.code
             if exc.candidates:
                 error["candidates"] = list(exc.candidates)
