@@ -17,18 +17,7 @@ import yaml
 
 from ariadne.init import main
 
-CONSOLE_SCRIPTS = (
-    "ariadne",
-    "ariadne-validate",
-    "ariadne-serve",
-    "ariadne-analyst-mcp",
-    "ariadne-authoring-mcp",
-    "ariadne-init",
-    "ariadne-skill",
-    "ariadne-profiler",
-    "ariadne-authoring",
-    "ariadne-admit",
-)
+CONSOLE_SCRIPTS = ("ariadne",)  # spec 0040 §3.1.1: ONE console script
 
 GITIGNORE_LINES = (
     "data/*",
@@ -491,7 +480,10 @@ def test_refuses_dangling_env_example_symlink(tmp_path):
 
 
 def test_console_scripts_registered():
-    scripts = {ep.name: ep for ep in entry_points(group="console_scripts")}
-    for name in CONSOLE_SCRIPTS:
-        assert name in scripts, f"missing console script: {name}"
-        scripts[name].load()  # the module:function target resolves
+    scripts = {
+        ep.name: ep
+        for ep in entry_points(group="console_scripts")
+        if ep.value.startswith("ariadne.")
+    }
+    assert set(scripts) == set(CONSOLE_SCRIPTS)  # exactly one; no removed executable remains
+    scripts["ariadne"].load()  # the module:function target resolves

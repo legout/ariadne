@@ -4,10 +4,10 @@ import asyncio
 import json
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
+from integration.tests.legacy_cli_support import main as cli_main
 
 from ariadne import admission
 from ariadne.authoring import AuthoringProject
-from ariadne.cli import main as cli_main
 from ariadne.query import QueryRuntime
 from ariadne.query_results import QueryResultError
 from tests.test_git_admission import _policy_edit, _validated_ready, admit
@@ -473,9 +473,10 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
     import io
     import os
 
+    from integration.tests.legacy_cli_support import main as cli_main
+
     from ariadne import proposals
     from ariadne.authoring import AuthoringProject
-    from ariadne.cli import main as cli_main
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)

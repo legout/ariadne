@@ -3005,7 +3005,8 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
     # runtime, the local JSON CLI, and the MCP tool — one implementation.
     import io
 
-    from ariadne.cli import main as cli_main
+    from integration.tests.legacy_cli_support import main as cli_main
+
     from ariadne.serve import build_app
 
     project, view = _t5_admitted(tmp_path)
@@ -3304,7 +3305,7 @@ def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_pa
     # unknown_metric plus the real candidates over the admitted graph.
     import io
 
-    from ariadne.cli import main as cli_main
+    from integration.tests.legacy_cli_support import main as cli_main
 
     project, _view = _t5_admitted(tmp_path)
     request_file = tmp_path / "bad-request.json"

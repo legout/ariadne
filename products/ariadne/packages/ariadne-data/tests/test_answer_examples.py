@@ -13,7 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.cli import main as cli  # noqa: E402
+from integration.tests.legacy_cli_support import main as cli  # noqa: E402
+
 from tests.test_cli import create_git_demo_project, error_payload  # noqa: E402
 from tests.test_git_authoring import run_git, worktree_of  # noqa: E402
 
@@ -88,7 +89,7 @@ def _record_revision(project, proposal):
 
 
 def _cli_for(project):
-    from ariadne.cli import main as cli
+    from integration.tests.legacy_cli_support import main as cli
 
     def cli_run(*args, stdin=None):
         return cli([*args, "--project", str(project)], stdin=stdin)

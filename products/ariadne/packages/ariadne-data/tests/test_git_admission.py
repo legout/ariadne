@@ -910,7 +910,7 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     started = api.start_proposal()
     approved(api, project, started)
 
-    from ariadne.cli import main as cli
+    from integration.tests.legacy_cli_support import main as cli
 
     assert cli(["list-metrics", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)["error"]
@@ -942,7 +942,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     tmp_path, monkeypatch, capsys
 ):
     """Example writes stay project-scoped; ad-hoc metric results are ephemeral."""
-    from ariadne.cli import main as cli
+    from integration.tests.legacy_cli_support import main as cli
 
     project = complete_bundle_project(tmp_path)
     select_revision4_fixture(project)

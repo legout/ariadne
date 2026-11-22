@@ -807,7 +807,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert second["persistence"] == {"status": "not_saved"}
 
     elif case == "cli_replaces_oversized_error_representations":
-        from ariadne import cli
+        from integration.tests import legacy_cli_support as cli
 
         project = tmp_path / "cli-project"
         project.mkdir()
@@ -890,7 +890,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             make_runtime(served, response_bytes=64)
 
     elif case == "host_config_file_tightens_the_cli":
-        from ariadne import cli
+        from integration.tests import legacy_cli_support as cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
@@ -1094,7 +1094,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert result["rows"] == [{"total": 60.0}] and result["result"]["complete"] is True
 
     elif case == "cli_threads_one_request_budget_through_construction":
-        from ariadne import cli
+        from integration.tests import legacy_cli_support as cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
