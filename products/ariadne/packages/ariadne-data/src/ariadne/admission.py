@@ -72,6 +72,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env 
     authoring_sources,
     context,
     contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
+    draft,
     proposals,
 )
 from ariadne.sources import Registry
@@ -887,6 +888,7 @@ def admit_revision(
     overall_preview: dict | None = None,
     confirmed_overall_digest: str | None = None,
     private_profile=None,
+    draft_pin: dict | None = None,
 ) -> dict:
     """HUMAN-ONLY activation (the ``--confirm`` half of ``ariadne-admit``):
     record the operator's explicit confirmation for the exact reviewed revision
@@ -930,6 +932,23 @@ def admit_revision(
         with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
             record, revision = _check_reviewed_revision(project, proposal, revision)
             proposals._check_coherent(project, record)
+            if draft_pin is not None:  # spec 0040 §3.3.5: no dangling approval
+                slot = draft._load_slot(project)
+                served = load_current(project)
+                if not (
+                    slot is not None
+                    and slot["state"] == "active"
+                    and slot["proposal"] == proposal
+                    and slot["generation"] == draft_pin["generation"]
+                    and slot["candidate_revision"] == revision
+                    and slot["base_served_revision"] == draft_pin["base_served_revision"]
+                    and (served["commit"] if served else None) == draft_pin["base_served_revision"]
+                ):
+                    raise ValueError(
+                        "the draft (generation, revision or served base) changed between "
+                        "display and confirmation — nothing was activated; review the "
+                        "current draft and approve again"
+                    )
             # The exact review digest under the lock: the review binds revision,
             # change inventory, artifact bytes and citations.
             review = authoring._review_candidate(project, proposal, record=record)
@@ -1159,6 +1178,8 @@ def admit_revision(
                 proposals._store_record(project, record)
             except OSError:
                 pass
+            if draft_pin is not None:
+                draft.consume(project, proposal)  # the approved generation is consumed
     return {
         "route": ADMISSION_ROUTE,
         "project": str(project),
@@ -1379,12 +1400,6 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             "re-admission of a reviewed/validated revision, never a fallback"
         )
     refuse_unsupported_admission_snapshot(project, record)
-    if not approval_present(project, record):
-        raise ValueError(
-            "the admitted source identity is no longer granted — approve the exact "
-            "resolved identity again (ariadne approve) before serving; the runtime "
-            "never opens an ungranted identity"
-        )
     # The pinned effective storage binding must be COMPLETE, internally
     # consistent AND still be the binding the CURRENT environment resolves
     # (spec 0025 §§4/AC6): every profile the admitted sources reference must
@@ -1451,18 +1466,6 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
             "ariadne-admit (display the review, then --confirm)"
         )
     return validate_admission_record(project, record)
-
-
-def approval_present(project: str | Path, record: dict) -> bool:
-    """True when every source the admitted release binds is still granted (the
-    served release's own binding or a source grant) — the session's bound source
-    identity recheck."""
-    sources_ = record.get("sources") or []
-    if not sources_:
-        return True
-    return authoring_sources.approval_state(
-        Path(project), sources_, authoring_sources.resolved_digest(sources_)
-    )["approved"]
 
 
 def approved_registry(record: dict) -> Registry:

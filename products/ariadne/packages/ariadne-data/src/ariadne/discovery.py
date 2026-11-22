@@ -299,13 +299,6 @@ class _DiscoverySession:
                 f"{record['artifact_digest'][:12]}…) — the runtime never serves "
                 "hand-edited snapshot bytes; re-admit a reviewed/validated revision",
             )
-        if self._project is not None and not admission.approval_present(self._project, record):
-            raise PlannerError(
-                "admission_stale",
-                "the admitted source identity no longer carries the operator's "
-                "approval — re-approve the exact resolved identity before serving",
-            )
-
         if self._context_snapshot is not None:
             from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 

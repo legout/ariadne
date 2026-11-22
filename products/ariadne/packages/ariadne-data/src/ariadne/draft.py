@@ -95,6 +95,56 @@ def _store_slot(project: Path, slot: dict) -> None:
     proposals._fsync_path(path.parent)
 
 
+BASELINE_REL = proposals.ARIADNE_STATE_DIR / "source_baseline.json"
+
+
+def set_source_baseline(project: Path, commit: str) -> None:
+    """Record the approved source baseline (spec 0040 §3.4.2.6): the commit holding the
+    source declarations a source approval consumed. The next draft starts on it."""
+    _store_json(project / BASELINE_REL, {"commit": commit})
+
+
+def _store_json(path: Path, doc: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, sort_keys=True)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    proposals._fsync_path(path.parent)
+
+
+def _is_ancestor(project: Path, ancestor: str, revision: str) -> bool:
+    return (
+        proposals._git(
+            ["merge-base", "--is-ancestor", ancestor, revision], project, check=False
+        ).returncode
+        == 0
+    )
+
+
+def _default_base(project: Path) -> str | None:
+    """The approved source baseline when it still builds on the base a new draft would
+    otherwise take (served revision, else HEAD); otherwise None (the engine default)."""
+    path = project / BASELINE_REL
+    if not path.is_file():
+        return None
+    try:
+        commit = json.loads(path.read_text(encoding="utf-8"))["commit"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(commit, str) or not proposals._COMMIT_RE.fullmatch(commit):
+        return None
+    if proposals._git(["cat-file", "-e", f"{commit}^{{commit}}"], project, check=False).returncode:
+        return None
+    parent = _served_revision(project) or proposals._current_head(project)
+    if parent is None or parent == commit or not _is_ancestor(project, parent, commit):
+        return None
+    return commit
+
+
 def _served_revision(project: Path) -> str | None:
     from ariadne import admission  # lazy: admission imports proposals at load
 
@@ -224,7 +274,7 @@ def mutate(
         created: str | None = None
         if active is None:
             started = proposals.start_proposal(
-                project, base_revision=base_revision, _lock_held=True
+                project, base_revision=base_revision or _default_base(project), _lock_held=True
             )
             created = started["proposal"]
             generation = (slot_before["generation"] if slot_before else 0) + 1
