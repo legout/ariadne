@@ -7,8 +7,6 @@ distribution in miniature so this lane validates standalone; one integration
 test runs the real seeder once lane #2 merges.
 """
 
-import json
-import os
 import sqlite3
 import subprocess
 import sys
