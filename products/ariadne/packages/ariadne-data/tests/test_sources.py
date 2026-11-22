@@ -1307,6 +1307,36 @@ def test_a_locked_ducklake_grants_only_its_metadata_file_and_reported_data_path(
         con.close()
 
 
+def test_a_locked_ducklake_grants_a_glob_named_data_path_literally(tmp_path):
+    """DuckDB's reported DATA_PATH is an exact folder: one named like a glob
+    (``[2026] actuals``) is granted as itself, never reduced to its parent."""
+    meta, warehouse = tmp_path / "meta", tmp_path / "warehouse"
+    data = warehouse / "[2026] actuals"
+    meta.mkdir()
+    data.mkdir(parents=True)
+    catalog = meta / "lake.ducklake"
+    setup = duckdb.connect()
+    setup.execute("LOAD ducklake")
+    setup.execute(f"ATTACH 'ducklake:{catalog}' AS fx (DATA_PATH '{data}/')")
+    setup.execute("CREATE TABLE fx.t AS SELECT 9 AS n")
+    setup.execute("DETACH fx")
+    setup.execute(f"COPY (SELECT 8 AS n) TO '{warehouse / 'sibling.parquet'}' (FORMAT PARQUET)")
+    registry = load_registry(
+        write_registry(tmp_path, [{"name": "dl", "type": "ducklake", "path": str(catalog)}])
+    )
+    con, _ = build_connection(registry, locked=True)
+    try:
+        assert con.execute("SELECT n FROM dl.t").fetchall() == [(9,)]
+        granted = con.execute("SELECT unnest(current_setting('allowed_directories'))").fetchall()
+        folders = [g[0].rstrip("/") for g in granted]
+        assert str(data) in folders
+        assert str(warehouse) not in folders
+        with pytest.raises(duckdb.Error):
+            con.execute("SELECT * FROM read_parquet(?)", [str(warehouse / "sibling.parquet")])
+    finally:
+        con.close()
+
+
 @pytest.mark.parametrize(
     ("call", "literal"),
     [

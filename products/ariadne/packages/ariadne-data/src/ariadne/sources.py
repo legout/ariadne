@@ -1198,11 +1198,13 @@ def lock_down(con: duckdb.DuckDBPyConnection, registry: Registry) -> None:
     paths: set[str] = set()
     directories: set[str] = set()
 
-    def allow(raw: str, folder: bool = False) -> None:
+    def allow(raw: str, folder: bool = False, exact: bool = False) -> None:
         if raw.startswith(("s3://", "s3a://", "s3n://")):
             return  # covered by the used profiles' scopes below
         if _is_remote(raw):
             directories.add(raw.rsplit("/", 1)[0] + "/")
+        elif folder and exact:
+            directories.update(_local(raw))  # an engine-reported folder: literal, never a glob
         elif folder or any(c in raw for c in GLOB_CHARS):
             base = raw
             while any(c in base for c in GLOB_CHARS):
@@ -1222,7 +1224,7 @@ def lock_down(con: duckdb.DuckDBPyConnection, registry: Registry) -> None:
             # only the metadata file (above) and the DATA_PATH DuckDB reports
             row = con.execute("SELECT data_path FROM ducklake_settings(?)", [src.name]).fetchone()
             if row and row[0]:
-                allow(row[0], folder=True)
+                allow(row[0], folder=True, exact=True)
         if src.type == "duckdb":
             # ADR-0022: a native catalog is an operator-approved trusted source
             # definition; the literal files its own views read are part of it.
