@@ -13,7 +13,12 @@ import re
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.skill import ASSETS, main
+from ariadne.cli import main as _cli_main
+from ariadne.skill import ASSETS
+
+
+def main(argv):
+    return _cli_main(["skill", *argv])
 
 
 @pytest.fixture

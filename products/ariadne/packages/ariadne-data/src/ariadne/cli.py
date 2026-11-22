@@ -260,13 +260,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     if command == "skill":
         from ariadne import skill
 
-        return skill.main(
-            [args.skill_command]
-            + (
-                ["--scope", args.scope] + (["--agent", args.agent] if args.agent else [])
-                if args.skill_command == "install"
-                else []
-            )
+        return skill.run(
+            args.skill_command,
+            getattr(args, "scope", "user"),
+            getattr(args, "agent", None),
         )
     if command == "init":
         from ariadne import init

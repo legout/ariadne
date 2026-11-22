@@ -120,3 +120,13 @@ def _status() -> int:
         note = " (symlink)" if target.is_symlink() else ""
         print(f"{state}{note}  {target}")
     return 0
+
+
+def run(command: str, scope: str = "user", agent: str | None = None) -> int:
+    """``ariadne skill path|install|status`` (spec 0040 §3.1.2; behavior unchanged)."""
+    if command == "path":
+        print(ASSETS)
+        return 0
+    if command == "install":
+        return _install(scope, agent)
+    return _status()

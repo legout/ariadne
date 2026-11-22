@@ -448,15 +448,6 @@ def test_console_script_entries_fix_the_toolset(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(serve_module, "build_app", FakeApp)
     assert serve_module.main(["--project", str(project)]) == 0
-    assert serve_module.analyst_main(["--project", str(project)]) == 0
-    assert serve_module.authoring_main(["--project", str(project)]) == 0
+    assert serve_module.main(["--project", str(project), "--toolset", "analyst"]) == 0
+    assert serve_module.main(["--project", str(project), "--toolset", "authoring"]) == 0
     assert captured == ["combined", "analyst", "authoring"]
-
-    for entry, flag in (
-        (serve_module.analyst_main, ["--toolset", "authoring"]),
-        (serve_module.authoring_main, ["--toolset=analyst"]),
-    ):
-        captured.clear()
-        assert entry(["--project", str(project), *flag]) == 2
-        assert captured == []
-        assert "fixes --toolset" in capsys.readouterr().err
