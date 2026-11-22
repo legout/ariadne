@@ -24,26 +24,20 @@ The three registrations:
   ``list_context_pages``/``read_context_page``: token-free listing and
   path-addressed reading of the admitted Context snapshot — read-only.
   No authoring operation.
-- **authoring** — the Git authoring contract with one stable prefix:
-  ``authoring_start_proposal``, ``authoring_read_artifact``,
-  ``authoring_edit_proposal``, ``authoring_propose_sources``,
-  ``authoring_inputs``, ``authoring_validate_proposal``,
-  ``authoring_refresh_schema`` (issue #41:
-  the explicit physical schema refresh), ``authoring_resolve_term`` (issue
-  read-only candidate term resolution), ``authoring_review_proposal``.
-  No query operation; the registration starts without a governed catalog
-  (AC5).
+- **authoring** — the draft authoring contract with one stable prefix, acting on the
+  ONE active draft (spec 0040): ``authoring_read_artifact``,
+  ``authoring_edit_proposal`` (typed artifact edits, native page batches and typed
+  source declarations — no proposal or base IDs), ``authoring_inputs``,
+  ``authoring_refresh_schema``, ``authoring_inspect_mapping``,
+  ``authoring_resolve_term`` and ``draft_status``. No query operation; the
+  registration starts without a governed catalog (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
 
-All MCP authoring operations address one explicit Git proposal and its exact
-revision. There is no complete-bundle submission, staged-project, or separate
-Example-review registration.
-
-No registration exposes source approval (``ariadne-authoring
-approve-sources``), Git Review Admission (``ariadne-admit``, including its
-``--confirm-mapping`` decision), or reconciliation (``ariadne-authoring
-reconcile``): those are human-only local commands. Tool arguments never select
-a project root, worktree path or credential.
+No MCP tool approves, rejects, discards, grants a source or confirms a mapping;
+validation, approval and discard are human CLI commands (``ariadne validate`` /
+``approve`` / ``draft discard``). There is no complete-bundle submission, staged
+project, or separate Example-review registration. Tool arguments never select a
+project root, worktree path or credential.
 
 The server is launched for ONE locally configured Git project (``--project
 DIR``): tool arguments cannot select another project or source credentials,
@@ -81,6 +75,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
+
+from ariadne import draft as draft_module
 
 # The transport-neutral authoring service (plan §2's Authoring call contract):
 # one import, the tool bodies are one-line delegations with its verbatim
@@ -930,41 +926,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         @_tool_errors
-        async def authoring_start_proposal(base_revision: str | None = None) -> dict:
-            """Start one isolated Git authoring proposal in the launch-selected
-            project: a system-generated proposal ID with its branch and worktree,
-            from the optional known base revision or the current admitted/HEAD
-            revision (an empty repository gets its human-created initial artifact
-            revision first). Returns {proposal, base_revision, candidate_revision}.
-            Never approval, validation or admission. Same contract as
-            ``ariadne-authoring start``.
-
-            Args:
-                base_revision: optional known base commit SHA (default: the
-                    current admitted revision, or HEAD before the first admission).
-            """
-            return authoring_api.start_proposal(base_revision)
-
-        @app.tool()
-        @_tool_errors
         async def authoring_read_artifact(
-            proposal: str,
             kind: str,
             name: str | None = None,
             section: str | None = None,
             part: int = 1,
         ) -> dict:
-            """Read one artifact of the proposal's current candidate revision —
-            inherited from the base when never edited — in bounded parts.
-            Returns {proposal, revision, path, content, part, parts, chars,
-            complete} or a specific missing-artifact error. Same contract as
-            ``ariadne-authoring read``.
+            """Read one artifact of the ACTIVE DRAFT's current candidate revision, in
+            bounded parts. Returns {proposal, revision, path, content, part, parts,
+            chars, complete} or a specific missing-artifact error. There is no proposal
+            or base ID: the project has one active draft (a first edit opens it).
 
             Args:
-                proposal: the proposal ID (authoring_start_proposal returned it).
                 kind: one of model, graph, page, seed_notes, contract, contract_bindings.
-                name: artifact name (model/page/contract); contract accepts an exact
-                    .yaml/.yml filename, required to disambiguate extensions.
+                name: artifact name (model/page/contract).
                 section: OKF page section (page).
                 part: which bounded part (default 1).
             """
@@ -973,204 +948,108 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 identity["name"] = name
             if section is not None:
                 identity["section"] = section
-            return authoring_api.read_artifact(proposal, identity, part=part)
+            return authoring_api.draft_read(identity, part=part)
 
         @app.tool()
         @_tool_errors
-        async def authoring_edit_proposal(
-            proposal: str, expected_revision: str, edit: dict
-        ) -> dict:
-            """Apply one complete artifact edit to the proposal, requiring the
-            expected candidate revision — a stale revision or a competing writer
-            is refused before any write; an identical edit at the current
-            revision is a no-op. Returns {proposal, revision, changed, path}.
-            Same contract as ``ariadne-authoring edit``.
+        async def authoring_edit_proposal(edit: dict) -> dict:
+            """Apply ONE typed edit to the active draft (the first edit opens it).
+            Competing writers are arbitrated by the draft's generation and candidate
+            revision: the loser is refused as stale and nothing is written. No
+            proposal or base ID is accepted. Never approval.
 
             Args:
-                proposal: the proposal ID.
-                expected_revision: the CURRENT candidate revision the edit is
-                    based on (the response of the previous edit/read).
-                edit: one discriminated JSON object — {kind: model, name,
-                    content}, {kind: graph, content}, {kind: page, section,
-                    name, content}, {kind: seed_notes, content}, {kind: contract,
-                    name, content}, or {kind: contract_bindings, content} (the fixed
-                    contract_bindings.yaml). Typed source proposals arrive through
-                    authoring_propose_sources.
+                edit: one typed JSON object — {kind: model, name, content}, {kind:
+                    graph, content}, {kind: seed_notes, content}, {kind: contract,
+                    name, content}, {kind: contract_bindings, content}, {kind: pages,
+                    pages: [{path, content}]} (native knowledge pages), or {kind:
+                    sources, entries: [...registry-shaped...], storages?} — a typed
+                    source declaration: inert DATA, nothing is opened, and it grants
+                    nothing; the human approves sources outside this surface.
             """
-            return authoring_api.edit_proposal(proposal, expected_revision, edit)
-
-        @app.tool()
-        @_tool_errors
-        async def authoring_propose_sources(
-            proposal: str,
-            expected_revision: str,
-            sources: list[dict],
-            storages: dict | None = None,
-        ) -> dict:
-            """Append typed source-registry entries — plus optional named S3
-            storage profile definitions — to the candidate's
-            registry: inert DATA, nothing is opened; the candidate cannot
-            grant itself approval. Returns {proposal, revision, changed,
-            source_digest, sources} naming the precise resolved locations; the
-            digest is what the operator approves OUTSIDE this surface. Same
-            contract as Git-mode ``ariadne-authoring propose-sources``.
-
-            Args:
-                proposal: the proposal ID.
-                expected_revision: the CURRENT candidate revision.
-                sources: registry-shaped entries (name/type/path or
-                    connection_env, optional storage: <profile name>);
-                    invalid shapes and inline credentials are rejected before
-                    anything is written.
-                storages: optional named storage-profile declarations
-                    (access_key_id_env/secret_access_key_env/
-                    endpoint_url_env names, url_style, literal s3:// scopes)
-                    an entry may reference; existing candidate profiles can be
-                    referenced without resending them.
-            """
-            return authoring_api.propose_sources(proposal, expected_revision, sources, storages)
+            result = authoring_api.apply_edit(edit)
+            return {key: value for key, value in result.items() if key != "sources"} | (
+                {"sources": result["sources"]} if "sources" in result else {}
+            )
 
         @app.tool()
         @_tool_errors
         async def authoring_inputs(
-            proposal: str,
             documents: list[str] | None = None,
             part: int = 1,
             sample_rows: int | None = None,
         ) -> dict:
-            """The proposal's measured inputs (no model anywhere): the
-                        deterministic profile of the operator-APPROVED resolved registry
-                        identity (an unapproved or changed entry is an explicit error),
-                        source-linked converted evidence for the referenced documents, and
-                        the candidate's Seed Notes — each in bounded parts (part 1 of N;
-                        complete only when N is 1). Same contract as Git-mode
-                        ``ariadne-authoring inputs``.
+            """The active draft's measured inputs (no model anywhere): the
+            deterministic profile of the GRANTED source identities (an ungranted or
+            changed entry is an explicit error), source-linked converted evidence for
+            the referenced documents, and the draft's Seed Notes — each in bounded
+            parts.
 
-                        Args:
-                            proposal: the proposal ID.
-            documents: operator-placed input-area references; at most 16 per call,
-                                each inside the operator-configured roots.
-                            part: which bounded part of each document's converted text.
-                            sample_rows: optional positive per-table profile row bound;
-                                sampled statistics do not claim primary or foreign key
-                                candidates.
+            Args:
+                documents: operator-placed input-area references; at most 16 per call,
+                    each inside the operator-configured roots.
+                part: which bounded part of each document's converted text.
+                sample_rows: optional positive per-table profile row bound.
             """
-            return authoring_api.inputs(
-                proposal, documents=documents or [], part=part, sample_rows=sample_rows
+            return authoring_api.draft_inputs(
+                documents=documents or [], part=part, sample_rows=sample_rows
             )
 
         @app.tool()
         @_tool_errors
-        async def authoring_validate_proposal(proposal: str, expected_revision: str) -> dict:
-            """Validate the proposal's effective candidate at its EXACT final
-            revision: finalize the deterministic generated artifacts, commit any
-            generated changes, run the complete check stack against the
-            operator-approved source identity and return that revision with its
-            report/errors — never validation of the earlier input commit, never
-            a signoff. Same contract as ``ariadne-authoring validate``.
+        async def authoring_refresh_schema(assets: list[dict]) -> dict:
+            """Regenerate the core-owned physical schema facts and Dataset Overviews of
+            an EXPLICIT catalog asset list inside the active draft (reads only granted
+            source identities). Authored meaning survives only for identical column
+            identity/type; an identical refresh is a no-op. Never approval.
 
             Args:
-                proposal: the proposal ID.
-                expected_revision: the CURRENT candidate revision the validation
-                    is based on (the response returns the FINAL revision after
-                    the finalize commit).
+                assets: catalog identity tuples {source, catalog, schema, table}
+                    (catalog null for file views).
             """
-            return authoring_api.validate_proposal(proposal, expected_revision)
+            return authoring_api.draft_refresh_schema(assets)
 
         @app.tool()
         @_tool_errors
-        async def authoring_refresh_schema(
-            proposal: str, expected_revision: str, assets: list[dict]
-        ) -> dict:
-            """Regenerate the core-owned physical schema facts and Dataset
-            Overviews of an EXPLICIT catalog asset list inside the proposal
-            (reads only the operator-approved resolved source identity — stop
-            for approval first if propose_sources just ran). Authored
-            summary/column meaning survives only for identical column
-            identity/type; removed/type-changed columns keep their old meaning
-            as reviewable history; an identical refresh is a no-op that does
-            not move the revision. Returns the resulting revision, the generated
-            page identities and schema-change flags. Never admission. Same
-            contract as ``ariadne-authoring refresh-schema``.
+        async def authoring_inspect_mapping(candidate: dict, limits: dict | None = None) -> dict:
+            """Measure one structured mapping-inspection candidate over the GRANTED
+            source identities and retain the core receipt in the project evidence area
+            (guarded read-only statements, operator-owned finite ceilings; a request may
+            only LOWER them). Never a page edit, approval or admission.
 
             Args:
-                proposal: the proposal ID.
-                expected_revision: the CURRENT candidate revision the refresh is
-                    based on.
-                assets: catalog identity tuples {source, catalog, schema,
-                    table} (catalog null for file views) — same-named tables in
-                    distinct schemas/collections stay distinct assets.
-            """
-            return authoring_api.refresh_schema(proposal, expected_revision, assets)
-
-        @app.tool()
-        @_tool_errors
-        async def authoring_review_proposal(proposal: str, part: int = 1) -> dict:
-            """Read the proposal's candidate — read-only, NEVER a signoff
-            (admission is the separate human-only ``ariadne-admit``): current and
-            base revisions, change inventory, bounded effective bodies,
-            citations, the validation report with its full check scope, and a
-            review digest binding the exact reviewed identity. Same contract as
-            Git-mode ``ariadne-authoring review --proposal``.
-
-            Args:
-                proposal: the proposal ID.
-                part: which bounded part of each body.
-            """
-            return authoring_api.review_proposal(proposal, part=part)
-
-        @app.tool()
-        @_tool_errors
-        async def authoring_inspect_mapping(
-            proposal: str, expected_revision: str, candidate: dict, limits: dict | None = None
-        ) -> dict:
-            """Measure one structured mapping-inspection candidate —
-            equality/composite, string prefix (optional scoped prefix lookup)
-            or explicit scoped lookup — over the operator-APPROVED resolved
-            source identity and retain the core receipt in the project evidence
-            area. Guarded core-generated read-only statements, parameterized
-            scope, operator-owned finite ceilings (requests may only LOWER
-            them); aggregate counts by default — raw identifier examples need
-            the operator's explicit sample permission. The receipt reports
-            eligible/tested denominators, coverage, mismatches, collisions,
-            multiplicity, containment-versus-pairing basis, sampled/full
-            designation and complete|inconclusive outcome with limitations.
-            Never a page edit, approval or admission. Same contract as
-            ``ariadne-authoring inspect-mapping``.
-
-            Args:
-                proposal: the proposal ID.
-                expected_revision: the CURRENT candidate revision the inspection
-                    is based on.
                 candidate: the discriminated candidate object (family, ordered
-                    left/right {resource, column} bindings, scope predicates,
-                    optional pairing/family fields — never SQL or paths).
-                limits: optional REQUEST-LOWERED bounds {sample_rows,
-                    execution_seconds, response_bytes, examples}; raising a
-                    ceiling is refused.
+                    left/right {resource, column} bindings, scope predicates).
+                limits: optional REQUEST-LOWERED bounds.
             """
-            return authoring_api.inspect_mapping(
-                proposal, expected_revision, candidate, limits=limits
-            )
+            return authoring_api.draft_inspect_mapping(candidate, limits=limits)
 
         @app.tool()
         @_tool_errors
-        async def authoring_resolve_term(proposal: str, request: str | dict, part: int = 1) -> dict:
-            """Resolve one shared business term or an exact {resource, column}
-            field lookup against the EXPLICITLY selected proposal's current
-            candidate revision — read-only, with the candidate identity
-            (proposal/revision) visible in the response: representations, exact
-            bindings, scope, ambiguity and UNCONFIRMED claim status. Same
-            contract as ``ariadne-authoring resolve-term``; never approval,
-            admission or a query.
+        async def authoring_resolve_term(request: str | dict, part: int = 1) -> dict:
+            """Resolve one shared business term or an exact {resource, column} field
+            lookup against the ACTIVE DRAFT's current candidate revision — read-only,
+            with the candidate identity visible: representations, bindings, scope,
+            ambiguity and UNCONFIRMED claim status. No proposal ID.
 
             Args:
-                proposal: the proposal ID (authoring_start_proposal returned it).
-                request: the term string, or the exact field lookup
-                    {resource, column} with a canonical ariadne://table/ resource.
+                request: the term string, or {resource, column} with a canonical
+                    ariadne://table/ resource.
                 part: which bounded part of the matches (default 1).
             """
-            return authoring_api.resolve_term(proposal, request, part=part)
+            return authoring_api.resolve_term_in_draft(request, part=part)
+
+        @app.tool()
+        @_tool_errors
+        async def draft_status() -> dict:
+            """The active draft: generation, candidate revision, the served revision it
+            is based on and whether it is stale; {draft: null} when none is open. Also
+            reports the validation state of the current candidate. Read-only."""
+            view = draft_module.status(authoring_api.project)
+            if view is None:
+                return {"draft": None}
+            review = authoring_api.draft_review()
+            return {**view, "validation": (review["report"] or {}).get("status", "unvalidated")}
 
     from starlette.responses import (  # pyright: ignore[reportMissingImports] — [mcp] extra
         JSONResponse,

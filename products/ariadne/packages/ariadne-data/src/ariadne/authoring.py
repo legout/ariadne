@@ -571,6 +571,44 @@ class AuthoringProject:
         )
         return result
 
+    def _active(self) -> tuple[str, str]:
+        """The active draft's (proposal, candidate revision) — read once per call; the
+        engine's own revision check (and the project lock) arbitrates a racing writer."""
+        view = draft.status(self.project)
+        if view is None:
+            raise ValueError(
+                "there is no active draft — make an edit (or add a source) to open one"
+            )
+        proposal = draft.proposal_of(self.project, (view["generation"], view["candidate_revision"]))
+        return proposal, view["candidate_revision"]
+
+    def draft_read(self, identity: dict, *, part: int = 1) -> dict:
+        """:meth:`read_artifact` of the active draft; with no draft yet, the served
+        (or HEAD) state is read through a read-only view of the base."""
+        proposal, _revision = self._active()
+        return self.read_artifact(proposal, identity, part=part)
+
+    def draft_inputs(self, **kwargs) -> dict:
+        proposal, _revision = self._active()
+        return self.inputs(proposal, **kwargs)
+
+    def draft_refresh_schema(self, assets: list[dict]) -> dict:
+        proposal, revision = self._active()
+        return self.refresh_schema(proposal, revision, assets)
+
+    def draft_inspect_mapping(self, candidate: object, limits: object = None) -> dict:
+        proposal, revision = self._active()
+        return self.inspect_mapping(proposal, revision, candidate, limits=limits)
+
+    def draft_review(self, *, part: int = 1) -> dict:
+        proposal, _revision = self._active()
+        return self.review_proposal(proposal, part=part)
+
+    def draft_validate(self) -> dict:
+        """Validate the active draft at its current generation (refuses when stale)."""
+        proposal, revision = self._active()
+        return self.validate_proposal(proposal, revision)
+
     def resolve_term_in_draft(self, request: str | dict, *, part: int = 1) -> dict:
         """:meth:`resolve_term` against the ACTIVE draft — no proposal ID (spec 0040
         §3.1.3, the same shape as the other authoring tools)."""

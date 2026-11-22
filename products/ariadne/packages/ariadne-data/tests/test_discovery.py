@@ -99,9 +99,10 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
 
     assert admit(project, review) == 0
     capsys.readouterr()
+    later = api.start_proposal()  # approval consumed the generation: the next draft
     api.edit_proposal(
-        review["proposal"],
-        review["revision"],
+        later["proposal"],
+        later["candidate_revision"],
         {
             "kind": "contract",
             "name": "orders.yaml",
