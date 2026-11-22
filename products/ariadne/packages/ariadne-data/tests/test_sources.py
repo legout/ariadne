@@ -1294,9 +1294,7 @@ def test_a_locked_ducklake_grants_only_its_metadata_file_and_reported_data_path(
     setup.execute("DETACH fx")
     setup.execute(f"COPY (SELECT 8 AS n) TO '{meta / 'sibling.parquet'}' (FORMAT PARQUET)")
     registry = load_registry(
-        write_registry(
-            tmp_path, [{"name": "dl", "type": "ducklake", "path": str(catalog)}]
-        )
+        write_registry(tmp_path, [{"name": "dl", "type": "ducklake", "path": str(catalog)}])
     )
     con, _ = build_connection(registry, locked=True)
     try:
@@ -1305,5 +1303,62 @@ def test_a_locked_ducklake_grants_only_its_metadata_file_and_reported_data_path(
         assert str(meta) not in granted
         with pytest.raises(duckdb.Error):
             con.execute("SELECT * FROM read_parquet(?)", [str(meta / "sibling.parquet")])
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize(
+    ("call", "literal"),
+    [
+        ("read_parquet('{p}')", True),
+        ("read_csv('{c}')", True),
+        ("read_csv_auto('{c}')", True),
+        ("read_json('{j}')", True),
+        ("read_json_auto('{j}')", True),
+        ("read_csv(['{c}', '{c}'])", True),
+        ("read_parquet(['{p}', '{p}'])", True),
+        ("read_csv('{c}', header = true)", True),
+        ("read_csv(lower('{c}'))", False),
+    ],
+)
+def test_catalog_backing_literals_follow_each_scanners_parse_shape(tmp_path, call, literal):
+    """Every supported local scanner yields its literal path(s); a non-literal
+    argument yields nothing and so stays locked. (delta_scan/iceberg_scan need
+    extension tables to bind; their parse shape is the same Anonymous node as
+    read_csv_auto/read_json_auto, covered here.)"""
+    from ariadne.sources import _catalog_backing
+
+    files = {k: tmp_path / f"f.{e}" for k, e in (("p", "parquet"), ("c", "csv"), ("j", "json"))}
+    files["c"].write_text("n\n7\n", encoding="utf-8")
+    files["j"].write_text('{"n": 7}\n', encoding="utf-8")
+    con = duckdb.connect()
+    con.execute(f"COPY (SELECT 7 AS n) TO '{files['p']}' (FORMAT PARQUET)")
+    con.execute("ATTACH ':memory:' AS c")
+    scan = call.format(**{k: str(v) for k, v in files.items()})
+    con.execute(f"CREATE VIEW c.main.v AS SELECT * FROM {scan}")
+    found = _catalog_backing(con, "c")
+    if literal:
+        assert set(found) <= {str(v) for v in files.values()} and found
+    else:
+        assert found == []
+
+
+def test_a_locked_native_view_over_read_csv_in_another_directory_is_readable(tmp_path):
+    """read_csv keeps its path in the parser's ``this`` slot; the approved view
+    over a CSV with 7 rows (hand-counted) still answers under lock."""
+    backing, cats = tmp_path / "backing", tmp_path / "cats"
+    backing.mkdir()
+    cats.mkdir()
+    (backing / "r.csv").write_text("n\n" + "\n".join(map(str, range(7))) + "\n", encoding="utf-8")
+    catalog = cats / "catalog.duckdb"
+    cat = duckdb.connect(str(catalog))
+    cat.execute(f"CREATE VIEW main.v AS SELECT * FROM read_csv('{backing / 'r.csv'}')")
+    cat.close()
+    registry = load_registry(
+        write_registry(tmp_path, [{"name": "cat", "type": "duckdb", "path": str(catalog)}])
+    )
+    con, _ = build_connection(registry, locked=True)
+    try:
+        assert con.execute("SELECT count(*) FROM cat.v").fetchall() == [(7,)]
     finally:
         con.close()

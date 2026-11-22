@@ -1172,8 +1172,12 @@ def _catalog_backing(con: duckdb.DuckDBPyConnection, catalog: str) -> list[str]:
                 fname = str(node.name).lower()
             if fname not in _SCAN_FUNCTIONS:
                 continue
-            args = node.expressions
-            first = args[0] if args else None
+            # the parser keeps the first argument in ``this`` for some scanners
+            # (ReadCSV; ``this`` is the name string on Anonymous) and in
+            # ``expressions`` for the rest
+            first = node.this if isinstance(node.this, exp.Expression) else None
+            if first is None and node.expressions:
+                first = node.expressions[0]
             literals = (
                 first.expressions if isinstance(first, exp.Array) else [first] if first else []
             )
@@ -1216,9 +1220,7 @@ def lock_down(con: duckdb.DuckDBPyConnection, registry: Registry) -> None:
         allow(raw, folder=src.type in {"delta", "iceberg"})
         if src.type == "ducklake":
             # only the metadata file (above) and the DATA_PATH DuckDB reports
-            row = con.execute(
-                "SELECT data_path FROM ducklake_settings(?)", [src.name]
-            ).fetchone()
+            row = con.execute("SELECT data_path FROM ducklake_settings(?)", [src.name]).fetchone()
             if row and row[0]:
                 allow(row[0], folder=True)
         if src.type == "duckdb":
