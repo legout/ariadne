@@ -2368,6 +2368,14 @@ def load_receipt(project: Path, proposal: str, receipt_id: str) -> dict:
     path = _receipt_path(project, proposal, receipt_id)
     entry = proposals._lstat(path)
     if entry is None:
+        # Draft generations (spec 0040 §3.3) each have their own proposal, but a receipt's
+        # validity is dependency-matched, never proposal-matched: resolve the random
+        # receipt id from an earlier generation's evidence directory. The integrity
+        # digest and every dependency check below still apply.
+        for other in sorted((project / EVIDENCE_REL).glob(f"*/{receipt_id}.json")):
+            path, entry = other, proposals._lstat(other)
+            break
+    if entry is None:
         raise ValueError(
             f"receipt {receipt_id!r} does not resolve in the project's evidence "
             f"records ({path} is absent) — allowlisting an id is not proof"

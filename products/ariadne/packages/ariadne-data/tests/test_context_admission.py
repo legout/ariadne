@@ -409,6 +409,13 @@ def _policy_page_edit(text: str) -> list[dict]:
     ]
 
 
+def next_draft(api, project):
+    """Approval consumed the previous generation (spec 0040 §3.4.2.6): open the NEXT
+    draft on the served revision. Returns its proposal id and candidate revision."""
+    started = api.start_proposal()
+    return started["proposal"], started["candidate_revision"]
+
+
 def admit(
     project: Path,
     review: dict,
@@ -708,18 +715,19 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
 
     # a new revision of the same proposal: select the assertion and confirm
     api = AuthoringProject(project)
+    npr, nrev = next_draft(api, project)
     moved = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; revised."
             )
         ),
     )
-    validated = api.validate_proposal(review["proposal"], moved["revision"])
+    validated = api.validate_proposal(npr, moved["revision"])
     assert validated["ok"] is True
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     pre_blobs = blobs_of(project, second["revision"])
     assert (
         admit(
@@ -751,7 +759,7 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     assert entry["by"] and entry["at"]  # the operational human evidence
 
     # admission changed no candidate byte
-    assert branch_of(project, review["proposal"]) == second["revision"]
+    assert branch_of(project, npr) == second["revision"]
     assert blobs_of(project, second["revision"]) == pre_blobs
 
     # resolution now reports EXACTLY that assertion confirmed; the hypothesis
@@ -1080,7 +1088,6 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     the confirmation); a CHANGED assertion cannot inherit confirmation — it
     lapses until a fresh human selection confirms the new declaration."""
     project, _api, review = admitted_candidate(tmp_path / "proj")
-    proposal = review["proposal"]
     selection = "order-number:global-order-concatenation"
 
     # admit with the selection: the assertion is confirmed (composite
@@ -1098,18 +1105,19 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # an unrelated page-only change: the assertion is byte-identical, so the
     # prior human evidence RETAINS without a new selection
     api = AuthoringProject(project)
+    npr, nrev = next_draft(api, project)
     unrelated = api.edit_pages_batch(
-        proposal,
-        branch_of(project, proposal),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; unrelated edit."
             )
         ),
     )
-    validated = api.validate_proposal(proposal, unrelated["revision"])
+    validated = api.validate_proposal(npr, unrelated["revision"])
     assert validated["ok"] is True
-    second = api.review_proposal(proposal)
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection
@@ -1138,14 +1146,15 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
         "orders-catalog"
     ]
     front = yaml.safe_dump(changed_page, default_flow_style=False, sort_keys=False).strip()
+    npr, nrev = next_draft(api, project)
     changed = api.edit_pages_batch(
-        proposal,
-        branch_of(project, proposal),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
-    validated = api.validate_proposal(proposal, changed["revision"])
+    validated = api.validate_proposal(npr, changed["revision"])
     assert validated["ok"] is True
-    third = api.review_proposal(proposal)
+    third = api.review_proposal(npr)
     assert (
         admit(project, third, destination=published, expected=second["revision"]) == 0
     )  # still no selection
@@ -1162,7 +1171,7 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     )
 
     # a fresh selection of the CHANGED assertion confirms the new declaration
-    fourth = api.review_proposal(proposal)
+    fourth = api.review_proposal(npr)
     assert (
         admit(
             project,
@@ -1213,14 +1222,15 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     ]
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = read_reference(api, candidate["proposal"])["content"].split("---", 2)[2]
+    npr, nrev = next_draft(api, project)
     edited = api.edit_pages_batch(
-        candidate["proposal"],
-        branch_of(project, candidate["proposal"]),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---{body}"),
     )
-    validated = api.validate_proposal(candidate["proposal"], edited["revision"])
-    assert validated["ok"] is True
-    second = api.review_proposal(candidate["proposal"])
+    validated = api.validate_proposal(npr, edited["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=first["revision"]) == 0
     )  # no selection: the dependency changed
@@ -1233,7 +1243,7 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     assert view["confirmation"] == "unconfirmed"  # stale confirmation cannot inherit
 
     # the fresh selection re-binds the re-measured evidence
-    third = api.review_proposal(candidate["proposal"])
+    third = api.review_proposal(npr)
     assert (
         admit(
             project,
@@ -1374,14 +1384,15 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     )
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = content.split("---", 2)[2]
+    npr, nrev = next_draft(api, project)
     retargeted = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---{body}"),
     )
-    validated = api.validate_proposal(review["proposal"], retargeted["revision"])
+    validated = api.validate_proposal(npr, retargeted["revision"])
     assert validated["ok"] is True  # no receipts cited: nothing re-verifies
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     [assertion] = [
         entry
         for entry in second["mapping_assertions"]
@@ -1518,20 +1529,21 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     # a later candidate of the same proposal, validated while fresh: the
     # stored evidence returns idempotently, so the expiry can only be caught
     # at the retention decision of the new admission
+    npr, nrev = next_draft(api, project)
     moved = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; later."
             )
         ),
     )
-    validated = api.validate_proposal(review["proposal"], moved["revision"])
-    assert validated["ok"] is True
+    validated = api.validate_proposal(npr, moved["revision"])
+    assert validated["ok"] is True, validated["errors"]
 
     aged_context_clock(monkeypatch, 26)  # past the budget BEFORE admitting
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection: nothing may retain
