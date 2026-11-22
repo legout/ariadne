@@ -308,9 +308,7 @@ def test_workbook_stored_values_and_refresh_are_truthful(tmp_path: Path) -> None
     assert list(shared_follower_output.iterdir()) == []
 
     shared_master_source = tmp_path / "shared-master-implicit.xlsx"
-    shared_master_xml = shared_follower_xml.replace(
-        '<c r="A2"><f t="shared"', '<c><f t="shared"'
-    )
+    shared_master_xml = shared_follower_xml.replace('<c r="A2"><f t="shared"', '<c><f t="shared"')
     _write_hand_ooxml(shared_master_source, override_a=shared_master_xml)
     shared_master_output = tmp_path / "shared-master-output"
     with pytest.raises(SpreadsheetImportError, match="explicit r") as shared_master:

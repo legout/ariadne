@@ -1066,7 +1066,7 @@ def test_xlsx_conversion_requires_approved_source_and_caller_grant(tmp_path, mon
         connection = duckdb.connect(str(artifact), read_only=True)
         try:
             artifact_rows = connection.execute(
-                "SELECT __ariadne_source_row, id, amount, status FROM \"orders\" "
+                'SELECT __ariadne_source_row, id, amount, status FROM "orders" '
                 "ORDER BY __ariadne_source_row"
             ).fetchall()
         finally:
@@ -1104,9 +1104,9 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
         ).replace(
             "    computation: {}\n",
             "    computation: {}\n"
-            "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
+            '    knowledge-artifact:\n      description: "A document, record, or other knowledge '
             "artifact. Its referent is the artifact itself, not a person, organization, "
-            "service, or business object mentioned in it.\"\n"
+            'service, or business object mentioned in it."\n'
             "  predicates:\n    documented-by:\n"
             "      subject_types:\n        - knowledge-artifact\n",
         ),
@@ -1469,9 +1469,9 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
         ).replace(
             "    computation: {}\n",
             "    computation: {}\n"
-            "    knowledge-artifact:\n      description: \"A document, record, or other knowledge "
+            '    knowledge-artifact:\n      description: "A document, record, or other knowledge '
             "artifact. Its referent is the artifact itself, not a person, organization, "
-            "service, or business object mentioned in it.\"\n",
+            'service, or business object mentioned in it."\n',
         ),
         encoding="utf-8",
     )
@@ -1647,13 +1647,10 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
             "visibility: internal\n"
             f"sources:\n  - id: {source_id}\n    title: {source_id} original\n"
             f"{extra_sources}"
-            "---\n"
-            + text
+            "---\n" + text
         )
 
-    lf_page = verbatim_page(
-        "entity:verbatim-lf", "Verbatim LF Runbook", "verbatim-lf", doc_lf_text
-    )
+    lf_page = verbatim_page("entity:verbatim-lf", "Verbatim LF Runbook", "verbatim-lf", doc_lf_text)
     crlf_page = verbatim_page(
         "entity:verbatim-crlf", "Verbatim CRLF Runbook", "verbatim-crlf", doc_crlf_text
     )
@@ -1688,15 +1685,16 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
                 "sources": [
                     {"upload_id": mismatch_upload["upload_id"], "intent": "new", "verbatim": True}
                 ],
-                "pages": [
-                    {"filename": "verbatim-mismatch.md", "markdown": mismatch_page}
-                ],
+                "pages": [{"filename": "verbatim-mismatch.md", "markdown": mismatch_page}],
             },
         )
         assert mismatch["isError"] is True
-        assert state.get_operation(
-            config.workspace_id, contributor, "prepare_contribution", "verbatim-mismatch-one"
-        ) is None
+        assert (
+            state.get_operation(
+                config.workspace_id, contributor, "prepare_contribution", "verbatim-mismatch-one"
+            )
+            is None
+        )
 
         # Incomplete (bounded) extraction refuses verbatim intake entirely.
         huge_text = "A" * 201_000
@@ -1723,9 +1721,12 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
             },
         )
         assert huge["isError"] is True
-        assert state.get_operation(
-            config.workspace_id, contributor, "prepare_contribution", "verbatim-huge-one"
-        ) is None
+        assert (
+            state.get_operation(
+                config.workspace_id, contributor, "prepare_contribution", "verbatim-huge-one"
+            )
+            is None
+        )
 
         # Ambiguous binding: one page claimed by two verbatim sources refuses.
         amb_upload_a = intake.save(
@@ -1764,9 +1765,12 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
             },
         )
         assert ambiguous["isError"] is True
-        assert state.get_operation(
-            config.workspace_id, contributor, "prepare_contribution", "verbatim-ambiguous-one"
-        ) is None
+        assert (
+            state.get_operation(
+                config.workspace_id, contributor, "prepare_contribution", "verbatim-ambiguous-one"
+            )
+            is None
+        )
 
         # Mixed candidate: two verbatim documents plus one ordinary distilled
         # page, reviewed by a separate human and published natively.

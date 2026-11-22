@@ -70,11 +70,7 @@ def native_page(kind, title, resource, body):
         policy_extra = "  required_policies: []\n"
     core_ref_extra = ""
     if kind == "table":
-        core_ref_extra = (
-            "  core_ref:\n"
-            "    kind: resource\n"
-            f"    id: {resource}\n"
-        )
+        core_ref_extra = f"  core_ref:\n    kind: resource\n    id: {resource}\n"
     # the document/Policy path rides the DECLARED native source record —
     # never the protected native.resource claim
     source_resource = f"        resource: {resource}\n" if kind != "table" else ""
@@ -101,10 +97,7 @@ def native_page(kind, title, resource, body):
         "    title: Owner rule\n"
         "ariadne_profile:\n"
         "  version: 1\n"
-        f"  kind: {kind}\n"
-        + policy_extra
-        + core_ref_extra
-        + "  native:\n"
+        f"  kind: {kind}\n" + policy_extra + core_ref_extra + "  native:\n"
         f"    type: {kind}\n"
         f"    title: {title}\n"
         f"    description: {body}\n"
@@ -279,9 +272,7 @@ def main():
         pages = [
             {
                 "path": "knowledge/tables/events.md",
-                "content": native_page(
-                    "table", "events", events_table_uri, "One row per event."
-                ),
+                "content": native_page("table", "events", events_table_uri, "One row per event."),
             },
             {
                 "path": "knowledge/references/event-rule.md",

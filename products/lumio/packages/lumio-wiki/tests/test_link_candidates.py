@@ -195,9 +195,7 @@ def test_deterministic_ordering_across_input_order():
     second = find_link_candidates(list(reversed(pages)))
 
     assert first == second
-    keys = [
-        (c.source_path, c.line, c.column, c.target_title, c.term) for c in first
-    ]
+    keys = [(c.source_path, c.line, c.column, c.target_title, c.term) for c in first]
     assert keys == sorted(keys)
     # Beta once, Gamma twice (two distinct locations).
     assert len(first) == 3

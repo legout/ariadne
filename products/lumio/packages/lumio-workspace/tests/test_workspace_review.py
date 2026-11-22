@@ -260,9 +260,7 @@ def _prepare(
     arguments = {
         "retry_key": retry_key,
         "sources": [{"upload_id": upload_id, "intent": "new"}],
-        "pages": [
-            {"filename": filename, "markdown": _page(title, addition, source_id)}
-        ],
+        "pages": [{"filename": filename, "markdown": _page(title, addition, source_id)}],
     }
     if continuation_task_id is not None:
         arguments["continuation_task_id"] = continuation_task_id
@@ -582,13 +580,14 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert cross_origin.status_code == 403
         assert _decision(reviewer, task_id, "0" * 64, "approve").status_code == 409
         with fixture.state._connect() as connection:
-            assert connection.execute(
-                "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
-            ).fetchone()[0] == 0
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
+                ).fetchone()[0]
+                == 0
+            )
 
-        source_url = (
-            f"/review/{task_id}/source/runbook-source/entity:restart-worker-runbook"
-        )
+        source_url = f"/review/{task_id}/source/runbook-source/entity:restart-worker-runbook"
         denied_source = reviewer.get(source_url)
         assert denied_source.status_code == 403
         assert "Stop the old worker" not in denied_source.text
@@ -618,9 +617,7 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert "source inspection requires separate authorization" in revoked_review.text
 
         # A real native concurrent activation makes the first browser action stale.
-        profile = load_private_profile(
-            config.private_profile_path, kb_root=config.authoring_path
-        )
+        profile = load_private_profile(config.private_profile_path, kb_root=config.authoring_path)
         native = resolve_private_profile(
             profile, kb_root=config.authoring_path, needs=frozenset({"registry", "artifacts"})
         )
@@ -669,9 +666,12 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
         assert _decision(reviewer, task_id, fresh_digest, "approve").status_code == 409
         with fixture.state._connect() as connection:
-            assert connection.execute(
-                "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
-            ).fetchone()[0] == 1
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM review_actions WHERE decision != ''"
+                ).fetchone()[0]
+                == 1
+            )
 
         status = _call_tool(
             contributor, fixture.contributor_api, "get_task", {"task_id": task_id}, 5
@@ -693,9 +693,12 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         }
         resolved = PublishedFilesystemLocation(config.published_path).resolve()
         assert resolved.lookup_by_title("Restart Worker")[0].body.strip() == EXPECTED_BODY
-        assert LocalDirectoryArtifactStore(fixture.artifact_path).get_artifact(
-            source_id="runbook-source", content_hash=EXPECTED_SHA256
-        ) == ORIGINAL
+        assert (
+            LocalDirectoryArtifactStore(fixture.artifact_path).get_artifact(
+                source_id="runbook-source", content_hash=EXPECTED_SHA256
+            )
+            == ORIGINAL
+        )
 
         pinned = _call_tool(
             pinned_reader,
@@ -734,9 +737,7 @@ def test_browser_review_is_required_and_binds_exact_candidate(tmp_path: Path, mo
         assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
 
 
-def test_continuation_review_shows_complete_effective_changes(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_continuation_review_shows_complete_effective_changes(tmp_path: Path, monkeypatch) -> None:
     fixture = _fixture(tmp_path, monkeypatch)
     with (
         TestClient(create_app(fixture.config), base_url="https://workspace.test") as owner,
@@ -1065,9 +1066,12 @@ def test_task_recovery_distinguishes_prepared_and_completed_native_activation(
         assert repeated["publication"] == recovered["publication"]
         assert activated_receipt_path.read_bytes() == receipt_after_recovery
         with fixture.state._connect() as connection:
-            assert connection.execute(
-                "SELECT COUNT(*) FROM operations WHERE action = 'prepare_contribution'"
-            ).fetchone()[0] == task_count
+            assert (
+                connection.execute(
+                    "SELECT COUNT(*) FROM operations WHERE action = 'prepare_contribution'"
+                ).fetchone()[0]
+                == task_count
+            )
 
         profile = load_private_profile(config.private_profile_path, kb_root=config.authoring_path)
         native = resolve_private_profile(

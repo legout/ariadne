@@ -59,6 +59,7 @@ def _lumio_core_compat_available() -> bool:
     therefore the application) is not installed."""
     return importlib.util.find_spec("lumio") is not None
 
+
 @pytest.mark.skipif(
     not _lumio_core_compat_available(),
     reason="lumio.core lives in the private app repo (ADR-0025)",

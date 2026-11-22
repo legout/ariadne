@@ -112,10 +112,7 @@ def _manifest(bindings):
             version=1,
             namespace=NAMESPACE,
             sources={source: "active" for source, _digest in bindings.values()},
-            bindings={
-                entity: {source: digest}
-                for entity, (source, digest) in bindings.items()
-            },
+            bindings={entity: {source: digest} for entity, (source, digest) in bindings.items()},
         )
     )
 
@@ -277,16 +274,19 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     assert not (project / ".ariadne/current.json").exists()
     assert PublishedFilesystemLocation(destination).read_pointer() is None
 
-    assert admission_main(
-        [
-            *cli_args,
-            "--confirm",
-            "--by",
-            "human:synthetic-operator",
-            "--overall-digest",
-            base_preview["digest"],
-        ]
-    ) == 0
+    assert (
+        admission_main(
+            [
+                *cli_args,
+                "--confirm",
+                "--by",
+                "human:synthetic-operator",
+                "--overall-digest",
+                base_preview["digest"],
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
     prior_descriptor = current_bytes(project)
     prior_pointer = PublishedFilesystemLocation(destination).read_pointer()
@@ -304,9 +304,7 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
         )
     )
     registry.register_version(NEW_SOURCE, NEW_ORIGINAL)
-    assert store.delete_artifact(
-        source_id=BASELINE_SOURCE, content_hash=BASELINE_ORIGINAL_DIGEST
-    )
+    assert store.delete_artifact(source_id=BASELINE_SOURCE, content_hash=BASELINE_ORIGINAL_DIGEST)
     new_revision = reconcile_knowledge(project, proposal, base_revision)
     new_review = _review(api, proposal, new_revision)
     new_revision = new_review["revision"]
@@ -359,7 +357,5 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     session = DiscoveryRuntime.open_project(project)
     served = asyncio.run(session.read_context_page(NEW_PAGE_PATH))
     assert served["content"] == NEW_PAGE
-    assert served["citation"] == (
-        f"{NAMESPACE} {NEW_ENTITY} v{new_revision} {NEW_PAGE_PATH}"
-    )
+    assert served["citation"] == (f"{NAMESPACE} {NEW_ENTITY} v{new_revision} {NEW_PAGE_PATH}")
     assert served["bound_release"] == admitted["bound_release"]["digest"]

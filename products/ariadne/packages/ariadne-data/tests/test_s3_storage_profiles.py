@@ -98,6 +98,7 @@ def no_profile_environment(monkeypatch):
 @pytest.fixture
 def builder_canary(monkeypatch):
     """Fail the test if the shared connection builder is ever called."""
+
     def boom(registry, read_only=True, *, deadline=None):
         raise AssertionError("the inert contract must never open a connection")
 
@@ -181,9 +182,7 @@ def test_profiles_are_inert_and_credential_free(tmp_path, builder_canary):
         yaml.safe_dump(yaml.safe_load(plain.read_text()), sort_keys=True),
     )
     same_again = load_registry(reordered)
-    assert (
-        resolved_digest(_resolved_entries(same_again.sources, same_again.storages)) == baseline
-    )
+    assert resolved_digest(_resolved_entries(same_again.sources, same_again.storages)) == baseline
 
     # a conflicting profile EDIT inside the candidate refuses, leaving the
     # candidate untouched (spec §5): identical re-proposition is reuse.
@@ -240,9 +239,7 @@ def test_profiles_are_inert_and_credential_free(tmp_path, builder_canary):
     conflicting = {**profiles, "local": {**profiles["local"], "scopes": ["s3://other/"]}}
     before = reuse["revision"]
     with pytest.raises(ValueError, match="conflicting replacement"):
-        api.propose_sources(
-            started["proposal"], before, sources=[], storages=conflicting
-        )
+        api.propose_sources(started["proposal"], before, sources=[], storages=conflicting)
     record = yaml.safe_load(
         (project / ".ariadne" / "proposals" / f"{first['proposal']}.json").read_text()
     )

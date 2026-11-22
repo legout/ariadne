@@ -38,9 +38,9 @@ FIXTURES = ROOT / "tests" / "fixtures"
 CATEGORIZED = FIXTURES / "categorized_kb"
 
 ADDED_PAGE = (
-    "---\ntitle: \"Added Page\"\nid: \"entity:added\"\nentity_types:\n  - organization\n"
-    "summary: \"A page added in v2.\"\nlifecycle: \"approved\"\nvisibility: \"public\"\n"
-    "sources:\n  - id: \"added-source\"\nsynthetic: false\n---\n\n# Added Page\n\nNew.\n"
+    '---\ntitle: "Added Page"\nid: "entity:added"\nentity_types:\n  - organization\n'
+    'summary: "A page added in v2."\nlifecycle: "approved"\nvisibility: "public"\n'
+    'sources:\n  - id: "added-source"\nsynthetic: false\n---\n\n# Added Page\n\nNew.\n'
 )
 
 

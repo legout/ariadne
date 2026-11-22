@@ -233,9 +233,7 @@ def _authoring_handoff(root: Path) -> None:
     )
 
 
-def _resolve_skill_target(
-    args: argparse.Namespace, interactive: bool, stdin: Any
-) -> str | None:
+def _resolve_skill_target(args: argparse.Namespace, interactive: bool, stdin: Any) -> str | None:
     """The real selected skill target, or None when nothing is selected (no
     --agents, missing noninteractive target, interactive skip). No writes."""
     if not args.agents:
@@ -356,9 +354,7 @@ def run(args: argparse.Namespace, stdin: Any) -> int:
     # the operator's relative --private-profile selection binds to the INVOCATION
     # cwd before any project chdir, so identical selections address the same
     # machine-local file on fresh setup and resume
-    private_profile = (
-        args.private_profile.absolute() if args.private_profile is not None else None
-    )
+    private_profile = args.private_profile.absolute() if args.private_profile is not None else None
     try:
         # retired or incomplete layouts refuse BEFORE any
         # KB/profile/source write; plain empty projects stay supported.

@@ -15,11 +15,7 @@ import sys
 from pathlib import Path
 
 CORE_MEMBER = (
-    Path(__file__).resolve().parents[2]
-    / "products"
-    / "ariadne"
-    / "packages"
-    / "ariadne-data"
+    Path(__file__).resolve().parents[2] / "products" / "ariadne" / "packages" / "ariadne-data"
 )
 if str(CORE_MEMBER) not in sys.path:
     sys.path.insert(0, str(CORE_MEMBER))

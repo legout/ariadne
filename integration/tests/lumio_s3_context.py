@@ -649,16 +649,25 @@ def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys
     inline_secret = "synthetic-inline-secret-never-print"
     rejected = _destination().replace("s3://", f"s3://{inline_user}:{inline_secret}@", 1)
     capsys.readouterr()
-    assert admission_main(
-        [
-            "--project", str(project),
-            "--proposal", review["proposal"],
-            "--revision", review["revision"],
-            "--reviewed-digest", review["review_digest"],
-            "--context-destination", rejected,
-            "--context-storage-profile", PROFILE_NAME,
-        ]
-    ) == 1
+    assert (
+        admission_main(
+            [
+                "--project",
+                str(project),
+                "--proposal",
+                review["proposal"],
+                "--revision",
+                review["revision"],
+                "--reviewed-digest",
+                review["review_digest"],
+                "--context-destination",
+                rejected,
+                "--context-storage-profile",
+                PROFILE_NAME,
+            ]
+        )
+        == 1
+    )
     diagnostic = capsys.readouterr()
     assert diagnostic.out == ""
     assert json.loads(diagnostic.err)["error"]["type"] == "ValueError"
@@ -666,6 +675,8 @@ def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys
     assert inline_user not in diagnostic.err
     assert rejected not in diagnostic.err
     assert not (project / ".ariadne" / "current.json").exists()
+
+
 def test_s3_revision3_query_operations_serve_full_context_from_bound_release(tmp_path, monkeypatch):
     """#84 final S3 qualification (spec0032 §6, acceptance §8.7) over the
     parent-owned labelled synthetic SeaweedFS service: the three revision-3

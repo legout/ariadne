@@ -210,6 +210,7 @@ def _guard(budget, con):
     budget is set (the trusted operator CLI route keeps its exact contract)."""
     return budget.guard(con) if budget is not None else nullcontext()
 
+
 # SQLite storage classes surface as these types through the scanner; keys may
 # reference across the numeric family (INTEGER <-> BIGINT etc.).
 _NUMERIC_TYPES = frozenset(
@@ -426,9 +427,13 @@ def _profile_table(
         if 1 < distinct <= TOP_VALUES_MAX_CARDINALITY and row_count > 0:
             with _guard(budget, con):
                 if payload is not None:  # pre-transfer value-size guard
-                    biggest = _column_rel(rel, name, allowed).aggregate(
-                        "max(length(CAST(__profile_value AS VARCHAR))) AS __profile_vlen"
-                    ).fetchall()[0][0]
+                    biggest = (
+                        _column_rel(rel, name, allowed)
+                        .aggregate(
+                            "max(length(CAST(__profile_value AS VARCHAR))) AS __profile_vlen"
+                        )
+                        .fetchall()[0][0]
+                    )
                     payload.guard_stat(biggest, f"top value of {name!r}")
                     # remaining must cover what earlier columns already
                     # transferred (pending) PLUS this column's lower bound
@@ -526,8 +531,12 @@ def _fk_candidates(
 
 
 def _profile_source(
-    con: duckdb.DuckDBPyConnection, entry: dict, *, sample_rows: int | None = None,
-    budget=None, payload: PayloadBound | None = None,
+    con: duckdb.DuckDBPyConnection,
+    entry: dict,
+    *,
+    sample_rows: int | None = None,
+    budget=None,
+    payload: PayloadBound | None = None,
 ) -> dict:
     """Profile every table of one builder-catalog source: attaches address
     tables as ``<catalog>.<schema>.<table>``, file views as

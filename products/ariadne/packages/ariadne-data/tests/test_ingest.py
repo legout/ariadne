@@ -153,5 +153,3 @@ def test_rtf_conversion_via_firecrawl_anydoc(tmp_path):
     doc = tmp_path / "memo.rtf"
     doc.write_text(r"{\rtf1\ansi Churned ARR is not booked ARR.}")
     assert "Churned ARR" in _convert(doc)
-
-

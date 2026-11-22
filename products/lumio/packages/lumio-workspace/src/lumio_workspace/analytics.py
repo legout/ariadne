@@ -620,9 +620,7 @@ class AnalyticsService:
 
         output = (self.project / expected).parent.parent
         try:
-            imported = import_workbook(
-                upload_path, sheets=staged["selected_sheets"], output=output
-            )
+            imported = import_workbook(upload_path, sheets=staged["selected_sheets"], output=output)
         except ValueError as exc:
             raise AnalyticsError(str(exc)) from exc
         if imported["source_sha256"] != upload_facts["sha256"]:
@@ -635,9 +633,7 @@ class AnalyticsService:
                 "derived workbook artifact escaped its private destination"
             ) from exc
         if relative.as_posix() != expected:
-            raise AnalyticsError(
-                "converted artifact does not match its declared source identity"
-            )
+            raise AnalyticsError("converted artifact does not match its declared source identity")
         if response["table"] not in imported["derived_source"]["tables"]:
             raise AnalyticsError(
                 "table must name one normalized table from the explicitly imported sheets"
@@ -654,9 +650,7 @@ class AnalyticsService:
             "limitations": imported["limitations"],
         }
         updated = {**response, "conversion": [converted]}
-        self.state.finish_operation(
-            self.workspace_id, actor, operation, operation.status, updated
-        )
+        self.state.finish_operation(self.workspace_id, actor, operation, operation.status, updated)
         return updated
 
     def profile_data_source(self, actor: Actor, task_id: str) -> dict:

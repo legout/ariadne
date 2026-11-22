@@ -171,8 +171,10 @@ class EntraTokenVerifier:
             kid = header.get("kid")
         except (TypeError, ValueError):
             return False
-        return isinstance(kid, str) and bool(kid) and all(
-            key.as_dict().get("kid") != kid for key in key_set.keys
+        return (
+            isinstance(kid, str)
+            and bool(kid)
+            and all(key.as_dict().get("kid") != kid for key in key_set.keys)
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:

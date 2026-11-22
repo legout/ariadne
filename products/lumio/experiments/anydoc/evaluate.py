@@ -50,6 +50,7 @@ CALL_TIMEOUT = 30.0
 class _CallTimeout(Exception):
     """Raised when a single converter call exceeds CALL_TIMEOUT."""
 
+
 WHEEL_VERSION = "0.1.3"
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,7 @@ def structure(md: str) -> dict[str, int]:
 # Converter wrappers — each returns (markdown_str, error_or_None).
 # ---------------------------------------------------------------------------
 
+
 def _anydoc_version() -> str:
     try:
         from importlib.metadata import version
@@ -95,8 +97,10 @@ def _anydoc_version() -> str:
 
 def _with_timeout(fn, *args, timeout: float = CALL_TIMEOUT):
     """Run fn(*args) with a SIGALRM hard timeout (Linux main-thread only)."""
+
     def _handler(signum, frame):  # noqa: ARG001
         raise _CallTimeout(f"call exceeded {timeout:.0f}s")
+
     old = signal.signal(signal.SIGALRM, _handler)
     signal.setitimer(signal.ITIMER_REAL, timeout)
     try:
@@ -124,8 +128,11 @@ def convert_anydoc(data: bytes, ext: str) -> tuple[str, str | None, dict[str, An
                 if fmt2 and fmt2 != "pdf":
                     doc = anydoc.to_document(data, fmt2)
                     meta["assets"] = [
-                        {"media_type": a.media_type, "origin_part": a.origin_part,
-                         "bytes": len(a.data)}
+                        {
+                            "media_type": a.media_type,
+                            "origin_part": a.origin_part,
+                            "bytes": len(a.data),
+                        }
                         for a in getattr(doc, "assets", []) or []
                     ]
             except Exception as exc:  # noqa: BLE001
@@ -158,8 +165,7 @@ def convert_liteparse(data: bytes, ext: str) -> tuple[str, str | None]:
         result = liteparse.LiteParse(max_pages=200).parse(data)
         pages = list(getattr(result, "pages", []) or [])
         md = "\n\n".join(
-            (getattr(p, "markdown", "") or getattr(p, "text", "") or "").strip()
-            for p in pages
+            (getattr(p, "markdown", "") or getattr(p, "text", "") or "").strip() for p in pages
         )
         return md, None
     except Exception as exc:  # noqa: BLE001
@@ -169,6 +175,7 @@ def convert_liteparse(data: bytes, ext: str) -> tuple[str, str | None]:
 # ---------------------------------------------------------------------------
 # Timing harness: cold (first call) + warm (median of N), + peak memory once.
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TimedResult:
@@ -222,6 +229,7 @@ def time_converter(fn, data: bytes, ext: str, warm: int):
 # Determinism: convert twice, compare bytes-for-bytes.
 # ---------------------------------------------------------------------------
 
+
 def determinism_anydoc(data: bytes, ext: str) -> bool | None:
     anydoc = importlib.import_module("anydoc")
     fmt = "csv" if ext == ".csv" else None
@@ -237,6 +245,7 @@ def determinism_anydoc(data: bytes, ext: str) -> bool | None:
 # Local-processing audit: run one conversion of each kind under strace and
 # count outbound network syscalls. Reproducible from the recorded command.
 # ---------------------------------------------------------------------------
+
 
 def audit_network(fixtures_root: Path, warm_runs: int) -> dict[str, Any]:
     """Best-effort no-network audit via strace (skipped if strace is absent).
@@ -273,8 +282,7 @@ def audit_network(fixtures_root: Path, warm_runs: int) -> dict[str, Any]:
     )
     with tempfile.NamedTemporaryFile("w+", suffix=".trace", delete=False) as tf:
         trace_path = tf.name
-    cmd = ["strace", "-f", "-e", "trace=network", "-o", trace_path,
-           sys.executable, "-c", child]
+    cmd = ["strace", "-f", "-e", "trace=network", "-o", trace_path, sys.executable, "-c", child]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         lines = Path(trace_path).read_text(errors="replace").splitlines()
@@ -284,10 +292,21 @@ def audit_network(fixtures_root: Path, warm_runs: int) -> dict[str, Any]:
     finally:
         Path(trace_path).unlink(missing_ok=True)
     # Outbound indicators; pure exit notices ("+++ exited ...") are not calls.
-    outbound = [ln for ln in lines
-                if any(tok in ln for tok in (
-                    "connect", "sendto", "recvfrom", "getaddrinfo",
-                    "socket(AF_INET", "socket(AF_INET6"))]
+    outbound = [
+        ln
+        for ln in lines
+        if any(
+            tok in ln
+            for tok in (
+                "connect",
+                "sendto",
+                "recvfrom",
+                "getaddrinfo",
+                "socket(AF_INET",
+                "socket(AF_INET6",
+            )
+        )
+    ]
     result["outbound_syscalls"] = len(outbound)
     result["child_returncode"] = proc.returncode
     result["total_trace_lines"] = len(lines)
@@ -302,11 +321,27 @@ def audit_network(fixtures_root: Path, warm_runs: int) -> dict[str, Any]:
 # table; container variants like .docm/.xlsm/.ppsx share a parser with their
 # parent and are included so the anydoc_supported flag is accurate).
 ANYDOC_FORMATS = {
-    ".doc", ".docx", ".docm",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
-    ".xls", ".xlsx", ".xlsm", ".xlsb",
-    ".odt", ".ods", ".odp",
-    ".rtf", ".epub", ".csv", ".pdf",
+    ".doc",
+    ".docx",
+    ".docm",
+    ".ppt",
+    ".pps",
+    ".pot",
+    ".pptx",
+    ".pptm",
+    ".ppsx",
+    ".ppsm",
+    ".xls",
+    ".xlsx",
+    ".xlsm",
+    ".xlsb",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".rtf",
+    ".epub",
+    ".csv",
+    ".pdf",
 }
 
 # Routing mirrors lumio_wiki.source_processor (ADR-0001): PDF -> LiteParse,
@@ -314,12 +349,26 @@ ANYDOC_FORMATS = {
 # _MARKITDOWN_EXTENSIONS so the legacy/office formats Lumio routes to
 # MarkItDown are all exercised by the baseline (they error without the right
 # extras, which is itself a recorded finding).
-_MARKITDOWN_ROUTE = frozenset({
-    ".docx", ".doc", ".html", ".htm",
-    ".xls", ".xlsx", ".ppt", ".pptx",
-    ".odt", ".ods", ".odp",
-    ".csv", ".xml", ".json", ".rst", ".rtf",
-})
+_MARKITDOWN_ROUTE = frozenset(
+    {
+        ".docx",
+        ".doc",
+        ".html",
+        ".htm",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".csv",
+        ".xml",
+        ".json",
+        ".rst",
+        ".rtf",
+    }
+)
 
 
 def current_route(ext: str) -> str | None:
@@ -343,8 +392,11 @@ def main() -> int:
     ap.add_argument("--fixtures", default=str(here / "fixtures"))
     ap.add_argument("--out", default=str(here / "results.json"))
     ap.add_argument("--warm", type=int, default=3, help="warm runs (median)")
-    ap.add_argument("--baseline-only-docx-pdf", action="store_true",
-                    help="only run the current-route baseline for docx/pdf/html")
+    ap.add_argument(
+        "--baseline-only-docx-pdf",
+        action="store_true",
+        help="only run the current-route baseline for docx/pdf/html",
+    )
     args = ap.parse_args()
 
     fixtures = Path(args.fixtures)
@@ -378,7 +430,8 @@ def main() -> int:
         # AnyDoc timing.
         r = time_converter(convert_anydoc, data, ext, args.warm)
         entry["anydoc"] = {
-            "ok": r.ok, "error": r.error,
+            "ok": r.ok,
+            "error": r.error,
             "cold_ms": round(r.cold_ms, 3),
             "warm_ms": None if r.warm_ms is None else round(r.warm_ms, 3),
             "peak_bytes": r.peak_bytes,
@@ -392,13 +445,16 @@ def main() -> int:
         # Current-route baseline for the overlapping formats (docx/pdf/html).
         # Skipped for hostile fixtures (see above) to avoid converter hangs.
         route = current_route(ext)
-        if route and not hostile and (
-            not args.baseline_only_docx_pdf or ext in {".docx", ".pdf", ".html"}
+        if (
+            route
+            and not hostile
+            and (not args.baseline_only_docx_pdf or ext in {".docx", ".pdf", ".html"})
         ):
             rb = time_converter(current_funcs[route], data, ext, args.warm)
             entry["baseline"] = {
                 "route": route,
-                "ok": rb.ok, "error": rb.error,
+                "ok": rb.ok,
+                "error": rb.error,
                 "cold_ms": round(rb.cold_ms, 3),
                 "warm_ms": None if rb.warm_ms is None else round(rb.warm_ms, 3),
                 "peak_bytes": rb.peak_bytes,
@@ -413,21 +469,27 @@ def main() -> int:
 
 
 def _print_summary(results: dict[str, Any]) -> None:
-    print(f"# AnyDoc {results['anydoc_version']} | Python {results['python']} "
-          f"| {results['arch']} | warm_runs={results['warm_runs']}")
-    print(f"{'fixture':<46}{'ext':<7}{'anydoc_warm_ms':>15}"
-          f"{'baseline_warm_ms':>18}{'anydoc_chars':>14}{'base_chars':>12}")
+    print(
+        f"# AnyDoc {results['anydoc_version']} | Python {results['python']} "
+        f"| {results['arch']} | warm_runs={results['warm_runs']}"
+    )
+    print(
+        f"{'fixture':<46}{'ext':<7}{'anydoc_warm_ms':>15}"
+        f"{'baseline_warm_ms':>18}{'anydoc_chars':>14}{'base_chars':>12}"
+    )
     for f in results["fixtures"]:
         ad = f["anydoc"]
         bl = f.get("baseline")
         name = f["path"].split("/", 1)[-1][:45]
         aw = ad["warm_ms"] if ad["warm_ms"] is not None else ("ERR" if not ad["ok"] else "-")
-        bw = (bl["warm_ms"] if bl and bl.get("warm_ms") is not None
-              else ("ERR" if bl and not bl["ok"] else "-"))
+        bw = (
+            bl["warm_ms"]
+            if bl and bl.get("warm_ms") is not None
+            else ("ERR" if bl and not bl["ok"] else "-")
+        )
         ac = ad["structure"]["chars"] if ad["ok"] else "-"
         bc = bl["structure"]["chars"] if (bl and bl["ok"]) else "-"
-        print(f"{name:<46}{f['ext']:<7}{str(aw):>15}{str(bw):>18}"
-              f"{str(ac):>14}{str(bc):>12}")
+        print(f"{name:<46}{f['ext']:<7}{str(aw):>15}{str(bw):>18}{str(ac):>14}{str(bc):>12}")
 
 
 if __name__ == "__main__":

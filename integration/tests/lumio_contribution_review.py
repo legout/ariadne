@@ -28,9 +28,7 @@ from integration.tests.lumio_metric_mvp import page_parts, supported_candidate, 
 POLICY_BODY_ADDITION = (
     "\nOnly completed orders with an amount above 25 enter the reviewed revenue calculation.\n"
 )
-ORIGINAL_SUMMARY = (
-    "The shared order-number concept across store-local and global representations."
-)
+ORIGINAL_SUMMARY = "The shared order-number concept across store-local and global representations."
 REVISED_SUMMARY = "Shared order-number meaning reviewed for the filtered recognized-revenue metric."
 FILTER_EXPRESSION = "SUM(amount) FILTER (WHERE status = 'completed' AND amount > 25)"
 UNSTAGED_MARKER = "UNSTAGED-AND-EXCLUDED-FROM-REVIEW"
@@ -268,17 +266,20 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
 
     if case == "matching_commit":
         # Exercise the external review against the same captured HEAD/tree.
-        assert authoring_cli(
-            [
-                "contribution-review",
-                "--project",
-                str(project),
-                "--proposal",
-                proposal,
-                "--base",
-                base,
-            ]
-        ) == 0
+        assert (
+            authoring_cli(
+                [
+                    "contribution-review",
+                    "--project",
+                    str(project),
+                    "--proposal",
+                    proposal,
+                    "--base",
+                    base,
+                ]
+            )
+            == 0
+        )
         assert json.loads(capsys.readouterr().out) == review
 
     if case == "existing_candidate_staged_addition":
@@ -305,19 +306,22 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         # The private review round-trips through the external commit check.
         review_path = tmp_path / "private-contribution-review.json"
         review_path.write_text(json.dumps(review))
-        assert authoring_cli(
-            [
-                "contribution-check",
-                "--project",
-                str(project),
-                "--proposal",
-                proposal,
-                "--review",
-                str(review_path),
-                "--revision",
-                revision,
-            ]
-        ) == 0
+        assert (
+            authoring_cli(
+                [
+                    "contribution-check",
+                    "--project",
+                    str(project),
+                    "--proposal",
+                    proposal,
+                    "--review",
+                    str(review_path),
+                    "--revision",
+                    revision,
+                ]
+            )
+            == 0
+        )
         assert json.loads(capsys.readouterr().out) == checked
     else:
         assert any(

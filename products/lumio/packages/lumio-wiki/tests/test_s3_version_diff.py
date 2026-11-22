@@ -37,7 +37,7 @@ def _page(
         f'summary: "{title} summary."\n'
         f'lifecycle: "{lifecycle}"\n'
         f'visibility: "{visibility}"\n'
-        "sources:\n  - id: " + f'"{sid}"\n' + 'synthetic: false\n'
+        "sources:\n  - id: " + f'"{sid}"\n' + "synthetic: false\n"
         "---\n\n"
         f"# {title}\n\n{body}\n"
     )

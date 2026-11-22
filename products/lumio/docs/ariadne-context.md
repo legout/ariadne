@@ -69,9 +69,9 @@ references — never aliases, provenance Sources or navigation.
 
 ```python
 from lumio_wiki.ariadne_context import (
-    list_published_context_pages,     # metadata-only, sorted by exact path
-    read_published_context_page,      # one complete canonical page by path
-    search_published_context_pages,   # native lexical search, visible set
+    list_published_context_pages,  # metadata-only, sorted by exact path
+    read_published_context_page,  # one complete canonical page by path
+    search_published_context_pages,  # native lexical search, visible set
 )
 ```
 

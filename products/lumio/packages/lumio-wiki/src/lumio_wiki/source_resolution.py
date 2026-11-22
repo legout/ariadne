@@ -233,9 +233,7 @@ def _by_page_identity(pages: list[CompiledPage], query: str, known_ids) -> Sourc
     return SourceResolution(outcome=OUTCOME_UNKNOWN)
 
 
-def resolve_source(
-    pages: list[CompiledPage], known_ids, query: str
-) -> SourceResolution:
+def resolve_source(pages: list[CompiledPage], known_ids, query: str) -> SourceResolution:
     """Resolve one query to ONE registered Source identity or a truthful outcome.
 
     ``known_ids`` is the private registry's Source ID set (a Reader-facing

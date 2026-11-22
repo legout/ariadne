@@ -38,6 +38,7 @@ from tests import s3_fixture as fx  # noqa: E402
 ICEBERG_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "s3-lakehouse" / "iceberg"
 LAKEHOUSE_EXTENSIONS = ("httpfs", "delta", "iceberg", "ducklake")
 
+
 @pytest.fixture(autouse=True)
 def clean_profile_environment(monkeypatch):
     for name in (
@@ -98,6 +99,7 @@ def registry_file(tmp_path: Path, document: dict) -> Path:
 
 
 # --------------------------------------------------- family fixture preparation
+
 
 def prepare_delta(endpoint: fx.S3Endpoint, tmp: Path, bucket: str, table: str, rows: list) -> str:
     """A minimal but REAL remote Delta table, reusing the accepted
@@ -196,8 +198,7 @@ def prepare_ducklake(
             f"ATTACH '{catalog}' AS {name}_fx (TYPE DUCKLAKE, DATA_PATH 's3://{bucket}/{table}')"
         )
         con.execute(
-            f"CREATE TABLE {name}_fx.main.orders "
-            "(id INTEGER, amount INTEGER, region VARCHAR)"
+            f"CREATE TABLE {name}_fx.main.orders (id INTEGER, amount INTEGER, region VARCHAR)"
         )
         values = ", ".join(str(row) for row in rows)
         con.execute(  # nosemgrep — fixture-authored literal oracle rows only
@@ -211,6 +212,7 @@ def prepare_ducklake(
 
 
 # ------------------------------------------------------------------ the check
+
 
 @pytest.mark.parametrize("family", ["delta", "iceberg", "ducklake"])
 def test_named_profiles_route_lakehouse_reads(tmp_path, monkeypatch, family):
@@ -235,10 +237,20 @@ def test_named_profiles_route_lakehouse_reads(tmp_path, monkeypatch, family):
             a_path = prepare_delta(a, tmp_path, "retail", "delta/orders", fx.ORACLE_A_ROWS)
             b_path = prepare_delta(b, tmp_path, "analytics", "delta/metrics", fx.ORACLE_B_ROWS)
             sources = [
-                {"name": "lake_a", "type": "delta", "storage": "local", "path": a_path,
-                 "table": "orders"},
-                {"name": "lake_b", "type": "delta", "storage": "remote", "path": b_path,
-                 "table": "metrics"},
+                {
+                    "name": "lake_a",
+                    "type": "delta",
+                    "storage": "local",
+                    "path": a_path,
+                    "table": "orders",
+                },
+                {
+                    "name": "lake_b",
+                    "type": "delta",
+                    "storage": "remote",
+                    "path": b_path,
+                    "table": "metrics",
+                },
             ]
             queries = query_pair("lake_a.orders", "lake_b.metrics")
             required_object = "retail/delta/orders/_delta_log/00000000000000000000.json"
@@ -247,19 +259,31 @@ def test_named_profiles_route_lakehouse_reads(tmp_path, monkeypatch, family):
             a_path = prepare_iceberg(a, "retail", "retail", "iceberg/orders")
             b_path = prepare_iceberg(b, "analytics", "analytics", "iceberg/metrics")
             sources = [
-                {"name": "lake_a", "type": "iceberg", "storage": "local", "path": a_path,
-                 "table": "orders"},
-                {"name": "lake_b", "type": "iceberg", "storage": "remote", "path": b_path,
-                 "table": "metrics"},
+                {
+                    "name": "lake_a",
+                    "type": "iceberg",
+                    "storage": "local",
+                    "path": a_path,
+                    "table": "orders",
+                },
+                {
+                    "name": "lake_b",
+                    "type": "iceberg",
+                    "storage": "remote",
+                    "path": b_path,
+                    "table": "metrics",
+                },
             ]
             queries = query_pair("lake_a.orders", "lake_b.metrics")
             required_object = "retail/iceberg/orders/data/data.parquet"
             data_prefixes = {"retail": "retail/iceberg/", "analytics": "analytics/iceberg/"}
         else:  # ducklake: LOCAL metadata catalogs, REMOTE recorded data paths
-            a_catalog = prepare_ducklake(a, tmp_path, "lake_a", "retail", "ducklake/orders",
-                                         fx.ORACLE_A_ROWS)
-            b_catalog = prepare_ducklake(b, tmp_path, "lake_b", "analytics", "ducklake/metrics",
-                                         fx.ORACLE_B_ROWS)
+            a_catalog = prepare_ducklake(
+                a, tmp_path, "lake_a", "retail", "ducklake/orders", fx.ORACLE_A_ROWS
+            )
+            b_catalog = prepare_ducklake(
+                b, tmp_path, "lake_b", "analytics", "ducklake/metrics", fx.ORACLE_B_ROWS
+            )
             sources = [
                 {"name": "lake_a", "type": "ducklake", "storage": "local", "path": str(a_catalog)},
                 {"name": "lake_b", "type": "ducklake", "storage": "remote", "path": str(b_catalog)},

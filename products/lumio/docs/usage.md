@@ -373,8 +373,8 @@ kb, report = load_knowledge_base("my-kb")
 adapter = ZeroIndexRetrieval()
 
 results = adapter.retrieve(
-    kb.pages,                  # the pages to search
-    "technology stack",        # query
+    kb.pages,  # the pages to search
+    "technology stack",  # query
     limit=3,
 )
 
@@ -410,8 +410,8 @@ kb, report = load_knowledge_base("my-kb")
 # Related pages: accepted Claims (canonical) + Extracted References (discovery)
 related = kb.related_pages(
     "Technology Stack",
-    scope="discovery",       # or "canonical" (accepted Claims only)
-    direction="both",        # outgoing, incoming, or both
+    scope="discovery",  # or "canonical" (accepted Claims only)
+    direction="both",  # outgoing, incoming, or both
     relationship_type="uses",  # optional: filter by Claim Predicate ID
 )
 # -> ['Architecture']   (Canonical Page Titles; identity is the Entity ID)
@@ -425,7 +425,7 @@ path = kb.shortest_path(
 # -> ['Technology Stack', 'Architecture']
 
 # Deterministic entity resolution: exact ID, title, alias, or merge redirect
-resolution = kb.resolve_entity("entity:lumio")   # or a title / alias / retired ID
+resolution = kb.resolve_entity("entity:lumio")  # or a title / alias / retired ID
 print(resolution.entity.id, resolution.matched_by)
 ```
 
@@ -448,14 +448,14 @@ from lumio_wiki import load_knowledge_base
 
 kb, report = load_knowledge_base("my-kb")
 pages = kb.lookup_by_title("Technology Stack")  # exact title
-aliased = kb.lookup_by_alias("Stack")            # by alias
+aliased = kb.lookup_by_alias("Stack")  # by alias
 page = pages[0]
 
-print(page.title)           # "Technology Stack"
-print(page.tags)            # ["technology", "stack"]
-print(page.summary)         # "The technologies Lumio uses."
-print(page.body)            # full Markdown body
-print(page.path)            # "technology.md"
+print(page.title)  # "Technology Stack"
+print(page.tags)  # ["technology", "stack"]
+print(page.summary)  # "The technologies Lumio uses."
+print(page.body)  # full Markdown body
+print(page.path)  # "technology.md"
 ```
 
 ### Ingest workflow (you are the Distiller)
@@ -470,8 +470,12 @@ from lumio_wiki.source_registry import SourceRegistry
 
 original = Path("/private/notes.md")  # not tracked by the KB repository
 result = ingest_into_worktree(
-    "my-kb", original.read_bytes(), "text/markdown", original.name,
-    "notes", authored_markdown,  # page declares sources[].id = notes
+    "my-kb",
+    original.read_bytes(),
+    "text/markdown",
+    original.name,
+    "notes",
+    authored_markdown,  # page declares sources[].id = notes
     source_registry=SourceRegistry("/private/source-registry"),
     raw_source_path=original,
 )
@@ -568,32 +572,60 @@ snapshot = open_s3_knowledge_base(store, prefix="kb", version="2024-01-15")
 ```python
 from lumio_wiki import (
     # Core model
-    KnowledgeBase, CompiledPage, KnowledgeBaseControlFile,
+    KnowledgeBase,
+    CompiledPage,
+    KnowledgeBaseControlFile,
     # Validation
-    ValidationReport, ValidationIssue, validate,
+    ValidationReport,
+    ValidationIssue,
+    validate,
     # Records (immutable msgspec structs)
-    RetrievalResult, Evidence, Citation, RetrievalTrace, TraceStage,
-    PageSearchResult, Relationship, ExtractedReference,
-    SourceFingerprint, GraphState,
+    RetrievalResult,
+    Evidence,
+    Citation,
+    RetrievalTrace,
+    TraceStage,
+    PageSearchResult,
+    Relationship,
+    ExtractedReference,
+    SourceFingerprint,
+    GraphState,
     # Entity-claim ontology (ADR-0021)
-    Entity, EntityTypeDefinition, Claim, ClaimEvidence, EntityRedirect,
-    EntityResolution, EntityResolutionCandidate,
+    Entity,
+    EntityTypeDefinition,
+    Claim,
+    ClaimEvidence,
+    EntityRedirect,
+    EntityResolution,
+    EntityResolutionCandidate,
     # Location seam
-    KnowledgeBaseLocation, KnowledgeBaseSnapshot,
-    FilesystemLocation, open_filesystem_knowledge_base,
+    KnowledgeBaseLocation,
+    KnowledgeBaseSnapshot,
+    FilesystemLocation,
+    open_filesystem_knowledge_base,
     # S3 (requires lumio-wiki[s3])
-    S3Location, open_s3_knowledge_base,
+    S3Location,
+    open_s3_knowledge_base,
     # Git authoring and explicit publication admission
-    ingest_into_worktree, write_pages_into_worktree,
-    preview_publication, publish_revision, PublicationReview, PublicationReceipt,
+    ingest_into_worktree,
+    write_pages_into_worktree,
+    preview_publication,
+    publish_revision,
+    PublicationReview,
+    PublicationReceipt,
     # Retrieval
-    ZeroIndexRetrieval, RetrievalAdapter, default_retrieval_adapter,
+    ZeroIndexRetrieval,
+    RetrievalAdapter,
+    default_retrieval_adapter,
     # Publish
     S3PublicationConflict,
     # Discovery Graph diagnostics
-    StructuralGraphReport, GraphHealthReport,
+    StructuralGraphReport,
+    GraphHealthReport,
     # Cross-link candidates
-    LinkCandidate, RankedLinkCandidate, find_link_candidates,
+    LinkCandidate,
+    RankedLinkCandidate,
+    find_link_candidates,
 )
 ```
 

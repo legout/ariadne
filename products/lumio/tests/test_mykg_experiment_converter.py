@@ -65,11 +65,11 @@ def test_sample_session_maps_nodes_to_candidate_pages(converter, tmp_path):
 
     acme = pages["n_acme"]
     assert acme.title == "Acme"
-    assert acme.type == "Organization"          # ontology class -> free-form type
-    assert acme.lifecycle == "review"           # never 'approved'
-    assert acme.visibility == "internal"        # conservative default
-    assert acme.tags == ["organization"]        # type-derived tag (required, non-empty)
-    assert len(acme.sources) == 1               # provenance present (>=1 Source required)
+    assert acme.type == "Organization"  # ontology class -> free-form type
+    assert acme.lifecycle == "review"  # never 'approved'
+    assert acme.visibility == "internal"  # conservative default
+    assert acme.tags == ["organization"]  # type-derived tag (required, non-empty)
+    assert len(acme.sources) == 1  # provenance present (>=1 Source required)
     assert acme.sources[0].id.startswith("mykg-")
 
     acme_md = (out / "entities" / f"{acme.slug}.md").read_text(encoding="utf-8")
@@ -106,11 +106,11 @@ def test_edges_become_private_candidates_sidecar(converter, tmp_path):
     assert resolvable["relation_type"] == "works_for"
     assert resolvable["confidence"] == pytest.approx(0.82)
     assert resolvable["method"] == "extracted"
-    assert resolvable["disposition"] == "pending"   # maintainer fills this in
+    assert resolvable["disposition"] == "pending"  # maintainer fills this in
     assert resolvable["resolvable"]
 
     dangling = next(c for c in candidates if c["edge_id"] == "e2")
-    assert dangling["to_candidate_title"] is None    # n_noname was skipped
+    assert dangling["to_candidate_title"] is None  # n_noname was skipped
     assert not dangling["resolvable"]
     assert any("dangling" in warning or "skipped/missing" in warning for warning in result.warnings)
 
@@ -122,7 +122,7 @@ def test_private_provenance_recorded_only_in_report(converter, tmp_path):
 
     report = json.loads((out / "conversion-report.json").read_text(encoding="utf-8"))
     raw_sources = {f for files in report["private_provenance"].values() for f in files}
-    assert "corpus/acme-overview.md" in raw_sources          # PRIVATE: report only
+    assert "corpus/acme-overview.md" in raw_sources  # PRIVATE: report only
     assert report["summary"]["pages"] == 2
     assert report["summary"]["candidates"] == 2
 
@@ -157,9 +157,9 @@ def test_title_and_alias_collisions_are_disambiguated(converter, tmp_path):
     result = converter.convert_session(str(session), converter.Settings())
 
     titles = [page.title for page in result.pages]
-    assert len({t.lower() for t in titles}) == 3            # all titles unique
+    assert len({t.lower() for t in titles}) == 3  # all titles unique
     assert titles[0] == "Acme"
-    assert titles[1].lower().startswith("acme") and titles[1] != "Acme"   # disambiguated
+    assert titles[1].lower().startswith("acme") and titles[1] != "Acme"  # disambiguated
 
     # node c's alias "Acme" collided with a taken title -> dropped, not duplicated.
     page_c = next(page for page in result.pages if page.source_node_id == "c")

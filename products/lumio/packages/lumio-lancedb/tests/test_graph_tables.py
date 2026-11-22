@@ -484,9 +484,7 @@ def test_search_entity_candidates_returns_scored_review_candidates(categorized_k
     fingerprint = fingerprint_sources(tmp_path)
     build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
 
-    before = {
-        p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))
-    }
+    before = {p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))}
     candidates = search_entity_candidates(
         tmp_path / "lance", "Lumio", expected_fingerprint=fingerprint
     )
@@ -511,9 +509,10 @@ def test_search_entity_candidates_excludes_redirect_rows(categorized_kb, tmp_pat
     fingerprint = fingerprint_sources(tmp_path)
     build_graph_tables(categorized_kb, tmp_path / "lance", fingerprint)
 
-    candidates = search_entity_candidates(
-        tmp_path / "lance", "old-lumio", expected_fingerprint=fingerprint
-    ) or []
+    candidates = (
+        search_entity_candidates(tmp_path / "lance", "old-lumio", expected_fingerprint=fingerprint)
+        or []
+    )
     assert all(c.entity.id != "entity:old-lumio" for c in candidates)
 
 
@@ -549,9 +548,7 @@ def test_search_entity_candidates_fingerprint_optional(categorized_kb, tmp_path)
     assert candidates[0].entity.id == "entity:lancedb"
 
 
-def test_graph_retrieval_bounds_identical_across_zero_index_and_lancedb(
-    categorized_kb, tmp_path
-):
+def test_graph_retrieval_bounds_identical_across_zero_index_and_lancedb(categorized_kb, tmp_path):
     """AC6: authorization + traversal bounds identical across adapters.
 
     Graph expansion runs once in the Knowledge Base; the adapter only ranks.
@@ -581,17 +578,13 @@ def test_graph_retrieval_bounds_identical_across_zero_index_and_lancedb(
     enhanced_titles = {r.evidence.page_title for r in enhanced}
     assert zero_titles == enhanced_titles
     # An unauthorized seed expands to nothing under BOTH adapters.
-    empty_zero = categorized_kb.retrieve(
-        query, limit=10, graph_seed_titles=["Not A Page"]
-    )
+    empty_zero = categorized_kb.retrieve(query, limit=10, graph_seed_titles=["Not A Page"])
     empty_enhanced = lancedb_kb.retrieve(
         query, limit=10, index_dir=str(index_dir), graph_seed_titles=["Not A Page"]
     )
     assert empty_zero == [] and empty_enhanced == []
     # Both traces disclose the same graph-expansion stage shape.
     for results in (zero, enhanced):
-        stage = next(
-            s for r in results for s in r.trace.stages if s.name == "graph-expansion"
-        )
+        stage = next(s for r in results for s in r.trace.stages if s.name == "graph-expansion")
         assert "discovery" in stage.detail
         assert "lifecycle=accepted" in stage.detail

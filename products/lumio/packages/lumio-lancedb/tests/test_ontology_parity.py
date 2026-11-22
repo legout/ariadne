@@ -132,10 +132,20 @@ TRAVERSAL_CASES = [
     ("Lumio", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_OUTGOING, "uses", ["LanceDB", "obstore"]),
     ("Lumio", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_OUTGOING, "replaces", []),
     ("Lumio", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_INCOMING, None, ["LanceDB"]),
-    ("Lumio", GRAPH_SCOPE_DISCOVERY, GRAPH_DIRECTION_OUTGOING, None,
-     ["Knowledge Graph", "LanceDB", "Sage Wiki", "obstore"]),
-    ("Lumio", GRAPH_SCOPE_DISCOVERY, GRAPH_DIRECTION_BOTH, None,
-     ["Knowledge Graph", "LanceDB", "Sage Wiki", "obstore"]),
+    (
+        "Lumio",
+        GRAPH_SCOPE_DISCOVERY,
+        GRAPH_DIRECTION_OUTGOING,
+        None,
+        ["Knowledge Graph", "LanceDB", "Sage Wiki", "obstore"],
+    ),
+    (
+        "Lumio",
+        GRAPH_SCOPE_DISCOVERY,
+        GRAPH_DIRECTION_BOTH,
+        None,
+        ["Knowledge Graph", "LanceDB", "Sage Wiki", "obstore"],
+    ),
     ("LanceDB", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_OUTGOING, "used-by", ["Lumio"]),
     ("LanceDB", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_INCOMING, "uses", ["Lumio"]),
     ("obstore", GRAPH_SCOPE_CANONICAL, GRAPH_DIRECTION_OUTGOING, None, []),
@@ -164,9 +174,12 @@ def test_identical_traversal_across_projections(
 ):
     """Same bounded traversal, both projections, identical results."""
     for _label, kb in _projections(corpus_kb, tmp_path):
-        assert kb.related_pages(
-            source, scope=scope, direction=direction, relationship_type=relationship_type
-        ) == expected
+        assert (
+            kb.related_pages(
+                source, scope=scope, direction=direction, relationship_type=relationship_type
+            )
+            == expected
+        )
 
 
 def test_identical_shortest_paths_across_projections(corpus_kb, tmp_path):

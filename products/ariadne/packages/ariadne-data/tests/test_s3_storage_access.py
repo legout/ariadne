@@ -294,5 +294,3 @@ def s3_git_project(tmp_path: Path) -> Path:
 
 
 # ------------------------- fix pass (findings 4 and 5, spec 0025 §§4–5/AC6–7)
-
-

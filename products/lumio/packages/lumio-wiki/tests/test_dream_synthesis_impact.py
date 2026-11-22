@@ -91,10 +91,7 @@ def _add_page(
 
 
 def _pairs(report):
-    return {
-        (c.entity_a_id, c.entity_b_id)
-        for c in report.synthesis_candidates
-    }
+    return {(c.entity_a_id, c.entity_b_id) for c in report.synthesis_candidates}
 
 
 # ---------------------------------------------------------------------------
@@ -120,14 +117,14 @@ def test_mutual_claims_rank_strongest(kb_root: Path):
     text = path.read_text(encoding="utf-8")
     path.write_text(
         text.replace(
-            "type: \"entity\"",
-            "type: \"entity\"\nclaims:\n"
-            "  - id: \"claim:acme-used-by-overview\"\n"
+            'type: "entity"',
+            'type: "entity"\nclaims:\n'
+            '  - id: "claim:acme-used-by-overview"\n'
             "    predicate: used-by\n"
-            "    object: \"entity:lumio-overview\"\n"
+            '    object: "entity:lumio-overview"\n'
             "    status: accepted\n"
             "    evidence:\n"
-            "      - section: \"Acme Corp\"",
+            '      - section: "Acme Corp"',
             1,
         ),
         encoding="utf-8",
@@ -187,8 +184,7 @@ def test_dangling_claim_object_never_justifies(kb_root: Path):
     )
     report = lw.run_dream_cycle(kb_root)
     assert all(
-        "entity:dangling" not in (c.entity_a_id, c.entity_b_id)
-        for c in report.synthesis_candidates
+        "entity:dangling" not in (c.entity_a_id, c.entity_b_id) for c in report.synthesis_candidates
     )
 
 
@@ -260,14 +256,14 @@ def _add_chain_page(kb_root: Path) -> None:
     text = path.read_text(encoding="utf-8")
     path.write_text(
         text.replace(
-            "type: \"entity\"",
-            "type: \"entity\"\nclaims:\n"
-            "  - id: \"claim:acme-used-by-sub\"\n"
+            'type: "entity"',
+            'type: "entity"\nclaims:\n'
+            '  - id: "claim:acme-used-by-sub"\n'
             "    predicate: used-by\n"
-            "    object: \"entity:acme-sub\"\n"
+            '    object: "entity:acme-sub"\n'
             "    status: accepted\n"
             "    evidence:\n"
-            "      - section: \"Acme Corp\"",
+            '      - section: "Acme Corp"',
             1,
         ),
         encoding="utf-8",
@@ -394,8 +390,7 @@ def test_cli_dream_impact_block(kb_root: Path, capsys):
     assert main(["dream", str(kb_root), "--impact", "Lumio Overview"]) == 0
     out = capsys.readouterr().out
     assert (
-        "transitive_impact: Lumio Overview (entity entity:lumio-overview, scope=canonical)"
-        in out
+        "transitive_impact: Lumio Overview (entity entity:lumio-overview, scope=canonical)" in out
     )
     assert "direct_out: 1" in out
     assert "reachable_within_depth: 2" in out

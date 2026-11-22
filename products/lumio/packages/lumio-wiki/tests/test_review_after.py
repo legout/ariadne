@@ -104,9 +104,7 @@ def test_review_after_quoted_iso_string_decodes(tmp_path: Path):
     # Due (past date) is still only a warning, never blocking.
     assert report.is_valid
     assert any(
-        i.file == "concepts/overview.md"
-        and i.field == "review_after"
-        and i.severity == "warning"
+        i.file == "concepts/overview.md" and i.field == "review_after" and i.severity == "warning"
         for i in report.issues
     )
     # The proposed-markdown path OKF import produces loads identically.

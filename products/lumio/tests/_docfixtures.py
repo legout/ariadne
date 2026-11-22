@@ -83,8 +83,8 @@ def make_docx(heading: str, body: str) -> bytes:
         '<?xml version="1.0"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         '<w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
-        f'<w:r><w:t>{heading}</w:t></w:r></w:p>'
-        f'<w:p><w:r><w:t>{body}</w:t></w:r></w:p>'
+        f"<w:r><w:t>{heading}</w:t></w:r></w:p>"
+        f"<w:p><w:r><w:t>{body}</w:t></w:r></w:p>"
         "</w:body></w:document>"
     )
     buffer = io.BytesIO()

@@ -131,8 +131,9 @@ def _s3_profile(config, monkeypatch) -> Path:
     return Path(profile["source_registry"])
 
 
-def _contribute_bytes(client: TestClient, fixture, *, retry_key, title, addition, source_id,
-                      raw, request_id) -> dict:
+def _contribute_bytes(
+    client: TestClient, fixture, *, retry_key, title, addition, source_id, raw, request_id
+) -> dict:
     uploaded = _upload(client, fixture.contributor_api, raw, retry_key, source_id)
     assert uploaded.status_code == 200, uploaded.text
     prepared = _prepare(
@@ -167,9 +168,7 @@ def _tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def test_remote_original_backup_restores_without_remote_store(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_remote_original_backup_restores_without_remote_store(tmp_path: Path, monkeypatch) -> None:
     """AC26: an S3-backed workspace survives fresh-root restore self-contained.
 
     The private S3 artifact store is the real adapter over a synthetic
@@ -204,18 +203,28 @@ def test_remote_original_backup_restores_without_remote_store(
     ):
         _confirm_setup(owner, fixture)
         task_alpha = _contribute_bytes(
-            contributor, fixture, retry_key="recovery-alpha",
-            title=ALPHA_TITLE, addition=ALPHA_ADDITION, source_id=ALPHA_SOURCE,
-            raw=ALPHA_ORIGINAL, request_id=1,
+            contributor,
+            fixture,
+            retry_key="recovery-alpha",
+            title=ALPHA_TITLE,
+            addition=ALPHA_ADDITION,
+            source_id=ALPHA_SOURCE,
+            raw=ALPHA_ORIGINAL,
+            request_id=1,
         )
         _login(reviewer, fixture.reviewer_browser)
         _approve(reviewer, fixture, task_alpha["task_id"])
         version_a = PublishedFilesystemLocation(config.published_path).read_pointer()
         assert version_a == task_alpha["native_candidate"]
         task_beta = _contribute_bytes(
-            contributor, fixture, retry_key="recovery-beta",
-            title=BETA_TITLE, addition=BETA_ADDITION, source_id=BETA_SOURCE,
-            raw=BETA_ORIGINAL, request_id=2,
+            contributor,
+            fixture,
+            retry_key="recovery-beta",
+            title=BETA_TITLE,
+            addition=BETA_ADDITION,
+            source_id=BETA_SOURCE,
+            raw=BETA_ORIGINAL,
+            request_id=2,
         )
         _approve(reviewer, fixture, task_beta["task_id"])
         version_b = PublishedFilesystemLocation(config.published_path).read_pointer()
@@ -223,9 +232,14 @@ def test_remote_original_backup_restores_without_remote_store(
         # A pending candidate prepared before the backup: its outstanding
         # browser action must never activate after the restore.
         task_delta = _contribute_bytes(
-            contributor, fixture, retry_key="recovery-delta",
-            title="Recovery Delta", addition=DELTA_ADDITION, source_id=DELTA_SOURCE,
-            raw=DELTA_ORIGINAL, request_id=3,
+            contributor,
+            fixture,
+            retry_key="recovery-delta",
+            title="Recovery Delta",
+            addition=DELTA_ADDITION,
+            source_id=DELTA_SOURCE,
+            raw=DELTA_ORIGINAL,
+            request_id=3,
         )
         outstanding = _digest(reviewer.get(f"/review/{task_delta['task_id']}").text)
 
@@ -321,9 +335,10 @@ def test_remote_original_backup_restores_without_remote_store(
     # Unretained stays honestly unavailable — absence, not corruption.
     with pytest.raises(ArtifactUnavailable):
         restored_store.get_artifact(source_id=UNRETAINED_SOURCE, content_hash=UNRETAINED_HASH)
-    assert restored_store.artifact_exists(
-        source_id=UNRETAINED_SOURCE, content_hash=UNRETAINED_HASH
-    ) is False
+    assert (
+        restored_store.artifact_exists(source_id=UNRETAINED_SOURCE, content_hash=UNRETAINED_HASH)
+        is False
+    )
     restored_registry = SourceRegistry(second_root / "registry")
     assert restored_registry.get(UNRETAINED_SOURCE).versions[-1].artifact_available is False
 
@@ -362,9 +377,9 @@ def test_remote_original_backup_restores_without_remote_store(
     # (imported) admission receipt itself — exactly what an operator retry
     # of the pre-restore publication would carry.
     old_beta_confirmation = imported_before[0].review_digest
-    old_alpha_confirmation = read_local_published_bindings(
-        restored.published_path, version_a
-    )[0].review_digest
+    old_alpha_confirmation = read_local_published_bindings(restored.published_path, version_a)[
+        0
+    ].review_digest
     with pytest.raises(
         ConfirmationRefused, match="restored target requires a fresh reviewed confirmation"
     ):
@@ -458,9 +473,7 @@ def test_remote_original_backup_restores_without_remote_store(
         # The pre-restore outstanding action cannot activate anything.
         stale = _decision(reviewer2, task_delta["task_id"], outstanding, "approve")
         assert stale.status_code == 409
-        assert (
-            PublishedFilesystemLocation(restored.published_path).read_pointer() == version_b
-        )
+        assert PublishedFilesystemLocation(restored.published_path).read_pointer() == version_b
 
         # The moved root changes the setup attachment identity: the owner
         # reconfirms the restored target before new writes are accepted.
@@ -469,9 +482,14 @@ def test_remote_original_backup_restores_without_remote_store(
         # One fresh standalone contribution is human-reviewed and published
         # on the restored workspace, retained into the new local store.
         task_gamma = _contribute_bytes(
-            contributor2, fixture, retry_key="recovery-gamma",
-            title=GAMMA_TITLE, addition=GAMMA_ADDITION, source_id=GAMMA_SOURCE,
-            raw=GAMMA_ORIGINAL, request_id=21,
+            contributor2,
+            fixture,
+            retry_key="recovery-gamma",
+            title=GAMMA_TITLE,
+            addition=GAMMA_ADDITION,
+            source_id=GAMMA_SOURCE,
+            raw=GAMMA_ORIGINAL,
+            request_id=21,
         )
         _approve(reviewer2, fixture, task_gamma["task_id"])
         version_c = PublishedFilesystemLocation(restored.published_path).read_pointer()
@@ -481,17 +499,19 @@ def test_remote_original_backup_restores_without_remote_store(
         )
 
     # Historical immutable identities are unchanged by the new publication.
-    assert restored_store.get_binding_manifest(version_a) == (
-        backup_root / "store" / "bindings" / f"{version_a}.json"
-    ).read_bytes()
-    assert restored_store.get_binding_manifest(version_b) == (
-        backup_root / "store" / "bindings" / f"{version_b}.json"
-    ).read_bytes()
+    assert (
+        restored_store.get_binding_manifest(version_a)
+        == (backup_root / "store" / "bindings" / f"{version_a}.json").read_bytes()
+    )
+    assert (
+        restored_store.get_binding_manifest(version_b)
+        == (backup_root / "store" / "bindings" / f"{version_b}.json").read_bytes()
+    )
     assert restored_store.get_publication_record(version_a) == PUBLICATION_RECORD
     assert restored_store.get_activation_receipt(version_a) == ACTIVATION_RECEIPT
-    assert [
-        version.content_hash for version in restored_registry.get(ALPHA_SOURCE).versions
-    ] == [ALPHA_HASH]
+    assert [version.content_hash for version in restored_registry.get(ALPHA_SOURCE).versions] == [
+        ALPHA_HASH
+    ]
     assert restored_registry.get(ALPHA_SOURCE).versions[0].artifact_available is True
 
     # A manifest this restore does not understand refuses explicitly.
@@ -761,9 +781,7 @@ def test_restore_and_revocation_preserve_admitted_only_access(
         assert inner[0] == '"' and inner[-1] == '"'
         return re.sub(r'\\(["\\])', r"\1", inner[1:-1])
 
-    project_line = (
-        f'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="{systemd_escape(escaped_project)}"'
-    )
+    project_line = f'LUMIO_WORKSPACE_ANALYTICS_PROJECT_PATH="{systemd_escape(escaped_project)}"'
     assert project_line in escaped_output
     assert systemd_parse(project_line) == str(escaped_project)
     bindings_line = (
@@ -1042,9 +1060,7 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
         assert gitdir.exists(), f"registration {entry.name} lost its worktree"
         if gitdir.parent.parent == second_root / "private" / "worktrees":
             relinked_private += 1
-        elif gitdir.parent.parent == (
-            second_root / "authoring-repo" / ".ariadne" / "worktrees"
-        ):
+        elif gitdir.parent.parent == (second_root / "authoring-repo" / ".ariadne" / "worktrees"):
             relinked_analytics += 1
     assert relinked_private >= 1  # authoring task-worktree role preserved
     assert relinked_analytics >= 1  # analytics proposal-worktree role preserved
@@ -1241,8 +1257,9 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
         Path(new_record["bound_release"]["destination"]).resolve()
         == restored.published_path.resolve()
     )
-    assert PublishedFilesystemLocation(restored.published_path).read_pointer() == (
-        published["native_candidate"]
+    assert (
+        PublishedFilesystemLocation(restored.published_path).read_pointer()
+        == (published["native_candidate"])
     )
 
     # Historical admissions and receipts are untouched by the new publication.
@@ -1344,11 +1361,7 @@ def test_native_admitted_query_does_not_require_authoring_attachment(
     bindings = tmp_path / "analytics-bindings.json"
     bindings.write_text(
         json.dumps(
-            {
-                "orders": [
-                    {"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}
-                ]
-            }
+            {"orders": [{"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}]}
         ),
         encoding="utf-8",
     )
@@ -1416,9 +1429,7 @@ def test_native_admitted_query_does_not_require_authoring_attachment(
     monkeypatch.setattr(execution, "build_connection", spy)
     monkeypatch.setattr(native_sources, "build_connection", spy)
 
-    result = analytics.query_data(
-        contributor, "retail", task, "get_metric", {"name": "revenue"}
-    )
+    result = analytics.query_data(contributor, "retail", task, "get_metric", {"name": "revenue"})
     assert result["rows"] == [{"revenue": 150.0}]  # 100 + 50 completed; cancelled excluded
     assert result["pinned"]["commit"] == native_review["revision"]
     assert len(opened) == 1  # exactly the sanctioned source resolution
@@ -1487,11 +1498,7 @@ def test_native_source_preparation_preserves_publication_corruption(
     bindings = tmp_path / "analytics-bindings.json"
     bindings.write_text(
         json.dumps(
-            {
-                "orders": [
-                    {"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}
-                ]
-            }
+            {"orders": [{"name": "orders", "type": "sqlite", "path": "data/baseline.sqlite"}]}
         ),
         encoding="utf-8",
     )
@@ -1537,13 +1544,9 @@ def test_native_source_preparation_preserves_publication_corruption(
     pointer = PublishedFilesystemLocation(destination).read_pointer()
     assert pointer == native_review["revision"]
     manifest = json.loads(
-        (destination / VERSIONS_DIR_NAME / pointer / "manifest.json").read_text(
-            encoding="utf-8"
-        )
+        (destination / VERSIONS_DIR_NAME / pointer / "manifest.json").read_text(encoding="utf-8")
     )
-    target = next(
-        entry for entry in manifest["files"] if entry["path"].endswith(".md")
-    )
+    target = next(entry for entry in manifest["files"] if entry["path"].endswith(".md"))
     canonical = destination / VERSIONS_DIR_NAME / pointer / target["path"]
     with canonical.open("ab") as handle:
         handle.write(b" corruption")

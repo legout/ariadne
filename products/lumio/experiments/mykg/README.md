@@ -172,7 +172,7 @@ Using the Core SDK (the exact entry points the issue names):
 from lumio_wiki import (
     import_external_compiled_markdown,
     propose_external_import,
-    SourceProvenance,   # provenance for the staged proposal
+    SourceProvenance,  # provenance for the staged proposal
 )
 
 parsed = import_external_compiled_markdown("<EXPERIMENT_TREE_DIR>")

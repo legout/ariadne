@@ -551,8 +551,7 @@ def ingest_candidate(
 
     if retention not in ("required", "disabled"):
         raise AuthoringJourneyError(
-            "retention must be 'required' or 'disabled'; omit it for the "
-            "default required policy",
+            "retention must be 'required' or 'disabled'; omit it for the default required policy",
             code="invalid_retention_policy",
         )
     # Loader-equivalent Source identity uniqueness: repeated

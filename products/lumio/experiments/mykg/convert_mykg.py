@@ -306,7 +306,7 @@ def build_pages(
         for alias in (str(a) for a in (node.get("aliases") or [])):
             if alias.lower() in used_titles:
                 result.warnings.append(
-                    f'node {node_id!r}: dropped alias {alias!r} (collides with an existing '
+                    f"node {node_id!r}: dropped alias {alias!r} (collides with an existing "
                     "title/alias); re-add manually after review if intended"
                 )
             else:
@@ -440,9 +440,7 @@ def convert_session(session_root: str | Path, settings: Settings) -> ConversionR
             f"got {settings.default_visibility!r}"
         )
     if not settings.default_tag.strip():
-        raise ValueError(
-            "default_tag must be non-empty (tags are required and non-empty)"
-        )
+        raise ValueError("default_tag must be non-empty (tags are required and non-empty)")
 
     nodes, _edges, _schema = load_session(session_root)
     taken = _taken_titles_from_kb(settings.kb_root) if settings.kb_root else set()

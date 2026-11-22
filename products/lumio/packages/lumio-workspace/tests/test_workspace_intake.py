@@ -72,9 +72,7 @@ def _published_sentinel(tmp_path: Path) -> tuple[Path, str]:
         encoding="utf-8",
     )
     (kb / ".lumio-authoring.yaml").write_bytes(
-        serialize_source_reference_manifest(
-            SourceReferenceManifest(version=1, namespace=NAMESPACE)
-        )
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
     )
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "Fixture")
@@ -271,9 +269,12 @@ def _workspace_fixture(tmp_path: Path, monkeypatch) -> WorkspaceFixture:
     contributor = Actor(tenant_id="local", object_id="contributor")
     assert main(["local-membership", "grant", "--user-id", "owner", "--capability", "setup"]) == 0
     assert main(["local-membership", "grant", "--user-id", "contributor"]) == 0
-    assert main(
-        ["local-membership", "grant", "--user-id", "contributor", "--capability", "contribute"]
-    ) == 0
+    assert (
+        main(
+            ["local-membership", "grant", "--user-id", "contributor", "--capability", "contribute"]
+        )
+        == 0
+    )
     _, owner_api = state.issue_local_credential("owner", "api", expires_at=expires)
     _, owner_browser = state.issue_local_credential("owner", "browser", expires_at=expires)
     _, contributor_api = state.issue_local_credential("contributor", "api", expires_at=expires)
@@ -314,9 +315,7 @@ def _adopt_without_setup(fixture: WorkspaceFixture) -> str:
     kb.mkdir()
     write_control_file(kb, seeded_control_file())
     (kb / ".lumio-authoring.yaml").write_bytes(
-        serialize_source_reference_manifest(
-            SourceReferenceManifest(version=1, namespace=NAMESPACE)
-        )
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
     )
     repo = kb.parent
     _git(repo, "add", "kb")
@@ -328,9 +327,7 @@ def _snapshot(root: Path) -> dict[str, bytes] | None:
     if not root.exists():
         return None
     return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
     }
 
 
@@ -476,9 +473,9 @@ def test_exact_upload_retry_preserves_source_and_pending_visibility(
         versions = SourceRegistry(registry_path).get("runbook-source").versions
         assert [version.content_hash for version in versions] == [EXPECTED_SHA256]
         store = LocalDirectoryArtifactStore(artifact_path)
-        assert store.get_artifact(
-            source_id="runbook-source", content_hash=EXPECTED_SHA256
-        ) == ORIGINAL
+        assert (
+            store.get_artifact(source_id="runbook-source", content_hash=EXPECTED_SHA256) == ORIGINAL
+        )
 
         repeated = _prepare(
             client,
@@ -694,9 +691,7 @@ def test_setup_commit_preserves_unrelated_index_and_rechecks_base(
         assert not late.config.authoring_path.exists()
 
 
-def test_concurrent_retry_never_removes_active_native_work(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_concurrent_retry_never_removes_active_native_work(tmp_path: Path, monkeypatch) -> None:
     fixture = _workspace_fixture(tmp_path, monkeypatch)
     config = fixture.config
     assert config.authoring_path is not None
@@ -802,9 +797,7 @@ def test_concurrent_retry_never_removes_active_native_work(
         assert current["native_review"] == first_task["native_review"]
 
 
-def test_contributor_uses_server_base_and_opaque_continuation(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_contributor_uses_server_base_and_opaque_continuation(tmp_path: Path, monkeypatch) -> None:
     fixture = _workspace_fixture(tmp_path, monkeypatch)
     config = fixture.config
     assert config.authoring_path is not None
@@ -990,9 +983,7 @@ def test_interrupted_prepare_recovers_exact_registered_task_ref(
     assert store.get_artifact(source_id="runbook-source", content_hash=EXPECTED_SHA256) == ORIGINAL
 
 
-def test_moved_profile_requires_matching_owner_confirmation(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_moved_profile_requires_matching_owner_confirmation(tmp_path: Path, monkeypatch) -> None:
     fixture = _workspace_fixture(tmp_path, monkeypatch)
     old_config = fixture.config
     assert old_config.authoring_path is not None
@@ -1114,9 +1105,7 @@ def _retention_fixture(tmp_path: Path, monkeypatch, *, policy: str) -> Retention
         encoding="utf-8",
     )
     (authoring_kb / ".lumio-authoring.yaml").write_bytes(
-        serialize_source_reference_manifest(
-            SourceReferenceManifest(version=1, namespace=NAMESPACE)
-        )
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
     )
     _git(authoring_repo, "init", "-q")
     _git(authoring_repo, "config", "user.name", "Fixture")
@@ -1229,9 +1218,7 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
     assert default_refusal.value.code == "retention_required"
     assert SourceRegistry(fixture.registry_path).list() == []
     assert (authoring_kb / ".lumio-authoring.yaml").read_bytes() == (
-        serialize_source_reference_manifest(
-            SourceReferenceManifest(version=1, namespace=NAMESPACE)
-        )
+        serialize_source_reference_manifest(SourceReferenceManifest(version=1, namespace=NAMESPACE))
     )
 
     with TestClient(create_app(config), base_url="https://workspace.test") as client:
@@ -1305,9 +1292,12 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
             recovered_result = recovered.json()["result"]
             assert recovered_result["isError"] is False, recovered_result
             assert recovered_result["structuredContent"]["status"] == "pending_review"
-            assert LocalDirectoryArtifactStore(fixture.artifact_path).get_artifact(
-                source_id="runbook-source", content_hash=EXPECTED_SHA256
-            ) == ORIGINAL
+            assert (
+                LocalDirectoryArtifactStore(fixture.artifact_path).get_artifact(
+                    source_id="runbook-source", content_hash=EXPECTED_SHA256
+                )
+                == ORIGINAL
+            )
             candidate = recovered_result["structuredContent"]["native_candidate"]
         else:
             # Gate 2b: the owner-confirmed standalone exception admits the
@@ -1433,8 +1423,7 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
                 blocked_result = blocked_prepare.json()["result"]
                 assert blocked_result["isError"] is True
                 assert (
-                    "requires required original retention"
-                    in blocked_result["content"][0]["text"]
+                    "requires required original retention" in blocked_result["content"][0]["text"]
                 )
                 assert _git(authoring_kb.parent, "rev-parse", "HEAD") == head_before
                 versions = SourceRegistry(fixture.registry_path).get("runbook-source").versions
@@ -1468,8 +1457,9 @@ def test_retention_exception_requires_owner_and_preserves_default_gates(
             assert PublishedFilesystemLocation(config.published_path).read_pointer() == candidate
 
             sealed = json.loads(
-                (config.published_path / ".lumio-publication" / "bindings" / f"{candidate}.json")
-                .read_bytes()
+                (
+                    config.published_path / ".lumio-publication" / "bindings" / f"{candidate}.json"
+                ).read_bytes()
             )
             assert sealed["sources"] == {"runbook-source": "active"}
             assert sealed["bindings"][binding["entity_id"]]["runbook-source"] == EXPECTED_SHA256

@@ -484,8 +484,7 @@ def validate_candidate_records(project: Path, record: dict, candidate_root: Path
         arguments = method.get("arguments") if isinstance(method, dict) else None
         if operation not in OPERATIONS or not isinstance(arguments, dict) or not arguments:
             errors.append(
-                f"{rel}: method must record operation {list(OPERATIONS)} with "
-                "structured arguments"
+                f"{rel}: method must record operation {list(OPERATIONS)} with structured arguments"
             )
         else:
             missing = [

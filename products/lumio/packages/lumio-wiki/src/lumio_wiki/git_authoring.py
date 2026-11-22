@@ -638,8 +638,7 @@ def _restored_root_authorization(destination: Path) -> dict[str, object] | None:
         return None
     imported = raw["imported_versions"]
     if not isinstance(imported, dict) or any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in imported.items()
+        not isinstance(key, str) or not isinstance(value, str) for key, value in imported.items()
     ):
         return None
     if (
@@ -648,20 +647,21 @@ def _restored_root_authorization(destination: Path) -> dict[str, object] | None:
         or raw["destination"] != str(destination.resolve())
     ):
         return None
-    if restored_root_record_binding(
-        workspace_id=raw["workspace_id"],
-        restored_at=raw["restored_at"],
-        destination=raw["destination"],
-        source_backup_manifest_sha256=raw["source_backup_manifest_sha256"],
-        imported_versions=imported,
-    ) != raw["binding"]:
+    if (
+        restored_root_record_binding(
+            workspace_id=raw["workspace_id"],
+            restored_at=raw["restored_at"],
+            destination=raw["destination"],
+            source_backup_manifest_sha256=raw["source_backup_manifest_sha256"],
+            imported_versions=imported,
+        )
+        != raw["binding"]
+    ):
         return None
     return raw
 
 
-def _imported_receipt_digest(
-    record: dict[str, object], version: str, destination: Path
-) -> bool:
+def _imported_receipt_digest(record: dict[str, object], version: str, destination: Path) -> bool:
     """Whether the live receipt bytes are exactly the imported ones.
 
     Later added, swapped, or unimported receipts stay subject to the normal

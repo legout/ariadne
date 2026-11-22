@@ -328,8 +328,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.namespace.strip():
         print(
-            "error: --namespace must be an explicit non-empty namespace "
-            "(spec 0010 §2.2)",
+            "error: --namespace must be an explicit non-empty namespace (spec 0010 §2.2)",
             file=sys.stderr,
         )
         return 1

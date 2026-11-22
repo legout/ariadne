@@ -316,8 +316,7 @@ GLOSSARY_MD = (
     "visible Meridian note in this glossary is published context for routing.\n"
     "\n"
     "## Canonical register\n"
-    "\n"
-    + GLOSSARY_REGISTER
+    "\n" + GLOSSARY_REGISTER
 )
 
 # A valid hidden page sharing the token (title+summary+body would score 160
@@ -2717,9 +2716,9 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         revision = first["revision"]
         comp = tree / "knowledge" / "computations" / "retail_sales--revenue_plus_one.md"
         assert comp.is_file(), "the finalize must generate the derived Computation"
-        assert (
-            "CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END" in comp.read_text()
-        ), "the generated page records the RESOLVED dependency, not the raw expression"
+        assert "CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END" in comp.read_text(), (
+            "the generated page records the RESOLVED dependency, not the raw expression"
+        )
         meta, body = page_parts(comp)
         meta["ariadne_profile"]["native"]["attester"] = "an-independent-derived-oracle"
         del meta["ariadne_profile"]["native"]["attestation"]
@@ -2899,9 +2898,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
             {
                 "kind": "model",
                 "name": "status_lookup",
-                "content": P1_LOOKUP_MODEL.replace(
-                    "sql: COUNT(*)", "sql: COUNT(DISTINCT status)"
-                ),
+                "content": P1_LOOKUP_MODEL.replace("sql: COUNT(*)", "sql: COUNT(DISTINCT status)"),
             },
         )
         refreshed = api.validate_proposal(started["proposal"], changed_model["revision"])
@@ -4215,8 +4212,7 @@ def test_integrated_ad_hoc_metric_is_unsaved_and_context_bound(tmp_path, monkeyp
                             "name": "expression_borrowed_count",
                             "source": "orders.main.orders",
                             "expression": (
-                                "SUM(amount) + (SELECT COUNT(*) FROM"
-                                " orders.main.order_status)"
+                                "SUM(amount) + (SELECT COUNT(*) FROM orders.main.order_status)"
                             ),
                             "description": "Temporary value borrowing a nested count",
                         }
@@ -4472,9 +4468,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
                         {
                             "dataset": "orders.main.order_status",
                             "fields": ["status"],
-                            "filters": [
-                                {"field": "status", "op": "in", "value": [["completed"]]}
-                            ],
+                            "filters": [{"field": "status", "op": "in", "value": [["completed"]]}],
                             "order": [{"field": "status", "direction": "asc"}],
                             "limit": 10,
                         }

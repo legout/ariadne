@@ -132,8 +132,7 @@ def _native_metric_page(metric: str, policies: tuple[str, ...]) -> str:
     )
     sources = "".join(f"  - id: {policy}\n    title: {policy}\n" for policy in policies)
     native_sources = "".join(
-        f"      - id: {policy}\n        title: {policy}\n"
-        f"        resource: policies/{policy}.md\n"
+        f"      - id: {policy}\n        title: {policy}\n        resource: policies/{policy}.md\n"
         for policy in policies
     )
     description = _METRIC_DESCRIPTIONS[metric]
@@ -205,15 +204,18 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     run_git(root, "config", "user.name", "Ariadne Tests")
     run_git(root, "config", "user.email", "tests@ariadne.local")
     with redirect_stdout(io.StringIO()):
-        assert init_main(
-            [
-                str(root),
-                "--namespace",
-                NAMESPACE,
-                "--private-profile",
-                str(root.parent / _PRIVATE_PROFILE),
-            ]
-        ) == 0
+        assert (
+            init_main(
+                [
+                    str(root),
+                    "--namespace",
+                    NAMESPACE,
+                    "--private-profile",
+                    str(root.parent / _PRIVATE_PROFILE),
+                ]
+            )
+            == 0
+        )
     db = seed_demo_db(root / "data" / "demo.db")
     (root / "ariadne.yaml").write_text(
         "sources:\n  - name: demo\n    type: sqlite\n    path: data/demo.db\n",

@@ -236,9 +236,7 @@ class ReviewService:
             # Current separate inspect_source permission precedes any
             # inspection-specific availability probing or private registry
             # metadata lookup.
-            inspection_permitted = self.state.permits(
-                self.workspace_id, actor, "inspect_source"
-            )
+            inspection_permitted = self.state.permits(self.workspace_id, actor, "inspect_source")
             # Preserve the native submission ancestry check independently of
             # the complete effective review against the admitted publication.
             self._authoring(task_kb, repo_root, submission_base, candidate, resources)
@@ -271,13 +269,9 @@ class ReviewService:
                 expected_current = admitted
             authoring = self._authoring(task_kb, repo_root, base, candidate, resources)
             captured = capture_revision(task_kb, candidate)
-            publication = self.publication.preview(
-                task_kb, candidate, expected_current, resources
-            )
+            publication = self.publication.preview(task_kb, candidate, expected_current, resources)
             availability = (
-                self._source_availability(captured, resources)
-                if inspection_permitted
-                else None
+                self._source_availability(captured, resources) if inspection_permitted else None
             )
             source_impact: list[dict] = []
             proposed_sources: dict[str, str] = {}

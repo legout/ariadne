@@ -56,9 +56,10 @@ single shared document model and one Markdown serializer. The Python API is smal
 
 ```python
 import anydoc
-markdown = anydoc.to_markdown_bytes(data)          # bytes -> Markdown (format auto-detected)
-markdown = anydoc.to_markdown_bytes(data, "csv")   # signature-less formats named explicitly
-document = anydoc.to_document(data)                # document model + embedded assets (not PDF)
+
+markdown = anydoc.to_markdown_bytes(data)  # bytes -> Markdown (format auto-detected)
+markdown = anydoc.to_markdown_bytes(data, "csv")  # signature-less formats named explicitly
+document = anydoc.to_document(data)  # document model + embedded assets (not PDF)
 ```
 
 `to_markdown_bytes` returns a single Markdown string; `to_document` additionally exposes
@@ -301,8 +302,10 @@ str | None], str]`. AnyDoc slots in directly:
 ```python
 # A hypothetical anydoc adapter — NOT implemented in this spike.
 def _anydoc_convert(content: bytes, filename: str | None) -> str:
-    fmt = _fmt_from_extension(filename)   # csv needs an explicit hint
+    fmt = _fmt_from_extension(filename)  # csv needs an explicit hint
     return anydoc.to_markdown_bytes(content, fmt)
+
+
 DocumentSourceProcessor(converted_by="anydoc", convert=_anydoc_convert)
 ```
 

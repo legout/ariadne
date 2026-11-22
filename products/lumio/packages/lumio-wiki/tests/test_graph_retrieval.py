@@ -321,9 +321,7 @@ def test_explicit_empty_seed_list_returns_empty():
 
 
 def _expansion_stage(results: list[RetrievalResult]):
-    return next(
-        s for r in results for s in r.trace.stages if s.name == "graph-expansion"
-    )
+    return next(s for r in results for s in r.trace.stages if s.name == "graph-expansion")
 
 
 def test_trace_distinguishes_claim_and_extracted_origins():

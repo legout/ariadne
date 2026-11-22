@@ -262,22 +262,39 @@ class S3Endpoint:
             ports - {self.port}
         )
         argv = [
-            str(self._mini_binary), "mini", f"-dir={data}",
-            "-ip=127.0.0.1", "-ip.bind=127.0.0.1",
-            f"-master.port={master}", f"-master.port.grpc={master_rpc}",
-            "-master.telemetry=false", "-master.volumeSizeLimitMB=64",
-            f"-volume.port={volume}", f"-volume.port.grpc={volume_rpc}", "-volume.max=4",
-            f"-filer.port={filer}", f"-filer.port.grpc={filer_rpc}",
+            str(self._mini_binary),
+            "mini",
+            f"-dir={data}",
+            "-ip=127.0.0.1",
+            "-ip.bind=127.0.0.1",
+            f"-master.port={master}",
+            f"-master.port.grpc={master_rpc}",
+            "-master.telemetry=false",
+            "-master.volumeSizeLimitMB=64",
+            f"-volume.port={volume}",
+            f"-volume.port.grpc={volume_rpc}",
+            "-volume.max=4",
+            f"-filer.port={filer}",
+            f"-filer.port.grpc={filer_rpc}",
             f"-filer.localSocket={sockets / 'filer.sock'}",
-            f"-s3.port={self.port}", f"-s3.port.grpc={s3_rpc}",
-            f"-s3.localSocket={sockets / 's3.sock'}", f"-s3.config={config.resolve()}",
-            "-s3.iam=false", "-s3.port.iceberg=0", "-s3.port.lance=0",
-            "-webdav=false", "-admin.ui=false", "-admin.port.legacy=0",
+            f"-s3.port={self.port}",
+            f"-s3.port.grpc={s3_rpc}",
+            f"-s3.localSocket={sockets / 's3.sock'}",
+            f"-s3.config={config.resolve()}",
+            "-s3.iam=false",
+            "-s3.port.iceberg=0",
+            "-s3.port.lance=0",
+            "-webdav=false",
+            "-admin.ui=false",
+            "-admin.port.legacy=0",
         ]
         self._mini_log = (data / "mini.log").open("wb")
         try:
             self._mini_process = subprocess.Popen(
-                argv, cwd=data, stdout=self._mini_log, stderr=subprocess.STDOUT,
+                argv,
+                cwd=data,
+                stdout=self._mini_log,
+                stderr=subprocess.STDOUT,
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)},
             )
         except OSError:
@@ -296,9 +313,7 @@ class S3Endpoint:
             if self._mini_log is not None:
                 self._mini_log.close()
             return
-        subprocess.run(
-            ["docker", "rm", "-f", self._container], capture_output=True, check=False
-        )
+        subprocess.run(["docker", "rm", "-f", self._container], capture_output=True, check=False)
 
     def __enter__(self) -> S3Endpoint:
         return self.start()
@@ -367,15 +382,16 @@ class S3Endpoint:
             if token:
                 query += f"&continuation-token={urllib.parse.quote(token, safe='')}"
             status, body = _sigv4(
-                self.access_key, self.secret_key, "us-east-1", "GET",
+                self.access_key,
+                self.secret_key,
+                "us-east-1",
+                "GET",
                 f"{self.endpoint_url}/{bucket}?{query}",
             )
             assert status == 200, f"fixture LIST {key_prefix} failed ({status}): {body[:200]!r}"
             root = xml.etree.ElementTree.fromstring(body)
             strip = lambda tag: tag.rsplit("}", 1)[-1]  # noqa: E731 — s3 XML namespace
-            keys.extend(
-                f"{bucket}/{node.text}" for node in root.iter() if strip(node.tag) == "Key"
-            )
+            keys.extend(f"{bucket}/{node.text}" for node in root.iter() if strip(node.tag) == "Key")
             truncated = any(
                 strip(node.tag) == "IsTruncated" and (node.text or "").lower() == "true"
                 for node in root.iter()
@@ -459,8 +475,7 @@ def native_view_catalog_bytes(endpoint: S3Endpoint, s3_parquet_url: str) -> byte
     try:
         endpoint._fixture_secret(con)
         con.execute(
-            "CREATE VIEW main.backing_orders AS SELECT * FROM "
-            f"read_parquet('{s3_parquet_url}')"
+            f"CREATE VIEW main.backing_orders AS SELECT * FROM read_parquet('{s3_parquet_url}')"
         )
     finally:
         con.close()

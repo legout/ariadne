@@ -133,7 +133,7 @@ def _safe_attachment(raw: bytes, filename: str | None, source_id: str) -> Respon
     """
     name = safe_artifact_filename(filename) or f"{source_id}.bin"
     ascii_name = name.encode("ascii", "replace").decode("ascii").replace('"', "")
-    disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(name)}'
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"
     return Response(
         content=raw,
         media_type="application/octet-stream",

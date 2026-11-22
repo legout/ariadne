@@ -55,15 +55,29 @@ def propose(project):
     state["revision"] = state["candidate_revision"]
     if not (project / ".ariadne/current.json").exists():
         result = cli(
-            "ariadne-authoring", "propose-sources", "--project", str(project),
-            "--proposal", state["proposal"], "--expected-revision", state["revision"],
-            "--file", str(project / "sources.yaml"),
+            "ariadne-authoring",
+            "propose-sources",
+            "--project",
+            str(project),
+            "--proposal",
+            state["proposal"],
+            "--expected-revision",
+            state["revision"],
+            "--file",
+            str(project / "sources.yaml"),
         )
         state.update(revision=result["revision"], source_digest=result["source_digest"])
         state["operator_source_approval"] = [
-            "ariadne-authoring", "approve-sources", "--project", str(project),
-            "--proposal", state["proposal"], "--revision", state["revision"],
-            "--source-digest", state["source_digest"],
+            "ariadne-authoring",
+            "approve-sources",
+            "--project",
+            str(project),
+            "--proposal",
+            state["proposal"],
+            "--revision",
+            state["revision"],
+            "--source-digest",
+            state["source_digest"],
         ]
         print(json.dumps(result, indent=2))
         print("HUMAN: inspect the resolved synthetic source above. If you approve, run:")
@@ -78,16 +92,23 @@ def propose(project):
 def review(project):
     state = json.loads((project / ".demo-state.json").read_text())
     validated = cli(
-        "ariadne-authoring", "validate", "--project", str(project),
-        "--proposal", state["proposal"], "--expected-revision", state["revision"],
+        "ariadne-authoring",
+        "validate",
+        "--project",
+        str(project),
+        "--proposal",
+        state["proposal"],
+        "--expected-revision",
+        state["revision"],
     )
     print(json.dumps(validated, indent=2))
     if not validated["ok"]:
         raise SystemExit("Validation refused. Inspect the reported errors; nothing was admitted.")
     # Native finalization can create a commit: always use its returned revision.
     state["revision"] = validated["revision"]
-    report = cli("ariadne-authoring", "review", "--project", str(project),
-                 "--proposal", state["proposal"])
+    report = cli(
+        "ariadne-authoring", "review", "--project", str(project), "--proposal", state["proposal"]
+    )
     print(json.dumps(report, indent=2))
     previous = "none"
     current = project / ".ariadne/current.json"
@@ -96,15 +117,26 @@ def review(project):
             "published_version"
         ]
     preview_args = [
-        "ariadne-admit", "--project", str(project), "--proposal", state["proposal"],
-        "--revision", state["revision"], "--reviewed-digest", report["review_digest"],
-        "--context-destination", str(project.parent / (project.name + "-published")),
-        "--context-expected-current", previous,
+        "ariadne-admit",
+        "--project",
+        str(project),
+        "--proposal",
+        state["proposal"],
+        "--revision",
+        state["revision"],
+        "--reviewed-digest",
+        report["review_digest"],
+        "--context-destination",
+        str(project.parent / (project.name + "-published")),
+        "--context-expected-current",
+        previous,
     ]
     composite = cli(*preview_args)
     print(json.dumps(composite, indent=2))
     state["operator_admission"] = preview_args + [
-        "--overall-digest", composite["digest"], "--confirm"
+        "--overall-digest",
+        composite["digest"],
+        "--confirm",
     ]
     save(project, state)
     print("HUMAN: inspect validation, review and overall preview above. If you agree, run:")
@@ -113,8 +145,14 @@ def review(project):
 
 
 def check(project):
-    result = cli("ariadne", "query-metrics", "--project", str(project),
-                 "--file", str(project / "metrics.json"))
+    result = cli(
+        "ariadne",
+        "query-metrics",
+        "--project",
+        str(project),
+        "--file",
+        str(project / "metrics.json"),
+    )
     # Hand-worked from supplied CSV/rule: completed100+50, cancelled25 excluded.
     assert result["rows"] == [{"revenue": 150.0, "completed_orders": 2}], result["rows"]
     assert result["governed"] is True

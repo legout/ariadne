@@ -121,5 +121,3 @@ def load_embedding_model(index_dir: Path) -> EmbeddingModelInfo | None:
     if not path.exists():
         return None
     return msgspec.json.decode(path.read_bytes(), type=EmbeddingModelInfo)
-
-

@@ -467,7 +467,13 @@ def test_scoped_evidence_preserves_version_and_hides_restricted(
             "published_version": v1,
         }
         assert set(read_v1) == {
-            "found", "title", "summary", "markdown", "entity_id", "citation", "sources"
+            "found",
+            "title",
+            "summary",
+            "markdown",
+            "entity_id",
+            "citation",
+            "sources",
         }
         # #104: published attribution plus a reference action only; no private store facts
         assert all(set(s) == {"id", "title", "url", "reference"} for s in read_v1["sources"])

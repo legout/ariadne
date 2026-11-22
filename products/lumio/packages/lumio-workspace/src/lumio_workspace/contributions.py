@@ -80,9 +80,7 @@ def _digest(value: object) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _page(
-    filename: str, markdown: str, *, require_artifact: bool = True
-) -> tuple[str, dict]:
+def _page(filename: str, markdown: str, *, require_artifact: bool = True) -> tuple[str, dict]:
     if (
         not filename
         or filename in {".", ".."}
@@ -443,10 +441,10 @@ class ContributionService:
                             verbatim_page=verbatim_page,
                             expected_text_digest=expected_text_digest,
                         )
-                            for source, path, intent, verbatim_page, expected_text_digest in (
-                                checked_sources
-                            )
-                        ],
+                        for source, path, intent, verbatim_page, expected_text_digest in (
+                            checked_sources
+                        )
+                    ],
                     pages=checked_pages,
                     conversion=conversion,
                 )
@@ -499,9 +497,7 @@ class ContributionService:
                 raise ContributionError("each page requires filename and markdown") from exc
             if not isinstance(filename, str) or not isinstance(markdown, str):
                 raise ContributionError("page filename and markdown must be strings")
-            checked_pages.append(
-                (filename, *_page(filename, markdown, require_artifact=False))
-            )
+            checked_pages.append((filename, *_page(filename, markdown, require_artifact=False)))
         input_digest = _digest(
             {
                 "enrichment_task_id": task_id,

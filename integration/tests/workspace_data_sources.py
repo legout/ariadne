@@ -174,7 +174,12 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
             "categories": [
                 {"name": name}
                 for name in (
-                    "references", "metrics", "policies", "computations", "tables", "datasets"
+                    "references",
+                    "metrics",
+                    "policies",
+                    "computations",
+                    "tables",
+                    "datasets",
                 )
             ],
             "ontology": {
@@ -190,15 +195,15 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         (knowledge / "metrics").mkdir()
         (knowledge / "policies").mkdir()
         (knowledge / "metrics/event-count.md").write_text(
-            native_fixture.NATIVE_METRIC_PAGE
-            .replace("urn:uuid:authoring-fixture", "urn:demo:retail")
-            .replace("      - label\n", "      - region\n")
+            native_fixture.NATIVE_METRIC_PAGE.replace(
+                "urn:uuid:authoring-fixture", "urn:demo:retail"
+            ).replace("      - label\n", "      - region\n")
         )
         (knowledge / "policies/all-events-count.md").write_text(native_fixture.NATIVE_POLICY_PAGE)
         (project / "context_integration.yaml").write_text(
-            native_fixture.NATIVE_SELECTOR
-            .replace("support_revision: 2", "support_revision: 3")
-            .replace("urn:uuid:authoring-fixture", "urn:demo:retail")
+            native_fixture.NATIVE_SELECTOR.replace(
+                "support_revision: 2", "support_revision: 3"
+            ).replace("urn:uuid:authoring-fixture", "urn:demo:retail")
         )
         (knowledge / SOURCE_REFERENCE_MANIFEST_BASENAME).write_bytes(
             serialize_source_reference_manifest(

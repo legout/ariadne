@@ -59,11 +59,7 @@ def _search_excerpt(text: str, tokens: list[str], max_length: int = 260) -> str:
         return compact
     folded = compact.casefold()
     position = min(
-        (
-            folded.find(token.casefold())
-            for token in tokens
-            if folded.find(token.casefold()) >= 0
-        ),
+        (folded.find(token.casefold()) for token in tokens if folded.find(token.casefold()) >= 0),
         default=0,
     )
     radius = max_length // 2
@@ -116,9 +112,7 @@ def search_pages(
                 # A substring fallback keeps aliases and tags useful for a
                 # query such as ``stack`` even when punctuation joined tokens.
                 if not matching_tokens:
-                    matching_tokens = [
-                        token for token in tokens if token and token in folded
-                    ]
+                    matching_tokens = [token for token in tokens if token and token in folded]
                 if not matching_tokens:
                     continue
                 field_matched = True

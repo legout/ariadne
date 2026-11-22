@@ -155,9 +155,7 @@ def preview_setup(
         # managed journey is always required.
         retention="required",
         analytics_enabled=analytics_enabled,
-        digest=_digest(
-            {"native_setup_digest": plan.setup_digest, "managed_commit": commit_action}
-        ),
+        digest=_digest({"native_setup_digest": plan.setup_digest, "managed_commit": commit_action}),
         target=target,
         namespace=namespace,
         base_revision=plan.facts.current_commit,
@@ -389,9 +387,7 @@ def apply_setup(
 # the exception never claims secure deletion — transient uploads/backups may
 # remain — and required retention stays the default elsewhere.
 RETENTION_NOTES = {
-    "required": (
-        "<p>Originals are retained as required by the confirmed private profile.</p>"
-    ),
+    "required": ("<p>Originals are retained as required by the confirmed private profile.</p>"),
     "disabled": (
         "<p><strong>Retention exception:</strong> the confirmed private profile does "
         "not promise a durable original copy. Contributions stay source-backed by "

@@ -209,9 +209,7 @@ _ANSWER_EXAMPLE_SQL_SOURCE = "submitted_result.sql"
 #: spec0007: the timestamped answer excerpt bound (UTF-8 bytes).
 _ANSWER_EXAMPLE_EXCERPT_BYTES = 8 * 1024
 _ANSWER_EXAMPLE_SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_ANSWER_EXAMPLE_KEYS = frozenset(
-    {"question", "interpretation", "method", "submitter", "answer"}
-)
+_ANSWER_EXAMPLE_KEYS = frozenset({"question", "interpretation", "method", "submitter", "answer"})
 _ANSWER_EXAMPLE_OPTIONAL_KEYS = frozenset({"parameters", "project", "citations", "sql_provenance"})
 _EXTENSION_KEYS = frozenset({"version", "reference_role", "representations", "mappings"})
 _REPRESENTATION_KEYS = frozenset({"id", "aliases", "fields", "scope", "description"})
@@ -849,8 +847,12 @@ def _value_evidence_errors(where: str, evidence: object) -> list[str]:
         return [f"{where} must map selected columns to evidence entries"]
     errors: list[str] = []
     reasons = {
-        "not_in_profile", "column_missing", "type_changed", "unsupported_representation",
-        "permission_denied", "too_large",
+        "not_in_profile",
+        "column_missing",
+        "type_changed",
+        "unsupported_representation",
+        "permission_denied",
+        "too_large",
     }
     for column, entry in evidence.items():
         spot = f"{where}[{column!r}]"
@@ -860,8 +862,11 @@ def _value_evidence_errors(where: str, evidence: object) -> list[str]:
         state = entry.get("state")
         if state == "unavailable":
             reason = entry.get("reason")
-            if (set(entry) != {"state", "reason"}
-                    or not isinstance(reason, str) or reason not in reasons):
+            if (
+                set(entry) != {"state", "reason"}
+                or not isinstance(reason, str)
+                or reason not in reasons
+            ):
                 errors.append(f"{spot} unavailable requires a supported reason and no top_values")
         elif state == "observed":
             top = entry.get("top_values")
@@ -877,7 +882,8 @@ def _value_evidence_errors(where: str, evidence: object) -> list[str]:
                     continue
                 literal = value["value"]
                 if not (
-                    literal is None or isinstance(literal, (str, bool, int))
+                    literal is None
+                    or isinstance(literal, (str, bool, int))
                     or (isinstance(literal, float) and math.isfinite(literal))
                 ):
                     errors.append(f"{item}.value must retain a supported finite native scalar")
@@ -887,8 +893,11 @@ def _value_evidence_errors(where: str, evidence: object) -> list[str]:
             errors.append(f"{spot}.state must be observed or unavailable")
     if not errors:
         try:
-            size = len(json.dumps(evidence, ensure_ascii=False, allow_nan=False,
-                                  separators=(",", ":")).encode("utf-8"))
+            size = len(
+                json.dumps(
+                    evidence, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
         except UnicodeError:
             errors.append(f"{where} must contain UTF-8 representable values")
         else:
@@ -945,8 +954,11 @@ def _table_ariadne_errors(where: str, block: object) -> list[str]:
     count = observations.get("row_count")
     if not _is_int(count) or count < 0:
         errors.append(f"{where} observations row_count must be a non-negative integer")
-    errors.extend(_string_list_errors(
-        f"{where} observations candidate_keys", observations.get("candidate_keys")))
+    errors.extend(
+        _string_list_errors(
+            f"{where} observations candidate_keys", observations.get("candidate_keys")
+        )
+    )
     columns = observations.get("columns")
     if not isinstance(columns, dict):
         errors.append(f"{where} observations columns must be a mapping")
@@ -954,17 +966,26 @@ def _table_ariadne_errors(where: str, block: object) -> list[str]:
         for name, stats in columns.items():
             spot = f"{where} observations columns[{name!r}]"
             if (
-                not _non_empty_str(name) or not isinstance(stats, dict)
+                not _non_empty_str(name)
+                or not isinstance(stats, dict)
                 or set(stats) != {"null_count", "distinct_count"}
-                or any(not _is_int(stats.get(key)) or stats[key] < 0
-                       for key in ("null_count", "distinct_count"))
+                or any(
+                    not _is_int(stats.get(key)) or stats[key] < 0
+                    for key in ("null_count", "distinct_count")
+                )
             ):
                 errors.append(f"{spot} must carry non-negative integer null_count/distinct_count")
-    errors.extend(_resource_uri_errors(
-        f"{where} observations citation", observations.get("citation"), kinds=("table",)))
+    errors.extend(
+        _resource_uri_errors(
+            f"{where} observations citation", observations.get("citation"), kinds=("table",)
+        )
+    )
     if "value_evidence" in observations:
-        errors.extend(_value_evidence_errors(
-            f"{where} observations value_evidence", observations["value_evidence"]))
+        errors.extend(
+            _value_evidence_errors(
+                f"{where} observations value_evidence", observations["value_evidence"]
+            )
+        )
     if "source_binding" in observations and not _non_empty_str(observations["source_binding"]):
         errors.append(f"{where} observations source_binding must be a non-empty string")
     return errors
@@ -1179,9 +1200,7 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
             errors.append(f"{where} {key} must be a non-empty string")
     method = native.get("method")
     if not isinstance(method, dict) or set(method) != {"operation", "arguments"}:
-        errors.append(
-            f"{where} method must be a mapping with exactly {{operation, arguments}}"
-        )
+        errors.append(f"{where} method must be a mapping with exactly {{operation, arguments}}")
     else:
         if not isinstance(method["operation"], str) or (
             method["operation"] not in _ANSWER_EXAMPLE_OPERATIONS
@@ -1206,39 +1225,27 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
         errors.append(f"{where} project must be a non-empty string")
     submitter = native.get("submitter")
     if not isinstance(submitter, dict) or set(submitter) != {"identity", "attestation"}:
-        errors.append(
-            f"{where} submitter must be a mapping with exactly {{identity, attestation}}"
-        )
-    elif not _non_empty_str(submitter["identity"]) or not _non_empty_str(
-        submitter["attestation"]
-    ):
-        errors.append(
-            f"{where} submitter identity and attestation must be non-empty strings"
-        )
+        errors.append(f"{where} submitter must be a mapping with exactly {{identity, attestation}}")
+    elif not _non_empty_str(submitter["identity"]) or not _non_empty_str(submitter["attestation"]):
+        errors.append(f"{where} submitter identity and attestation must be non-empty strings")
     citations = native.get("citations")
     if not isinstance(citations, list):
         errors.append(f"{where} citations must be a list of {{path, sha256}} mappings")
     else:
         for index, entry in enumerate(citations):
             if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
-                errors.append(
-                    f"{where} citations[{index}] must be exactly {{path, sha256}}"
-                )
+                errors.append(f"{where} citations[{index}] must be exactly {{path, sha256}}")
                 continue
             if not _non_empty_str(entry["path"]):
                 errors.append(f"{where} citations[{index}].path must be a non-empty string")
             if not isinstance(entry["sha256"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
                 entry["sha256"]
             ):
-                errors.append(
-                    f"{where} citations[{index}].sha256 must be a 64-hex digest"
-                )
+                errors.append(f"{where} citations[{index}].sha256 must be a 64-hex digest")
     if "sql_provenance" in native:
         provenance = native["sql_provenance"]
         if not isinstance(provenance, dict) or set(provenance) != {"source", "text"}:
-            errors.append(
-                f"{where} sql_provenance must be a mapping with exactly {{source, text}}"
-            )
+            errors.append(f"{where} sql_provenance must be a mapping with exactly {{source, text}}")
         else:
             if provenance["source"] != _ANSWER_EXAMPLE_SQL_SOURCE:
                 errors.append(
@@ -1246,14 +1253,11 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
                     f"{_ANSWER_EXAMPLE_SQL_SOURCE!r} (never a verified execution origin)"
                 )
             if not isinstance(provenance["text"], str) or not provenance["text"].strip():
-                errors.append(
-                    f"{where} sql_provenance.text must be a non-whitespace string"
-                )
+                errors.append(f"{where} sql_provenance.text must be a non-whitespace string")
     answer = native.get("answer")
     if not isinstance(answer, dict) or set(answer) != {"captured", "excerpt", "result_digest"}:
         errors.append(
-            f"{where} answer must be a mapping with exactly "
-            "{captured, excerpt, result_digest}"
+            f"{where} answer must be a mapping with exactly {{captured, excerpt, result_digest}}"
         )
     else:
         if not _non_empty_str(answer["captured"]):
@@ -1263,8 +1267,7 @@ def _answer_example_native_errors(where: str, native: dict) -> list[str]:
             errors.append(f"{where} answer.excerpt must be a string")
         elif len(excerpt.encode("utf-8")) > _ANSWER_EXAMPLE_EXCERPT_BYTES:
             errors.append(
-                f"{where} answer.excerpt exceeds the "
-                f"{_ANSWER_EXAMPLE_EXCERPT_BYTES}-byte bound"
+                f"{where} answer.excerpt exceeds the {_ANSWER_EXAMPLE_EXCERPT_BYTES}-byte bound"
             )
         if not isinstance(answer["result_digest"], str) or not _ANSWER_EXAMPLE_SHA256_RE.fullmatch(
             answer["result_digest"]
@@ -1401,6 +1404,7 @@ def _quality_normalized_bytes(profile: dict) -> int:
     become ISO-8601 strings, containers are rebuilt in order, and the JSON is
     emitted with the default separators and insertion order — the same shape
     the Core authoring gate measures. Pure; no Core import."""
+
     def normalize(value: object) -> object:
         if isinstance(value, datetime):
             return value.isoformat()
@@ -1446,8 +1450,7 @@ def _table_quality_native_errors(
         or version != ARIADNE_QUALITY_VERSION
     ):
         errors.append(
-            f"{where} version must be the exact integer {ARIADNE_QUALITY_VERSION}, "
-            f"got {version!r}"
+            f"{where} version must be the exact integer {ARIADNE_QUALITY_VERSION}, got {version!r}"
         )
     reports = profile.get("reports")
     if not isinstance(reports, list):
@@ -1661,9 +1664,7 @@ def _table_quality_native_errors(
                     )
                 tested_population = check.get("tested_population")
                 if not isinstance(tested_population, str) or not tested_population.strip():
-                    errors.append(
-                        f"{check_spot} tested_population must be supplied non-empty text"
-                    )
+                    errors.append(f"{check_spot} tested_population must be supplied non-empty text")
                 elif len(tested_population) > QUALITY_MAX_TEXT_CHARS:
                     errors.append(
                         f"{check_spot} tested_population exceeds its "
@@ -1709,13 +1710,9 @@ def _table_quality_native_errors(
                 ):
                     wm_value = watermark.get(key)
                     if not isinstance(wm_value, str) or not wm_value.strip():
-                        errors.append(
-                            f"{spot} watermark {key} must be supplied non-empty text"
-                        )
+                        errors.append(f"{spot} watermark {key} must be supplied non-empty text")
                     elif len(wm_value) > cap:
-                        errors.append(
-                            f"{spot} watermark {key} exceeds its {cap}-character bound"
-                        )
+                        errors.append(f"{spot} watermark {key} exceeds its {cap}-character bound")
                 _, wm_errors = _quality_aware_instant(
                     watermark.get("observed_at"), f"{spot} watermark observed_at"
                 )
@@ -1972,7 +1969,8 @@ def policy_closure(
 
 
 def _parse_ariadne_context_control(
-    raw: object, control_bytes: bytes,
+    raw: object,
+    control_bytes: bytes,
 ) -> tuple[AriadneContextControl | None, list[str]]:
     """Parse the optional canonical application block; no external authority or I/O."""
     import yaml
@@ -1982,8 +1980,11 @@ def _parse_ariadne_context_control(
     # block's fixed-depth maps so ambiguous declarations cannot become last-wins.
     root = yaml.compose(control_bytes, Loader=yaml.SafeLoader)
     if isinstance(root, yaml.MappingNode):
-        blocks = [value for key, value in root.value
-                  if isinstance(key, yaml.ScalarNode) and key.value == "ariadne_context"]
+        blocks = [
+            value
+            for key, value in root.value
+            if isinstance(key, yaml.ScalarNode) and key.value == "ariadne_context"
+        ]
         if len(blocks) != 1:
             errors.append("ariadne_context is declared more than once")
         maps = [(node, "ariadne_context", 0) for node in blocks]
@@ -2402,10 +2403,12 @@ def inspect_ariadne_candidate(
         for message in validate_source_references(captured.manifest, captured.kb)
     )
     if ontology_catalog is not None and ontology_catalog != _control_catalog(captured.kb.control):
-        diagnostics.append(AriadneProfileDiagnostic(
-            "unresolved-reference",
-            "caller ontology_catalog does not agree with the captured Control File declaration",
-        ))
+        diagnostics.append(
+            AriadneProfileDiagnostic(
+                "unresolved-reference",
+                "caller ontology_catalog does not agree with the captured Control File declaration",
+            )
+        )
     return AriadneCandidateInspection(
         namespace=namespace,
         revision=captured.revision,
@@ -2504,10 +2507,14 @@ def _verify_s3_admission(metadata_store: Any, pinned: str, manifest: Any, locati
         activation.version != receipt.version
         or activation.review_digest != receipt.review_digest
         or activation.expected_current != receipt.expected_current
-        or (location.destination_uri is not None
-            and receipt.destination.rstrip("/") != location.destination_uri.rstrip("/"))
-        or (location.effective_target_identity is not None
-            and receipt.destination_identity != location.effective_target_identity)
+        or (
+            location.destination_uri is not None
+            and receipt.destination.rstrip("/") != location.destination_uri.rstrip("/")
+        )
+        or (
+            location.effective_target_identity is not None
+            and receipt.destination_identity != location.effective_target_identity
+        )
     ):
         raise UnadmittedInputError(
             f"S3 Published Version {pinned!r} has inconsistent activation or destination identity"
@@ -2787,9 +2794,7 @@ def _metadata_match_passage(
     import yaml
 
     keys = {
-        _METADATA_FIELD_KEYS[field]
-        for field in matched_fields
-        if field in _METADATA_FIELD_KEYS
+        _METADATA_FIELD_KEYS[field] for field in matched_fields if field in _METADATA_FIELD_KEYS
     }
     if not keys:
         raise MalformedProfileError(
@@ -2813,9 +2818,7 @@ def _metadata_match_passage(
     frontmatter = raw[:pos]
     root = yaml.compose(frontmatter, Loader=yaml.SafeLoader)
     if not isinstance(root, yaml.MappingNode):
-        raise MalformedProfileError(
-            f"no citable YAML frontmatter mapping at {page.path!r}"
-        )
+        raise MalformedProfileError(f"no citable YAML frontmatter mapping at {page.path!r}")
     for key, value in root.value:
         if not (isinstance(key, yaml.ScalarNode) and key.value in keys):
             continue
@@ -3002,8 +3005,7 @@ def search_published_context_pages(
         visible = [
             page
             for page in visible
-            if (page.ariadne_profile.kind if page.ariadne_profile else "unprofiled")
-            in requested
+            if (page.ariadne_profile.kind if page.ariadne_profile else "unprofiled") in requested
         ]
     canonical_content = snapshot.knowledge_base.canonical_pages
     hits: list[PublishedContextSearchHit] = []

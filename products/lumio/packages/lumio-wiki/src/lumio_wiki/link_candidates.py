@@ -186,11 +186,7 @@ def find_link_candidates(pages: Sequence[CompiledPage]) -> list[LinkCandidate]:
         if len(distinct) != 1:
             continue
         target = distinct[0]
-        term = (
-            target.title
-            if target.title and target.title.casefold() == key
-            else pairs[0][1]
-        )
+        term = target.title if target.title and target.title.casefold() == key else pairs[0][1]
         resolvable[key] = (target, term)
 
     # 3. One case-insensitive, word-bounded pattern per term, in stable order.
@@ -238,7 +234,5 @@ def find_link_candidates(pages: Sequence[CompiledPage]) -> list[LinkCandidate]:
                     )
                 )
 
-    candidates.sort(
-        key=lambda c: (c.source_path, c.line, c.column, c.target_title, c.term)
-    )
+    candidates.sort(key=lambda c: (c.source_path, c.line, c.column, c.target_title, c.term))
     return candidates

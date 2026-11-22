@@ -231,9 +231,7 @@ def test_snapshot_graph_traversal_matches_the_path_based_loader():
 
     titles = [page.title for page in direct_kb.pages]
     # Canonical relationships.
-    assert snapshot.related_from("Lumio Overview") == direct_kb.related_from(
-        "Lumio Overview"
-    )
+    assert snapshot.related_from("Lumio Overview") == direct_kb.related_from("Lumio Overview")
     assert snapshot.graph_path("Lumio Overview", "Technology Stack") == direct_kb.graph_path(
         "Lumio Overview", "Technology Stack"
     )

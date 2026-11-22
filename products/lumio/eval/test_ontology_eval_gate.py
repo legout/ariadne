@@ -66,9 +66,7 @@ def test_a_wrong_expectation_is_a_measured_failure_not_a_crash(corpus_kb, tmp_pa
         '    expect: ["Sage Wiki"]  # wrong: disputed claims never traverse\n',
         encoding="utf-8",
     )
-    report = ontology_eval.evaluate_ontology(
-        corpus_kb, ontology_eval.load_ontology_gold_set(wrong)
-    )
+    report = ontology_eval.evaluate_ontology(corpus_kb, ontology_eval.load_ontology_gold_set(wrong))
     assert report.edge_traversal.n == 1 and report.edge_traversal.correct == 0
     assert not report.all_pass
     assert report.edge_traversal.failures, "the failure must name the row"
@@ -77,14 +75,17 @@ def test_a_wrong_expectation_is_a_measured_failure_not_a_crash(corpus_kb, tmp_pa
 def test_empty_gold_set_sections_measure_as_vacuously_true(tmp_path, corpus_kb):
     empty = tmp_path / "empty_gold_set.yaml"
     empty.write_text("name: empty-v1\n", encoding="utf-8")
-    report = ontology_eval.evaluate_ontology(
-        corpus_kb, ontology_eval.load_ontology_gold_set(empty)
-    )
+    report = ontology_eval.evaluate_ontology(corpus_kb, ontology_eval.load_ontology_gold_set(empty))
     assert report.all_pass
-    assert all(a.n == 0 for a in (
-        report.entity_resolution, report.title_recall,
-        report.edge_traversal, report.scope_separation,
-    ))
+    assert all(
+        a.n == 0
+        for a in (
+            report.entity_resolution,
+            report.title_recall,
+            report.edge_traversal,
+            report.scope_separation,
+        )
+    )
 
 
 def test_cli_eval_ontology_table_and_exit_code(corpus_kb, capsys):
@@ -99,9 +100,7 @@ def test_cli_eval_ontology_table_and_exit_code(corpus_kb, capsys):
 
 
 def test_cli_eval_ontology_json_is_valid(corpus_kb, capsys):
-    code = cli_main(
-        ["eval-ontology", str(CORPUS), "--gold-set", str(GOLD_SET), "--json"]
-    )
+    code = cli_main(["eval-ontology", str(CORPUS), "--gold-set", str(GOLD_SET), "--json"])
     out = capsys.readouterr().out
     assert code == 0
     payload = json.loads(out)

@@ -194,7 +194,7 @@ CUSTOMER_COUNT_PAGE = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: metric\n"
@@ -205,10 +205,10 @@ CUSTOMER_COUNT_PAGE = (
     "    type: metric\n"
     "    status: stable\n"
     "    title: customer_count\n"
-    '    description: Count of customers in the master data.\n'
+    "    description: Count of customers in the master data.\n"
     "    tags: [metric]\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "    dimensions:\n      - country\n"
     "    governed_by: references/customers-master-data.md\n"
     "    grain:\n"
@@ -229,17 +229,17 @@ CUSTOMERS_REFERENCE_PAGE = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: reference\n"
     "  native:\n"
     "    type: reference\n"
     '    title: "Customers master data"\n'
-    '    description: The demo customers master data.\n'
+    "    description: The demo customers master data.\n"
     "    tags:\n      - customers\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "---\n\n# Customers master data\n\nOne row per customer.\n"
 )
 
@@ -510,17 +510,17 @@ _TRAP_GOVERNING_REFERENCE = (
     "lifecycle: approved\n"
     "visibility: public\n"
     "sources:\n"
-    '  - id: seed-notes\n    title: Seed notes\n'
+    "  - id: seed-notes\n    title: Seed notes\n"
     "ariadne_profile:\n"
     "  version: 1\n"
     "  kind: reference\n"
     "  native:\n"
     "    type: reference\n"
     '    title: "Trap fixture notes"\n'
-    '    description: The trap fixture governing notes.\n'
+    "    description: The trap fixture governing notes.\n"
     "    tags:\n      - trap\n"
     "    sources:\n"
-    '      - id: seed-notes\n        title: Seed notes\n'
+    "      - id: seed-notes\n        title: Seed notes\n"
     "---\n\n# Trap fixture notes\n\nThe orders and order_lines fixtures.\n"
 )
 
@@ -539,7 +539,7 @@ def _trap_metric_page(model: str, metric: str, grain_key: str, dataset: str) -> 
         "lifecycle: approved\n"
         "visibility: public\n"
         "sources:\n"
-        '  - id: seed-notes\n    title: Seed notes\n'
+        "  - id: seed-notes\n    title: Seed notes\n"
         "ariadne_profile:\n"
         "  version: 1\n"
         "  kind: metric\n"
@@ -554,7 +554,7 @@ def _trap_metric_page(model: str, metric: str, grain_key: str, dataset: str) -> 
         "    tags: [metric]\n"
         "    stale_after: 2027-12-31\n"
         "    sources:\n"
-        '      - id: seed-notes\n        title: Seed notes\n'
+        "      - id: seed-notes\n        title: Seed notes\n"
         "    dimensions:\n      - region\n"
         "    governed_by: references/trap-fixture-notes.md\n"
         "    grain:\n"
@@ -593,7 +593,7 @@ def _admitted_trap_project(root: Path, *, drifted: bool) -> Path:
     (knowledge / "references").mkdir(parents=True)
     (knowledge / "lumio.yaml").write_text(_TRAP_CONTROL, encoding="utf-8")
     (knowledge / ".lumio-authoring.yaml").write_text(
-        f"version: 1\nnamespace: \"{_TRAP_NAMESPACE}\"\nsources: {{}}\nbindings: {{}}\n",
+        f'version: 1\nnamespace: "{_TRAP_NAMESPACE}"\nsources: {{}}\nbindings: {{}}\n',
         encoding="utf-8",
     )
     for model, metric, grain_key, dataset in (

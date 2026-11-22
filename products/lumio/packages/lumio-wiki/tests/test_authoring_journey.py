@@ -1174,8 +1174,9 @@ Keep the existing field guide identity.\n"""
     assert candidate_control.categories == existing_control.categories
     assert candidate_control.hot_index == existing_control.hot_index
     assert candidate_control.ontology is not None
-    assert candidate_control.ontology.entity_types["note"] == (
-        existing_control.ontology.entity_types["note"]
+    assert (
+        candidate_control.ontology.entity_types["note"]
+        == (existing_control.ontology.entity_types["note"])
     )
     assert candidate_control.ontology.predicates == existing_control.ontology.predicates
     assert candidate_control.ontology.redirects == existing_control.ontology.redirects
@@ -1207,9 +1208,7 @@ ontology:
 
     runbook_entity = "entity:restart-worker-runbook"
     runbook_source = "restart-worker-runbook-source"
-    runbook_body = (
-        "# Restart Worker\n\nRestart the worker after replacing its configuration.\n"
-    )
+    runbook_body = "# Restart Worker\n\nRestart the worker after replacing its configuration.\n"
     original = outside / "originals" / "restart-worker.md"
     original.parent.mkdir(parents=True)
     original.write_text(runbook_body)

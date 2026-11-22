@@ -458,11 +458,7 @@ def test_overlapping_login_cannot_restore_rotated_browser_session(
 
     async def gated_app(scope, receive, send):
         nonlocal delay_arrival
-        if (
-            delay_arrival
-            and scope["type"] == "http"
-            and scope["path"] == "/workspace"
-        ):
+        if delay_arrival and scope["type"] == "http" and scope["path"] == "/workspace":
             delay_arrival = False
             arrival_started.set()
             await finish_arrival.wait()
@@ -515,9 +511,7 @@ def test_overlapping_login_cannot_restore_rotated_browser_session(
                     "callback_status": callback_response.status_code,
                     "old_status": old_response.status_code,
                     "rotated": new_credential is not None and new_credential != old_credential,
-                    "late_response_cookie": old_response.cookies.get(
-                        "lumio_workspace_session"
-                    ),
+                    "late_response_cookie": old_response.cookies.get("lumio_workspace_session"),
                     "browser_credential": browser_credential,
                     "old_session": state.load_browser_session(old_credential),
                     "new_session": (
