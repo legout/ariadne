@@ -536,7 +536,7 @@ def rewrite_identities(text: str, conv: Conversion) -> str:
     doc = yaml.safe_load(text)
     section = doc.get("policy_bindings") if isinstance(doc, dict) else None
     bindings = section.get("bindings") if isinstance(section, dict) else None
-    if not isinstance(bindings, list):
+    if not isinstance(doc, dict) or not isinstance(section, dict) or not isinstance(bindings, list):
         return text
 
     def mapped(value: Any) -> Any:
