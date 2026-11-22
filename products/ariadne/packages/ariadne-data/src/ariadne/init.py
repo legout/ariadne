@@ -470,6 +470,164 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- `ariadne init`
+
+SELECTOR_YAML = """\
+version: 1
+mode: integrated
+subtree: knowledge
+namespace: {namespace}
+profile: ariadne-context/1
+support_revision: {revision}
+policy_bindings:
+  version: 1
+  bindings: []
+"""
+
+
+def _created_by_init(target: Path, before: set[str]) -> list[str]:
+    """Paths (relative, sorted) that exist now and did not before — init's own files."""
+    now = {
+        p.relative_to(target).as_posix()
+        for p in target.rglob("*")
+        if p.is_file() and ".git" not in p.relative_to(target).parts
+    }
+    return sorted(now - before)
+
+
+def _git(target: Path, *argv: str, check: bool = True) -> str:
+    from ariadne import proposals
+
+    return proposals._git(list(argv), target, check=check).stdout
+
+
+def ensure_git(target: Path, *, assume_yes: bool, stdin, stdout) -> None:
+    """Create the repository if absent and make sure a Git identity resolves; with no
+    identity prompt once and set a repository-LOCAL identity (spec 0040 §3.2.1)."""
+    from ariadne import proposals
+
+    target.mkdir(parents=True, exist_ok=True)
+    top = proposals._git(["rev-parse", "--show-toplevel"], target, check=False)
+    if top.returncode != 0:
+        _git(target, "init", "-q")
+    elif Path(top.stdout.strip()).resolve() != target.resolve():
+        raise ValueError(
+            f"{target} is inside the Git repository {top.stdout.strip()}; run init at its top level"
+        )
+    import os
+
+    if os.environ.get("GIT_AUTHOR_NAME") and os.environ.get("GIT_AUTHOR_EMAIL"):
+        return
+    missing = [
+        k
+        for k in ("user.name", "user.email")
+        if not _git(target, "config", "--get", k, check=False).strip()
+    ]
+    if not missing:
+        return
+    if assume_yes or not (stdin.isatty() and stdout.isatty()):
+        raise ValueError(
+            "no Git identity resolves; set one with:\n"
+            f"  git -C {target} config user.name '<your name>'\n"
+            f"  git -C {target} config user.email '<you@example.org>'"
+        )
+    for key in missing:
+        stdout.write(f"Git {key}: ")
+        stdout.flush()
+        value = stdin.readline().strip()
+        if not value:
+            raise ValueError(f"no value for {key}; nothing was changed")
+        _git(target, "config", key, value)
+
+
+def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, stdout=None) -> dict:
+    """``ariadne init [DIR]`` (spec 0040 §3.2): repository, identity, namespace, the
+    private profile pair, the selector at the highest support_revision and the native
+    Lumio KB, as ONE commit holding only the files init created. A re-run on an
+    initialized project validates it and changes nothing; a conflicting existing file
+    refuses before any write."""
+    import contextlib
+    import io
+
+    from ariadne import lumio_context, profile_pair, proposals
+
+    stdin = stdin or sys.stdin
+    stdout = stdout or sys.stdout
+    target = Path(target).resolve()
+    if (target / "context_integration.yaml").is_file():
+        return _revalidate(target)
+    conflicts = [
+        rel
+        for rel in ("context_integration.yaml", "knowledge", "ariadne.yaml", "data/seed_notes.md")
+        if (target / rel).exists() or (target / rel).is_symlink()
+    ]
+    if conflicts:
+        raise ValueError(
+            f"init refuses: {', '.join(conflicts)} already exist(s) without a complete "
+            "Ariadne project — move or remove them; nothing was written"
+        )
+    ensure_git(target, assume_yes=assume_yes, stdin=stdin, stdout=stdout)
+    # the user's index and working tree stay untouched except for init's own files
+    staged_before = _git(target, "diff", "--cached", "--name-only").split()
+    before = {
+        p.relative_to(target).as_posix()
+        for p in target.rglob("*")
+        if p.is_file() and ".git" not in p.relative_to(target).parts
+    }
+    identifier = profile_pair.new_identifier()
+    namespace = f"urn:uuid:{identifier}"
+    lumio_profile = profile_pair.config_dir() / f"{identifier}.json"
+    sibling = profile_pair.sibling_path(lumio_profile)
+    revision = max(lumio_context.IMPLEMENTED_PROFILE_REVISIONS)
+    quiet = io.StringIO()
+    with contextlib.redirect_stdout(quiet):
+        code = main(
+            [str(target), "--namespace", namespace, "--private-profile", str(lumio_profile)]
+        )
+    if code != 0:
+        raise ValueError("init failed: " + quiet.getvalue().strip())
+    (target / "context_integration.yaml").write_text(
+        SELECTOR_YAML.format(namespace=namespace, revision=revision), encoding="utf-8"
+    )
+    profile_pair.write_private(
+        sibling,
+        json.dumps(profile_pair.default_sibling(identifier), indent=2, sort_keys=True) + "\n",
+    )
+    profile_pair.record(target, lumio_profile, sibling)
+    created = _created_by_init(target, before)
+    tracked = [rel for rel in created if not rel.startswith(".ariadne/")]
+    ignored = [
+        rel
+        for rel in tracked
+        if proposals._git(["check-ignore", "-q", "--", rel], target, check=False).returncode == 0
+    ]
+    tracked = [rel for rel in tracked if rel not in ignored]
+    literal = [proposals._literal(rel) for rel in tracked]
+    _git(target, "add", "-f", "--", *literal)
+    _git(target, "commit", "-q", "-m", "ariadne: init", "--", *literal)
+    after = _git(target, "diff", "--cached", "--name-only").split()
+    assert sorted(set(after) - set(staged_before)) == []  # nothing else was staged
+    return {
+        "initialized": True,
+        "namespace": namespace,
+        "committed": tracked,
+        "profile": str(lumio_profile),
+    }
+
+
+def _revalidate(target: Path) -> dict:
+    """The no-op re-run: the project must still be a valid managed project."""
+    from ariadne import profile_pair, proposals
+
+    proposals.refuse_unsupported_project(target)
+    settings = profile_pair.load(target)
+    return {
+        "initialized": False,
+        "message": "already initialized",
+        "profile": settings["lumio_profile"],
+    }
+
+
 def _project_conflict(pyproject: Path) -> str | None:
     """Refusal message for an existing ``pyproject.toml``, or None if safe."""
     try:
