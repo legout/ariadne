@@ -979,7 +979,7 @@ def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> lis
         for page in sorted(knowledge.rglob("*.md")):
             rel = f"knowledge/{page.relative_to(knowledge)}"
             try:
-                full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), rel)
+                full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), Path(rel))
             except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
                 continue
             profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1543,7 +1543,7 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
     from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return []
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1597,7 +1597,7 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
     from lumio_wiki import parse_frontmatter
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return []
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1641,7 +1641,7 @@ def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
     from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return None
     view = _kb_reference_view(full)

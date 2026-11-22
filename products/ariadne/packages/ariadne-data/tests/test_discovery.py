@@ -20,12 +20,11 @@ from tests.test_git_authoring import complete_bundle_project  # noqa: E402
 
 
 def _source_free_guards(monkeypatch):
-    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
-
     import ariadne.execution as execution
     import ariadne.query as query
     import ariadne.render as render
     import ariadne.validate as validate
+    import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
     def forbidden(*args, **kwargs):
         raise AssertionError("discovery must not connect, render, execute, or use network")
@@ -176,7 +175,7 @@ def test_mcp_discovery_starts_source_free_for_every_registration(tmp_path, monke
                 if "discover" in tools:
                     result = await self.app.call_tool("discover", {"query": "event"})
                     blocks = list(getattr(result, "content", result))
-                    observed.append(json.loads(blocks[0].text))
+                    observed.append(json.loads(blocks[0].text))  # pyright: ignore[reportAttributeAccessIssue]
 
             asyncio.run(probe())
 
@@ -230,6 +229,7 @@ def test_ai_context_is_returned_as_read_only_guidance_and_never_changes_the_sql(
 
     plain_entry, plain_sql = listing(plain)
     guided_entry, guided_sql = listing(guided)
+    assert isinstance(plain_entry, dict) and isinstance(guided_entry, dict)
     assert "ai_context" not in plain_entry
     assert guided_entry["ai_context"] == {"metric": {"synonyms": ["sum of values", "grand total"]}}
     assert guided_sql == plain_sql

@@ -125,7 +125,9 @@ def demo_db(tmp_path):
 
 def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
     path = tmp_path / "events.parquet"
-    duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)").write_parquet(str(path))
+    relation = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
+    assert relation is not None
+    relation.write_parquet(str(path))
     registry = tmp_path / "ariadne.yaml"
     registry.write_text(
         yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),
@@ -142,7 +144,9 @@ def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
 
 def _selector_registry(tmp_path: Path) -> Path:
     path = tmp_path / "events.parquet"
-    duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)").write_parquet(str(path))
+    relation = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
+    assert relation is not None
+    relation.write_parquet(str(path))
     registry = tmp_path / "selector.yaml"
     registry.write_text(
         yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),

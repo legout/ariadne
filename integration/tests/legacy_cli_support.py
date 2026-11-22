@@ -1,4 +1,7 @@
-"""TEST-ONLY driver (not packaged, no product alias): the pre-0040 flat commands whose behavior now lives in MCP tools / library calls. Kept so the behavior tests that drove them stay migrated, not deleted. Local JSON CLI: the five Ariadne operations as flat subcommands (spec
+"""TEST-ONLY driver (not packaged, no product alias).
+
+The pre-0040 flat commands whose behavior now lives in MCP tools and library calls, kept
+so the behavior tests that drove them stay migrated rather than deleted. Original text:
 2026-09-23-0001 §4, ADR-0012).
 
 A thin adapter over :class:`ariadne.query.QueryRuntime` — this module owns

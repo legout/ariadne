@@ -1390,7 +1390,7 @@ def _edit_page_batch_locked(
         if not (worktree_root / rel).exists():
             _refuse_untracked_new_artifact(project, worktree_root, rel, current)
         try:
-            meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+            meta, _body, _line = parse_frontmatter(content, Path(PurePosixPath(rel).name))
         except FrontmatterError as exc:
             raise GitAuthoringError(f"{rel}: {exc}") from exc
         title = meta.get("title") if isinstance(meta, dict) else None

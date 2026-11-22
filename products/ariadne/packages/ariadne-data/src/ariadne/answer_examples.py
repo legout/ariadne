@@ -203,7 +203,7 @@ def _verify_citation(project: Path, revision: str, ref: str) -> dict:
         raise ValueError(f"cited path does not exist in the selected revision: {ref!r}")
     from lumio_wiki import parse_frontmatter
 
-    meta, _body, _line = parse_frontmatter(blob.decode("utf-8"), pure.name)
+    meta, _body, _line = parse_frontmatter(blob.decode("utf-8"), Path(pure.name))
     kind = ((meta or {}).get("ariadne_profile") or {}).get("kind")
     if kind not in ("metric", "policy"):
         raise ValueError(
@@ -355,13 +355,10 @@ def save_candidate_example(
                 None if active is None else (active["generation"], active["candidate_revision"])
             )
             written = draft.edit_pages(project, expected, pages)
-            proposal = proposals._load_record(
+            proposal = draft.proposal_of(
                 project,
-                draft.proposal_of(
-                    project,
-                    (written["draft"]["generation"], written["draft"]["candidate_revision"]),
-                ),
-            )["id"]
+                (written["draft"]["generation"], written["draft"]["candidate_revision"]),
+            )
             base_revision = proposals._load_record(project, proposal)["base_revision"]
             result_record = written
         else:
@@ -370,7 +367,9 @@ def save_candidate_example(
                 project, draft.active_expected(project, proposal, expected_revision), pages
             )
     except Exception as exc:
-        if not created_proposal and isinstance(exc, ValueError):
+        if proposal is None or (not created_proposal and isinstance(exc, ValueError)):
+            # a refused FIRST write leaves no draft behind (draft.mutate abandons it),
+            # so there is no unadmitted worktree state to report
             raise
         worktree = project / proposals.WORKTREES_REL / proposal
         try:
@@ -622,7 +621,7 @@ def search_candidate(
     ranked = []
     for result in captured.kb.search_pages(query, limit=len(selected), pages=selected):
         page = result.page
-        meta = page.ariadne_profile.native or {}
+        meta = (page.ariadne_profile.native if page.ariadne_profile else None) or {}
         stale = _candidate_is_stale(meta, project, revision, proposals)
         if stale and not include_history:
             continue  # stale history never occupies a result slot by default

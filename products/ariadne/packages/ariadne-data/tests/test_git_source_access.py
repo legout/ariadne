@@ -1139,7 +1139,7 @@ def test_authoring_profiling_limits_are_host_owned_and_complete(tmp_path, connec
                             observer.large_transferred += 1
                 return rows
 
-            duckdb.DuckDBPyRelation.fetchall = observing
+            duckdb.DuckDBPyRelation.fetchall = observing  # pyright: ignore[reportAttributeAccessIssue]
             return self
 
         def __exit__(self, *exc):

@@ -229,6 +229,7 @@ def _core_control_file():  # noqa: PLR0911 - none; single return path
     )
 
     control = extend_control_file_categories(seeded_control_file(), _CORE_CATEGORIES)
+    assert control.ontology is not None  # the seeded Control File always carries its ontology
     control = control.__class__(
         version=control.version,
         categories=control.categories,
@@ -431,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inspect it and re-run the preview",
                 code="setup_target_changed",
             )
+        assert plan.agents_bytes is not None  # agents_enabled=True above
         destination.write_bytes(plan.agents_bytes)
 
     try:

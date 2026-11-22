@@ -233,7 +233,8 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         page for page in loaded.pages if page.path == "policies/cancelled-orders.md"
     )
     expected_verified = [{"by": "human:synthetic-owner", True: date(2020, 1, 1)}]
-    assert cancellation.ariadne_profile.native["verified"] == expected_verified
+    assert cancellation.ariadne_profile is not None
+    assert (cancellation.ariadne_profile.native or {})["verified"] == expected_verified
     cancellation_review = next(
         change
         for change in pages["policies/cancelled-orders.md"]["semantic_changes"]
@@ -266,7 +267,7 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
     if case == "existing_candidate_staged_addition":
         run_git(tree, "commit", "-q", "-m", "human: existing reviewed candidate")
 
-    def forbidden(*args, **kwargs):
+    def forbidden_check(*args, **kwargs):
         pytest.fail("static contribution review/check opened a live source or runtime")
 
     for module, name in (
@@ -275,7 +276,7 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         (execution, "build_connection"),
         (execution.DuckDBExecution, "__init__"),
     ):
-        monkeypatch.setattr(module, name, forbidden)
+        monkeypatch.setattr(module, name, forbidden_check)
 
     review = review_contribution(project, proposal, base_revision=base)
     assert review["schema_version"] == 1
@@ -328,7 +329,8 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         page for page in loaded.pages if page.path == "policies/cancelled-orders.md"
     )
     expected_verified = [{"by": "human:synthetic-owner", True: date(2020, 1, 1)}]
-    assert cancellation.ariadne_profile.native["verified"] == expected_verified
+    assert cancellation.ariadne_profile is not None
+    assert (cancellation.ariadne_profile.native or {})["verified"] == expected_verified
     cancellation_review = next(
         change
         for change in pages["policies/cancelled-orders.md"]["semantic_changes"]

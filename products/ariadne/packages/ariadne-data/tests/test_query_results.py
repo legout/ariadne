@@ -31,7 +31,6 @@ from pathlib import Path
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import yaml
-
 from ariadne import (
     execution,
     query_results,  # pyright: ignore[reportAttributeAccessIssue] — drift: analyzer binds the venv copy lacking this lane's new module
@@ -727,7 +726,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         from mcp.types import CallToolResult  # pyright: ignore[reportMissingImports] — [mcp] extra
 
         assert isinstance(result, CallToolResult) and not result.is_error
-        assert json.loads(result.content[0].text)["rows"] == [{"plain_total": 60.0}]
+        assert json.loads(result.content[0].text)["rows"]  # pyright: ignore[reportAttributeAccessIssue] == [{"plain_total": 60.0}]
         assert instance._measure is _mcp_result_bytes  # installed at the seam
         factory_built = make_runtime(served)
         app2 = build_app(lambda: factory_built, toolset="analyst")
@@ -741,14 +740,13 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
 
     elif case == "framing_reserve_covers_worst_case_ids":
         import pydantic_core  # pyright: ignore[reportMissingImports] — the [mcp] extra ships it
+        from ariadne.serve import _RESERVED_REQUEST_ID, _mcp_result_bytes
         from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
             SERVER_INFO_META_KEY,
             CallToolResult,
             JSONRPCResponse,
             TextContent,
         )
-
-        from ariadne.serve import _RESERVED_REQUEST_ID, _mcp_result_bytes
 
         value = {"metric": "m", "rows": [{"a": 1}]}
         text = pydantic_core.to_json(value, fallback=str, indent=2).decode()
@@ -890,10 +888,11 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             make_runtime(served, response_bytes=64)
 
     elif case == "host_config_file_tightens_the_cli":
-        from integration.tests import legacy_cli_support as cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
+
+        from integration.tests import legacy_cli_support as cli
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)
@@ -989,12 +988,11 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             assert name.isascii() and "\\" not in name and '"' not in name
 
     elif case == "mcp_error_envelope_matches_the_actual_form":
+        from ariadne.serve import _mcp_error_envelope_bytes, _wire_bytes
         from mcp.types import (  # pyright: ignore[reportMissingImports] — the [mcp] extra
             CallToolResult,
             TextContent,
         )
-
-        from ariadne.serve import _mcp_error_envelope_bytes, _wire_bytes
 
         exc = ValueError("boom " * 400)
         actual = _wire_bytes(
@@ -1094,10 +1092,11 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert result["rows"] == [{"total": 60.0}] and result["result"]["complete"] is True
 
     elif case == "cli_threads_one_request_budget_through_construction":
-        from integration.tests import legacy_cli_support as cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
+
+        from integration.tests import legacy_cli_support as cli
 
         project = complete_bundle_project(tmp_path)
         api = AuthoringProject(project)

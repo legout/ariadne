@@ -531,7 +531,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             # the assembled report (with its embedded SDK
             # pages) is a typed navigation result too — measured on its real
             # SDK conversion, refusing whole when it cannot fit.
-            return _typed_navigation_result(app._tool_manager._tools["discover"], result, project)
+            return _typed_navigation_result(app._tool_manager._tools["discover"], result, project)  # pyright: ignore[reportReturnType] — a refusal is a CallToolResult passed through
 
         @app.tool()
         @_tool_errors
@@ -552,7 +552,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.search_context(query)
-            return _typed_navigation_result(
+            return _typed_navigation_result(  # pyright: ignore[reportReturnType] — a refusal is a CallToolResult passed through
                 app._tool_manager._tools["search_context"], result, project
             )
 
@@ -563,7 +563,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.list_context_pages()
-            return _typed_navigation_result(
+            return _typed_navigation_result(  # pyright: ignore[reportReturnType] — a refusal is a CallToolResult passed through
                 app._tool_manager._tools["list_context_pages"], result, project
             )
 
@@ -579,7 +579,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             _refuse_unrepresentable_mcp_ceiling(project)
             discovery = DiscoveryRuntime.open_project(project)
             result = await discovery.read_context_page(path)
-            return _typed_navigation_result(
+            return _typed_navigation_result(  # pyright: ignore[reportReturnType] — a refusal is a CallToolResult passed through
                 app._tool_manager._tools["read_context_page"], result, project
             )
 
@@ -911,7 +911,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 _refuse_unrepresentable_mcp_ceiling(project)
                 discovery = DiscoveryRuntime.open_project(project)
                 result = await discovery.resolve_term(request, part=part)
-                return _typed_navigation_result(
+                return _typed_navigation_result(  # pyright: ignore[reportReturnType] — a refusal is a CallToolResult passed through
                     app._tool_manager._tools["resolve_term"], result, project
                 )
             return await _runtime().resolve_term(request, part=part)
