@@ -1,15 +1,19 @@
-"""AC8 installed-wheel self-check; run with the FRESH venv's Python, not uv run.
+"""Installed-wheel self-check (spec 0040 AC1/AC5); run with the FRESH venv's Python.
 
 Build/install separately: uv build; uv venv --python 3.14 /tmp/ariadne-wheel-venv;
 uv pip install --python /tmp/ariadne-wheel-venv/bin/python dist/ariadne_data-*.whl;
 /tmp/ariadne-wheel-venv/bin/python tests/setup_wheel_walkthrough.py
 
-The harness acts as the operator for human commands in a throwaway fixture;
-setup itself performs no approval/admission. No provider or live LLM is needed.
+The wheel must expose only the `ariadne` executable. The owner path runs end to end in
+a throwaway directory through that executable: init, add, a sources-only approval and a
+calculation approval answered on a REAL pseudo-terminal, edit, validate and a governed
+query. No provider or live LLM is needed.
 """
 
 import json
 import os
+import pty
+import select
 import subprocess
 import sys
 import tempfile
@@ -115,11 +119,54 @@ def native_page(kind, title, resource, body):
     )
 
 
+def run_on_pty(binary, args, cwd, env, answers):
+    """Run a human-only command on a real pty: wait for each prompt, then answer."""
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [binary, *args], cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave, close_fds=True
+    )
+    os.close(slave)
+    output = b""
+    pending = list(answers)
+    while True:
+        ready, _, _ = select.select([master], [], [], 60)
+        if not ready:
+            proc.kill()
+            raise AssertionError(f"pty timeout: {output.decode(errors='replace')}")
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output += chunk
+        if pending and b"[yes/no]" in output.split(b"\n")[-1]:
+            os.write(master, pending.pop(0).encode() + b"\n")
+    code = proc.wait(timeout=60)
+    os.close(master)
+    return code, output.decode(errors="replace")
+
+
 def main():
     prefix = Path(sys.prefix)
     assert prefix in Path(ariadne.__file__).resolve().parents, "not a wheel-installed package"
     assert "site-packages" in str(ariadne.__file__)
     bin_dir = prefix / "bin"
+    # AC5: the installed wheel exposes only `ariadne` (no removed executables, no aliases)
+    removed = (
+        "ariadne-validate",
+        "ariadne-serve",
+        "ariadne-analyst-mcp",
+        "ariadne-authoring-mcp",
+        "ariadne-init",
+        "ariadne-skill",
+        "ariadne-profiler",
+        "ariadne-authoring",
+        "ariadne-admit",
+    )
+    present = sorted(p.name for p in bin_dir.glob("ariadne*"))
+    assert present == ["ariadne"], f"unexpected executables: {present}"
+    assert not [name for name in removed if (bin_dir / name).exists()]
     with tempfile.TemporaryDirectory(prefix="ariadne-wheel-walkthrough-") as tmp:
         root = Path(tmp)
         home = root / "home"
@@ -134,87 +181,57 @@ def main():
         )
         for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "OPENAI_API_KEY", "OPENAI_MODEL"):
             env.pop(key, None)
+        ariadne_bin = str(bin_dir / "ariadne")
 
-        def command(name, *args, cwd=root, structured=False) -> Any:
-            binary = str(bin_dir / name) if name.startswith("ariadne") else name
+        def cli(*args, cwd=project, structured=True) -> Any:
             result = subprocess.run(
-                [binary, *args], cwd=cwd, env=env, capture_output=True, text=True, check=False
+                [ariadne_bin, *args, "--json"],
+                cwd=cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
             )
-            assert result.returncode == 0, f"{name} {args}: {result.stdout}\n{result.stderr}"
-            print(f"PASS {name} {' '.join(args)}")
+            assert result.returncode == 0, f"ariadne {args}: {result.stdout}\n{result.stderr}"
+            print(f"PASS ariadne {' '.join(args)}")
             return json.loads(result.stdout) if structured else result.stdout
 
-        for name in (
-            "ariadne",
-            "ariadne-authoring",
-            "ariadne-admit",
-            "ariadne-init",
-            "ariadne-skill",
+        for sub in (
+            "init",
+            "add",
+            "draft",
+            "validate",
+            "diff",
+            "approve",
+            "status",
+            "query",
+            "detail",
+            "metrics",
+            "datasets",
+            "search",
+            "page",
+            "serve",
+            "skill",
+            "profile",
+            "migrate",
         ):
-            command(name, "--help")
-        assert "--no-input" in command("ariadne", "setup", "--help")
-        assert "--json" in command("ariadne", "status", "--help")
-        scaffold = command(
-            "ariadne", "setup", "--project", str(project), "--no-input", "--agents", "--agent", "pi"
+            helped = subprocess.run(
+                [ariadne_bin, sub, "--help"], env=env, capture_output=True, text=True, check=False
+            )
+            assert helped.returncode == 0 and sub in helped.stdout, sub
+
+        # --- the owner path (spec 0040 §1): no ID, revision, digest or selector anywhere
+        project.mkdir()
+        subprocess.run(["git", "init", "-q", str(project)], check=True, env=env)
+        subprocess.run(
+            ["git", "config", "user.name", "Wheel Operator"], cwd=project, env=env, check=True
         )
-        assert "Ready: no" in scaffold and "git init" in scaffold
-        assert not (project / ".git").exists() and not (project / ".ariadne").exists()
-        assert (project / ".pi/skills/ariadne").resolve() == project / ".agents/skills/ariadne"
-        command("git", "init", "-q", str(project))
-        command("git", "config", "user.name", "Wheel Operator", cwd=project)
-        command("git", "config", "user.email", "wheel@example.test", cwd=project)
-        # setup without Git materializes only the selected agent install (S2)
-        (project / "data").mkdir()
-        (project / "data/seed_notes.md").write_text(
-            "# Events\n\nOne row per unique event id; count every event once.\n", encoding="utf-8"
+        subprocess.run(
+            ["git", "config", "user.email", "wheel@example.test"], cwd=project, env=env, check=True
         )
-        # the native authoring surface: the knowledge/ KB plus the revision-2
-        # integrated selector with the authored §10.1 binding inventory (the
-        # narrative Policy binds the metric and its generated computation;
-        # enforcement null — no graph policy audit)
-        kb = project / "knowledge"
-        kb.mkdir(parents=True, exist_ok=True)
-        (kb / "lumio.yaml").write_text(
-            "version: 2\n"
-            'mode: "categorized"\n'
-            "categories:\n"
-            "  - name: tables\n"
-            "  - name: references\n"
-            "  - name: policies\n"
-            "  - name: metrics\n"
-            "  - name: computations\n"
-            "ontology:\n"
-            "  entity_types:\n"
-            "    table: {}\n"
-            "    reference: {}\n"
-            "    policy: {}\n"
-            "    metric: {}\n"
-            "    computation: {}\n"
-            "  predicates: {}\n"
-            "  redirects: {}\n",
-            encoding="utf-8",
-        )
-        (kb / ".lumio-authoring.yaml").write_text(
-            'version: 1\nnamespace: "urn:uuid:wheel-walkthrough"\nsources: {}\nbindings: {}\n',
-            encoding="utf-8",
-        )
-        (project / "context_integration.yaml").write_text(
-            "version: 1\n"
-            "mode: integrated\n"
-            "subtree: knowledge\n"
-            "namespace: urn:uuid:wheel-walkthrough\n"
-            "profile: ariadne-context/1\n"
-            "support_revision: 2\n"
-            "policy_bindings:\n"
-            "  version: 1\n"
-            "  bindings:\n"
-            "    - subject: {kind: metric, identity: events::events.event_count}\n"
-            "      policy: {namespace: urn:uuid:wheel-walkthrough,"
-            " entity_id: entity:all-events-count}\n"
-            "      operations: [get_metric, query_metrics]\n"
-            "      enforcement: null\n",
-            encoding="utf-8",
-        )
+        out = cli("init", str(project), "--yes", cwd=root)
+        assert out["initialized"] is True
+        (project / "data").mkdir(exist_ok=True)
         conn = duckdb.connect()
         conn.execute(
             "CREATE TABLE events AS SELECT * FROM "
@@ -222,50 +239,22 @@ def main():
         )
         conn.execute("COPY events TO ? (FORMAT PARQUET)", [str(project / "data/events.parquet")])
         conn.close()
-        intake = root / "sources.yaml"
-        intake.write_text(
-            "sources:\n- name: events\n  type: parquet\n  path: data/events.parquet\n"
+
+        added = cli("add", "data/events.parquet", "--name", "events")
+        assert added["draft"]["generation"] == 1 and "source_digest" in added
+        assert not (project / ".ariadne/source_grants.json").exists()  # nothing granted yet
+
+        # a sources-only approval on a real terminal: offline display, then "yes"
+        code, shown = run_on_pty(
+            ariadne_bin, ["approve", "--project", str(project)], project, env, ["yes"]
         )
-        started = command("ariadne-authoring", "start", "--project", str(project), structured=True)
-        pid = started["proposal"]
-        declared = command(
-            "ariadne-authoring",
-            "propose-sources",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            "--expected-revision",
-            started["candidate_revision"],
-            "--file",
-            str(intake),
-            structured=True,
-        )
-        # Exact operator handoff is visible when resuming setup, but setup never executes it.
-        resumed = command("ariadne", "setup", "--project", str(project), "--no-input")
-        assert (
-            f"--proposal {pid}" in resumed
-            and f"--source-digest {declared['source_digest']}" in resumed
-        )
-        assert not (project / ".ariadne/source_grants.json").exists()
-        command(
-            "ariadne-authoring",
-            "approve-sources",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            "--revision",
-            declared["revision"],
-            "--source-digest",
-            declared["source_digest"],
-        )
-        command("ariadne-authoring", "inputs", "--project", str(project), "--proposal", pid)
-        revision = declared["revision"]
-        # the OSI/model draft rides the live single-edit seam; the knowledge
-        # pages ride ONE native page batch (AC4) through the edit-pages command
-        # (a native skill profile refuses — the skill page is not authored)
-        edits = [{"kind": "model", "name": "events", "content": MODEL}]
+        assert code == 0, shown
+        assert "no source has been read" in shown
+        grants = json.loads((project / ".ariadne/source_grants.json").read_text(encoding="utf-8"))
+        assert [g["source"]["name"] for g in grants["grants"]] == ["events"]
+        assert not (project / ".ariadne/current.json").exists()  # no release activated
+
+        # the model draft, native pages and validation
         from ariadne.sources import table_resource
 
         events_table_uri = table_resource("events", None, "events", "events")
@@ -293,108 +282,50 @@ def main():
                 ),
             },
         ]
-        for edit in edits:
+        (project / "data/seed_notes.md").write_text(
+            "# Events\n\nOne row per unique event id; count every event once.\n", encoding="utf-8"
+        )
+        for edit in (
+            {"kind": "model", "name": "events", "content": MODEL},
+            {"kind": "seed_notes", "content": (project / "data/seed_notes.md").read_text("utf-8")},
+            {"kind": "pages", "pages": pages},
+        ):
             edit_file = root / "edit.json"
             edit_file.write_text(json.dumps(edit), encoding="utf-8")
-            changed = command(
-                "ariadne-authoring",
-                "edit",
-                "--project",
-                str(project),
-                "--proposal",
-                pid,
-                "--expected-revision",
-                revision,
-                "--file",
-                str(edit_file),
-                structured=True,
-            )
-            revision = changed["revision"]
-        pages_file = root / "pages.json"
-        pages_file.write_text(json.dumps(pages), encoding="utf-8")
-        changed = command(
-            "ariadne-authoring",
-            "edit-pages",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            "--expected-revision",
-            revision,
-            "--file",
-            str(pages_file),
-            structured=True,
-        )
-        revision = changed["revision"]
-        validated = command(
-            "ariadne-authoring",
-            "validate",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            "--expected-revision",
-            revision,
-            structured=True,
-        )
+            cli("draft", "edit", str(edit_file))
+        validated = cli("validate")
         assert validated["ok"] is True, validated
-        review = command(
-            "ariadne-authoring",
-            "review",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            structured=True,
-        )
-        assert not (project / ".ariadne/current.json").exists()
-        # integrated admission goes through the composite preview the
-        # operator confirms (spec0032 §10): the preview is computed in-process
-        # (the walkthrough runs on the installed wheel's own API) and its
-        # exact digest rides the admit command alongside the operator-owned
-        # local publication destination
-        from ariadne import admission
+        diff = cli("diff")
+        assert diff["approval_kind"] == "calculation" and diff["validation"] == "validated"
 
-        published = root / "published"
-        composite = admission.overall_review(
-            project,
-            pid,
-            review["revision"],
-            review["review_digest"],
-            destination=str(published),
-            expected_current="none",
-            scope=["public"],
+        # no terminal, no approval: stdin/stdout are pipes here
+        refused = subprocess.run(
+            [ariadne_bin, "approve", "--project", str(project)],
+            cwd=project,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        command(
-            "ariadne-admit",
-            "--project",
-            str(project),
-            "--proposal",
-            pid,
-            "--revision",
-            review["revision"],
-            "--reviewed-digest",
-            review["review_digest"],
-            "--context-destination",
-            str(published),
-            "--context-expected-current",
-            "none",
-            f"--overall-digest={composite['digest']}",
-            "--confirm",
+        assert refused.returncode == 1 and "interactive terminal" in refused.stderr
+        assert not (project / ".ariadne/current.json").exists()
+
+        # calculation approval on a real terminal, then the governed answer
+        code, shown = run_on_pty(
+            ariadne_bin, ["approve", "--project", str(project)], project, env, ["yes"]
         )
-        metrics = command("ariadne", "list-metrics", "--project", str(project), structured=True)
+        assert code == 0, shown
+        metrics = cli("metrics")
         assert metrics[0]["name"] == "events::events.event_count"  # spec 0039 §6 identity
-        result = command(
-            "ariadne", "get-metric", "event_count", "--project", str(project), structured=True
-        )
+        result = cli("query", "event_count")
         assert result["rows"] == [{"event_count": 3}]  # independently seeded three rows
         assert result["governed"] is True
         assert result["admission"]["route"] == "git-review-admission"
-        report = command("ariadne", "status", "--project", str(project), "--json", structured=True)
+        report = cli("status")
         assert report["ready"] is True and report["project"]["admission"]["state"] == "valid"
     print(
-        f"AC8 PASS: installed core wheel at {ariadne.__file__}; fresh governed event_count=3; "
-        "no optional agent/MCP/provider required; no publication."
+        f"PASS: installed wheel at {ariadne.__file__}; only `ariadne` is installed; owner path "
+        "with pty approvals gives governed event_count=3; no optional agent/MCP/provider."
     )
 
 
