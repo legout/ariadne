@@ -2874,7 +2874,7 @@ def test_integrated_technical_profiles_preserve_evidence_and_curated_content(
         validated = api.validate_proposal(started["proposal"], revision)
         assert validated["ok"] is True, validated["errors"]
         revision = validated["revision"]  # the finalize batch advanced the candidate
-        comp = tree / "knowledge" / "computations" / "status_lookup--order_status-label_count.md"
+        comp = tree / "knowledge" / "computations" / "status_lookup--order_status-2elabel_count.md"
         assert comp.is_file(), "the first validation must generate the Computation"
         # a human earns an independent attester on the generated page and adds
         # unrelated curated narrative; the sanctioned definition is unchanged
