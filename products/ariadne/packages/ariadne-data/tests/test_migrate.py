@@ -440,9 +440,7 @@ def test_a_generated_page_with_a_retained_check_is_deleted_for_regeneration(tmp_
     assert result["deleted"] == ["knowledge/computations/revenue.md"]
 
 
-def test_an_authored_attested_page_on_a_cross_fact_metric_is_refused(tmp_path):
-    """No sanctioned SQL exists for a cross-fact composition, so an authored attestation
-    cannot be proven against it: the project is refused, nothing written."""
+def _cross_fact_legacy_model() -> str:
     cross = LEGACY_RETAIL_SALES.replace(
         "    metrics:\n",
         "      - name: returns\n        source: orders.main.returns\n        primary_key: [id]\n"
@@ -457,6 +455,30 @@ def test_an_authored_attested_page_on_a_cross_fact_metric_is_refused(tmp_path):
         "            - dialect: ANSI_SQL\n              expression: revenue - refunds\n",
         1,
     )
+    return cross
+
+
+def test_a_same_identity_generated_page_with_a_check_is_retired_and_not_regenerated(tmp_path):
+    """`net` keeps its key but becomes a model-scoped cross-fact AGG composition: no
+    sanctioned SQL exists, so the generated page and its retained check are deleted,
+    not regenerated, and the notes say why."""
+    project = _legacy_project(tmp_path, _cross_fact_legacy_model())
+    info = {"model": "retail_sales", "dataset_sources": ["orders.main.orders"]}
+    _attested(project, "net", info, "SELECT 1", generated=True)
+    result = migrate.migrate_project(project)
+    assert result["deleted"] == ["knowledge/computations/net.md"]
+    assert any(
+        "computations/net.md" in note and "cross-fact" in note and "not regenerated" in note
+        for note in result["notes"]
+    ), result["notes"]
+    tree = _git(project, "ls-tree", "-r", "--name-only", result["revision"], "knowledge")
+    assert "knowledge/computations/net.md" not in tree.split()
+
+
+def test_an_authored_attested_page_on_a_cross_fact_metric_is_refused(tmp_path):
+    """No sanctioned SQL exists for a cross-fact composition, so an authored attestation
+    cannot be proven against it: the project is refused, nothing written."""
+    cross = _cross_fact_legacy_model()
     project = _legacy_project(tmp_path, cross)
     info = {"model": "retail_sales", "dataset_sources": ["orders.main.orders"]}
     _attested(project, "net", info, "SELECT 1", generated=False)
