@@ -71,16 +71,13 @@ QUERY_TOOLS = {
 # explicit schema refresh (issue #41), the K3 bounded mapping inspection
 # (issue #43), review.
 AUTHORING_TOOLS = {
-    "authoring_start_proposal",
     "authoring_read_artifact",
     "authoring_edit_proposal",
-    "authoring_propose_sources",
     "authoring_inputs",
-    "authoring_validate_proposal",
     "authoring_refresh_schema",
-    "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
-    "authoring_resolve_term",  # K2 (issue #42): read-only candidate resolution
-    "authoring_review_proposal",
+    "authoring_inspect_mapping",
+    "authoring_resolve_term",
+    "draft_status",
 }
 
 # Never a tool on ANY surface (spec §5: source approval, Git Review
@@ -222,22 +219,18 @@ def test_stdio_fresh_onboarding_authoring_unblocked_by_missing_admission(tmp_pat
         async with _launch(project, "authoring") as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                out["started"] = json.loads(
-                    _text(await session.call_tool("authoring_start_proposal", {}))
-                )
+                out["no_draft"] = json.loads(_text(await session.call_tool("draft_status", {})))
                 out["edited"] = json.loads(
                     _text(
                         await session.call_tool(
                             "authoring_edit_proposal",
                             {
-                                "proposal": out["started"]["proposal"],
-                                "expected_revision": out["started"]["candidate_revision"],
                                 "edit": {
                                     "kind": "seed_notes",
                                     "content": SEED_NOTES.replace(
                                         "All events count.", "All events count, drafted."
                                     ),
-                                },
+                                }
                             },
                         )
                     )
@@ -249,27 +242,25 @@ def test_stdio_fresh_onboarding_authoring_unblocked_by_missing_admission(tmp_pat
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 out["refused"] = await session.call_tool("list_metrics", {})
-                out["started_again"] = json.loads(
-                    _text(await session.call_tool("authoring_start_proposal", {}))
-                )
+                out["status_again"] = json.loads(_text(await session.call_tool("draft_status", {})))
         return out
 
     out = asyncio.run(run())
 
-    # the onboarding flow works before any admission (never a governed catalog)
-    started = out["started"]
-    assert set(started) == {"proposal", "base_revision", "candidate_revision"}
+    # the onboarding flow works before any admission (never a governed catalog): the first
+    # edit opens the draft
+    assert out["no_draft"] == {"draft": None}
     edited = out["edited"]
     assert edited["changed"] is True
-    assert edited["revision"] != started["candidate_revision"]
+    assert edited["draft"]["generation"] == 1
 
     # queries refuse with the managed route's explicit missing-admission error
     assert out["refused"].is_error
     assert "no valid admission" in _text(out["refused"])
 
     # authoring on the SAME combined session is not blocked by that refusal
-    assert set(out["started_again"]) == {"proposal", "base_revision", "candidate_revision"}
-    assert out["started_again"]["proposal"] != started["proposal"]
+    assert out["status_again"]["generation"] == 1
+    assert out["status_again"]["candidate_revision"] == edited["revision"]
 
 
 def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
@@ -298,18 +289,13 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
                 out["combined_metric"] = json.loads(
                     _text(await session.call_tool("get_metric", {"name": "event_count"}))
                 )
-                out["started"] = json.loads(
-                    _text(await session.call_tool("authoring_start_proposal", {}))
-                )
+                out["started"] = {
+                    "base_revision": AuthoringProject(project).start_proposal()["base_revision"]
+                }
                 out["read"] = json.loads(
                     _text(
                         await session.call_tool(
-                            "authoring_read_artifact",
-                            {
-                                "proposal": out["started"]["proposal"],
-                                "kind": "model",
-                                "name": "events",
-                            },
+                            "authoring_read_artifact", {"kind": "model", "name": "events"}
                         )
                     )
                 )
@@ -330,7 +316,6 @@ def test_stdio_admitted_project_serves_queries_and_keeps_authoring(tmp_path):
     started = out["started"]
     assert started["base_revision"] == review["revision"]
     read = out["read"]
-    assert read["revision"] == started["candidate_revision"]
     assert read["path"] == "semantic_layer/models/events.yml"
     assert "COUNT(*)" in read["content"]  # the governed fixture expression
     assert read["complete"] is True

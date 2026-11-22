@@ -136,17 +136,13 @@ def test_compose_external_project_auth_and_proposals_survive_recreation(tmp_path
         assert inspection["State"]["Health"]["Status"] == "healthy"
         assert client("probes")["uid"] != 0
         tools = client("tools")
-        assert "authoring_start_proposal" in tools and "get_metric" not in tools
-        started = client("authoring_start_proposal")
+        assert "authoring_edit_proposal" in tools and "get_metric" not in tools
         notes = "# Seed Notes\n\nSynthetic rule, pending human review.\n"
         edited = client(
             "authoring_edit_proposal",
-            {
-                "proposal": started["proposal"],
-                "expected_revision": started["candidate_revision"],
-                "edit": {"kind": "seed_notes", "content": notes},
-            },
+            {"edit": {"kind": "seed_notes", "content": notes}},
         )
+        started = {"proposal": edited["proposal"]}
         worktrees = command(["git", "-C", str(project), "worktree", "list", "--porcelain"])
         paths = [
             line.removeprefix("worktree ")
@@ -169,13 +165,7 @@ def test_compose_external_project_auth_and_proposals_survive_recreation(tmp_path
                 "90",
             ]
         )
-        restored = client(
-            "authoring_read_artifact",
-            {
-                "proposal": started["proposal"],
-                "kind": "seed_notes",
-            },
-        )
+        restored = client("authoring_read_artifact", {"kind": "seed_notes"})
         assert restored["content"] == notes and restored["revision"] == edited["revision"]
         assert (project / ".ariadne" / "proposals" / (started["proposal"] + ".json")).is_file()
         assert not (project / ".ariadne" / "current.json").exists()  # no human admission

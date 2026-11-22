@@ -883,16 +883,16 @@ def test_mcp_resolve_term_routes_share_the_core(tmp_path):
         async with _launch(project, "authoring") as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = json.loads(_text(await session.call_tool("authoring_start_proposal", {})))
+                started = {
+                    "candidate_revision": AuthoringProject(project).start_proposal()[
+                        "candidate_revision"
+                    ]
+                }  # the operator opened the draft (the first edit would do the same)
                 out["started"] = started
                 out["authoring"] = json.loads(
                     _text(
                         await session.call_tool(
-                            "authoring_resolve_term",
-                            {
-                                "proposal": started["proposal"],
-                                "request": "global order number",
-                            },
+                            "authoring_resolve_term", {"request": "global order number"}
                         )
                     )
                 )

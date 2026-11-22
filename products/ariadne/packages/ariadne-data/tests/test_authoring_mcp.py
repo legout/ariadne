@@ -60,15 +60,13 @@ from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures
 # The G6 Authoring registration (spec §6): the plan §2 contract, prefixed —
 # plus the K1 explicit schema refresh (issue #41).
 AUTHORING_TOOLS = {
-    "authoring_start_proposal",
     "authoring_read_artifact",
     "authoring_edit_proposal",
-    "authoring_propose_sources",
     "authoring_inputs",
-    "authoring_validate_proposal",
     "authoring_refresh_schema",
-    "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
-    "authoring_review_proposal",
+    "authoring_inspect_mapping",
+    "authoring_resolve_term",
+    "draft_status",
 }
 QUERY_TOOLS = {
     "list_metrics",
@@ -166,7 +164,10 @@ def test_stdio_tool_boundary_authoring_without_approval_or_admission(tmp_path):
 
 
 def test_stdio_git_journey_matches_core_contracts(tmp_path):
-    """Real stdio authoring reads operator-placed documents by reference."""
+    """Real stdio authoring on the ACTIVE DRAFT (spec 0040 §3.1.3): the first edit opens
+    the draft (no start, no proposal ID), a typed source declaration goes through the
+    same edit tool, the operator's source grant is the human seam, and operator-placed
+    documents are read by reference."""
     project = complete_bundle_project(tmp_path / "proj")
     api = AuthoringProject(project)
     policy = "# Revision notes\n\nDrafted over stdio.\n"
@@ -178,54 +179,43 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
-                proposal = out["started"]["proposal"]
-                revision = out["started"]["candidate_revision"]
-                # the OPERATOR approves the candidate's resolved source identity
-                # (the human seam; no MCP tool can) — before the first edit, so
-                # the approval binds the revision it names
-                approved(api, project, out["started"])
+                out["no_draft"] = _payload(await session.call_tool("draft_status", {}))
                 out["edited"] = _payload(
                     await session.call_tool(
                         "authoring_edit_proposal",
                         {
-                            "proposal": proposal,
-                            "expected_revision": revision,
                             "edit": {
                                 "kind": "seed_notes",
                                 "content": SEED_NOTES.replace(
                                     "All events count.", "All events count, over stdio."
                                 ),
-                            },
+                            }
                         },
                     )
+                )
+                out["status"] = _payload(await session.call_tool("draft_status", {}))
+                # the OPERATOR grants the candidate's resolved source identity (the
+                # human seam; no MCP tool can)
+                approved(
+                    api,
+                    project,
+                    {
+                        "proposal": out["edited"]["proposal"],
+                        "candidate_revision": out["edited"]["revision"],
+                    },
                 )
                 out["inputs"] = _payload(
                     await session.call_tool(
                         "authoring_inputs",
-                        {
-                            "proposal": proposal,
-                            "documents": ["revision-notes.md"],
-                            "sample_rows": 1,
-                        },
+                        {"documents": ["revision-notes.md"], "sample_rows": 1},
                     )
                 )
-                # the CLI twin AT THE SAME candidate state (before validation
-                # advances the revision): full-contract parity
+                # the library twin AT THE SAME candidate state: full-contract parity
                 out["inputs_twin"] = api.inputs(
-                    proposal,
+                    out["edited"]["proposal"],
                     documents=["revision-notes.md"],
                     part=1,
                     sample_rows=1,
-                )
-                out["validated"] = _payload(
-                    await session.call_tool(
-                        "authoring_validate_proposal",
-                        {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
-                    )
-                )
-                out["review"] = _payload(
-                    await session.call_tool("authoring_review_proposal", {"proposal": proposal})
                 )
         # a session launched AFTER the project became Git-managed pins the
         # managed route: no admission yet, so queries refuse while authoring
@@ -237,13 +227,13 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
         return out
 
     out = asyncio.run(run())
-    started = out["started"]
-    assert set(started) == {"proposal", "base_revision", "candidate_revision"}
+    assert out["no_draft"] == {"draft": None}
     assert out["edited"]["changed"] is True
-    assert out["edited"]["revision"] != started["candidate_revision"]
+    assert out["edited"]["draft"]["generation"] == 1
+    assert out["status"]["candidate_revision"] == out["edited"]["revision"]
+    assert out["status"]["stale"] is False and out["status"]["validation"] == "unvalidated"
 
-    # same contracts as the CLI: external document evidence, sampled profile,
-    # and the full review envelope
+    # same contracts as the library: external document evidence and sampled profile
     assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
     assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
     assert document.read_text(encoding="utf-8") == policy
@@ -255,17 +245,12 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
     assert out["inputs"]["documents"] == twin["documents"]
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
-    assert out["inputs"]["profile"] is not None  # the approved source profile
+    assert out["inputs"]["profile"] is not None  # the granted source profile
     table = out["inputs"]["profile"]["sources"][0]["tables"]["events"]
     assert table["sampled"] is True and table["sample_limit"] == 1
-    validated = out["validated"]
-    assert validated["ok"] is True and validated["errors"] == []
-    assert out["review"] == api.review_proposal(started["proposal"])  # full-dict equality
-    assert out["review"]["revision"] == validated["revision"]
-    assert out["review"]["report"]["ok"] is True
 
-    # nothing admitted by authoring or review: the managed route still refuses
-    # queries, and no admission descriptor exists
+    # nothing admitted by authoring: the managed route still refuses queries, and no
+    # admission descriptor exists
     assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
 
@@ -291,28 +276,13 @@ def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = _payload(await session.call_tool("authoring_start_proposal", {}))
-                proposal = started["proposal"]
+                started = api.start_proposal()  # the draft the operator opened
                 approved(api, project, started)
                 out["first"] = _payload(
-                    await session.call_tool(
-                        "authoring_refresh_schema",
-                        {
-                            "proposal": proposal,
-                            "expected_revision": started["candidate_revision"],
-                            "assets": [asset],
-                        },
-                    )
+                    await session.call_tool("authoring_refresh_schema", {"assets": [asset]})
                 )
                 out["second"] = _payload(
-                    await session.call_tool(
-                        "authoring_refresh_schema",
-                        {
-                            "proposal": proposal,
-                            "expected_revision": out["first"]["revision"],
-                            "assets": [asset],
-                        },
-                    )
+                    await session.call_tool("authoring_refresh_schema", {"assets": [asset]})
                 )
         return out
 
@@ -352,12 +322,7 @@ def test_stdio_inspect_mapping_returns_the_core_receipt_envelope(tmp_path):
                 return _payload(
                     await session.call_tool(
                         "authoring_inspect_mapping",
-                        {
-                            "proposal": started["proposal"],
-                            "expected_revision": started["candidate_revision"],
-                            "candidate": prefix_candidate(),
-                            "limits": limits,
-                        },
+                        {"candidate": prefix_candidate(), "limits": limits},
                     )
                 )
 
@@ -569,7 +534,7 @@ def test_container_http_authenticated_health_and_readiness(tmp_path, toolset, re
     ) as url:
         tools = asyncio.run(discover(url))
         assert ("get_metric" in tools) == (toolset != "authoring")
-        assert ("authoring_start_proposal" in tools) == (toolset != "analyst")
+        assert ("authoring_edit_proposal" in tools) == (toolset != "analyst")
         root = url.removesuffix("/mcp")
         with httpx.Client() as client:
             for headers, rejection in (
@@ -704,44 +669,36 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
         async with _http_exit(url, HTTP_TOKEN) as session:
             await session.initialize()
             out["tools"] = {tool.name for tool in (await session.list_tools()).tools}
-            out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
-            proposal = out["started"]["proposal"]
-            revision = out["started"]["candidate_revision"]
-            # the OPERATOR approves the resolved source identity (the human
-            # seam; no MCP tool can) — before the first edit, exactly as stdio
-            approved(api, project, out["started"])
             out["edited"] = _payload(
                 await session.call_tool(
                     "authoring_edit_proposal",
                     {
-                        "proposal": proposal,
-                        "expected_revision": revision,
                         "edit": {
                             "kind": "seed_notes",
                             "content": SEED_NOTES.replace(
                                 "All events count.", "All events count, over HTTP."
                             ),
-                        },
+                        }
                     },
                 )
+            )
+            # the OPERATOR grants the resolved source identity (the human seam)
+            approved(
+                api,
+                project,
+                {
+                    "proposal": out["edited"]["proposal"],
+                    "candidate_revision": out["edited"]["revision"],
+                },
             )
             out["inputs"] = _payload(
                 await session.call_tool(
                     "authoring_inputs",
-                    {"proposal": proposal, "documents": ["revision-notes.md"], "sample_rows": 1},
+                    {"documents": ["revision-notes.md"], "sample_rows": 1},
                 )
             )
             out["inputs_twin"] = api.inputs(
-                proposal, documents=["revision-notes.md"], part=1, sample_rows=1
-            )
-            out["validated"] = _payload(
-                await session.call_tool(
-                    "authoring_validate_proposal",
-                    {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
-                )
-            )
-            out["review"] = _payload(
-                await session.call_tool("authoring_review_proposal", {"proposal": proposal})
+                out["edited"]["proposal"], documents=["revision-notes.md"], part=1, sample_rows=1
             )
         return out
 
@@ -765,9 +722,8 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert not [
         name for name in out["tools"] if any(marker in name for marker in HUMAN_OPERATION_MARKERS)
     ]
-    assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
     assert out["edited"]["changed"] is True
-    # identical contracts to the local CLI over the same core
+    # identical contracts to the library over the same core
     assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
     assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
     assert document.read_text(encoding="utf-8") == policy
@@ -777,8 +733,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
     assert out["inputs"]["documents"] == twin["documents"]
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
-    assert out["validated"]["ok"] is True and out["validated"]["errors"] == []
-    assert out["review"] == api.review_proposal(out["started"]["proposal"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
@@ -811,7 +765,7 @@ def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
                 return [tool.name for tool in (await session.list_tools()).tools]
 
     tools = asyncio.run(run())
-    assert "authoring_start_proposal" in tools
+    assert "authoring_edit_proposal" in tools
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", port)) != 0  # no listener materialized
 
@@ -819,11 +773,11 @@ def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
 # --------------------------- spec 0025 (S1): storages forwarding over stdio
 
 
-def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
-    """Spec 0025 §5 adapter parity: the MCP tool accepts the optional
-    ``storages`` definitions beside the source entries and returns EXACTLY
-    what the shared AuthoringProject returns; the candidate registry carries
-    both top-level blocks and the resolved identity embeds the profile."""
+def test_stdio_typed_source_edit_forwards_storage_profiles(tmp_path):
+    """Spec 0025 §5 / spec 0040 §3.1.3: a typed source declaration goes through
+    ``authoring_edit_proposal`` (``authoring_propose_sources`` is removed); the optional
+    ``storages`` definitions ride beside the entries and the result equals what the
+    shared library returns. Inert data: nothing is granted."""
     project = complete_bundle_project(tmp_path / "proj")
     profiles = {
         "local": {
@@ -847,32 +801,45 @@ def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = _payload(await session.call_tool("authoring_start_proposal", {}))
                 return _payload(
                     await session.call_tool(
-                        "authoring_propose_sources",
-                        {
-                            "proposal": started["proposal"],
-                            "expected_revision": started["candidate_revision"],
-                            "sources": entries,
-                            "storages": profiles,
-                        },
+                        "authoring_edit_proposal",
+                        {"edit": {"kind": "sources", "entries": entries, "storages": profiles}},
                     )
                 )
 
     over_stdio = asyncio.run(run())
-    # the CLI twin in a SECOND proposal of the SAME project: the identical
-    # candidate registry base resolves to the identical identity (cross-project
-    # comparison would differ by the host-root-resolved existing paths)
-    twin_api = AuthoringProject(project)
-    twin_started = twin_api.start_proposal()
-    twin = twin_api.propose_sources(
-        twin_started["proposal"], twin_started["candidate_revision"], entries, profiles
-    )
-    assert over_stdio["source_digest"] == twin["source_digest"]
-    assert over_stdio["sources"] == twin["sources"]
+    # the library twin: a second project with the identical base resolves identically
+    twin_project = complete_bundle_project(tmp_path / "twin")
+    from ariadne import authoring_sources
+
+    twin = authoring_sources.add_sources(twin_project, None, entries, profiles)
+    assert over_stdio["source_digest"] and over_stdio["draft"]["generation"] == 1
+    assert [e["name"] for e in over_stdio["sources"]] == [e["name"] for e in twin["sources"]]
     doc = yaml.safe_load(
         (project / ".ariadne" / "worktrees" / over_stdio["proposal"] / "ariadne.yaml").read_text()
     )
     assert doc["storages"]["local"]["access_key_id_env"] == "MCP_S3_KEY_ID"
     assert doc["sources"][-1]["storage"] == "local"
+    assert not (project / ".ariadne" / "source_grants.json").exists()  # nothing granted
+
+
+def test_the_tool_list_of_every_toolset_has_no_forbidden_tool(tmp_path):
+    """AC5 (spec 0040 §3.1.3): no approve, discard, grant, mapping-confirmation,
+    propose-sources, validate, review or start tool exists on ANY toolset; B1 added
+    `draft_status`."""
+    from ariadne.serve import build_app
+
+    forbidden_markers = ("approve", "discard", "grant", "confirm", "admit", "reconcil", "promot")
+    removed = {
+        "authoring_propose_sources",
+        "authoring_start_proposal",
+        "authoring_validate_proposal",
+        "authoring_review_proposal",
+    }
+    for toolset in ("combined", "analyst", "authoring"):
+        app = build_app(lambda: pytest.fail("registration constructed a runtime"), toolset=toolset)
+        tools = {tool.name for tool in asyncio.run(app.list_tools())}
+        assert not [t for t in tools if any(m in t for m in forbidden_markers)], toolset
+        assert not tools & removed, toolset
+        assert ("draft_status" in tools) == (toolset != "analyst")
