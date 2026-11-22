@@ -71,6 +71,16 @@ def _candidate_page(project, saved):
     return worktree_of(root, saved["proposal"]) / saved["path"]
 
 
+def _restart_draft(api, project):
+    """One active draft per project (spec 0040): retire the current draft, then start."""
+    from ariadne import draft
+
+    active = draft.status(project)
+    if active is not None:
+        draft.discard(project, (active["generation"], active["candidate_revision"]))
+    return api.start_proposal()
+
+
 def _record_revision(project, proposal):
     from ariadne import proposals
 
@@ -531,7 +541,7 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
 
     assert mcp_saved["status"] == "draft" and mcp_saved["id"] != saved["id"]
     assert mcp_saved["path"] != saved["path"]  # two page paths, never one aliased page
-    assert mcp_saved["proposal"] != saved["proposal"]  # two separate peer drafts
+    assert mcp_saved["proposal"] == saved["proposal"]  # one active draft holds both (spec 0040)
 
     def _persisted(record):
         page = worktree_of(project, record["proposal"]) / record["path"]
@@ -548,7 +558,7 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     assert db_path.read_bytes() == db_before
 
     monkeypatch.undo()  # restore the boundary: human admission legitimately validates
-    validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
+    validated = api.validate_proposal(saved["proposal"], mcp_saved["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
 
 
@@ -786,7 +796,7 @@ def test_native_example_edits_keep_core_validation(tmp_path):
         return "---\n" + yaml.safe_dump(front, sort_keys=False, allow_unicode=True) + "---" + body
 
     def _fresh():
-        started = api.start_proposal()
+        started = _restart_draft(api, project)
         approved(api, project, started)
         return started, _record_revision(project, started["proposal"])
 
@@ -939,7 +949,7 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
     assert len(variant_oversize.encode("utf-8")) < 65536
 
     # (a) a missing fenced excerpt refuses even with the caption retained
-    started = api.start_proposal()
+    started = _restart_draft(api, project)
     approved(api, project, started)
     revision = _record_revision(project, started["proposal"])
     proposals.edit_page_batch(
@@ -956,7 +966,7 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
 
     # (b) a body excerpt over the 8 KiB UTF-8 bound refuses even with a small
     # native.answer.excerpt and a whole page under the 64 KiB record bound
-    started_b = api.start_proposal()
+    started_b = _restart_draft(api, project)
     approved(api, project, started_b)
     revision_b = _record_revision(project, started_b["proposal"])
     proposals.edit_page_batch(

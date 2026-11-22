@@ -6,6 +6,7 @@ report. The legacy envelope below is the pre-0.3 fixture shape, written out as t
 migration input."""
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -199,13 +200,18 @@ def test_migrate_converts_the_joint_example_and_the_admitted_result_answers(tmp_
     project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES, context=True)
 
     result = migrate.migrate_project(project)
-    assert result["status"] == "proposal"
+    assert result["status"] == "draft"
     assert "semantic_layer/models/retail_sales.yml" in result["files"]
     assert "knowledge/metrics/retail-revenue.md" in result["files"]
     assert "context_integration.yaml" in result["files"]
 
     api = AuthoringProject(project)
-    started = {"proposal": result["proposal"], "candidate_revision": result["revision"]}
+    started = {
+        "proposal": json.loads((project / ".ariadne" / "draft.json").read_text(encoding="utf-8"))[
+            "proposal"
+        ],
+        "candidate_revision": result["revision"],
+    }
     approved(api, project, started)
     contract = ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175")
     bindings = ORDERS_BINDINGS.replace("region", "status").replace(

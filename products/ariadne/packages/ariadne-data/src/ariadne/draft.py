@@ -67,12 +67,18 @@ def _load_slot(project: Path) -> dict | None:
         or slot.get("state") not in ("active", "retired")
     ):
         raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
-    if slot["state"] == "active" and not (
-        isinstance(slot.get("proposal"), str)
-        and isinstance(slot.get("candidate_revision"), str)
-        and "base_served_revision" in slot
-    ):
-        raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
+    if slot["state"] == "active":
+        if not (
+            isinstance(slot.get("proposal"), str)
+            and isinstance(slot.get("candidate_revision"), str)
+            and "base_served_revision" in slot
+        ):
+            raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
+        # The proposal record is authoritative for the candidate: refresh, finalize and
+        # reconcile commits move it outside this module, so the slot follows it.
+        slot["candidate_revision"] = proposals._load_record(project, slot["proposal"])[
+            "candidate_revision"
+        ]
     return slot
 
 
@@ -147,7 +153,7 @@ def _check_expected(slot: dict | None, expected: Expected) -> dict | None:
         )
     if active["generation"] != generation or active["candidate_revision"] != revision:
         raise ValueError(
-            f"stale: the draft is at generation {active['generation']}, candidate "
+            f"stale revision: the draft is at generation {active['generation']}, candidate "
             f"{active['candidate_revision'][:12]}; the call read generation {generation}, "
             f"candidate {revision[:12]} — reread and retry; nothing was written"
         )
@@ -192,7 +198,12 @@ def _abandon(project: Path, proposal: str, previous: bytes | None) -> None:
 
 
 def mutate(
-    project: str | Path, expected: Expected, op: Callable[[str, str], Any], *, needs_fresh=False
+    project: str | Path,
+    expected: Expected,
+    op: Callable[[str, str], Any],
+    *,
+    needs_fresh=False,
+    base_revision: str | None = None,
 ) -> tuple[Any, dict]:
     """Run ``op(proposal, candidate_revision)`` against the draft under the project
     lock, compare-and-set on ``expected``. ``expected=None`` creates the draft first
@@ -205,10 +216,16 @@ def mutate(
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
         slot_before = _load_slot(project)
         previous = (project / DRAFT_REL).read_bytes() if (project / DRAFT_REL).is_file() else None
+        if slot_before is not None and slot_before["state"] == "active":
+            # an interrupted transition refuses for human resolution BEFORE any
+            # revision comparison, whatever the caller read
+            proposals._check_coherent(project, _coherent(project, slot_before))
         active = _check_expected(slot_before, expected)
         created: str | None = None
         if active is None:
-            started = proposals.start_proposal(project, _lock_held=True)
+            started = proposals.start_proposal(
+                project, base_revision=base_revision, _lock_held=True
+            )
             created = started["proposal"]
             generation = (slot_before["generation"] if slot_before else 0) + 1
             active = {
@@ -236,6 +253,27 @@ def mutate(
             active = {**active, "candidate_revision": record["candidate_revision"]}
             _store_slot(project, active)
         return result, _view(project, active)  # type: ignore[return-value]
+
+
+def open_draft(project: str | Path, *, base_revision: str | None = None) -> dict:
+    """Open the draft without editing it (the first write with a no-op body)."""
+    _result, view = mutate(project, None, lambda _p, _r: None, base_revision=base_revision)
+    return view
+
+
+def active_expected(project: str | Path, proposal: str, expected_revision: str) -> Expected:
+    """The compare-and-set precondition for a caller that names the draft's proposal
+    and the candidate revision it read: the slot supplies the generation, and a
+    proposal that is not the ACTIVE draft's (discarded, retired or never active)
+    refuses. Library entry for the proposal-addressed API; CLI and MCP never carry IDs."""
+    project = Path(project).resolve()
+    slot = _load_slot(project)
+    if slot is None or slot["state"] != "active" or slot["proposal"] != proposal:
+        raise ValueError(
+            f"stale: proposal {proposal} is not the active draft — only one draft is "
+            "open at a time and a discarded draft is never resurrected; nothing was written"
+        )
+    return (slot["generation"], expected_revision)
 
 
 def edit_artifact(
@@ -326,6 +364,22 @@ def discard(project: str | Path, expected: Expected) -> dict:
         proposals._git(["branch", "-m", record["branch"], branch], project)
         proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
     return {"discarded": True, "generation": slot["generation"], "branch": branch}
+
+
+def consume(project: Path, proposal: str) -> None:
+    """Retire the slot after its generation was approved (spec 0040 §3.4.2.6). The
+    CALLER holds the project lock (approval activation does). Only the named
+    proposal's own active slot retires; the proposal branch stays as history."""
+    slot = _load_slot(project)
+    if slot is not None and slot["state"] == "active" and slot["proposal"] == proposal:
+        _store_slot(
+            project,
+            {
+                "state": "retired",
+                "generation": slot["generation"],
+                "consumed_candidate": slot["candidate_revision"],
+            },
+        )
 
 
 def rebase(project: str | Path, expected: Expected) -> dict:

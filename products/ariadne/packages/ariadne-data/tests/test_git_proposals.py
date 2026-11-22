@@ -98,16 +98,15 @@ def git_project(tmp_path: Path, *, commit: bool = True) -> Path:
     return project
 
 
-def test_two_proposals_isolate_edits_and_reject_stale_revision(tmp_path):
-    """Issue #34 red seam: two proposals from one base — editing A leaves B
-    untouched at the base candidate, and an edit to A carrying A's now-stale
-    expected revision is refused without overwriting the candidate."""
+def test_one_active_draft_rejects_a_second_start_and_a_stale_revision(tmp_path):
+    """Issue #34 red seam, migrated to the one-draft model (spec 0040 §3.3): a
+    second start refuses stale instead of opening a parallel proposal, and an
+    edit carrying a superseded candidate revision is refused without overwriting."""
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     a = api.start_proposal()
-    b = api.start_proposal()
-    assert a["proposal"] != b["proposal"]
-    assert a["base_revision"] == b["base_revision"]  # both from the same base
+    with pytest.raises(ValueError, match="stale"):
+        api.start_proposal()
     assert a["candidate_revision"] == a["base_revision"]  # no edits yet
 
     edited = api.edit_proposal(
@@ -118,14 +117,8 @@ def test_two_proposals_isolate_edits_and_reject_stale_revision(tmp_path):
     assert edited["changed"] is True
     assert edited["revision"] != a["candidate_revision"]
 
-    # B is isolated: its candidate still carries the inherited base bytes and
-    # its branch never moved.
-    inherited = api.read_artifact(b["proposal"], {"kind": "seed_notes"})
-    assert inherited["revision"] == b["candidate_revision"] == b["base_revision"]
-    assert inherited["content"] == SEED_NOTES
-
-    # A's candidate moved: the stale expected revision is refused BEFORE any
-    # write — the candidate keeps exactly the Version 2 bytes.
+    # the stale expected revision is refused BEFORE any write — the candidate
+    # keeps exactly the Version 2 bytes.
     with pytest.raises(ValueError, match="stale"):
         api.edit_proposal(
             a["proposal"],
@@ -729,7 +722,8 @@ def test_wrong_proposal_or_project_identity_is_refused(tmp_path):
     api = AuthoringProject(project)
     other_api = AuthoringProject(other)
     foreign = other_api.start_proposal()
-    with pytest.raises(ValueError, match="no proposal"):
+    api.start_proposal()  # a draft of this project exists; the foreign ID is still no draft of it
+    with pytest.raises(ValueError, match="not the active draft"):
         api.edit_proposal(
             "p-00000000000000-000000",  # well-formed but unknown here
             foreign["candidate_revision"],
@@ -740,7 +734,7 @@ def test_wrong_proposal_or_project_identity_is_refused(tmp_path):
             api.read_artifact(bad, {"kind": "seed_notes"})
     with pytest.raises(ValueError, match="no proposal"):
         api.read_artifact(foreign["proposal"], {"kind": "seed_notes"})
-    with pytest.raises(ValueError, match="no proposal"):
+    with pytest.raises(ValueError, match="not the active draft"):
         api.edit_proposal(
             foreign["proposal"],
             foreign["candidate_revision"],

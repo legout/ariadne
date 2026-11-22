@@ -337,25 +337,38 @@ def save_candidate_example(
             f"encoded example record is {len(page)} bytes, over the "
             f"{MAX_RECORD_BYTES}-byte bound — submit a smaller record"
         )
+    from . import draft
+
     created_proposal = proposal is None
-    if created_proposal:
-        started = proposals.start_proposal(project, base_revision=selected_revision)
-        proposal = started["proposal"]
-        expected_revision = started["candidate_revision"]
-        base_revision = started["base_revision"]
-    assert proposal is not None and expected_revision is not None
+    pages = [
+        {
+            "path": f"knowledge/{EXAMPLES_DIR}/{example_id}.md",
+            "content": page.decode("utf-8"),
+        }
+    ]
     try:
-        result_record = proposals.edit_page_batch(
-            project,
-            proposal,
-            expected_revision,
-            [
-                {
-                    "path": f"knowledge/{EXAMPLES_DIR}/{example_id}.md",
-                    "content": page.decode("utf-8"),
-                }
-            ],
-        )
+        if created_proposal:
+            # spec 0040 §3.3: an example without a named proposal goes into the ONE
+            # active draft (the first write creates it).
+            active = draft.status(project)
+            expected = (
+                None if active is None else (active["generation"], active["candidate_revision"])
+            )
+            written = draft.edit_pages(project, expected, pages)
+            proposal = proposals._load_record(
+                project,
+                draft.proposal_of(
+                    project,
+                    (written["draft"]["generation"], written["draft"]["candidate_revision"]),
+                ),
+            )["id"]
+            base_revision = proposals._load_record(project, proposal)["base_revision"]
+            result_record = written
+        else:
+            assert proposal is not None and expected_revision is not None
+            result_record = draft.edit_pages(
+                project, draft.active_expected(project, proposal, expected_revision), pages
+            )
     except Exception as exc:
         if not created_proposal and isinstance(exc, ValueError):
             raise

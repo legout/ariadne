@@ -37,6 +37,7 @@ from ariadne import (
     authoring_sources,
     context,
     contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — same
+    draft,
     execution,
     profiler,
     proposals,
@@ -317,6 +318,10 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     return errors
 
 
+def _expect(view: dict) -> tuple[int, str]:
+    return (view["generation"], view["candidate_revision"])
+
+
 class AuthoringProject:
     """One host-configured data project and its Git-backed authoring proposals
     (spec 2026-10-02-0009 §3–4, plan §2). Callers address system-generated
@@ -342,7 +347,17 @@ class AuthoringProject:
         revision or the current one; a repository with no commits yet gets its
         human-created initial artifact revision first. Returns
         ``{proposal, base_revision, candidate_revision}``."""
-        return proposals.start_proposal(self.project, base_revision=base_revision)
+        # spec 0040 §3.3: ONE active draft. Opening is compare-and-set on "no slot";
+        # a second start refuses stale instead of creating a parallel proposal.
+        view = draft.open_draft(self.project, base_revision=base_revision)
+        record = proposals._load_record(
+            self.project.resolve(), draft.proposal_of(self.project, _expect(view))
+        )
+        return {
+            "proposal": record["id"],
+            "base_revision": record["base_revision"],
+            "candidate_revision": record["candidate_revision"],
+        }
 
     def read_artifact(self, proposal: str, identity: dict, *, part: int = 1) -> dict:
         """Read one artifact of the proposal's current candidate revision —
@@ -375,7 +390,10 @@ class AuthoringProject:
                 f"propose_sources operation), got kind {got!r}"
             )
         rel, content = authoring_edits.resolve_edit(edit, project=self.project, proposal=proposal)
-        return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.edit_artifact(self.project, expected, rel, content)
+        result.pop("draft")
+        return result
 
     def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
         """Apply ONE complete native knowledge-page batch:
@@ -387,7 +405,10 @@ class AuthoringProject:
         set, and an identical batch is a no-op. OSI/model drafts keep their
         separate single-edit handling. Returns
         ``{proposal, revision, changed, paths, count}``."""
-        return proposals.edit_page_batch(self.project, proposal, expected_revision, pages)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.edit_pages(self.project, expected, pages)
+        result.pop("draft")
+        return result
 
     # ------------------- G3: sources, approval, measured inputs
 
@@ -454,7 +475,10 @@ class AuthoringProject:
         materialized final commit (never the earlier input commit). Returns
         that revision with the report/errors; the evidence is stored separately
         under ``.ariadne/validation/``. Validation is not admission (G5)."""
-        return validate_proposal(self.project, proposal, expected_revision)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.validate(self.project, expected)
+        result.pop("draft")
+        return result
 
     def review_proposal(self, proposal: str, *, part: int = 1) -> dict:
         """Read the proposal's candidate (read-only; reading is never

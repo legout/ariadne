@@ -809,13 +809,16 @@ def migrate_project(project: str | Path) -> dict:
         raise MigrationError(f"project left unchanged — unconvertible construct(s): {report}")
     # the complete write and delete set is verified before any proposal state exists
     proposals.check_migration_set(writes, tuple(deletes))
-    started = proposals.start_proposal(root, base_revision=revision)
-    result = proposals.migration_commit(
-        root, started["proposal"], started["candidate_revision"], writes, tuple(deletes)
-    )
+    from ariadne import draft  # pyright: ignore[reportMissingImports] — resolver drift
+
+    # spec 0040 §3.3: migrate writes into the one active draft (superseding spec 0039
+    # §7.1's own proposal); with none open, this is the first write that creates it.
+    active = draft.status(root)
+    expected = None if active is None else (active["generation"], active["candidate_revision"])
+    result = draft.apply_migration(root, expected, writes, tuple(deletes))
     return {
-        "status": "proposal",
-        "proposal": started["proposal"],
+        "status": "draft",
+        "generation": result["draft"]["generation"],
         "revision": result["revision"],
         "files": sorted(writes),
         "deleted": sorted(deletes),
