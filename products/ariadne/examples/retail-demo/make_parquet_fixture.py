@@ -124,14 +124,10 @@ def summarize(written: list[Path]) -> str:
         # parameterized insert — lens sink heuristic false positive
         # pi-lens-ignore: sql-injection-sink
         con.executemany("INSERT INTO tickets VALUES (?, ?, ?, ?, ?, ?)", rows)
-        stats = (
-            con.table("tickets")
-            .aggregate(
-                "COUNT(*) AS n, COUNT(resolution_hours) AS closed, "
-                "AVG(resolution_hours) FILTER (WHERE status = 'closed') AS avg_h"
-            )
-            .fetchone()
-        )
+        stats = con.execute(
+            "SELECT COUNT(*) AS n, COUNT(resolution_hours) AS closed, "
+            "AVG(resolution_hours) FILTER (WHERE status = 'closed') AS avg_h FROM tickets"
+        ).fetchone()
     finally:
         con.close()
     if stats is None:  # unreachable for an aggregate query, but keeps pyright honest
