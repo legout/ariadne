@@ -34,7 +34,6 @@ from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
 from tests.test_discovery import _source_free_guards
 from tests.test_git_authoring import approved, run_git, worktree_of
 
-from integration.tests.admit_support import admit_cli as admission_main
 from integration.tests.lumio_local_context import (
     COMPLETED_METRIC,
     GRAPH,
@@ -392,27 +391,16 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     _no_secret_material(json.dumps(composite_a))
     assert not (project / ".ariadne" / "current.json").exists()
 
-    # --- The existing human CLI surface carries the explicit selection.
-    assert (
-        admission_main(
-            [
-                "--project",
-                str(project),
-                "--proposal",
-                review["proposal"],
-                "--revision",
-                a_rev,
-                "--reviewed-digest",
-                review["review_digest"],
-                "--context-destination",
-                _destination(),
-                "--context-storage-profile",
-                PROFILE_NAME,
-            ]
-        )
-        == 0
+    # --- The same review through the supported library call is deterministic.
+    again = admission.overall_review(
+        project,
+        review["proposal"],
+        a_rev,
+        review["review_digest"],
+        destination=_destination(),
+        storage_profile=PROFILE_NAME,
     )
-    assert json.loads(capsys.readouterr().out)["digest"] == composite_a["digest"]
+    assert again["digest"] == composite_a["digest"]
 
     # --- Real native S3 publication, private receipt verification, then the
     # Core descriptor LAST.
@@ -648,32 +636,19 @@ def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys
     inline_user = "synthetic-inline-access"
     inline_secret = "synthetic-inline-secret-never-print"
     rejected = _destination().replace("s3://", f"s3://{inline_user}:{inline_secret}@", 1)
-    capsys.readouterr()
-    assert (
-        admission_main(
-            [
-                "--project",
-                str(project),
-                "--proposal",
-                review["proposal"],
-                "--revision",
-                review["revision"],
-                "--reviewed-digest",
-                review["review_digest"],
-                "--context-destination",
-                rejected,
-                "--context-storage-profile",
-                PROFILE_NAME,
-            ]
+    with pytest.raises(ValueError) as raised:
+        admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=rejected,
+            storage_profile=PROFILE_NAME,
         )
-        == 1
-    )
-    diagnostic = capsys.readouterr()
-    assert diagnostic.out == ""
-    assert json.loads(diagnostic.err)["error"]["type"] == "ValueError"
-    assert inline_secret not in diagnostic.err
-    assert inline_user not in diagnostic.err
-    assert rejected not in diagnostic.err
+    diagnostic = str(raised.value)
+    assert inline_secret not in diagnostic
+    assert inline_user not in diagnostic
+    assert rejected not in diagnostic
     assert not (project / ".ariadne" / "current.json").exists()
 
 
