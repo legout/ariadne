@@ -129,19 +129,34 @@ def test_init_refuses_a_conflicting_existing_file_and_writes_nothing(tmp_path):
 
 
 def test_rerunning_init_is_a_noop(tmp_path):
+    """§3.2.5: a rerun validates and changes NOTHING — HEAD, every project byte (KB included),
+    both private profile files and a pre-existing unrelated `.mcp.json` stay byte-identical."""
     project = tmp_path / "proj"
     project.mkdir()
     git(project, "init", "-q")
     identity(project)
+    user_config = '{"mcpServers": {"user": {"command": "keep-me"}}}\n'
+    (project / ".mcp.json").write_text(user_config, encoding="utf-8")
     init.init_project(project)
     head = git(project, "rev-parse", "HEAD")
-    files = sorted(p.name for p in profile_pair.config_dir().iterdir())
+
+    def snapshot(root):
+        return {
+            p.relative_to(root).as_posix(): p.read_bytes()
+            for p in root.rglob("*")
+            if p.is_file() and ".git" not in p.relative_to(root).parts
+        }
+
+    tree = snapshot(project)
+    private = snapshot(profile_pair.config_dir())
 
     again = init.init_project(project)
 
     assert again["initialized"] is False
     assert git(project, "rev-parse", "HEAD") == head
-    assert sorted(p.name for p in profile_pair.config_dir().iterdir()) == files
+    assert snapshot(project) == tree  # byte-identical: nothing rewritten
+    assert snapshot(profile_pair.config_dir()) == private  # no profile rewritten or added
+    assert (project / ".mcp.json").read_text(encoding="utf-8") == user_config  # default preserve
 
 
 def test_init_without_a_git_identity_and_with_yes_refuses_naming_the_git_config_commands(tmp_path):
