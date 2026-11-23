@@ -103,6 +103,8 @@ def build_parser() -> _Parser:
     common = _Parser(add_help=False)
     common.add_argument("--project", default=".", help="the project directory (default: .)")
     common.add_argument("--json", action="store_true", help="print one JSON value")
+    json_only = _Parser(add_help=False)
+    json_only.add_argument("--json", action="store_true", help="print one JSON value")
     parser = _Parser(prog="ariadne", description="Governed metrics for agents and people.")
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
@@ -162,11 +164,11 @@ def build_parser() -> _Parser:
 
     skill_cmd = sub.add_parser("skill", help="the packaged agent skill")
     skill_sub = skill_cmd.add_subparsers(dest="skill_command", required=True, parser_class=_Parser)
-    skill_sub.add_parser("path")
-    p = skill_sub.add_parser("install")
+    skill_sub.add_parser("path", parents=[json_only])
+    p = skill_sub.add_parser("install", parents=[json_only])
     p.add_argument("--scope", choices=("user", "project"), default="user")
     p.add_argument("--agent", default=None)
-    skill_sub.add_parser("status")
+    skill_sub.add_parser("status", parents=[json_only])
 
     sub.add_parser("profile", parents=[common], help="profile the approved served sources")
     sub.add_parser("migrate", parents=[common], help="Ossie 0.2 -> 0.3 into the active draft")
@@ -258,13 +260,21 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
                 argv += ["--http-allowed-origin", origin]
         return serve.main(argv)
     if command == "skill":
+        import contextlib
+        import io
+
         from ariadne import skill
 
-        return skill.run(
-            args.skill_command,
-            getattr(args, "scope", "user"),
-            getattr(args, "agent", None),
-        )
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured if args.json else sys.stdout):
+            code = skill.run(
+                args.skill_command,
+                getattr(args, "scope", "user"),
+                getattr(args, "agent", None),
+            )
+        if args.json:
+            print(json.dumps({"ok": code == 0, "output": captured.getvalue().splitlines()}))
+        return code
     if command == "init":
         from ariadne import init
 
@@ -299,7 +309,11 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
 
         return _emit(
             approve.approve(
-                project, confirm_mappings=args.confirm_mapping, stdin=sys.stdin, stdout=sys.stdout
+                project,
+                confirm_mappings=args.confirm_mapping,
+                stdin=sys.stdin,
+                stdout=sys.stdout,
+                display=sys.stderr if args.json else None,  # JSON: stdout carries only the result
             ),
             args,
         )

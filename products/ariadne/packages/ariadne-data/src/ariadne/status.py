@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ariadne import admission, authoring_sources, ossie, proposals, skill, sources
+from ariadne import admission, authoring_sources, draft, ossie, proposals, skill, sources
 
 _LABEL = 18
 
@@ -161,58 +161,59 @@ def _managed_sources(root: Path, admitted: dict, approvals: dict | None) -> dict
 
 
 def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
+    """Pending work = the ONE active draft (spec 0040 §3.3). Consumed and discarded
+    proposals are history, never pending."""
     pending: list[dict] = []
-    records_dir = root / proposals.PROPOSALS_REL
-    if not records_dir.is_dir():
+    try:
+        view = draft.status(root)
+    except Exception as exc:
+        return [{"id": "draft", "state": "unreadable", "reason": str(exc)}]
+    if view is None:
         return pending
-    for path in sorted(records_dir.glob("*.json")):
-        entry: dict[str, Any] = {"id": path.stem}
-        try:
-            record = proposals._load_record(root, path.stem)
-        except Exception as exc:
-            entry.update(state="unreadable", reason=str(exc))
-            pending.append(entry)
-            continue
-        entry["base_revision"] = record.get("base_revision")
-        candidate = record.get("candidate_revision")
-        entry["candidate_revision"] = candidate
-        if not isinstance(candidate, str):
-            entry.update(
-                state="unreadable",
-                reason="malformed proposal record (missing candidate revision)",
-            )
-            pending.append(entry)
-            continue
-        try:
-            evidence = proposals.load_validation(root, path.stem, candidate)
-        except Exception as exc:
-            entry["validation"] = {"state": "unreadable", "reason": str(exc)}
-        else:
-            entry["validation"] = (
-                {"state": "unvalidated"}
-                if evidence is None
-                else {
-                    "state": "validated" if evidence.get("ok") else "invalid",
-                    "errors": len(evidence.get("errors") or []),
-                }
-            )
-        repair = (record.get("repair") or {}).get("status")
-        if repair:
-            entry["repair"] = repair
-        try:
-            resolved, digest = authoring_sources.candidate_sources(root, candidate)
-            entry["source_digest"] = digest
-            entry["sources_declared"] = bool(resolved)
-            state = authoring_sources.approval_state(root, resolved, digest)
-            entry["approved"] = state["approved"] if digest and approvals is not None else None
-            if resolved and any(isinstance(item.get("storage"), dict) for item in resolved):
-                entry["effective_approval"] = state["state"]
-                if state["state"] == "unresolved":
-                    entry["prerequisite"] = state.get("reason")
-        except Exception as exc:
-            entry["source_error"] = str(exc)
-        pending.append(entry)
-    return pending
+    proposal = draft.proposal_of(root, (view["generation"], view["candidate_revision"]))
+    entry: dict[str, Any] = {
+        "id": proposal,
+        "generation": view["generation"],
+        "base_served_revision": view["base_served_revision"],
+        "stale": view["stale"],
+    }
+    try:
+        record = proposals._load_record(root, proposal)
+    except Exception as exc:
+        entry.update(state="unreadable", reason=str(exc))
+        return [entry]
+    entry["base_revision"] = record.get("base_revision")
+    candidate = view["candidate_revision"]
+    entry["candidate_revision"] = candidate
+    try:
+        evidence = proposals.load_validation(root, proposal, candidate)
+    except Exception as exc:
+        entry["validation"] = {"state": "unreadable", "reason": str(exc)}
+    else:
+        entry["validation"] = (
+            {"state": "unvalidated"}
+            if evidence is None
+            else {
+                "state": "validated" if evidence.get("ok") else "invalid",
+                "errors": len(evidence.get("errors") or []),
+            }
+        )
+    repair = (record.get("repair") or {}).get("status")
+    if repair:
+        entry["repair"] = repair
+    try:
+        resolved, digest = authoring_sources.candidate_sources(root, candidate)
+        entry["source_digest"] = digest
+        entry["sources_declared"] = bool(resolved)
+        state = authoring_sources.approval_state(root, resolved, digest)
+        entry["approved"] = state["approved"] if digest and approvals is not None else None
+        if resolved and any(isinstance(item.get("storage"), dict) for item in resolved):
+            entry["effective_approval"] = state["state"]
+            if state["state"] == "unresolved":
+                entry["prerequisite"] = state.get("reason")
+    except Exception as exc:
+        entry["source_error"] = str(exc)
+    return [entry]
 
 
 def _example_counts(snapshot: Path | None, record: dict | None) -> dict:
@@ -327,44 +328,28 @@ def _readiness(admitted: dict) -> tuple[bool, str | None]:
 
 
 def _proposal_steps(root: str, pending: list[dict]) -> list[str]:
-    order = {"validated": 0, "unvalidated": 1, "invalid": 2, "unreadable": 3}
+    """Next steps for the one active draft — only commands that exist (spec 0040 §3.1.2)."""
     steps = []
-    for entry in sorted(
-        pending, key=lambda item: order.get(item.get("validation", {}).get("state", "invalid"), 9)
-    ):
-        proposal = entry["id"]
-        revision = entry.get("candidate_revision")
+    for entry in pending:
         if entry.get("state") == "unreadable":
             steps.append(
-                f"human resolution required: proposal {proposal} is unreadable "
-                f"({entry.get('reason')})"
+                f"human resolution required: the draft is unreadable ({entry.get('reason')})"
             )
+        elif entry.get("stale"):
+            steps.append(f"ariadne draft rebase --project {root} — the served revision moved on")
         elif entry.get("repair") == "review_needed":
-            steps.append(f"human review required: proposal {proposal} exhausted its bounded repair")
-        elif entry.get("validation", {}).get("state") == "validated":
-            steps.extend(
-                [
-                    f"ariadne-authoring review --project {root} --proposal {proposal}",
-                    f"ariadne-admit --project {root} --proposal {proposal} --revision {revision} "
-                    "--reviewed-digest <digest from that review>",
-                ]
-            )
+            steps.append("human review required: the draft exhausted its bounded repair")
         elif entry.get("sources_declared") and not entry.get("approved"):
             steps.append(
-                f"ariadne-authoring approve-sources --project {root} --proposal {proposal} "
-                f"--revision {revision} --source-digest {entry.get('source_digest')} "
-                "(HUMAN-ONLY: records the operator's source permission)"
+                f"ariadne approve --project {root} — HUMAN-ONLY: approve the new sources first "
+                "(source approval)"
             )
+        elif entry.get("validation", {}).get("state") == "validated":
+            steps.append(f"ariadne diff --project {root}, then ariadne approve --project {root}")
         elif entry.get("validation", {}).get("state") == "invalid":
-            steps.append(
-                f"repair proposal {proposal}'s reported errors, then ariadne-authoring validate "
-                f"--project {root} --proposal {proposal} --expected-revision <current revision>"
-            )
+            steps.append(f"repair the reported errors, then ariadne validate --project {root}")
         else:
-            steps.append(
-                f"ariadne-authoring validate --project {root} --proposal {proposal} "
-                f"--expected-revision {revision}"
-            )
+            steps.append(f"ariadne validate --project {root}")
     return steps
 
 
@@ -395,21 +380,21 @@ def _next_steps(
         steps.append(
             "human resolution required: admission state is inconsistent "
             f"({admitted.get('reason')}); "
-            f"inspect {proposals.ARIADNE_STATE_DIR}/ and re-admit a reviewed/validated revision"
+            f"inspect {proposals.ARIADNE_STATE_DIR}/ and approve a validated draft again"
         )
     elif admitted["state"] == "none":
         steps.extend(
             _proposal_steps(root_text, pending)
             if pending
-            else [f"ariadne-authoring start --project {root_text} — start the first proposal"]
+            else [f"ariadne add <source> --project {root_text} — start the first draft"]
         )
     elif admitted["catalog"]["context_only"]:
-        steps.append(f"ariadne-authoring start --project {root_text} — author semantic models")
+        steps.append(f"ariadne draft edit <file> --project {root_text} — author semantic models")
     for target in skill_targets:
         if target["state"] == "drift":
             agent = f" --agent {target['agent']}" if target["agent"] else ""
             steps.append(
-                f"ariadne-skill install --scope {target['scope']}{agent} — refresh the drifted "
+                f"ariadne skill install --scope {target['scope']}{agent} — refresh the drifted "
                 f"installed skill at {target['path']}"
             )
     return steps
@@ -535,7 +520,19 @@ def _render(report: dict) -> str:
     lines.append("")
     lines.append("Work pending")
     proposals_pending = report["work_pending"]["proposals"]
-    lines.append(_row("proposals:", str(len(proposals_pending)) if proposals_pending else "none"))
+    if proposals_pending:
+        entry = proposals_pending[0]
+        lines.append(
+            _row(
+                "draft:",
+                f"generation {entry.get('generation')}, base "
+                f"{str(entry.get('base_served_revision') or 'none')[:12]}, "
+                f"{'STALE' if entry.get('stale') else 'current'}, validation "
+                f"{(entry.get('validation') or {}).get('state', 'unknown')}",
+            )
+        )
+    else:
+        lines.append(_row("draft:", "none"))
     examples = report["work_pending"]["answer_examples"]
     lines.append(_row("answer examples:", str(examples["total"])))
     lines.append("")

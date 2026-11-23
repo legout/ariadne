@@ -157,7 +157,19 @@ def _view(project: Path, slot: dict | None) -> dict | None:
     if slot is None or slot["state"] != "active":
         return None
     served = _served_revision(project)
+    from ariadne import proposals as _p
+
+    evidence = None
+    try:
+        evidence = _p.load_validation(project, slot["proposal"], slot["candidate_revision"])
+    except ValueError:
+        evidence = None
     return {
+        "validation": (
+            "unvalidated"
+            if evidence is None
+            else ("validated" if evidence.get("ok") else "invalid")
+        ),
         "generation": slot["generation"],
         "candidate_revision": slot["candidate_revision"],
         "base_served_revision": slot["base_served_revision"],

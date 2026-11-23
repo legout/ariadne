@@ -355,10 +355,14 @@ def approve(
     confirm_mappings: list[str] | None = None,
     stdin: Any,
     stdout: Any,
+    display: Any = None,
 ) -> dict:
-    """The command body. ``stdin``/``stdout`` must be terminals."""
+    """The command body. ``stdin``/``stdout`` must be terminals (exactly as strict with
+    ``--json``); the summary and prompt go to ``display`` (default ``stdout``), so a JSON
+    caller can keep stdout for the result only."""
     project = Path(project).resolve()
     require_tty(stdin, stdout)
+    stdout = display if display is not None else stdout
     view, record = _view(project)
     kind = classify(project, view, record)
     if kind["kind"] == "source":

@@ -528,3 +528,10 @@ def test_every_documented_subcommand_has_working_help(capsys):
             build_parser().parse_args([command, "--help"])
         assert exc.value.code == 0
         assert command in capsys.readouterr().out
+
+
+def test_skill_accepts_json_and_every_table_command_takes_it(capsys):
+    """Finding 6: `--json` works for `skill` too (one JSON value on stdout)."""
+    assert cli(["skill", "path", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True and payload["output"]

@@ -115,7 +115,7 @@ def test_empty_cwd_is_not_ready_with_git_first_setup_steps_exit_zero(tmp_path, c
     assert report["project"]["kind"] == "git_managed"
     assert report["ready"] is False and report["ready_reason"]
     assert any("git init" in step for step in report["next_steps"])
-    assert any("ariadne-authoring start" in step for step in report["next_steps"])
+    assert any("ariadne add" in step for step in report["next_steps"])
     # human output carries the same states
     capsys.readouterr()
     assert run_status() == 0
@@ -170,10 +170,9 @@ def test_valid_admission_reports_checked_pinned_revision_and_digest(tmp_path, ca
     assert report["sources"]["selection"] == "admitted"
     assert report["sources"]["identity_digest"] == current["source_digest"]
     assert report["sources"]["approval"] is True
-    # the admitted proposal keeps its own identity/state in the backlog (AC2)
-    (proposal,) = report["work_pending"]["proposals"]
-    assert proposal["id"] == current["proposal"]
-    assert proposal["validation"]["state"] == "validated"
+    # approval consumed the draft: an approved proposal is history, never pending (spec 0040)
+    assert report["work_pending"]["proposals"] == []
+    assert current["proposal"]
 
 
 def test_absent_admission_and_corrupt_or_changed_state_block_never_fall_back(
@@ -318,7 +317,7 @@ def test_managed_pending_proposals_keep_identity_and_validation_state(tmp_path, 
     (pending_source,) = report["sources"]["pending"]
     assert pending_source["source_digest"] == digest
     assert pending_source["approved"] is False
-    assert any("approve-sources" in step for step in report["next_steps"])
+    assert any("ariadne approve" in step for step in report["next_steps"])
 
 
 # ------------------------------------------------------------------- [AC7]
@@ -360,20 +359,20 @@ def test_skill_targets_absent_optional_and_drifted_installed(tmp_path, capsys, m
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert set(states.values()) == {"absent"}  # every optional target honestly absent
-    assert not any("ariadne-skill" in s for s in report["next_steps"])  # absent ≠ failed install
+    assert not any("ariadne skill" in s for s in report["next_steps"])  # absent ≠ failed install
 
     target = Path.home() / ".agents" / "skills" / "ariadne"
     shutil.copytree(packaged, target)  # an exact installed copy…
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert states[("user", None)] == "ok"  # …is not drift
-    assert not any("ariadne-skill" in s for s in report["next_steps"])
+    assert not any("ariadne skill" in s for s in report["next_steps"])
 
     (target / "SKILL.md").write_text("# local edit\n", encoding="utf-8")  # now drifted
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert states[("user", None)] == "drift"
-    assert any(s.startswith("ariadne-skill install --scope user") for s in report["next_steps"])
+    assert any(s.startswith("ariadne skill install --scope user") for s in report["next_steps"])
 
 
 # ------------------------------------------- fix pass (review findings F1-F5)
@@ -541,10 +540,9 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
 
     # an explicit Example is saved into the active draft (an MCP tool in spec 0040)
     saved = DiscoveryRuntime.open_project(project).save_example(
-        _submission(_SMALL_RESULT, sources=[]),
-        proposal=started["proposal"],
-        expected_revision=started["candidate_revision"],
+        _submission(_SMALL_RESULT, sources=[])
     )
+    assert saved["proposal"] == started["proposal"]  # one active draft holds it
     validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     example_review = api.review_proposal(saved["proposal"])
@@ -557,3 +555,36 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
         "total": 1,
         "by_status": {"admitted": 1},
     }
+
+
+# ------------------------------------------------ finding 6: one draft, current commands
+
+
+def test_status_shows_the_one_active_draft_and_only_current_commands(tmp_path, capsys):
+    """Finding 6 (spec 0040 §3.1.2/§3.3): `status` renders the ONE active draft
+    (generation, base, staleness, validation) and recovery commands that exist; consumed
+    and discarded proposals are history, never pending."""
+    from ariadne import draft
+    from ariadne.authoring import AuthoringProject
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    first = api.start_proposal()
+    view = draft.status(project)
+    assert view is not None and view["validation"] == "unvalidated"
+    draft.discard(project, (view["generation"], view["candidate_revision"]))
+    second = api.start_proposal()  # generation 2
+
+    report = status_json(capsys, "--project", str(project))
+    (pending,) = report["work_pending"]["proposals"]  # exactly one: the discarded one is gone
+    assert pending["id"] == second["proposal"] and pending["id"] != first["proposal"]
+    assert pending["generation"] == 2 and pending["stale"] is False
+    assert pending["validation"] == {"state": "unvalidated"}
+    steps = " ".join(report["next_steps"])
+    assert "ariadne validate" in steps or "ariadne approve" in steps
+    for dead in ("ariadne-authoring", "ariadne-admit", "approve-sources", "ariadne-skill"):
+        assert dead not in steps, dead
+    capsys.readouterr()
+    assert run_status("--project", str(project)) == 0
+    human = capsys.readouterr().out
+    assert "draft:" in human and "generation 2" in human
