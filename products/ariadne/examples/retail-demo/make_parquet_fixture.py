@@ -111,8 +111,10 @@ def write_fixture(outdir: Path) -> list[Path]:
 
 
 def summarize(written: list[Path]) -> str:
-    """Stats over the same seeded rows the shards hold, via the relation API —
-    no file paths in SQL text."""
+    """Stats over the same seeded rows the shards hold, from one aggregate
+    SELECT on the connection (first row). This replaces the relation aggregate,
+    whose .fetchone() no longer exists on DuckDB 2.0.0. No file paths in SQL
+    text."""
     rows = build_rows(random.Random(SEED))
     con = duckdb.connect()
     try:
