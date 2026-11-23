@@ -358,7 +358,12 @@ def edit_pages(project: str | Path, expected: Expected, pages: list) -> dict:
 
 
 def apply_migration(
-    project: str | Path, expected: Expected, writes: dict[str, str], deletes: tuple[str, ...]
+    project: str | Path,
+    expected: Expected,
+    writes: dict[str, str],
+    deletes: tuple[str, ...],
+    *,
+    base_revision: str | None = None,
 ) -> dict:
     """The migration commit (spec 0039 §7) written into the active draft."""
     project = Path(project).resolve()
@@ -369,6 +374,7 @@ def apply_migration(
         lambda proposal, revision: proposals.migration_commit(
             project, proposal, revision, writes, deletes
         ),
+        base_revision=base_revision,
     )
     return {**result, "draft": view}
 

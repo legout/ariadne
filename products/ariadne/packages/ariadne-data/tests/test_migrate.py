@@ -551,3 +551,52 @@ def test_a_legacy_model_with_an_inline_credential_is_refused_and_creates_no_prop
     assert not (project / ".ariadne").exists() or not any(
         (project / ".ariadne").rglob("proposals/*")
     )
+
+
+def test_migrate_converts_the_active_drafts_candidate_and_never_overwrites_its_edit(tmp_path):
+    """Finding 4: `draft edit` then `migrate` must not replace the edit with the old served
+    bytes. migrate pins the active draft first and converts its CANDIDATE: the edited
+    description survives in the converted model."""
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    edited = LEGACY_RETAIL_SALES.replace(
+        "Synthetic local retail orders", "Edited in the draft before migrating"
+    )
+    draft.edit_artifact(project, None, "semantic_layer/models/retail_sales.yml", edited)
+    before = draft.status(project)
+    assert before is not None
+
+    result = migrate.migrate_project(project)
+
+    assert result["status"] == "draft" and result["generation"] == before["generation"]
+    converted = _git(
+        project, "show", f"{result['revision']}:semantic_layer/models/retail_sales.yml"
+    )
+    assert "Edited in the draft before migrating" in converted  # the edit survived
+    assert "version: 0.3.0.dev0" in converted
+
+
+def test_migrate_refuses_when_the_draft_moved_after_the_pin(tmp_path, monkeypatch):
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    draft.edit_artifact(
+        project, None, "semantic_layer/models/retail_sales.yml", LEGACY_RETAIL_SALES + "\n"
+    )
+    real = migrate.convert_documents
+
+    def convert_then_edit(files):
+        view = draft.status(project)
+        assert view is not None
+        draft.edit_artifact(
+            project,
+            (view["generation"], view["candidate_revision"]),
+            "data/seed_notes.md",
+            "moved\n",
+        )
+        return real(files)
+
+    monkeypatch.setattr(migrate, "convert_documents", convert_then_edit)
+    with pytest.raises(ValueError, match="stale"):
+        migrate.migrate_project(project)

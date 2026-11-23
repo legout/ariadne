@@ -781,12 +781,21 @@ def migrate_project(project: str | Path) -> dict:
     separate, human-only step."""
     from ariadne import (  # pyright: ignore[reportMissingImports] — resolver drift
         admission,
+        draft,  # pyright: ignore[reportMissingImports] — resolver drift
         proposals,
     )
 
     root = Path(project).resolve()
     current = admission.load_current(root)
-    revision = current["commit"] if current is not None else proposals._current_head(root)
+    # Pin FIRST (spec 0040 §3.3): with an active draft the conversion reads the draft's
+    # CANDIDATE bytes and the write is compare-and-set on that exact (generation, revision);
+    # with none, the first write is pinned to the served (else HEAD) revision it converted.
+    active = draft.status(root)
+    expected = None if active is None else (active["generation"], active["candidate_revision"])
+    if active is not None:
+        revision = active["candidate_revision"]
+    else:
+        revision = current["commit"] if current is not None else proposals._current_head(root)
     if revision is None:
         raise MigrationError(f"{root}: no commits to migrate from")
     files = _read_revision(root, revision)
@@ -809,13 +818,11 @@ def migrate_project(project: str | Path) -> dict:
         raise MigrationError(f"project left unchanged — unconvertible construct(s): {report}")
     # the complete write and delete set is verified before any proposal state exists
     proposals.check_migration_set(writes, tuple(deletes))
-    from ariadne import draft  # pyright: ignore[reportMissingImports] — resolver drift
-
     # spec 0040 §3.3: migrate writes into the one active draft (superseding spec 0039
-    # §7.1's own proposal); with none open, this is the first write that creates it.
-    active = draft.status(root)
-    expected = None if active is None else (active["generation"], active["candidate_revision"])
-    result = draft.apply_migration(root, expected, writes, tuple(deletes))
+    # §7.1's own proposal); a candidate that moved since the pin refuses (compare-and-set).
+    result = draft.apply_migration(
+        root, expected, writes, tuple(deletes), base_revision=None if active else revision
+    )
     return {
         "status": "draft",
         "generation": result["draft"]["generation"],
