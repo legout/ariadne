@@ -149,17 +149,25 @@ def _identity_lines(entries: list[dict], *, prefix: str = "  ") -> list[str]:
     return lines
 
 
-def _previous_identities(project: Path, names: set[str]) -> dict[str, dict]:
-    """The identity each named source had before this draft: the served release's, else
-    the newest source grant's (None when it is brand new)."""
-    previous: dict[str, dict] = {}
+def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict, dict]]:
+    """The identity AND frozen credential-free binding each named source had before this
+    draft: the served release's, else the newest source grant's (absent when brand new)."""
+    previous: dict[str, tuple[dict, dict]] = {}
     for grant in authoring_sources._load_grants(project):
         if grant["source"]["name"] in names:
-            previous[grant["source"]["name"]] = grant["source"]
+            own = {}
+            storage = grant["source"].get("storage")
+            if grant.get("binding") and isinstance(storage, dict):
+                own[storage["name"]] = grant["binding"]
+            if grant.get("postgres_binding"):
+                own[f"postgres:{grant['source']['name']}"] = grant["postgres_binding"]
+            previous[grant["source"]["name"]] = (grant["source"], own)
     served = admission.load_current(project)
     for entry in (served or {}).get("sources") or []:
         if entry["name"] in names:
-            previous[entry["name"]] = entry
+            keys = authoring_sources.storage_bindings_from_identity([entry]).keys()
+            stored = (served or {}).get("storage_bindings") or {}
+            previous[entry["name"]] = (entry, {k: stored[k] for k in keys if k in stored})
     return previous
 
 
@@ -170,6 +178,7 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
     stdout.write("Source approval (no source has been read):\n")
     for entry in new:
         old = previous.get(entry["name"])
+        own = authoring_sources.storage_bindings_from_identity([entry])
         if old is None:
             stdout.write(
                 f"NEW source:\n{chr(10).join(_identity_lines([entry], prefix='    + '))}\n"
@@ -177,8 +186,10 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         else:
             stdout.write(
                 f"CHANGED source {esc(entry['name'])}:\n"
-                f"{chr(10).join(_identity_lines([old], prefix='    - '))}\n"
+                f"{chr(10).join(_identity_lines([old[0]], prefix='    - '))}\n"
+                f"      old binding: {esc(json.dumps(old[1], sort_keys=True))}\n"
                 f"{chr(10).join(_identity_lines([entry], prefix='    + '))}\n"
+                f"      new binding: {esc(json.dumps(own, sort_keys=True))}\n"
             )
     stdout.write(f"Grant delta: {len(new)} source(s) will be granted read access for authoring.\n")
     if bindings:
@@ -257,16 +268,30 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
 
 def _diff_lines(project: Path, record: dict, review: dict, limit: int = 120) -> list[str]:
     """The changed artifacts and definitions: the escaped, bounded unified diff of the
-    draft against its base — the content the operator is actually confirming."""
-    out = proposals._git(
-        ["diff", "--no-color", "--no-ext-diff", record["base_revision"], review["revision"]],
-        project,
-        check=False,
-    ).stdout.splitlines()
+    draft against its base — the content the operator is actually confirming. Records are
+    split on LF ONLY (bytes decoded per record, then escaped), so an embedded CR or NEL in
+    an agent-authored page is shown as a visible escape inside its own diff line, never as
+    a display line boundary."""
+    out = diff_records(project, record["base_revision"], review["revision"])
     shown = [f"    {esc(line)}" for line in out[:limit]]
     if len(out) > limit:
-        shown.append(f"    … {len(out) - limit} more diff line(s) — run 'ariadne diff' for all")
+        shown.append(
+            f"    … {len(out) - limit} more diff line(s) — run 'ariadne diff --full' for all"
+        )
     return shown
+
+
+def diff_records(project: Path, base: str, revision: str) -> list[str]:
+    """The unified diff as LF-delimited records (raw bytes decoded with replacement)."""
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "diff", "--no-color", "--no-ext-diff", base, revision],
+        cwd=project,
+        capture_output=True,
+        check=False,
+    )
+    return proc.stdout.decode("utf-8", errors="replace").split("\n")[:-1]
 
 
 def _summary(

@@ -132,7 +132,8 @@ def build_parser() -> _Parser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation (not for approve)")
 
     sub.add_parser("validate", parents=[common], help="validate the active draft")
-    sub.add_parser("diff", parents=[common], help="the draft against the served state")
+    p = sub.add_parser("diff", parents=[common], help="the draft against the served state")
+    p.add_argument("--full", action="store_true", help="include the complete escaped content diff")
     p = sub.add_parser("approve", parents=[common], help="approve the draft (interactive)")
     p.add_argument("--confirm-mapping", action="append", default=[], metavar="SEL")
     sub.add_parser("status", parents=[common], help="served revision, approval, draft state")
@@ -208,7 +209,7 @@ def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
     return _emit(draft.discard(project, expected), args)
 
 
-def _diff(project: Path) -> dict:
+def _diff(project: Path, full: bool = False) -> dict:
     from ariadne import approve, authoring, draft, proposals
 
     view = draft.status(project)
@@ -217,13 +218,19 @@ def _diff(project: Path) -> dict:
     record = proposals._load_record(project, draft.proposal_of(project, _pair(view)))
     review = authoring.review_proposal(project, record["id"])
     kind = approve.classify(project, view, record)["kind"] if not view["stale"] else "stale"
-    return {
+    result = {
         "approval_kind": kind,
         "draft": view,
         "changes": review["changes"],
         "validation": (review["report"] or {}).get("status", "unvalidated"),
         "validation_stale": review["validation_stale"],
     }
+    if full:  # the complete content the prompt may have cut off, control characters escaped
+        result["content_diff"] = [
+            approve.esc(line)
+            for line in approve.diff_records(project, record["base_revision"], review["revision"])
+        ]
+    return result
 
 
 def _pair(view: dict) -> tuple[int, str]:
@@ -303,7 +310,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = draft.validate(project, expected)
         return _emit({k: result[k] for k in ("ok", "status", "errors", "revision", "draft")}, args)
     if command == "diff":
-        return _emit(_diff(project), args)
+        return _emit(_diff(project, full=args.full), args)
     if command == "approve":
         from ariadne import approve
 

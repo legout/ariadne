@@ -322,7 +322,7 @@ def test_an_unreachable_source_times_out_within_the_host_deadline_not_the_lock(
 # ------------------------------- the real `ariadne approve` on a pty (AC10, finding 3)
 
 
-def _run_on_pty(project, answer, *, before_answer=None):
+def _run_on_pty(project, answer, *, before_answer=None, extra=()):
     """Run ``python -m ariadne.cli approve`` on a REAL pty: wait for the prompt, run
     ``before_answer`` (an action between display and "yes"), then answer. Returns
     ``(exit_code, terminal_output)``."""
@@ -332,7 +332,7 @@ def _run_on_pty(project, answer, *, before_answer=None):
 
     master, slave = pty.openpty()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "ariadne.cli", "approve", "--project", str(project)],
+        [sys.executable, "-m", "ariadne.cli", "approve", "--project", str(project), *extra],
         env=os.environ.copy(),
         stdin=slave,
         stdout=slave,
@@ -369,16 +369,11 @@ def _active(project):
     return view
 
 
-@pytest.fixture
-def pty_project(tmp_path, monkeypatch):
-    """A project with a served release A and a calculation draft on it, plus the private
-    profile pair ``approve`` reads (written the supported way)."""
+def _profile_pair(project, tmp_path, monkeypatch):
+    """The private profile pair ``approve`` reads, written the supported way."""
     from ariadne import profile_pair
-    from tests.test_git_admission import _policy_edit, admitted_ready
-    from tests.test_git_authoring import admit_library
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    project = complete_bundle_project(tmp_path)
     lumio = tmp_path / "home" / "lumio-profile.json"
     lumio.parent.mkdir(parents=True, exist_ok=True)
     lumio.write_text("{}\n", encoding="utf-8")
@@ -387,12 +382,24 @@ def pty_project(tmp_path, monkeypatch):
     settings["publication_destination"] = str(tmp_path / "published")
     profile_pair.write_private(sibling, json.dumps(settings))
     profile_pair.record(project, lumio, sibling)
+
+
+@pytest.fixture
+def pty_project(tmp_path, monkeypatch):
+    """A project with a served release A and a calculation draft on it."""
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    project = complete_bundle_project(tmp_path)
+    _profile_pair(project, tmp_path, monkeypatch)
     api = AuthoringProject(project)
     review_a, _ = admitted_ready(api, project, _policy_edit("Served rule A."))
     assert admit_library(project, review_a, destination=tmp_path / "published") == 0
     draft_b = api.start_proposal()
     api.edit_pages_batch(
-        draft_b["proposal"], draft_b["candidate_revision"], _policy_edit("Draft rule B.")
+        draft_b["proposal"],
+        draft_b["candidate_revision"],
+        _policy_edit("Draft rule B.\rCR-line\u0085NEL-line\x1b[31mESC"),
     )
     return project, review_a
 
@@ -406,6 +413,10 @@ def test_the_calculation_prompt_shows_the_change_and_approves_exactly_that_revis
     assert code == 0, shown
     assert "Calculation approval of draft revision " + pinned[:12] in shown
     assert "Draft rule B." in shown and "Served rule A." in shown  # the changed content
+    # control characters inside a page are escaped INSIDE their own diff record: no raw CR/NEL/ESC
+    # reaches the terminal as a display line boundary or sequence
+    assert "Draft rule B.\\x0dCR-line\\x85NEL-line\\x1b[31mESC" in shown
+    assert "\x1b[31m" not in shown and "\x85" not in shown
     served = admission.load_current(project)
     assert served is not None and served["commit"] != review_a["revision"]
     assert served["commit"] == pinned  # exactly the revision the prompt displayed
@@ -568,3 +579,101 @@ def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calcu
         assert "pg" in message and "calculation approval" in message, message
         assert "ariadne approve" in message, message
     assert (project / CURRENT).read_bytes() == served_bytes  # the served state never moved
+
+
+def test_diff_full_gives_the_complete_escaped_content_the_prompt_may_cut_off(pty_project, capsys):
+    from ariadne.cli import main as cli
+
+    project, _review_a = pty_project
+    capsys.readouterr()
+    assert cli(["diff", "--full", "--json", "--project", str(project)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    joined = "\n".join(out["content_diff"])
+    assert "+" in joined and "Draft rule B.\\x0dCR-line" in joined and "\x1b" not in joined
+
+
+def test_a_mapping_selection_shows_its_assertion_and_evidence_on_the_real_prompt(
+    tmp_path, monkeypatch
+):
+    from ariadne import admission
+    from tests.test_context_admission import admitted_candidate
+
+    project, _api, review = admitted_candidate(tmp_path / "proj")
+    _profile_pair(project, tmp_path, monkeypatch)
+    selection = "order-number:global-order-concatenation"
+    code, shown = _run_on_pty(project, "yes", extra=("--confirm-mapping", selection))
+    assert code == 0, shown
+    assert "Mapping confirmations" in shown and selection in shown and "claim=asserted" in shown
+    assert "declaration:" in shown and "digest=" in shown
+    served = admission.load_current(project)
+    assert served is not None and [m["mapping"] for m in served["confirmed_mappings"]] == [
+        "global-order-concatenation"
+    ]
+
+
+def test_a_changed_destination_under_the_same_variable_shows_both_bindings(tmp_path, monkeypatch):
+    project = complete_bundle_project(tmp_path)
+    env = "ARIADNE_TEST_PG_DSN_SHOW"
+    monkeypatch.setenv(env, "postgresql://owner:pw-a@db-a.internal:5432/app")
+    entry = authoring_sources.source_entry(env, name="pg", type="postgres")
+    authoring_sources.add_sources(project, None, [entry])
+
+    class NoRemote:
+        catalog: list = []
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(approve.execution, "DuckDBExecution", NoRemote)
+    _run(project, Tty())  # grant A (and the fixture's own sources)
+    monkeypatch.setenv(env, "postgresql://owner:pw-b@db-b.internal:5432/app")
+    first = draft.edit_artifact(project, None, "data/seed_notes.md", "x\n")["draft"]
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (first["generation"], view["candidate_revision"]),
+        "data/seed_notes.md",
+        (project / "data" / "seed_notes.md").read_text(encoding="utf-8"),
+    )
+    # re-declare the same variable under a changed entry so the draft is a source change
+    doc_entry = {**entry, "read_only": False}
+    import yaml
+
+    doc = yaml.safe_load(
+        proposals.read_artifact(project, draft_proposal(project), "ariadne.yaml")["content"]
+    )
+    for existing in doc["sources"]:
+        if existing["name"] == "pg":
+            existing.update(doc_entry)
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        "ariadne.yaml",
+        yaml.safe_dump(doc, sort_keys=False),
+    )
+    _outcome, shown = _run(project, Tty())
+    assert "CHANGED source pg" in shown
+    assert "old binding:" in shown and "db-a.internal" in shown  # the frozen old destination
+    assert "new binding:" in shown and "db-b.internal" in shown
+    assert "pw-a" not in shown and "pw-b" not in shown  # credential-free
+
+
+def test_an_unreachable_source_exhausts_the_deadline_and_leaves_slot_and_grant_unchanged(
+    tmp_path, monkeypatch
+):
+    """The failure mode of finding 3: when the host-owned budget is spent the live check
+    refuses inside the transaction; the slot, baseline and grants stay as they were."""
+    project, _api, _result = _project_with_new_source(tmp_path)
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
+    ticks = iter(range(0, 10_000, 1000))  # every clock read advances 1000 s
+    monkeypatch.setattr(approve.execution, "_deadline_clock", lambda: next(ticks))
+    with pytest.raises(Exception, match="deadline"):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert not (project / GRANTS).exists()
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before
+    assert not (project / draft.BASELINE_REL).exists() and not (project / draft.TXN_REL).exists()
