@@ -197,25 +197,13 @@ def create_git_demo_project(root: Path) -> tuple[Path, Path]:
     proposal carries the generated Table profile (``refresh_schema``), full
     native validation and the composite human admission."""
     from ariadne import admission
-    from ariadne.init import main as init_main  # the library scaffold init_project builds on
+    from ariadne.init import _scaffold
 
     root.mkdir(parents=True, exist_ok=True)
     run_git(root, "init", "-q")
     run_git(root, "config", "user.name", "Ariadne Tests")
     run_git(root, "config", "user.email", "tests@ariadne.local")
-    with redirect_stdout(io.StringIO()):
-        assert (
-            init_main(
-                [
-                    str(root),
-                    "--namespace",
-                    NAMESPACE,
-                    "--private-profile",
-                    str(root.parent / _PRIVATE_PROFILE),
-                ]
-            )
-            == 0
-        )
+    _scaffold(root, NAMESPACE, root.parent / _PRIVATE_PROFILE)
     db = seed_demo_db(root / "data" / "demo.db")
     (root / "ariadne.yaml").write_text(
         "sources:\n  - name: demo\n    type: sqlite\n    path: data/demo.db\n",

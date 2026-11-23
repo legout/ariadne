@@ -165,3 +165,55 @@ def test_a_missing_or_invalid_sibling_refuses_naming_the_file(tmp_path):
     sibling.unlink()
     with pytest.raises(profile_pair.ProfileError, match="missing"):
         profile_pair.load(project)
+
+
+def test_init_refuses_any_differing_scaffold_target_and_names_it(tmp_path):
+    """Finding 5: every target file is preflighted; a differing .gitignore (or any other
+    target) refuses BEFORE anything is created, naming the file. Unrelated files are fine."""
+    for rel in (".gitignore", ".env.example"):
+        project = tmp_path / rel.strip(".")
+        project.mkdir()
+        git(project, "init", "-q")
+        identity(project)
+        (project / rel).write_text("my own rules\n")
+        (project / "unrelated.txt").write_text("fine\n")
+        with pytest.raises(ValueError, match=rf"{rel}.*different content"):
+            init.init_project(project)
+        assert not (project / "knowledge").exists()
+        assert not (project / ".ariadne").exists()
+        assert not profile_pair.config_dir().exists() or not any(
+            profile_pair.config_dir().iterdir()
+        )
+
+
+def test_the_sibling_profile_is_published_atomically_and_never_replaced(tmp_path):
+    target = tmp_path / "private" / "x.ariadne.json"
+    profile_pair.write_private(target, '{"a": 1}\n')
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    with pytest.raises(FileExistsError):
+        profile_pair.write_private(target, '{"a": 2}\n')
+    assert target.read_text() == '{"a": 1}\n'
+    assert [p.name for p in target.parent.iterdir()] == ["x.ariadne.json"]  # no temp left
+
+
+def test_init_does_not_replace_an_existing_local_profile_record(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    git(project, "init", "-q")
+    identity(project)
+    (project / ".ariadne").mkdir()
+    (project / ".ariadne" / "profile.json").write_text("{}")
+    with pytest.raises(ValueError, match="already records a private profile"):
+        init.init_project(project)
+    assert (project / ".ariadne" / "profile.json").read_text() == "{}"
+
+
+def test_the_generated_agents_page_names_only_current_commands(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    git(project, "init", "-q")
+    identity(project)
+    init.init_project(project)
+    text = (project / "AGENTS.md").read_text()
+    assert "ariadne approve" in text and "ariadne draft edit" in text
+    assert "ariadne-skill" not in text and "ariadne-authoring" not in text

@@ -948,18 +948,12 @@ def test_legacy_project_refuses_without_mutation(tmp_path, monkeypatch, capsys):
     with pytest.raises(ValueError) as query_exc:
         QueryRuntime.open_project(legacy)
     _assert_fresh_setup_refusal(query_exc.value)
-    from ariadne.init import main as init_main
+    from ariadne.init import _scaffold
 
     profile = tmp_path / "legacy-profile.json"
-    init_args = [
-        str(legacy),
-        "--namespace",
-        "urn:uuid:legacy-refusal",
-        "--private-profile",
-        str(profile),
-    ]
-    assert init_main(init_args) == 1
-    init_err = capsys.readouterr().err.lower()
+    with pytest.raises(ValueError) as init_exc:
+        _scaffold(legacy, "urn:uuid:legacy-refusal", profile)
+    init_err = str(init_exc.value).lower()
     assert "fresh" in init_err and "re-onboard" in init_err
     assert _owned_tree_manifest(legacy) == before_manifest
     assert _git_state(legacy) == (before_head, before_porcelain)
@@ -1088,9 +1082,7 @@ def test_admission_binding_checks_carry_postgres_destinations(tmp_path, monkeypa
     shaped["storage_bindings"] = bindings
     shaped["source_digest"] = authoring_sources.approval_digest(declared, bindings)
 
-    approvals = authoring_sources._load_approvals(project)
-    approvals[shaped["source_digest"]] = {"source_digest": shaped["source_digest"]}
-    authoring_sources._store_approvals(project, approvals)
+    # the served release's own bound identities need no grant record (spec 0040 §3.4.4)
 
     # unchanged destination: the COMPLETE binding set passes the admission
     # binding checks — any refusal must come from the later release-wrapper

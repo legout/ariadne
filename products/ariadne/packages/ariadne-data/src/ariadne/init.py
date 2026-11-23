@@ -32,7 +32,6 @@ is a symlink, nothing is written through the link.
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 import tomllib
@@ -88,7 +87,7 @@ knowledge pages cite them.
 
 ## The ariadne skill
 
-Load the ariadne skill (`ariadne-skill install` if absent) — it carries the
+Load the ariadne skill (`ariadne skill install` if absent) — it carries the
 workflow and the grain rules. This file holds only project facts.
 
 ## Layout
@@ -97,17 +96,19 @@ workflow and the grain rules. This file holds only project facts.
 | :--- | :--- |
 | `knowledge/` | The Lumio Knowledge Base — one native authoring path. |
 | `data/` | Private source inputs; originals remain operator-controlled. |
-| `semantic_layer/` | OSI models — tracked Git artifacts edited through proposals. |
-| `.ariadne/` | Operator-owned state: proposals, approvals, snapshots (never committed). |
+| `semantic_layer/` | OSI models — tracked Git artifacts edited in the one active draft. |
+| `.ariadne/` | Operator-owned state: the draft, source grants, snapshots (never committed). |
 
 Knowledge pages cover datasets, tables, references, policies, metrics and
 guides; technical facts and curated explanations share the same KB.
 
 ## Admission gate
 
-Governed calls use one exact human-admitted Git revision. Agents draft through
-`ariadne-authoring`; source permission and Admission remain separate human
-decisions. Original documents stay outside the authored artifact snapshot.
+Governed calls use one exact human-approved Git revision. Agents draft with
+`ariadne draft edit` and the `authoring_*` MCP tools and may run `ariadne validate`,
+`ariadne diff` and `ariadne draft status`; only the human runs `ariadne approve`
+(sources first, then the calculation). Original documents stay outside the authored
+artifact snapshot.
 """
 
 SEED_NOTES = """\
@@ -274,91 +275,73 @@ def _new_profile_payload(namespace: str) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="ariadne-init",
-        description=(
-            "Create a fresh Git-authoring project: one native Lumio Knowledge "
-            "Base (knowledge/) plus the Core input files. Explicit namespace "
-            "and private-profile selection are required; Git, admission and "
-            "source access stay separate human steps."
-        ),
-    )
-    parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
-    parser.add_argument(
-        "--namespace",
-        required=True,
-        help="explicit Knowledge Base namespace (stable identity, e.g. "
-        "urn:uuid:...); never generated or taken from an unrelated profile",
-    )
-    parser.add_argument(
-        "--private-profile",
-        required=True,
-        type=Path,
-        help="machine-local private source profile file (must live OUTSIDE "
-        "the repository); created from Core defaults when absent",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="scaffold even if the target already holds an ariadne pyproject.toml",
-    )
-    parser.add_argument(
-        "--with-mcp",
-        action="store_true",
-        help="also scaffold .mcp.json, the registry-aware MCP server config "
-        "(optional transport — the local ariadne CLI needs no server)",
-    )
-    args = parser.parse_args(argv)
-
-    target = Path(args.target).resolve()
-    pyproject = target / "pyproject.toml"
-    if not args.force and pyproject.is_file():
-        refusal = _project_conflict(pyproject)
-        if refusal is not None:
-            print(refusal, file=sys.stderr)
-            return 1
-
-    # a retired standalone project refuses BEFORE any mutation,
-    # with fresh-setup guidance — never a reset or conversion.
-    try:
-        refuse_unsupported_project(target)
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    if not args.namespace.strip():
-        print(
-            "error: --namespace must be an explicit non-empty namespace (spec 0010 §2.2)",
-            file=sys.stderr,
-        )
-        return 1
-    namespace = args.namespace.strip()
-
+def _scaffold_files(with_mcp: bool) -> list[tuple[str, str]]:
     files = [
         ("data/seed_notes.md", SEED_NOTES),
         ("ariadne.yaml", ARIADNE_YAML),
         (".env.example", ENV_EXAMPLE),
         (".gitignore", GITIGNORE),
     ]
-    if args.with_mcp:  # opt-in only: the local CLI needs no MCP config
+    if with_mcp:  # opt-in only: the local CLI needs no MCP config
         files.append((".mcp.json", json.dumps(MCP_JSON, indent=2) + "\n"))
+    return files
 
-    # Fail closed: refuse before any write if a scaffold path, a callback
-    # destination, or a parent of it under TARGET, is a symlink (even
-    # dangling) — never write through a link.
-    for rel in ("data", "knowledge", ".env", "AGENTS.md", *(rel for rel, _ in files)):
+
+def preflight_targets(target: Path, *, with_mcp: bool = False) -> list[str]:
+    """Check EVERY file init would create BEFORE anything is written (spec 0040 §3.2.4):
+    an existing target with different content — or a symlink, or any file the SDK writes
+    (``.env``, ``AGENTS.md``) — refuses and is named. Identical content is allowed (it is
+    skipped); unrelated files are never examined. Returns the targets that already match."""
+    matching: list[str] = []
+    for rel, content in _scaffold_files(with_mcp):
+        path = target / rel
         offender = _symlink_under(target, rel)
         if offender is not None:
-            print(
-                f"error: refusing to scaffold through a symlink: {offender} is a "
-                f"symlink under {target}; remove it and re-run",
-                file=sys.stderr,
+            raise ValueError(
+                f"init refuses: {offender} is a symlink under {target} — remove it and re-run"
             )
-            return 1
+        if path.exists():
+            if path.read_text(encoding="utf-8", errors="replace") != content:
+                raise ValueError(
+                    f"init refuses: {rel} already exists with different content — init never "
+                    "overwrites it; move it aside or merge it by hand and re-run. "
+                    "Nothing was written."
+                )
+            matching.append(rel)
+    for rel in (".env", "AGENTS.md", "data", "knowledge"):
+        offender = _symlink_under(target, rel)
+        if offender is not None:
+            raise ValueError(
+                f"init refuses: {offender} is a symlink under {target} — remove it and re-run"
+            )
+    for rel in (".env", "AGENTS.md"):
+        if (target / rel).exists():
+            raise ValueError(
+                f"init refuses: {rel} already exists — init never overwrites operator files; "
+                "move it aside and re-run. Nothing was written."
+            )
+    return matching
+
+
+def _scaffold(
+    target: Path, namespace: str, profile_path: Path, *, force: bool = False, with_mcp: bool = False
+) -> list[str]:
+    """Create the native Lumio KB and the Core input files (the private scaffold of
+    ``init_project``). Raises ``ValueError`` BEFORE any write for every refusal; returns the
+    relative paths it created."""
+    pyproject = target / "pyproject.toml"
+    if not force and pyproject.is_file():
+        refusal = _project_conflict(pyproject)
+        if refusal is not None:
+            raise ValueError(refusal.removeprefix("error: "))
+    # a retired standalone project refuses BEFORE any mutation, with fresh-setup guidance
+    refuse_unsupported_project(target)
+    if not namespace.strip():
+        raise ValueError("a non-empty namespace is required (spec 0010 §2.2)")
+    namespace = namespace.strip()
+    matching = preflight_targets(target, with_mcp=with_mcp)
 
     kb_target = target / "knowledge"
-    profile_path = args.private_profile
     new_payload = None if profile_path.is_file() else _new_profile_payload(namespace)
 
     from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
@@ -371,9 +354,6 @@ def main(argv: list[str] | None = None) -> int:
         PrivateProfileError,
     )
 
-    # The SDK's digest-bound plan validates every selection and the target
-    # (absent/empty KB target only) BEFORE any byte is written — an occupied
-    # or adopted target refuses here with the SDK's own recovery guidance.
     try:
         plan = plan_empty_setup(
             target=kb_target,
@@ -387,8 +367,6 @@ def main(argv: list[str] | None = None) -> int:
             agents_bytes=AGENTS_MD_GIT.encode(),
             skill=None,  # Core installs no agent skill implicitly
         )
-        # The guarded apply is authorized by this one explicit command in one
-        # process: the digest-bound recheck refuses any drift before apply.
         recheck_plan(
             plan,
             env_bytes=f"LUMIO_KB_PATH={kb_target}\n".encode(),
@@ -396,30 +374,13 @@ def main(argv: list[str] | None = None) -> int:
             skill=None,
         )
     except (EmptySetupError, PrivateProfileError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    # The no-overwrite contract covers the SDK apply callbacks exactly like
-    # the plain scaffold files: an existing operator AGENTS.md/.env refuses
-    # the WHOLE scaffold before any write (checked here so the KB-exists
-    # refusal keeps precedence on a re-run; plan/recheck never write).
-    for rel in (".env", "AGENTS.md"):
-        occupied = target / rel
-        if occupied.exists() or occupied.is_symlink():
-            print(
-                f"error: refusing to scaffold: {occupied} already exists — setup "
-                "never overwrites existing operator files; move or remove it "
-                "(or choose a different target) and re-run. Nothing was written.",
-                file=sys.stderr,
-            )
-            return 1
+        raise ValueError(str(exc)) from exc
 
     def _write_env() -> None:
         destination = target / ".env"
         if destination.exists() or destination.is_symlink():  # appeared mid-apply
             raise EmptySetupError(
-                f"{destination} appeared during setup — nothing is overwritten; "
-                "inspect it and re-run the preview",
+                f"{destination} appeared during setup — nothing is overwritten",
                 code="setup_target_changed",
             )
         destination.write_text(plan.env_bytes.decode("utf-8"), encoding="utf-8")
@@ -428,8 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         destination = target / "AGENTS.md"
         if destination.exists() or destination.is_symlink():  # appeared mid-apply
             raise EmptySetupError(
-                f"{destination} appeared during setup — nothing is overwritten; "
-                "inspect it and re-run the preview",
+                f"{destination} appeared during setup — nothing is overwritten",
                 code="setup_target_changed",
             )
         assert plan.agents_bytes is not None  # agents_enabled=True above
@@ -438,38 +398,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         apply_plan(plan, write_env=_write_env, write_agents=_write_agents, install_skill=None)
     except EmptySetupError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        raise ValueError(str(exc)) from exc
 
-    # Core's declared page vocabulary rides the same uncommitted scaffold
-    # transaction through the public Control File contract.
     from lumio_wiki import (  # pyright: ignore[reportMissingImports] — SDK now mandatory
         write_control_file,
     )
 
     write_control_file(kb_target, _core_control_file())
-
-    target.mkdir(parents=True, exist_ok=True)
     (target / "data").mkdir(exist_ok=True)  # local inputs are ignored by the project template
-    created = skipped = 0
-    for rel, content in files:
+    created: list[str] = []
+    for rel, content in _scaffold_files(with_mcp):
+        if rel in matching:
+            continue  # byte-identical: nothing to write
         path = target / rel
-        if path.exists():  # idempotent: never overwrite, only report
-            print(f"  skipped (exists): {path}")
-            skipped += 1
-            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        print(f"  created: {path}")
-        created += 1
-    print(
-        f"ariadne project ready in {target}: knowledge/ Knowledge Base "
-        f"(namespace {namespace}) plus {created} input file(s) created, "
-        f"{skipped} skipped — next: stage and commit the created files with "
-        "native Git, then use ariadne-authoring start; source permission and "
-        "Admission remain separate human decisions (MCP config: re-run with "
-        "--with-mcp)"
-    )
-    return 0
+        created.append(rel)
+    return created
 
 
 # ---------------------------------------------------------------- `ariadne init`
@@ -548,9 +493,6 @@ def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, st
     Lumio KB, as ONE commit holding only the files init created. A re-run on an
     initialized project validates it and changes nothing; a conflicting existing file
     refuses before any write."""
-    import contextlib
-    import io
-
     from ariadne import lumio_context, profile_pair, proposals
 
     stdin = stdin or sys.stdin
@@ -568,6 +510,14 @@ def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, st
             f"init refuses: {', '.join(conflicts)} already exist(s) without a complete "
             "Ariadne project — move or remove them; nothing was written"
         )
+    # EVERY target file is checked before anything (repository, profile, files) is created
+    preflight_targets(target)
+    if (target / profile_pair.RECORD_REL).exists():
+        raise ValueError(
+            f"init refuses: {profile_pair.RECORD_REL} already records a private profile for "
+            "this directory without a complete project — it is never replaced silently; "
+            "inspect or remove it and re-run. Nothing was written."
+        )
     ensure_git(target, assume_yes=assume_yes, stdin=stdin, stdout=stdout)
     # the user's index and working tree stay untouched except for init's own files
     staged_before = _git(target, "diff", "--cached", "--name-only").split()
@@ -581,13 +531,7 @@ def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, st
     lumio_profile = profile_pair.config_dir() / f"{identifier}.json"
     sibling = profile_pair.sibling_path(lumio_profile)
     revision = max(lumio_context.IMPLEMENTED_PROFILE_REVISIONS)
-    quiet = io.StringIO()
-    with contextlib.redirect_stdout(quiet):
-        code = main(
-            [str(target), "--namespace", namespace, "--private-profile", str(lumio_profile)]
-        )
-    if code != 0:
-        raise ValueError("init failed: " + quiet.getvalue().strip())
+    _scaffold(target, namespace, lumio_profile)
     (target / "context_integration.yaml").write_text(
         SELECTOR_YAML.format(namespace=namespace, revision=revision), encoding="utf-8"
     )

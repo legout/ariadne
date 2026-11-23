@@ -34,14 +34,22 @@ def config_dir() -> Path:
 
 
 def write_private(path: Path, text: str) -> None:
-    """Create ``path`` exclusively with mode 0600 from the first byte (O_EXCL: an
-    existing file is never overwritten)."""
+    """Publish ``text`` at ``path`` so a crash can never leave a partial file: write a temp
+    file in the same directory created ``O_CREAT|O_EXCL`` with mode 0600 from the first byte,
+    fsync it, then ``link`` it into place — which refuses if the target already exists (an
+    existing file is never replaced)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.link(tmp, path)  # FileExistsError when the target exists: never replaces
+    finally:
+        tmp.unlink(missing_ok=True)
+    proposals._fsync_path(path.parent)
 
 
 def sibling_path(lumio_profile: Path) -> Path:
@@ -103,6 +111,8 @@ def load_sibling(path: Path) -> dict:
 def record(project: Path, lumio_profile: Path, sibling: Path) -> None:
     """Record both paths in ``.ariadne/profile.json`` (atomic)."""
     path = project / RECORD_REL
+    if path.exists():
+        raise ValueError(f"{path}: a private profile record already exists — never replaced")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
