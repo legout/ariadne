@@ -57,3 +57,20 @@ def call(project: Path, tool: str, arguments: dict | None = None, toolset: str =
     if getattr(result, "is_error", False):
         return True, payload(result)
     return False, payload(result)
+
+
+def run(root: Path, tool: str, arguments: dict | None = None) -> int:
+    """Call one real MCP tool and report it CLI-shaped for the assertions: the payload as
+    one JSON value on stdout (exit 0), or one ``{"error": {...}}`` object on stderr (exit 1)."""
+    import sys
+
+    is_error, out = call(root, tool, arguments)
+    if tool in ("search_examples", "search_context") and not is_error:
+        out = out if isinstance(out, list) else ([] if out in ("", None) else [out])
+    if is_error:
+        message = out if isinstance(out, str) else json.dumps(out)
+        message = message.removeprefix(f"Error executing tool {tool}: ")
+        print(json.dumps({"error": {"type": "ToolError", "message": message}}), file=sys.stderr)
+        return 1
+    print(json.dumps(out))
+    return 0

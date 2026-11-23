@@ -22,7 +22,6 @@ from the fixture rows, never derived from runtime output.
 """
 
 import asyncio
-import io
 import json
 import os
 import sys
@@ -37,13 +36,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from integration.tests.legacy_cli_support import main as cli  # noqa: E402
-
 from ariadne import context as context_module  # noqa: E402
 from ariadne import (  # noqa: E402
     proposals,
 )
 from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
     _canonical_digest,
     confirmation_binding_digest,
@@ -51,6 +49,7 @@ from ariadne.context import (  # noqa: E402
 from ariadne.planner import PlannerError  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
+from tests.mcp_inproc import run as mcp_run  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     NATIVE_METRIC_PAGE,
     UNSAFE_GRAIN_MODEL_YML,
@@ -1242,7 +1241,7 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     assert admit(project, review, destination=published) == 0
     capsys.readouterr()  # the journey prints; clear before the CLI calls
 
-    code = cli(["resolve-term", "order number", "--project", str(project)])
+    code = mcp_run(project, "resolve_term", {"request": "order number"})
     assert code == 0
     served = json.loads(capsys.readouterr().out)
     assert [match["representation"] for match in served["matches"]] == [
@@ -1251,24 +1250,29 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     ]
     assert served["admission"]["revision"] == review["revision"]
 
-    code = cli(["search-context", "order number", "--project", str(project), "--limit", "5"])
+    code = mcp_run(project, "search_context", {"query": "order number"})
     assert code == 0
     hits = json.loads(capsys.readouterr().out)
     assert hits and all(not hit["draft"] for hit in hits)
 
     for argv in (
-        ["list-metrics", "--project", str(project)],
-        ["get-metric", "order_number_count", "--project", str(project)],
+        ["metrics", "--json", "--project", str(project)],
+        ["query", "order_number_count", "--json", "--project", str(project)],
     ):
         assert cli(argv) == 1, argv
         error = json.loads(capsys.readouterr().err)
         assert MISSING_CATALOG_MARK in error["error"]["message"], argv
 
-    code = cli(["query-metrics", "--project", str(project)], stdin=io.StringIO("{}"))
-    assert code == 1
+    # the multi-fact path (a filtered `query`) carries the stable planner code
+    assert cli(["query", "order_number_count", "--filter", "x=1", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)
     assert MISSING_CATALOG_MARK in error["error"]["message"]
     assert error["error"]["code"] == "missing_catalog"
+
+    code = mcp_run(project, "query_metrics", {"request": {}})
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert MISSING_CATALOG_MARK in error["error"]["message"]
 
 
 # ------------------ K4 fix pass: the three review findings (issue #44)

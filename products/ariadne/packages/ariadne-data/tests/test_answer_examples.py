@@ -22,23 +22,7 @@ def project(tmp_path_factory):
     return create_git_demo_project(tmp_path_factory.mktemp("answer-examples") / "project")
 
 
-def _tool(root, tool, arguments):
-    """Call one REAL MCP tool in-process; print the payload to stdout (exit 0) or one JSON
-    error object to stderr (exit 1), so the assertions read the tool's actual output."""
-    import sys
-
-    from tests.mcp_inproc import call
-
-    is_error, out = call(root, tool, arguments)
-    if tool == "search_examples" and not is_error:
-        out = out if isinstance(out, list) else ([] if out in ("", None) else [out])
-    if is_error:
-        message = out if isinstance(out, str) else json.dumps(out)
-        message = message.removeprefix(f"Error executing tool {tool}: ")
-        print(json.dumps({"error": {"type": "ToolError", "message": message}}), file=sys.stderr)
-        return 1
-    print(json.dumps(out))
-    return 0
+from tests.mcp_inproc import run as _tool  # noqa: E402
 
 
 def mcp_save(root, submission):
