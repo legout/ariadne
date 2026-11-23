@@ -220,11 +220,18 @@ sources with `governed:false` and state what the answer rests on.
       contains are committed to the project as the new *approved source baseline*. The
       next edit starts a new draft generation on top of it, so a calculation draft sees
       the granted sources as already approved.
-   7. **A changed identity never repoints served calculations.** If a granted identity
-      replaces the identity of a source that an admitted metric uses (a changed
-      endpoint, DSN destination or path), governed `query`/`detail` keep using the
-      identity bound by the **served release** until a calculation approval admits a
-      release bound to the new identity. Preview uses the new identity.
+   7. **A changed identity never repoints served calculations.** A granted identity can
+      replace the identity of a source that an admitted metric uses (a changed endpoint,
+      DSN destination or path). Governed `query`/`detail` then either:
+      - keep reading the identity bound by the **served release**, when that identity is
+        still resolvable in the current environment; or
+      - **refuse with a clear message** naming the source and the pending calculation
+        approval, when the environment now resolves only the new identity (for example,
+        the same `connection_env` or storage profile variables now point at B).
+
+      They never silently read the new identity before a calculation approval admits a
+      release bound to it. Preview uses the new identity. (Owner decision 2026-11-23 at
+      B1 review R1: refusing is acceptable; no dual-credential mechanism is required.)
    8. On any failure, the served state and every grant stay as before. **No grant is
       created by a failed or refused approval.**
    9. Postgres sources are declared with a `connection_env` reference (ADR-0010).
@@ -541,9 +548,12 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
    its endpoint or DSN destination.
    - It requires a new source approval. Until then, preview and profiling refuse the
      new identity.
-   - After the source approval, governed `query` of that metric still reads the
-     **old** identity bound by the served release, while `preview` uses the new one.
-   - Only after a calculation approval does `query` use the new identity.
+   - After the source approval, with the environment variables now pointing at B,
+     governed `query` of that metric **refuses** with a message naming the source and
+     the pending calculation approval. It never returns B's data. `preview` reads B.
+   - Only after a calculation approval does `query` use the new identity and answer.
+   - A test proves this with distinguishable A and B data through the real CLI
+     (`ariadne query`) and the real `ariadne approve` path.
    - `add` refuses an inline Postgres DSN with credentials and names the
      `connection_env` form.
    - A sources-only approval leaves the served release digest byte-identical.
