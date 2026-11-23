@@ -307,6 +307,15 @@ def _admission_view(admitted: dict) -> dict:
         bound = _bound_release_view(admitted["record"])
         if bound is not None:
             view["bound_release"] = bound
+        # the approval record: WHO confirmed, WHEN, and which review digest (attribution label)
+        confirmed = admitted["record"].get("confirmed")
+        if isinstance(confirmed, dict):
+            view["approval"] = {
+                key: confirmed.get(key) for key in ("by", "at", "review_digest", "commit")
+            }
+            overall = admitted["record"].get("overall_confirmation")
+            if isinstance(overall, dict):
+                view["approval"]["overall_digest"] = overall.get("digest")
         return view
     return {key: admitted.get(key) for key in ("state", "reason") if admitted.get(key) is not None}
 
@@ -388,8 +397,13 @@ def _next_steps(
             if pending
             else [f"ariadne add <source> --project {root_text} — start the first draft"]
         )
-    elif admitted["catalog"]["context_only"]:
-        steps.append(f"ariadne draft edit <file> --project {root_text} — author semantic models")
+    else:
+        if pending:  # an active draft's recovery command shows while a release is serving too
+            steps.extend(_proposal_steps(root_text, pending))
+        if admitted["catalog"]["context_only"] and not pending:
+            steps.append(
+                f"ariadne draft edit <file> --project {root_text} — author semantic models"
+            )
     for target in skill_targets:
         if target["state"] == "drift":
             agent = f" --agent {target['agent']}" if target["agent"] else ""
@@ -484,6 +498,15 @@ def _render(report: dict) -> str:
             _row("admission:", report["project"]["admission"]["state"]),
         ]
     )
+    approval = project["admission"].get("approval")
+    if approval is not None:
+        lines.append(
+            _row(
+                "approved by:",
+                f"{approval.get('by')} at {approval.get('at')} "
+                f"(review {str(approval.get('review_digest'))[:12]}…)",
+            )
+        )
     bound = project["admission"].get("bound_release")
     if bound is not None:
         lines.append(

@@ -39,6 +39,7 @@ from tests.test_git_admission import (  # noqa: E402
 )
 from tests.test_git_authoring import (  # noqa: E402
     complete_bundle_project,
+    write_parquet,
 )
 
 STATE = Path(".ariadne")
@@ -170,6 +171,15 @@ def test_valid_admission_reports_checked_pinned_revision_and_digest(tmp_path, ca
     assert report["sources"]["selection"] == "admitted"
     assert report["sources"]["identity_digest"] == current["source_digest"]
     assert report["sources"]["approval"] is True
+    # the approval record: who/when/which review (attribution label, 0040 §3.5.1)
+    approval = admission["approval"]
+    assert approval["by"] == current["confirmed"]["by"] and approval["by"].startswith("human:")
+    assert approval["at"] == current["confirmed"]["at"]
+    assert approval["review_digest"] == current["confirmed"]["review_digest"]
+    capsys.readouterr()
+    assert run_status("--project", str(project)) == 0
+    human = capsys.readouterr().out
+    assert "approved by:" in human and approval["by"] in human
     # approval consumed the draft: an approved proposal is history, never pending (spec 0040)
     assert report["work_pending"]["proposals"] == []
     assert current["proposal"]
@@ -588,3 +598,20 @@ def test_status_shows_the_one_active_draft_and_only_current_commands(tmp_path, c
     assert run_status("--project", str(project)) == 0
     human = capsys.readouterr().out
     assert "draft:" in human and "generation 2" in human
+
+
+def test_an_active_draft_shows_its_recovery_command_while_a_release_is_serving(tmp_path, capsys):
+    """Finding 6 (second pass): a ready, served project with a pending source draft or a
+    stale draft must not say "no blockers" — the draft's recovery command appears."""
+    from ariadne import authoring_sources
+
+    project = admitted_project(tmp_path)
+    (project / "data").mkdir(exist_ok=True)
+    write_parquet(project / "data" / "later.parquet", [(1,)], ["n"])
+    authoring_sources.add_sources(
+        project, None, [authoring_sources.source_entry("data/later.parquet", name="later")]
+    )
+    report = status_json(capsys, "--project", str(project))
+    assert report["ready"] is True  # the served release still serves
+    steps = " ".join(report["next_steps"])
+    assert "ariadne approve" in steps and "new sources first" in steps

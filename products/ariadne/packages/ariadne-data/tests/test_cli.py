@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
-from tests.test_git_authoring import approved, run_git  # noqa: E402
+from tests.test_git_authoring import approved, complete_bundle_project, run_git  # noqa: E402
 from tests.test_serve import (  # noqa: E402
     GOLDEN_OKF,
     GOLDEN_OSI,
@@ -535,3 +535,44 @@ def test_skill_accepts_json_and_every_table_command_takes_it(capsys):
     assert cli(["skill", "path", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True and payload["output"]
+
+
+def test_json_prompts_go_to_stderr_and_stdout_is_only_the_result(tmp_path, capsys, monkeypatch):
+    """Finding 6 (second pass): interactive commands under --json keep their prompt off
+    stdout: `draft discard --json` and `init --json` (Git identity prompts) write one JSON
+    value to stdout and the prompt to stderr."""
+    import io
+    import os
+
+    from ariadne import draft
+    from ariadne.authoring import AuthoringProject
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    project = complete_bundle_project(tmp_path)
+    AuthoringProject(project).start_proposal()
+    assert draft.status(project) is not None
+    answers, shown = Tty("yes\n"), Tty()
+    monkeypatch.setattr(sys, "stdin", answers)
+    monkeypatch.setattr(sys, "stdout", shown)
+    err = Tty()
+    monkeypatch.setattr(sys, "stderr", err)
+    assert cli(["draft", "discard", "--json", "--project", str(project)]) == 0
+    assert "[yes/no]" in err.getvalue() and "[yes/no]" not in shown.getvalue()
+    assert json.loads(shown.getvalue())["discarded"] is True
+
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    subprocess.run(["git", "init", "-q", str(fresh)], check=True)
+    answers, shown, err = Tty("Name\nn@example.test\n"), Tty(), Tty()
+    monkeypatch.setattr(sys, "stdin", answers)
+    monkeypatch.setattr(sys, "stdout", shown)
+    monkeypatch.setattr(sys, "stderr", err)
+    code = cli(["init", str(fresh), "--json", "--project", str(fresh)], stdin=answers)
+    assert code == 0, err.getvalue()
+    assert "Git user.name" in err.getvalue() and "Git user.name" not in shown.getvalue()
+    assert json.loads(shown.getvalue())["initialized"] is True

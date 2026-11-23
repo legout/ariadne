@@ -204,7 +204,8 @@ def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
         from ariadne import approve
 
         approve.require_tty(sys.stdin, sys.stdout)
-        if not approve.ask(sys.stdin, sys.stdout, "Discard the active draft?"):
+        prompt_to = sys.stderr if args.json else sys.stdout  # JSON: stdout is the result only
+        if not approve.ask(sys.stdin, prompt_to, "Discard the active draft?"):
             raise ValueError("refused at the prompt — nothing was changed")
     return _emit(draft.discard(project, expected), args)
 
@@ -286,7 +287,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         from ariadne import init
 
         result = init.init_project(
-            args.dir or args.project, assume_yes=args.yes, stdin=stdin, stdout=sys.stdout
+            args.dir or args.project,
+            assume_yes=args.yes,
+            stdin=stdin,
+            stdout=sys.stderr if args.json else sys.stdout,  # JSON: stdout is the result only
         )
         return _emit(result, args)
     project = Path(args.project).resolve()
