@@ -169,7 +169,8 @@ Source: spec §3.1; AC5.
 - Delete `authoring_cli.py`, the `main`s of `admission.py`, `validate.py`, `init.py`,
   `setup.py`, `skill.py` and `profiler.py`, `review.py`, and the `serve` entry-point
   variants. Keep the library functions that are still used.
-- Text output by default, JSON with `--json`.
+- Text output by default, JSON with `--json`. `serve` is exempt (spec §3.1.2, owner
+  decision 2026-11-23).
 - Update the walkthrough script (`tests/setup_wheel_walkthrough.py`) to the new flow.
 
 Test: the installed wheel exposes only `ariadne`, and every subcommand's `--help` works.
@@ -245,7 +246,12 @@ On the final tree:
 - Lumio native `-n 4` (workspace changed);
 - root `-n 4`;
 - wheel build, install and the new walkthrough;
-- `ruff check`.
+- `ruff check`;
+- the AC4 live A/B journey: a served release reads A; the source endpoint changes to B
+  and is granted through the real `ariadne approve`; `ariadne query` refuses by name;
+  B answers only after a calculation approval. It runs against a live Postgres source
+  in CI, not only offline (owner decision 2026-11-23: R1 accepts the offline proof of
+  the named refusal; this live leg must pass before V is accepted).
 
 Run the AC1 owner path end to end against the installed wheel in a temporary
 directory, with the TTY simulated through a pty.

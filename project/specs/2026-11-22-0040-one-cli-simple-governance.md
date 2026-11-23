@@ -96,7 +96,9 @@ sources with `governed:false` and state what the answer rests on.
    `-serve`, `-analyst-mcp`, `-authoring-mcp`, `-init`, `-skill`, `-profiler`,
    `-authoring` and `-admit` are removed.
 2. **The B1 CLI is exhaustive.** Each command prints text by default and JSON with
-   `--json`.
+   `--json`. `serve` is exempt: it is the MCP transport, not a table command. Its
+   stdout carries the MCP protocol, and it takes no `--json`. (Owner decision
+   2026-11-23 at B1 review R1.)
 
 | Command | Meaning |
 |---|---|
