@@ -21,7 +21,6 @@ oversized cell or continuing read crosses it.
 """
 
 import asyncio
-import io
 import json
 import sqlite3
 import threading
@@ -807,7 +806,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert second["persistence"] == {"status": "not_saved"}
 
     elif case == "cli_replaces_oversized_error_representations":
-        from integration.tests import legacy_cli_support as cli
+        from ariadne import cli
 
         project = tmp_path / "cli-project"
         project.mkdir()
@@ -822,8 +821,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(cli.QueryRuntime, "open_project", lambda *args, **kwargs: runtime)
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--project", str(project)],
-            stdin=io.StringIO(""),
+            ["query", "total", "--project", str(project)],
         )
         captured = capsys.readouterr()
         assert code == 1
@@ -838,8 +836,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         runtime.message = "small verbatim failure"
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "total", "--project", str(project)],
-            stdin=io.StringIO(""),
+            ["query", "total", "--project", str(project)],
         )
         assert code == 1
         assert json.loads(capsys.readouterr().err)["error"]["message"] == "small verbatim failure"
@@ -890,8 +887,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
             make_runtime(served, response_bytes=64)
 
     elif case == "host_config_file_tightens_the_cli":
-        from integration.tests import legacy_cli_support as cli
-
+        from ariadne import cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
@@ -906,8 +902,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         registry.write_text(original_registry + "\nquery:\n  max_rows: 2\n", encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
-            stdin=io.StringIO(""),
+            ["query", "event_count", "--by", "label", "--json", "--project", str(project)],
         )
         captured = capsys.readouterr()
         assert code == 1
@@ -924,8 +919,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         registry.write_text(original_registry, encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
-            stdin=io.StringIO(""),
+            ["query", "event_count", "--by", "label", "--json", "--project", str(project)],
         )
         assert code == 0
         # row order is not part of the contract (no ORDER BY in the compiled
@@ -1095,8 +1089,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert result["rows"] == [{"total": 60.0}] and result["result"]["complete"] is True
 
     elif case == "cli_threads_one_request_budget_through_construction":
-        from integration.tests import legacy_cli_support as cli
-
+        from ariadne import cli
         from ariadne.authoring import AuthoringProject
         from tests.test_git_admission import _policy_edit, admit, admitted_ready
         from tests.test_git_authoring import complete_bundle_project
@@ -1107,8 +1100,7 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert admit(project, review) == 0
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(
-            ["get-metric", "event_count", "--project", str(project)],
-            stdin=io.StringIO(""),
+            ["query", "event_count", "--project", str(project)],
         )
         assert code == 1
         refusal = json.loads(capsys.readouterr().err)
