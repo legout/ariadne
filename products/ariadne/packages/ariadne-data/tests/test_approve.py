@@ -495,3 +495,76 @@ def test_a_journal_cleanup_failure_after_the_grant_is_not_a_failed_approval(tmp_
     resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
     assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
     assert draft.status(project) is None  # recovery drops the journal; the grant survives
+
+
+def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calculation_approval(
+    tmp_path, monkeypatch, capsys
+):
+    """AC4 (amended 0040 §3.4.2.7) through the real CLI: the operator sees A served, grants B
+    (same DSN variable, other destination) with `approve`, and `query`/`detail` then REFUSE
+    naming the source and the pending calculation approval — they never read B, and the
+    served state stays byte-identical. The offline fixture shapes the served record (a live
+    Postgres admission cannot run offline; the binding values are hand-written from 0025 §4)."""
+    from ariadne import admission
+    from ariadne.cli import main as cli
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _ = admitted_ready(api, project, _policy_edit("Served rule A."))
+    assert admit_library(project, review, destination=tmp_path / "published") == 0
+    record = admission.load_current(project)
+    assert record is not None
+    env = "ARIADNE_TEST_PG_DSN"
+    monkeypatch.setenv(env, "postgresql://owner:pw-a@db-a.internal:5432/app")
+    entry = {"name": "pg", "type": "postgres", "connection_env": env, "read_only": True}
+    binding_a = {
+        "host": ["db-a.internal"],
+        "hostaddr": [],
+        "port": ["5432"],
+        "dbname": "app",
+        "user": "owner",
+    }
+    declared = record.get("source_declaration_digest") or record["source_digest"]
+    shaped = {**record, "sources": [*record["sources"], entry]}
+    shaped["storage_bindings"] = {"postgres:pg": binding_a}
+    shaped["source_digest"] = authoring_sources.approval_digest(
+        declared, {"postgres:pg": binding_a}
+    )
+    (project / CURRENT).write_text(json.dumps(shaped), encoding="utf-8")
+    served_bytes = (project / CURRENT).read_bytes()
+
+    # the environment now points the same variable at B; the operator declares and grants it
+    monkeypatch.setenv(env, "postgresql://owner:pw-b@db-b.internal:5432/app")
+    authoring_sources.add_sources(
+        project, None, [authoring_sources.source_entry(env, name="pg", type="postgres")]
+    )
+
+    class NoRemote:  # the live check is the only network step; the approval offline-stubs it
+        catalog: list = []
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(approve.execution, "DuckDBExecution", NoRemote)
+    outcome, _shown = _run(project, Tty())
+    assert outcome["approved"] == "sources"
+
+    request = tmp_path / "detail.json"
+    request.write_text('{"dataset": "events", "fields": ["id"]}', encoding="utf-8")
+    capsys.readouterr()
+    for argv in (
+        ["query", "event_count", "--json", "--project", str(project)],
+        ["detail", "--project", str(project), "--file", str(request)],
+    ):
+        code = cli(argv)
+        captured = capsys.readouterr()
+        message = json.loads(captured.err)["error"]["message"]
+        assert code == 1 and captured.out == "", argv
+        assert "pg" in message and "calculation approval" in message, message
+        assert "ariadne approve" in message, message
+    assert (project / CURRENT).read_bytes() == served_bytes  # the served state never moved

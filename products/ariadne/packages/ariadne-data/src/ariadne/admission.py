@@ -1445,16 +1445,36 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             )
         current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
         if current != bindings:
+            changed = sorted(
+                {
+                    entry["name"]
+                    for entry in record.get("sources") or []
+                    if authoring_sources.storage_bindings_from_identity([entry])
+                    != {k: v for k, v in bindings.items() if k in _entry_keys(entry)}
+                }
+            )
             raise ValueError(
-                "the environment resolves a different effective storage binding "
-                "than the admitted one (spec 0025 §4) — the pinned admission binds "
-                "its exact endpoint; approve and admit the current binding before "
-                "serving, never a silent endpoint switch"
+                f"source(s) {', '.join(changed) or 'unknown'}: the environment resolves a "
+                "different effective storage binding than the admitted one (spec 0025 §4) — "
+                "the served release stays pinned to its exact endpoint and is not read "
+                "from the new one. If you granted the changed source with 'ariadne approve', "
+                "a calculation approval is still pending: run 'ariadne approve' again on a "
+                "new draft to serve the current binding; or restore the previous "
+                "environment value to keep reading the served one"
             )
     from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
     lumio_context.verify_release(record, snapshot)
     return record, snapshot
+
+
+def _entry_keys(entry: dict) -> set[str]:
+    storage = entry.get("storage")
+    if isinstance(storage, dict) and isinstance(storage.get("name"), str):
+        return {storage["name"]}
+    if entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+        return {f"postgres:{entry['name']}"}
+    return set()
 
 
 def resolve_admission(project: str | Path) -> tuple[dict, Path]:
