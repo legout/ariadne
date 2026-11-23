@@ -1393,3 +1393,43 @@ def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, m
     assert (project / draft.DRAFT_REL).read_bytes() == slot_before  # status wrote nothing
     assert cli(["status", "--project", str(project)]) == 0
     assert "draft:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("when", ["before its effect", "after its effect"])
+def test_a_prior_journal_interrupted_at_the_unlink_is_cleanup_only(tmp_path, monkeypatch, when):
+    """Finding 2: operator A leaves a journal; B consents and recovers it. After the durable
+    restore, Ctrl-C AT the journal unlink — before or after its filesystem effect — is cleanup
+    only: B's report never says "recovery pending" or "incomplete restore"; a journal that
+    remains is a remnant (reads stay refused), an unlink that took effect leaves it gone."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+
+    def operator_one_fails_and_leaves_a_journal():
+        with monkeypatch.context() as m:
+            m.setattr(draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck")))
+            with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
+                _run(project, Tty())
+        assert (project / draft.TXN_REL).exists()
+        real_unlink = Path.unlink
+
+        def unlink(self, *a, **k):
+            if self.name == "source_txn.json":
+                if when == "before its effect":
+                    raise KeyboardInterrupt
+                real_unlink(self, *a, **k)
+                raise KeyboardInterrupt
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+
+    expected = "remnant" if when == "before its effect" else "cleanup only"
+    with pytest.raises(approve.ApprovalRefused, match=expected) as raised:
+        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    monkeypatch.undo()
+    assert "recovery pending" not in str(raised.value)
+    assert "incomplete" not in str(raised.value)
+    assert _state_bytes(project)["grants"] == before["grants"]  # restored durably
+    assert _state_bytes(project)["slot"] == before["slot"]
+    assert _granted(project, result) is False
+    assert (project / draft.TXN_REL).exists() is (when == "before its effect")

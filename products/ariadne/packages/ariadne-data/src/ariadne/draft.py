@@ -660,8 +660,14 @@ def rollback_source_txn(project: Path) -> None:
     proposals._fsync_path(journal.parent)  # the three restored states are durable here
     try:
         journal.unlink()
-    except OSError as exc:
-        raise JournalRemnant(f"the journal could not be removed: {exc}") from exc
+    except BaseException as exc:
+        # after the durable restore, ANY failure or interruption throughout the removal is
+        # cleanup only; distinguish a journal that REMAINS from an unlink that took effect
+        if journal.exists():
+            raise JournalRemnant(f"the journal could not be removed: {exc!r}") from exc
+        raise RollbackCleanup(
+            f"the journal removal was interrupted after it took effect: {exc!r}"
+        ) from exc
     try:
         proposals._fsync_path(journal.parent)  # deletion cleanup only
     except BaseException as exc:  # an interruption here is still only cleanup of a done rollback

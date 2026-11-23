@@ -671,52 +671,67 @@ def test_status_reports_a_pending_source_approval_without_recovering_or_writing(
         assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
         assert tree_hash(project) == before  # no file created or changed
         assert (project / target).exists()  # and no recovery ran
+        # the human text names the SAME pending work: exactly one draft row, with the recovery
+        # command, and no competing "none" row
+        capsys.readouterr()
+        assert run_status("--project", str(project)) == 0
+        draft_rows = [
+            ln for ln in capsys.readouterr().out.splitlines() if ln.strip().startswith("draft:")
+        ]
+        assert len(draft_rows) == 1, draft_rows
+        assert "pending" in draft_rows[0] and "ariadne draft status" in draft_rows[0]
+        assert not draft_rows[0].rstrip().endswith("none")
 
 
 def test_status_never_reports_an_uncommitted_grant_as_current_when_the_first_lock_appears(
     tmp_path, capsys, monkeypatch
 ):
-    """Blocker 1: the unlocked diagnostic read races the FIRST creation of grants.lock. In ONE
-    read, between the lock-absent/journal-absent check and the grants read, a writer creates the
-    lock, journals and replaces the grants file: the unlocked read must not be returned as
-    current — it is re-sampled and the locked path reports pending. A status of an empty project
-    creates no lock file."""
+    """Finding 3: ONE CLI interleaving through `ariadne status`: the uncommitted grant appears in
+    the scaffold display's SECOND grants read (after the initial approvals and draft samples) —
+    the first grants.lock is created, the journal written and the grants replaced inside that
+    unlocked read. The actual CLI report must not say approved/current (it reports
+    `in-progress`). A status of an empty project creates no lock file."""
     from ariadne import authoring_sources, draft
 
     project = complete_bundle_project(tmp_path / "proj")
     (project / ".ariadne").mkdir(exist_ok=True)
+    registry = authoring_sources.sources.load_registry(project / "ariadne.yaml")
+    resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
+    grants = [
+        {
+            "source": entry,
+            "source_digest": authoring_sources.resolved_digest([entry]),
+            "binding": None,
+            "postgres_binding": None,
+            "by": "human:w",
+            "at": "2026-01-01T00:00:00+00:00",
+            "generation": 1,
+            "seq": n,
+        }
+        for n, entry in enumerate(resolved, 1)
+    ]
     real_read = authoring_sources._read_grants_file
-    fired = {"n": 0}
+    reads = {"n": 0}
 
-    def writer_starts_during_the_read(proj):
-        grants = real_read(proj)
-        if fired["n"] == 0:  # exactly the first (unlocked) read of the sample
-            fired["n"] += 1
+    def uncommitted_grant_in_the_second_read(proj):
+        reads["n"] += 1
+        if reads["n"] == 2:  # the scaffold display's read (the initial approvals read was #1)
             (proj / draft.GRANTS_LOCK_REL).parent.mkdir(parents=True, exist_ok=True)
             (proj / draft.GRANTS_LOCK_REL).touch()  # the first creation of the lock ...
             draft.begin_source_txn(proj)  # ... the journal ...
-            authoring_sources._store_grants(  # ... and an uncommitted grants replacement
-                proj, [{"source": {"name": "x"}, "by": "human:w", "seq": 1}]
-            )
-            return [{"source": {"name": "x"}, "by": "human:w", "seq": 1}]
-        return grants
+            authoring_sources._store_grants(proj, grants)  # ... and the uncommitted replacement
+            return grants
+        return real_read(proj)
 
-    monkeypatch.setattr(authoring_sources, "_read_grants_file", writer_starts_during_the_read)
-    token = authoring_sources.DIAGNOSIS.set(True)
-    try:
-        with pytest.raises(authoring_sources.SourceApprovalPending):
-            authoring_sources._load_grants(project)  # never the uncommitted grants
-    finally:
-        authoring_sources.DIAGNOSIS.reset(token)
-    assert fired["n"] == 1
-    monkeypatch.undo()
-    assert draft.source_txn_pending(project)  # and status reports it pending, not current
+    monkeypatch.setattr(
+        authoring_sources, "_read_grants_file", uncommitted_grant_in_the_second_read
+    )
     report = status_json(capsys, "--project", str(project))
-    (entry,) = report["work_pending"]["proposals"]
-    assert entry["state"] == "source_approval_pending"
-    scaffold = report["sources"].get("scaffold") or {}
-    assert scaffold.get("approval") is not True and scaffold.get("effective_approval") != "current"
+    assert reads["n"] >= 2
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["approval"] is False and scaffold["effective_approval"] == "in-progress"
 
+    monkeypatch.undo()
     empty = tmp_path / "empty-project"
     empty.mkdir()
     subprocess.run(["git", "init", "-q", str(empty)], check=True)

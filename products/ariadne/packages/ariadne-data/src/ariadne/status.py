@@ -567,13 +567,13 @@ def _render(report: dict) -> str:
     lines.append("")
     lines.append("Work pending")
     proposals_pending = report["work_pending"]["proposals"]
-    if proposals_pending:
-        entry = proposals_pending[0]
-        if entry.get("state") == "source_approval_pending":
-            lines.append(_row("draft:", f"pending — a source approval; run {entry.get('command')}"))
-            proposals_pending = []
-    if proposals_pending:
-        entry = proposals_pending[0]
+    entry = proposals_pending[0] if proposals_pending else None
+    # exactly ONE draft row: no draft / a pending source approval / an ordinary draft
+    if entry is None:
+        lines.append(_row("draft:", "none"))
+    elif entry.get("state") == "source_approval_pending":
+        lines.append(_row("draft:", f"pending — a source approval; run {entry.get('command')}"))
+    else:
         lines.append(
             _row(
                 "draft:",
@@ -583,8 +583,6 @@ def _render(report: dict) -> str:
                 f"{(entry.get('validation') or {}).get('state', 'unknown')}",
             )
         )
-    else:
-        lines.append(_row("draft:", "none"))
     examples = report["work_pending"]["answer_examples"]
     lines.append(_row("answer examples:", str(examples["total"])))
     lines.append("")
