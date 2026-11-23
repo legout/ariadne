@@ -317,3 +317,136 @@ def test_an_unreachable_source_times_out_within_the_host_deadline_not_the_lock(
     project, _api, _result = _project_with_new_source(tmp_path)
     _run(project, Tty())
     assert seen["budget"] is not None and seen["budget"].seconds > 0
+
+
+# ------------------------------- the real `ariadne approve` on a pty (AC10, finding 3)
+
+
+def _run_on_pty(project, answer, *, before_answer=None):
+    """Run ``python -m ariadne.cli approve`` on a REAL pty: wait for the prompt, run
+    ``before_answer`` (an action between display and "yes"), then answer. Returns
+    ``(exit_code, terminal_output)``."""
+    import pty
+    import select
+    import subprocess
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "ariadne.cli", "approve", "--project", str(project)],
+        env=os.environ.copy(),
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        close_fds=True,
+    )
+    os.close(slave)
+    output, answered = b"", False
+    while True:
+        ready, _, _ = select.select([master], [], [], 60)
+        if not ready:
+            proc.kill()
+            raise AssertionError(f"pty timeout: {output.decode(errors='replace')}")
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        output += chunk
+        if not answered and b"[yes/no]" in output:
+            answered = True
+            if before_answer:
+                before_answer()
+            os.write(master, answer.encode() + b"\n")
+    code = proc.wait(timeout=60)
+    os.close(master)
+    return code, output.decode(errors="replace")
+
+
+def _active(project):
+    view = draft.status(project)
+    assert view is not None, "an active draft is expected"
+    return view
+
+
+@pytest.fixture
+def pty_project(tmp_path, monkeypatch):
+    """A project with a served release A and a calculation draft on it, plus the private
+    profile pair ``approve`` reads (written the supported way)."""
+    from ariadne import profile_pair
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = complete_bundle_project(tmp_path)
+    lumio = tmp_path / "home" / "lumio-profile.json"
+    lumio.parent.mkdir(parents=True, exist_ok=True)
+    lumio.write_text("{}\n", encoding="utf-8")
+    sibling = profile_pair.sibling_path(lumio)
+    settings = profile_pair.default_sibling("pty")
+    settings["publication_destination"] = str(tmp_path / "published")
+    profile_pair.write_private(sibling, json.dumps(settings))
+    profile_pair.record(project, lumio, sibling)
+    api = AuthoringProject(project)
+    review_a, _ = admitted_ready(api, project, _policy_edit("Served rule A."))
+    assert admit_library(project, review_a, destination=tmp_path / "published") == 0
+    draft_b = api.start_proposal()
+    api.edit_pages_batch(
+        draft_b["proposal"], draft_b["candidate_revision"], _policy_edit("Draft rule B.")
+    )
+    return project, review_a
+
+
+def test_the_calculation_prompt_shows_the_change_and_approves_exactly_that_revision(pty_project):
+    from ariadne import admission
+
+    project, review_a = pty_project
+    pinned = _active(project)["candidate_revision"]
+    code, shown = _run_on_pty(project, "yes")
+    assert code == 0, shown
+    assert "Calculation approval of draft revision " + pinned[:12] in shown
+    assert "Draft rule B." in shown and "Served rule A." in shown  # the changed content
+    served = admission.load_current(project)
+    assert served is not None and served["commit"] != review_a["revision"]
+    assert served["commit"] == pinned  # exactly the revision the prompt displayed
+    assert draft.status(project) is None
+
+
+def test_an_edit_during_the_calculation_prompt_refuses_on_a_real_terminal(pty_project):
+    from ariadne import admission
+    from tests.test_git_admission import _policy_edit
+
+    project, review_a = pty_project
+
+    def edit_now():
+        view = _active(project)
+        draft.edit_pages(
+            project,
+            (view["generation"], view["candidate_revision"]),
+            _policy_edit("Edited during the prompt."),
+        )
+
+    code, shown = _run_on_pty(project, "yes", before_answer=edit_now)
+    assert code == 1 and "nothing" in shown
+    served = admission.load_current(project)
+    assert served is not None and served["commit"] == review_a["revision"]  # A still serves
+
+
+def test_a_served_base_that_changes_between_display_and_yes_refuses(pty_project):
+    from ariadne import admission
+    from tests.test_git_authoring import admit_library
+
+    project, _review_a = pty_project
+
+    def another_operator_approves_the_same_draft():
+        view = _active(project)
+        proposal = draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
+        review = AuthoringProject(project).review_proposal(proposal)
+        assert admit_library(project, review) == 0
+
+    code, shown = _run_on_pty(
+        project, "yes", before_answer=another_operator_approves_the_same_draft
+    )
+    assert code == 1 and "changed between display and confirmation" in shown, shown
+    served = admission.load_current(project)
+    assert served is not None  # the other approval's release serves; this one added nothing
