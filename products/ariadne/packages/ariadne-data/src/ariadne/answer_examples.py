@@ -332,7 +332,35 @@ def save_candidate_example(submission: Any, project: str | Path, base_revision: 
         }
     ]
     # one compare-and-set write: a stale pin refuses, a refused first write leaves no draft
-    written = draft.edit_pages(project, expected, pages)
+    try:
+        written = draft.edit_pages(project, expected, pages)
+    except Exception as exc:
+        if active is None or isinstance(exc, ValueError):
+            # a refused FIRST write leaves no draft behind, and a refusal wrote nothing:
+            # there is no unadmitted worktree state to report
+            raise
+        proposal = draft.proposal_of(project, expected)
+        worktree = project / proposals.WORKTREES_REL / proposal
+        try:
+            head_result = proposals._git(["rev-parse", "HEAD"], worktree, check=False)
+            head = head_result.stdout.strip() or head_result.stderr.strip() or "unavailable"
+        except Exception:
+            head = "unavailable"
+        try:
+            status_result = proposals._git(
+                ["status", "--short", "--untracked-files=all"], worktree, check=False
+            )
+            worktree_status = status_result.stdout.strip() or (
+                "clean" if status_result.returncode == 0 else status_result.stderr.strip()
+            )
+        except Exception:
+            worktree_status = "unavailable"
+        raise RuntimeError(
+            f"save_example failed; proposal {proposal} remains unadmitted. "
+            f"Recorded candidate {active['candidate_revision']}; branch HEAD {head}; "
+            f"worktree status: {worktree_status or 'unavailable'}. "
+            f"Preserve the proposal evidence for human resolution: {exc}"
+        ) from exc
     proposal = draft.proposal_of(
         project, (written["draft"]["generation"], written["draft"]["candidate_revision"])
     )
@@ -551,10 +579,19 @@ def search_candidate(
             f"{record['candidate_revision']} — re-read the candidate before searching"
         )
     captured = capture_revision(project / "knowledge", revision)
+    # the draft's OWN examples: pages the base release already serves are read from the
+    # served side, never twice
+    inherited = set(
+        proposals._git(
+            ["ls-tree", "-r", "--name-only", record["base_revision"], "--", "knowledge"], project
+        ).stdout.splitlines()
+    )
     selected = [
         page
         for page in captured.kb.pages
-        if page.ariadne_profile is not None and page.ariadne_profile.kind == "answer_example"
+        if page.ariadne_profile is not None
+        and page.ariadne_profile.kind == "answer_example"
+        and f"knowledge/{page.path}" not in inherited
     ]
     if not selected:
         return []

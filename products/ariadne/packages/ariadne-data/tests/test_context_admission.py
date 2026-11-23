@@ -433,6 +433,7 @@ def admit(
         confirm_mappings=confirm_mapping,
         destination=destination,
         expected_current=expected,
+        plain_review=destination is None,
     )
 
 

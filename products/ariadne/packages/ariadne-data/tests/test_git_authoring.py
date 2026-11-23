@@ -3581,6 +3581,7 @@ def admit_library(
     storage_profile: str | None = None,
     reviewed_digest: str | None = None,
     visibility: Sequence[str] = ("public",),
+    plain_review: bool = False,
 ) -> int:
     """Fixture/engine admission through the SUPPORTED library calls (the same ones
     ``ariadne approve`` makes): ``overall_review`` for the composite, then ``admit_revision``
@@ -3600,8 +3601,22 @@ def admit_library(
             if current is not None and current.get("bound_release")
             else "none"
         )
+    display_only = plain_review and not confirm
     destination = destination if destination is not None else project.parent / "published"
     try:
+        if display_only:  # the plain review display: confirmed mapping selections resolved
+            print(
+                json.dumps(
+                    admission.admission_review(
+                        project,
+                        review["proposal"],
+                        review["revision"],
+                        digest,
+                        confirm_mappings=list(confirm_mappings),
+                    )
+                )
+            )
+            return 0
         composite = admission.overall_review(
             project,
             review["proposal"],
