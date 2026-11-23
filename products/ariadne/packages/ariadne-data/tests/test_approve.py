@@ -271,12 +271,12 @@ def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
             entry["path"] = "data/extra2.parquet"
     draft.edit_artifact(
         project,
-        (first["generation"], draft.status(project)["candidate_revision"]),
+        (first["generation"], _view(project)["candidate_revision"]),
         "ariadne.yaml",
         yaml.safe_dump(doc, sort_keys=False),
     )
     # the seed-notes edit is not a source change: remove it so the draft is sources-only
-    view = draft.status(project)
+    view = _view(project)
     draft.edit_artifact(
         project,
         (view["generation"], view["candidate_revision"]),
@@ -289,8 +289,14 @@ def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
     assert "    + extra: parquet" in shown and "extra2.parquet" in shown
 
 
-def draft_proposal(project):
+def _view(project):
     view = draft.status(project)
+    assert view is not None
+    return view
+
+
+def draft_proposal(project):
+    view = _view(project)
     return draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
 
 
