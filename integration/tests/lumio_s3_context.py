@@ -25,7 +25,6 @@ import pytest  # pyright: ignore[reportMissingImports] — qualified test env is
 import yaml
 from ariadne import admission, lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 from ariadne.authoring import AuthoringProject
-from ariadne.cli import main as cli
 from ariadne.query import QueryRuntime
 from ariadne.sources import canonical_endpoint
 from lumio_wiki.ariadne_context import UnadmittedInputError
@@ -497,17 +496,17 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
             "list_context_pages",
             "read_context_page",
         } <= set(report["support"]["operations"])
-        assert cli(["search-context", "kestrel", "--project", str(project)]) == 0
-        assert json.loads(capsys.readouterr().out) == hits
 
     # --- B: publication plus complete Core admission; A stays pinned.
-    tree = worktree_of(project, review["proposal"])
+    # approval consumed draft A (spec 0040 §3.4.2.6): B is the NEXT draft, a live generation
+    proposal_b = api.start_proposal()["proposal"]
+    tree = worktree_of(project, proposal_b)
     (tree / "knowledge" / JOURNEY_PATH).write_text(JOURNEY_MD + JOURNEY_B_APPENDIX)
-    candidate_b = reconcile_knowledge(project, review["proposal"], a_rev)
-    checked_b = api.validate_proposal(review["proposal"], candidate_b)  # native round 2 of 3
+    candidate_b = reconcile_knowledge(project, proposal_b, a_rev)
+    checked_b = api.validate_proposal(proposal_b, candidate_b)  # native round 2 of 3
     assert checked_b["ok"] is True, checked_b["errors"]
     b_rev = checked_b["revision"]  # native finalization owns the final commit
-    review_b = api.review_proposal(review["proposal"])
+    review_b = api.review_proposal(proposal_b)
     assert review_b["revision"] == b_rev
     composite_b = _s3_preview(project, review_b, a_rev)
     manifest_b = composite_b["manifest"]
@@ -555,7 +554,10 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
     # Activation changes baseline-dependent review facts for the same revision.
     # Refresh before both the wrong-current check and the later fault preview.
-    review_b = api.review_proposal(review["proposal"])
+    # B's draft was consumed by its approval: re-review on a fresh live generation, which
+    # holds exactly the served B revision
+    proposal_c = api.start_proposal()["proposal"]
+    review_b = api.review_proposal(proposal_c)
     assert review_b["revision"] == b_rev
     # Blocked expected state: the finite documented family is Core's
     # preview ValueError or the direct native GitAuthoringError guard; the

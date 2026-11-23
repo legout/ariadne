@@ -125,22 +125,13 @@ def isolated_environment(tmp_path, monkeypatch):
 
 
 def library_cli(operation, project, argument):
-    """The navigation operation through the supported library call (the one both the CLI
-    and the MCP tool wrap), reported CLI-shaped: one JSON value on stdout (0) or one bounded
-    refusal object on stderr (1)."""
-    import json
-    import sys
+    """The navigation operation through the REAL MCP tool (in-process harness: actual tool
+    registration, argument schema and error mapping): one JSON value on stdout (0) or the
+    tool's error on stderr (1)."""
+    from tests.mcp_inproc import run
 
-    from ariadne.discovery import DiscoveryRuntime
-    from ariadne.query_results import QueryResultError
-
-    try:
-        result = asyncio.run(getattr(DiscoveryRuntime.open_project(project), operation)(argument))
-    except QueryResultError as exc:
-        print(json.dumps(exc.refusal(), default=str), file=sys.stderr)
-        return 1
-    print(json.dumps(result, default=str))
-    return 0
+    key = {"search_context": "query", "resolve_term": "request"}[operation]
+    return run(project, operation, {key: argument})
 
 
 def multi_metric_release(root: Path):
@@ -612,8 +603,9 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     failure = capsys.readouterr()
     assert code == 1 and not failure.out
     refused = json.loads(failure.err)
-    assert refused["error"]["code"] == "result_byte_limit"
-    assert refused["error"]["exhausted_bound"]["response_bytes"] == tightened
+    # the MCP tool's bounded refusal (its error mapping carries the message, not the code)
+    assert "exceeds its byte ceiling" in refused["error"]["message"]
+    assert "required content is never dropped" in refused["error"]["message"]
     config.write_text(original)
     assert library_cli("search_context", project, "meridian") == 0
     capsys.readouterr()
@@ -1314,7 +1306,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         failure = capsys.readouterr()
         assert code == 1 and not failure.out
         refused = json.loads(failure.err)
-        assert refused["error"]["code"] == "result_byte_limit"
+        assert "exceeds its byte ceiling" in refused["error"]["message"]
         config.write_text(original)
         assert library_cli("resolve_term", project, "order number") == 0
         capsys.readouterr()

@@ -67,6 +67,9 @@ def run(root: Path, tool: str, arguments: dict | None = None) -> int:
     is_error, out = call(root, tool, arguments)
     if tool in ("search_examples", "search_context") and not is_error:
         out = out if isinstance(out, list) else ([] if out in ("", None) else [out])
+    if is_error and isinstance(out, dict) and "error" in out:
+        print(json.dumps(out), file=sys.stderr)  # the tool's structured refusal, verbatim
+        return 1
     if is_error:
         message = out if isinstance(out, str) else json.dumps(out)
         message = message.removeprefix(f"Error executing tool {tool}: ")
