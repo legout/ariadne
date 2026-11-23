@@ -677,3 +677,104 @@ def test_an_unreachable_source_exhausts_the_deadline_and_leaves_slot_and_grant_u
     assert not (project / GRANTS).exists()
     assert (project / draft.DRAFT_REL).read_bytes() == slot_before
     assert not (project / draft.BASELINE_REL).exists() and not (project / draft.TXN_REL).exists()
+
+
+def test_a_retired_old_variable_still_renders_the_served_binding_and_asks_for_consent(
+    tmp_path, monkeypatch
+):
+    """Finding 3 (third pass): the old binding comes from the served record, keyed by the old
+    DECLARATION — the operator changed connection_env and retired the old variable, and the
+    display must not resolve A (it used to raise before the prompt)."""
+    import yaml
+
+    from ariadne import admission
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _ = admitted_ready(api, project, _policy_edit("Served rule A."))
+    assert admit_library(project, review, destination=tmp_path / "published") == 0
+    record = admission.load_current(project)
+    assert record is not None
+    old_env, new_env = "ARIADNE_TEST_PG_OLD", "ARIADNE_TEST_PG_NEW"
+    entry_a = {"name": "pg", "type": "postgres", "connection_env": old_env, "read_only": True}
+    binding_a = {
+        "host": ["db-a.internal"],
+        "hostaddr": [],
+        "port": ["5432"],
+        "dbname": "app",
+        "user": "owner",
+    }
+    declared = record.get("source_declaration_digest") or record["source_digest"]
+    shaped = {**record, "sources": [*record["sources"], entry_a]}
+    shaped["storage_bindings"] = {"postgres:pg": binding_a}
+    shaped["source_digest"] = authoring_sources.approval_digest(
+        declared, {"postgres:pg": binding_a}
+    )
+    (project / CURRENT).write_text(json.dumps(shaped), encoding="utf-8")
+    monkeypatch.delenv(old_env, raising=False)  # the old variable is retired
+    monkeypatch.setenv(new_env, "postgresql://owner:pw-b@db-b.internal:5432/app")
+
+    # the draft re-points the SAME source at the new variable
+    first = draft.edit_artifact(project, None, "data/seed_notes.md", "x\n")["draft"]
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (first["generation"], view["candidate_revision"]),
+        "data/seed_notes.md",
+        (project / "data" / "seed_notes.md").read_text(encoding="utf-8"),
+    )
+    doc = yaml.safe_load(
+        proposals.read_artifact(project, draft_proposal(project), "ariadne.yaml")["content"]
+    )
+    doc["sources"] = [e for e in doc["sources"] if e["name"] != "pg"] + [
+        {"name": "pg", "type": "postgres", "connection_env": new_env}
+    ]
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        "ariadne.yaml",
+        yaml.safe_dump(doc, sort_keys=False),
+    )
+
+    class NoRemote:
+        catalog: list = []
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(approve.execution, "DuckDBExecution", NoRemote)
+    outcome, shown = _run(project, Tty())
+    assert "CHANGED source pg" in shown
+    assert "old binding:" in shown and "db-a.internal" in shown  # frozen, never re-resolved
+    assert "new binding:" in shown and "db-b.internal" in shown
+    assert "[yes/no]" in shown and outcome["approved"] == "sources"
+
+
+def test_diff_full_in_text_and_the_cut_off_prompt_points_at_it(pty_project, capsys, monkeypatch):
+    """The human rendering of `diff --full`, and the calculation prompt whose content was cut
+    off names it (a long draft exceeds the 120-line display bound)."""
+    from ariadne.cli import main as cli
+    from tests.test_git_admission import _policy_edit
+
+    project, _review_a = pty_project
+    view = _active(project)
+    long_body = "\n".join(f"filler line {i}" for i in range(200))
+    draft.edit_pages(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        _policy_edit(f"Draft rule C.\n{long_body}\nLAST-LINE-MARKER"),
+    )
+    capsys.readouterr()
+    assert cli(["diff", "--full", "--project", str(project)]) == 0
+    text = capsys.readouterr().out
+    assert "LAST-LINE-MARKER" in text and "content_diff" in text  # complete, human rendering
+    code, shown = _run_on_pty(project, "no")
+    assert code == 1
+    assert "more diff line(s)" in shown and "ariadne diff --full" in shown
+    assert "LAST-LINE-MARKER" not in shown  # the prompt really was cut off

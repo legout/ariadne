@@ -149,6 +149,15 @@ def _identity_lines(entries: list[dict], *, prefix: str = "  ") -> list[str]:
     return lines
 
 
+def _binding_keys(entry: dict) -> set[str]:
+    storage = entry.get("storage")
+    if isinstance(storage, dict) and isinstance(storage.get("name"), str):
+        return {storage["name"]}
+    if entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+        return {f"postgres:{entry['name']}"}
+    return set()
+
+
 def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict, dict]]:
     """The identity AND frozen credential-free binding each named source had before this
     draft: the served release's, else the newest source grant's (absent when brand new)."""
@@ -165,7 +174,9 @@ def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict
     served = admission.load_current(project)
     for entry in (served or {}).get("sources") or []:
         if entry["name"] in names:
-            keys = authoring_sources.storage_bindings_from_identity([entry]).keys()
+            # the key comes from the DECLARATION and the value from the frozen record: the old
+            # environment variable may be retired, so A is never resolved
+            keys = _binding_keys(entry)
             stored = (served or {}).get("storage_bindings") or {}
             previous[entry["name"]] = (entry, {k: stored[k] for k in keys if k in stored})
     return previous
