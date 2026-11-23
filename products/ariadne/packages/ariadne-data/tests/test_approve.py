@@ -177,18 +177,18 @@ def test_a_failure_writing_the_slot_during_source_approval_rolls_back_the_baseli
     assert (project / draft.DRAFT_REL).read_bytes() == slot_before
 
 
-def test_a_crash_after_the_grant_commit_rolls_forward_on_the_next_draft_operation(
+def test_a_crash_after_the_commit_leaves_a_marker_that_the_next_operation_removes(
     tmp_path, monkeypatch
 ):
-    """Only a committed grant authorizes reads; a journal left behind AFTER the grant was
-    written is dropped, not rolled back (the grant stays effective)."""
+    """After the commit point everything is cleanup: a leftover `source_txn.committed` is
+    removed by the next draft operation and the grant stays effective."""
     project, _api, result = _project_with_new_source(tmp_path)
-    monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: None)  # crash before close
+    monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: None)  # crash before cleanup
     outcome, _shown = _run(project, Tty())
     monkeypatch.undo()
-    assert outcome["approved"] == "sources" and (project / draft.TXN_REL).exists()
+    assert outcome["approved"] == "sources" and (project / draft.TXN_COMMITTED_REL).exists()
     assert draft.status(project) is None  # recovery under the lock; the grant survives
-    assert not (project / draft.TXN_REL).exists()
+    assert not (project / draft.TXN_COMMITTED_REL).exists()
     resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
     assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
 
@@ -505,7 +505,8 @@ def test_a_journal_cleanup_failure_after_the_grant_is_not_a_failed_approval(tmp_
     assert outcome["approved"] == "sources"
     resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
     assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
-    assert draft.status(project) is None  # recovery drops the journal; the grant survives
+    assert draft.status(project) is None  # recovery drops the marker; the grant survives
+    assert not (project / draft.TXN_COMMITTED_REL).exists()
 
 
 def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calculation_approval(
@@ -778,3 +779,204 @@ def test_diff_full_in_text_and_the_cut_off_prompt_points_at_it(pty_project, caps
     assert code == 1
     assert "more diff line(s)" in shown and "ariadne diff --full" in shown
     assert "LAST-LINE-MARKER" not in shown  # the prompt really was cut off
+
+
+# --------------------------------- the one commit point of a source approval (0040 §3.4.2.5)
+
+
+def _state_bytes(project):
+    """The three journaled files, byte for byte (None when absent)."""
+
+    def read(rel):
+        return (project / rel).read_bytes() if (project / rel).exists() else None
+
+    return {
+        "grants": read(GRANTS),
+        "baseline": read(draft.BASELINE_REL),
+        "slot": read(draft.DRAFT_REL),
+    }
+
+
+def _granted(project, result):
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    return authoring_sources.approval_state(project, resolved, digest)["approved"]
+
+
+def _fault(monkeypatch, project, boundary):
+    """Inject ONE fault at ``boundary``."""
+    real_replace, real_sync = os.replace, proposals._fsync_path
+
+    def boom(msg):
+        raise OSError(msg)
+
+    if boundary == "journal write":
+        real_store = draft._store_json
+        monkeypatch.setattr(
+            draft,
+            "_store_json",
+            lambda path, doc: (
+                boom("journal") if path.name == "source_txn.json" else real_store(path, doc)
+            ),
+        )
+    elif boundary == "baseline write":
+        monkeypatch.setattr(draft, "set_source_baseline", lambda *_a, **_k: boom("baseline"))
+    elif boundary == "draft consume":
+        monkeypatch.setattr(draft, "consume", lambda *_a, **_k: boom("consume"))
+    elif boundary == "grants replace":
+        monkeypatch.setattr(
+            os,
+            "replace",
+            lambda src, dst: (
+                boom("grants replace") if Path(dst) == project / GRANTS else real_replace(src, dst)
+            ),
+        )
+    elif boundary == "grants directory sync":
+        fired = {"done": False}
+
+        def sync(path):
+            if not fired["done"] and (project / GRANTS).exists():
+                fired["done"] = True
+                boom("grants sync")
+            return real_sync(path)
+
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+    elif boundary == "commit rename":
+        monkeypatch.setattr(
+            os,
+            "replace",
+            lambda src, dst: (
+                boom("commit rename")
+                if Path(dst) == project / draft.TXN_COMMITTED_REL
+                else real_replace(src, dst)
+            ),
+        )
+    elif boundary == "commit directory sync":
+        fired = {"done": False}
+
+        def csync(path):
+            if not fired["done"] and (project / draft.TXN_COMMITTED_REL).exists():
+                fired["done"] = True
+                boom("commit sync")
+            return real_sync(path)
+
+        monkeypatch.setattr(proposals, "_fsync_path", csync)
+    elif boundary == "marker removal":
+        monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: boom("marker removal"))
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "journal write",
+        "baseline write",
+        "draft consume",
+        "grants replace",
+        "grants directory sync",
+        "commit rename",
+    ],
+)
+def test_a_fault_before_the_commit_point_fails_and_restores_all_three_files(
+    tmp_path, monkeypatch, boundary
+):
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, boundary)
+    with pytest.raises(OSError):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert _state_bytes(project) == before  # grants, baseline and slot: previous bytes
+    assert (
+        not (project / draft.TXN_REL).exists() and not (project / draft.TXN_COMMITTED_REL).exists()
+    )
+    assert _granted(project, result) is False
+
+
+@pytest.mark.parametrize("boundary", ["commit directory sync", "marker removal"])
+def test_a_fault_after_the_commit_point_reports_success_and_heals_on_the_next_operation(
+    tmp_path, monkeypatch, boundary
+):
+    project, _api, result = _project_with_new_source(tmp_path)
+    _fault(monkeypatch, project, boundary)
+    outcome, _shown = _run(project, Tty())
+    monkeypatch.undo()
+    assert outcome["approved"] == "sources"  # reported success
+    assert (project / GRANTS).exists()  # the grant is effective and durable
+    assert draft.status(project) is None  # the next operation heals the slot ...
+    assert not (project / draft.TXN_COMMITTED_REL).exists()  # ... and removes the marker
+    assert _granted(project, result) is True
+
+
+def test_a_failing_rollback_reports_recovery_pending_refuses_reads_and_the_next_holder_recovers(
+    tmp_path, monkeypatch
+):
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+    monkeypatch.setattr(
+        draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("restore failed"))
+    )
+    with pytest.raises(approve.ApprovalRefused, match="not approved; recovery pending"):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert (project / draft.TXN_REL).exists()  # the journal stays
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    with pytest.raises(
+        authoring_sources.SourceApprovalPending, match="in progress or was interrupted"
+    ):
+        authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
+    state = authoring_sources.approval_state(project, resolved, digest)
+    assert state["approved"] is False and state["state"] == "in-progress"  # a display never crashes
+
+    view = draft.status(project)  # the next project-lock holder finishes the rollback
+    assert view is not None and not (project / draft.TXN_REL).exists()
+    assert _state_bytes(project) == before
+    with pytest.raises(ValueError, match="NO grant for that exact identity"):
+        authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
+
+
+def test_a_reader_is_refused_while_the_journal_exists_and_authorized_after_the_commit(
+    tmp_path, monkeypatch
+):
+    project, _api, result = _project_with_new_source(tmp_path)
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    # the writer is interrupted between the grants replace and the commit and its rollback is
+    # stuck: the journal stays and the grants file is already replaced (the reader window)
+    monkeypatch.setattr(
+        draft, "commit_source_txn", lambda *_a, **_k: (_ for _ in ()).throw(OSError("x"))
+    )
+    monkeypatch.setattr(
+        draft, "rollback_source_txn", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck"))
+    )
+    with pytest.raises(approve.ApprovalRefused):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert (project / GRANTS).exists() and draft.source_txn_pending(project)  # in the window
+    with pytest.raises(authoring_sources.SourceApprovalPending):
+        authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
+    assert draft.status(project) is not None  # recovered (rolled back)
+    outcome, _shown = _run(project, Tty())  # now the approval commits
+    assert outcome["approved"] == "sources"
+    authoring_sources._effective_grant(
+        project, resolved, digest, "p", result["revision"]
+    )  # authorized
+
+
+def test_a_crash_with_the_grants_already_replaced_is_rolled_back_by_the_next_holder(
+    tmp_path, monkeypatch
+):
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    # everything written, commit never reached, rollback never ran (a crash)
+    monkeypatch.setattr(
+        draft, "commit_source_txn", lambda *_a, **_k: (_ for _ in ()).throw(OSError("crash"))
+    )
+    monkeypatch.setattr(
+        draft, "rollback_source_txn", lambda *_a, **_k: (_ for _ in ()).throw(OSError("crash"))
+    )
+    with pytest.raises(approve.ApprovalRefused):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert (project / GRANTS).exists() and (project / draft.TXN_REL).exists()
+    assert draft.status(project) is not None  # the next lock holder restores all three files
+    assert _state_bytes(project) == before and not (project / draft.TXN_REL).exists()
+    assert _granted(project, result) is False  # no grant is effective

@@ -478,30 +478,59 @@ def pinned(project: str | Path, expected: Expected):
 
 # ------------------------------------------------ approval transaction + recovery
 
-TXN_REL = proposals.ARIADNE_STATE_DIR / "approval_txn.json"
+TXN_REL = proposals.ARIADNE_STATE_DIR / "source_txn.json"  # the journal
+TXN_COMMITTED_REL = proposals.ARIADNE_STATE_DIR / "source_txn.committed"  # the commit marker
+GRANTS_REL = proposals.ARIADNE_STATE_DIR / "source_grants.json"
+GRANTS_LOCK_REL = proposals.LOCKS_REL / "grants.lock"
+
+
+def grants_lock(project: str | Path):
+    """The short-lived exclusive lock that orders a source approval against grant readers.
+    Order: ``project.lock`` first, then this one; a reader holds it only for the journal check
+    and the grants read. ``_file_lock`` is not re-entrant: never take it twice in one chain."""
+    return proposals._file_lock(Path(project) / GRANTS_LOCK_REL)
+
+
+def source_txn_pending(project: str | Path) -> bool:
+    """True while a source-approval journal exists (a reader must refuse; see item 7)."""
+    return (Path(project) / TXN_REL).exists()
 
 
 def _read_bytes(path: Path) -> str | None:
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
 
-def begin_source_txn(project: Path, expected_grants: int) -> None:
-    """Journal a source approval BEFORE its three state changes (baseline, slot, grants).
-    The grant file is the commit point: only a committed grant authorizes reads. The caller
-    holds the project lock. A crash or failure leaves this journal; :func:`recover` then
-    rolls the baseline and the slot back unless the grants were committed."""
+def begin_source_txn(project: Path) -> None:
+    """Journal a source approval BEFORE its three state changes. The journal keeps the
+    previous bytes of the grants, the source baseline and the draft slot. The caller holds the
+    project lock AND ``grants.lock`` until the commit or the rollback is complete. The approval
+    is committed exactly when the journal is renamed to ``source_txn.committed`` and the
+    directory is synced (:func:`commit_source_txn`); nothing before that counts."""
+    (project / TXN_COMMITTED_REL).unlink(missing_ok=True)  # stale cleanup of an old approval
     _store_json(
         project / TXN_REL,
         {
-            "expected_grants": expected_grants,
+            "grants": _read_bytes(project / GRANTS_REL),
             "baseline": _read_bytes(project / BASELINE_REL),
             "slot": _read_bytes(project / DRAFT_REL),
         },
     )
 
 
+def commit_source_txn(project: Path) -> None:
+    """THE commit point: rename the journal to the committed marker, then sync the directory.
+    A failure of the rename is before the commit point (the caller rolls back); a directory-sync
+    failure after the rename is post-commit — the marker is visible and the approval stands."""
+    os.replace(project / TXN_REL, project / TXN_COMMITTED_REL)
+    try:
+        proposals._fsync_path((project / TXN_REL).parent)
+    except OSError:
+        pass  # post-commit: recovery or a crash re-derives the state from the single marker file
+
+
 def end_source_txn(project: Path) -> None:
-    (project / TXN_REL).unlink(missing_ok=True)
+    """Post-commit cleanup: remove the committed marker."""
+    (project / TXN_COMMITTED_REL).unlink(missing_ok=True)
 
 
 def _restore(path: Path, text: str | None) -> None:
@@ -517,28 +546,43 @@ def _restore(path: Path, text: str | None) -> None:
         os.replace(tmp, path)
 
 
+def rollback_source_txn(project: Path) -> None:
+    """Restore the grants, the baseline and the slot to the journaled bytes (identical bytes:
+    idempotent), then remove the journal. The caller holds the project lock and ``grants.lock``.
+    A failure leaves the journal in place so the next project-lock holder finishes the job."""
+    journal = project / TXN_REL
+    if not journal.is_file():
+        return
+    try:
+        txn = json.loads(journal.read_text(encoding="utf-8"))
+        previous = {k: txn[k] for k in ("grants", "baseline", "slot")}
+    except (OSError, ValueError, KeyError, TypeError):
+        raise ValueError(
+            f"{journal}: unreadable approval journal — this needs human resolution"
+        ) from None
+    _restore(project / GRANTS_REL, previous["grants"])
+    _restore(project / BASELINE_REL, previous["baseline"])
+    _restore(project / DRAFT_REL, previous["slot"])
+    proposals._fsync_path(journal.parent)
+    journal.unlink()
+    proposals._fsync_path(journal.parent)
+
+
 def recover(project: Path) -> None:
     """Complete or undo an interrupted approval. The caller holds the project lock.
 
-    - A journaled source approval whose grants were committed rolls forward (the journal is
-      dropped); otherwise the baseline and slot return to their journaled bytes.
+    - A source-approval journal (``source_txn.json``) means the approval never committed: the
+      grants, baseline and slot return to their journaled bytes and the journal is removed. A
+      ``source_txn.committed`` marker is only removed (the grant stays effective).
     - A calculation approval whose release is already serving but whose generation was never
       retired (a failure after ``current.json`` was published) retires it now."""
-    from ariadne import admission, authoring_sources  # lazy: admission imports this module
+    from ariadne import admission  # lazy: admission imports this module
 
-    journal = project / TXN_REL
-    if journal.is_file():
-        try:
-            txn = json.loads(journal.read_text(encoding="utf-8"))
-            expected = int(txn["expected_grants"])
-        except (OSError, ValueError, KeyError, TypeError):
-            raise ValueError(
-                f"{journal}: unreadable approval journal — this needs human resolution"
-            ) from None
-        if len(authoring_sources._load_grants(project)) < expected:
-            _restore(project / BASELINE_REL, txn.get("baseline"))
-            _restore(project / DRAFT_REL, txn.get("slot"))
-        journal.unlink(missing_ok=True)
+    if (project / TXN_REL).exists() or (project / TXN_COMMITTED_REL).exists():
+        with grants_lock(project):  # project.lock (held by the caller) first, then grants.lock
+            if (project / TXN_REL).exists():
+                rollback_source_txn(project)  # uncommitted: undo all three files
+            end_source_txn(project)  # committed (or leftover) marker: cleanup only
     slot = _load_slot(project)
     if slot is not None and slot["state"] == "active":
         served = admission.load_current(project)

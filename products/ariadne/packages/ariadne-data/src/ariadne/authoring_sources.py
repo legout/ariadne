@@ -387,9 +387,34 @@ def propose_sources(
 # ----------------------------------------------- operator-owned source grants
 
 
-def _load_grants(project: Path) -> list[dict]:
-    """The append-only grant list ([] when none exist). A non-regular, unreadable
-    or malformed file is a human-resolution failure — never silently reset."""
+class SourceApprovalPending(ValueError):
+    """A source approval is unfinished or interrupted: grants authorize nothing until it
+    finishes or is recovered (spec 0040 §3.4.2.5)."""
+
+
+_PENDING_MESSAGE = (
+    "a source approval is in progress or was interrupted — no grant authorizes a read until it "
+    "finishes or is recovered; run any 'ariadne draft' command (e.g. 'ariadne draft status') "
+    "to recover it, then retry; nothing was opened"
+)
+
+
+def _load_grants(project: Path, *, _held: bool = False) -> list[dict]:
+    """The append-only grant list ([] when none exist). A reader takes ``grants.lock`` LAST,
+    refuses while the source-approval journal exists (never falling back to the file) and holds
+    the lock only for that check and the read. ``_held`` is for code that already holds
+    ``grants.lock`` inside the approval transaction. A non-regular, unreadable or malformed
+    file is a human-resolution failure — never silently reset."""
+    project = Path(project)
+    if _held:
+        return _read_grants_file(project)
+    with draft.grants_lock(project):
+        if draft.source_txn_pending(project):
+            raise SourceApprovalPending(_PENDING_MESSAGE)
+        return _read_grants_file(project)
+
+
+def _read_grants_file(project: Path) -> list[dict]:
     path = project / SOURCE_GRANTS_REL
     entry = proposals._lstat(path)
     if entry is None:
@@ -417,7 +442,8 @@ def _load_grants(project: Path) -> list[dict]:
 
 
 def _store_grants(project: Path, grants: list[dict]) -> None:
-    """Persist the grant list atomically (tmp + os.replace) and durably."""
+    """Persist the grant list atomically (tmp + os.replace) and durably. Inside a source
+    approval the journal (not this function) owns rollback."""
     path = project / SOURCE_GRANTS_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
@@ -426,27 +452,8 @@ def _store_grants(project: Path, grants: list[dict]) -> None:
         fh.write("\n")
         fh.flush()
         os.fsync(fh.fileno())
-    previous = path.read_bytes() if path.is_file() else None
     os.replace(tmp, path)
-    try:
-        proposals._fsync_path(path.parent)
-    except BaseException:
-        # not durably committed: put the previous grants back so a failed sync never leaves
-        # an effective grant behind a failed approval (best effort; the caller's recovery
-        # reads the file and treats whatever is committed as the truth)
-        try:
-            if previous is None:
-                path.unlink(missing_ok=True)
-            else:
-                fd, back = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-                with os.fdopen(fd, "wb") as fh:
-                    fh.write(previous)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(back, path)
-        except OSError:
-            pass
-        raise
+    proposals._fsync_path(path.parent)
 
 
 def record_grants(
@@ -457,6 +464,7 @@ def record_grants(
     by: str,
     generation: int | None = None,
     _lock_held: bool = False,
+    _grants_held: bool = False,
 ) -> dict:
     """HUMAN-ONLY library call (never an MCP/Agent tool; the approval command and the
     workspace's browser-reviewed source request call it): append one grant per
@@ -499,10 +507,15 @@ def record_grants(
         else proposals._file_lock(project / proposals.LOCKS_REL / "project.lock")
     )
     with lock:
-        grants = _load_grants(project)
-        for number, grant in enumerate(new, start=len(grants) + 1):
-            grant["seq"] = number
-        _store_grants(project, [*grants, *new])
+        # the standalone (non-transactional) call serializes with readers on grants.lock; inside
+        # the approval transaction the caller already holds it
+        with nullcontext() if _grants_held else draft.grants_lock(project):
+            grants = _load_grants(project, _held=True)
+            if not _grants_held and draft.source_txn_pending(project):
+                raise SourceApprovalPending(_PENDING_MESSAGE)
+            for number, grant in enumerate(new, start=len(grants) + 1):
+                grant["seq"] = number
+            _store_grants(project, [*grants, *new])
     return {
         "source_digest": source_digest,
         "approval_digest": approval_digest(source_digest, bindings),
@@ -618,6 +631,19 @@ def approval_state(project: Path, resolved: list[dict] | None, digest: str | Non
         return {"state": "unresolved", "reason": str(exc), "approved": False}
     effective = approval_digest(digest or "", bindings) if digest else None
     entries = resolved or []
+    try:
+        return _approval_state_reading(project, entries, digest, effective, bindings)
+    except SourceApprovalPending as exc:  # a display path reports; it never crashes or reads
+        return {
+            "state": "in-progress",
+            "approved": False,
+            "reason": str(exc),
+            "approval_digest": effective,
+            "storage_bindings": bindings,
+        }
+
+
+def _approval_state_reading(project, entries, digest, effective, bindings) -> dict:
     if effective is not None and all(
         _covering(project, entry, _entry_bindings(entry)) is not None for entry in entries
     ):

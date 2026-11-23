@@ -28,7 +28,7 @@ from ariadne.authoring import AuthoringProject
 from ariadne.query import QueryRuntime
 from ariadne.sources import canonical_endpoint
 from lumio_wiki.ariadne_context import UnadmittedInputError
-from lumio_wiki.git_authoring import GitAuthoringError
+from lumio_wiki.git_authoring import PublicationConflict
 from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
 from tests.test_discovery import _source_free_guards
 from tests.test_git_authoring import approved, run_git, worktree_of
@@ -566,12 +566,13 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     # Blocked expected state: the finite documented family is Core's
     # preview ValueError or the direct native GitAuthoringError guard; the
     # refused operation and the byte-identical descriptor are the oracle.
-    with pytest.raises((ValueError, GitAuthoringError)) as wrong_current:
+    with pytest.raises(PublicationConflict) as wrong_current:
         _s3_preview(project, review_b, "none")
-    # it must refuse for the INTENDED reason (the active version is not the expected one),
-    # never for missing validation evidence or any unrelated error
-    assert "active version" in str(wrong_current.value), str(wrong_current.value)
-    assert "validation" not in str(wrong_current.value).lower()
+    # the `none` + present branch of lumio_wiki.git_authoring._check_pointer_expectation: the
+    # preview is rejected because B is ALREADY active on this prefix, for that reason only
+    message = str(wrong_current.value)
+    assert "expected no current published version" in message, message
+    assert f"{b_rev!r} is active" in message, message
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
 
     # --- One controlled required-write/persistence failure at the Core

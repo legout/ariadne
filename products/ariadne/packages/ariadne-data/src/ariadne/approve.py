@@ -162,7 +162,11 @@ def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict
     """The identity AND frozen credential-free binding each named source had before this
     draft: the served release's, else the newest source grant's (absent when brand new)."""
     previous: dict[str, tuple[dict, dict]] = {}
-    for grant in authoring_sources._load_grants(project):
+    try:
+        grants = authoring_sources._load_grants(project)
+    except authoring_sources.SourceApprovalPending:
+        grants = []  # a display never crashes on the journal; the prompt itself refuses below
+    for grant in grants:
         if grant["source"]["name"] in names:
             own = {}
             storage = grant["source"].get("storage")
@@ -236,38 +240,42 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
             tables = sum(len(source["tables"]) for source in owned.catalog)
         finally:
             owned.close()
-        # ONE recoverable transaction (finding 1): journal first; the grant file is the
-        # commit point and is written LAST, so only a committed grant authorizes reads. Any
-        # failure restores the previous baseline and the active draft.
-        expected_grants = len(authoring_sources._load_grants(project)) + len(new)
-        draft.begin_source_txn(project, expected_grants)
-        try:
-            draft.set_source_baseline(project, view["candidate_revision"])
-            draft.consume(project, record["id"])
-            result = authoring_sources.record_grants(
-                project,
-                new,
-                authoring_sources.resolved_digest(new),
-                by=by,
-                generation=view["generation"],
-                _lock_held=True,
-            )
-        except BaseException:
-            draft.recover(project)  # rolls back (grants not committed), drops the journal
-            # the reported outcome must match the commit point: when the grant file IS
-            # committed (a rollback that could not run), the approval happened
-            if len(authoring_sources._load_grants(project)) < expected_grants:
+        # ONE commit point (spec 0040 §3.4.2.5): the journal is renamed to source_txn.committed
+        # and the directory synced. Before it nothing counts as approved and every failure rolls
+        # all three files back; after it everything is cleanup. grants.lock (taken after
+        # project.lock) is held from the journal until the commit or the rollback is complete.
+        with draft.grants_lock(project):
+            draft.begin_source_txn(project)
+            try:
+                draft.set_source_baseline(project, view["candidate_revision"])
+                draft.consume(project, record["id"])
+                result = authoring_sources.record_grants(
+                    project,
+                    new,
+                    authoring_sources.resolved_digest(new),
+                    by=by,
+                    generation=view["generation"],
+                    _lock_held=True,
+                    _grants_held=True,
+                )
+                draft.commit_source_txn(project)  # THE commit point
+            except BaseException as failure:
+                if (project / draft.TXN_COMMITTED_REL).exists():
+                    raise  # cannot happen: the commit's own failures are handled inside it
+                try:
+                    draft.rollback_source_txn(project)
+                except BaseException:
+                    raise ApprovalRefused(
+                        "not approved; recovery pending — the rollback of an interrupted source "
+                        "approval could not finish; no grant is effective and reads are refused "
+                        "until it is recovered: run 'ariadne draft status' (the next command "
+                        f"finishes the rollback). Cause: {failure}"
+                    ) from failure
                 raise
-            result = {
-                "grants": len(new),
-                "approval_digest": authoring_sources.approval_digest(
-                    authoring_sources.resolved_digest(new), bindings
-                ),
-            }
-        try:
-            draft.end_source_txn(project)
-        except OSError:
-            pass  # post-commit cleanup: the next draft operation drops the journal
+            try:
+                draft.end_source_txn(project)  # post-commit cleanup
+            except BaseException:
+                pass  # healed by the next draft operation
     return {
         "approved": "sources",
         "sources": [e["name"] for e in new],
