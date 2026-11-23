@@ -448,7 +448,7 @@ def _git(target: Path, *argv: str, check: bool = True) -> str:
     return proposals._git(list(argv), target, check=check).stdout
 
 
-def ensure_git(target: Path, *, assume_yes: bool, stdin, stdout) -> None:
+def ensure_git(target: Path, *, assume_yes: bool, stdin, stdout, prompt=None) -> None:
     """Create the repository if absent and make sure a Git identity resolves; with no
     identity prompt once and set a repository-LOCAL identity (spec 0040 §3.2.1)."""
     from ariadne import proposals
@@ -479,15 +479,18 @@ def ensure_git(target: Path, *, assume_yes: bool, stdin, stdout) -> None:
             f"  git -C {target} config user.email '<you@example.org>'"
         )
     for key in missing:
-        stdout.write(f"Git {key}: ")
-        stdout.flush()
+        out = prompt or stdout  # the consent check above stays on the ORIGINAL streams
+        out.write(f"Git {key}: ")
+        out.flush()
         value = stdin.readline().strip()
         if not value:
             raise ValueError(f"no value for {key}; nothing was changed")
         _git(target, "config", key, value)
 
 
-def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, stdout=None) -> dict:
+def init_project(
+    target: str | Path, *, assume_yes: bool = False, stdin=None, stdout=None, prompt=None
+) -> dict:
     """``ariadne init [DIR]`` (spec 0040 §3.2): repository, identity, namespace, the
     private profile pair, the selector at the highest support_revision and the native
     Lumio KB, as ONE commit holding only the files init created. A re-run on an
@@ -519,7 +522,7 @@ def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, st
             "this directory without a complete project — it is never replaced silently; "
             "inspect or remove it and re-run. Nothing was written."
         )
-    ensure_git(target, assume_yes=assume_yes, stdin=stdin, stdout=stdout)
+    ensure_git(target, assume_yes=assume_yes, stdin=stdin, stdout=stdout, prompt=prompt)
     # the user's index and working tree stay untouched except for init's own files
     staged_before = _git(target, "diff", "--cached", "--name-only").split()
     before = {

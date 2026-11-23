@@ -551,8 +551,12 @@ def test_json_prompts_go_to_stderr_and_stdout_is_only_the_result(tmp_path, capsy
         def isatty(self):
             return True
 
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))  # never the real ~/.config/ariadne
+    (tmp_path / "home").mkdir()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"):
+        monkeypatch.delenv(key, raising=False)
     project = complete_bundle_project(tmp_path)
     AuthoringProject(project).start_proposal()
     assert draft.status(project) is not None
@@ -576,3 +580,28 @@ def test_json_prompts_go_to_stderr_and_stdout_is_only_the_result(tmp_path, capsy
     assert code == 0, err.getvalue()
     assert "Git user.name" in err.getvalue() and "Git user.name" not in shown.getvalue()
     assert json.loads(shown.getvalue())["initialized"] is True
+    assert (Path.home() / ".config" / "ariadne").is_dir()  # profiles landed under the test HOME
+
+    # a normal terminal operator whose STDERR is redirected (not a TTY) is still prompted:
+    # the interaction check stays on stdin/stdout, only the prompt text moves
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    subprocess.run(["git", "init", "-q", str(redirected)], check=True)
+    answers, shown, err = Tty("Name\nn@example.test\n"), Tty(), io.StringIO()  # err: no isatty
+    monkeypatch.setattr(sys, "stdin", answers)
+    monkeypatch.setattr(sys, "stdout", shown)
+    monkeypatch.setattr(sys, "stderr", err)
+    code = cli(["init", str(redirected), "--json", "--project", str(redirected)], stdin=answers)
+    assert code == 0, err.getvalue()
+    assert "Git user.name" in err.getvalue()
+
+    # stdout NOT a terminal: no prompt may be allowed, whatever stderr is
+    nonterminal = tmp_path / "nonterminal"
+    nonterminal.mkdir()
+    subprocess.run(["git", "init", "-q", str(nonterminal)], check=True)
+    answers, shown, err = Tty("Name\nn@example.test\n"), io.StringIO(), Tty()
+    monkeypatch.setattr(sys, "stdin", answers)
+    monkeypatch.setattr(sys, "stdout", shown)
+    monkeypatch.setattr(sys, "stderr", err)
+    assert cli(["init", str(nonterminal), "--json", "--project", str(nonterminal)]) == 1
+    assert "no Git identity resolves" in err.getvalue()

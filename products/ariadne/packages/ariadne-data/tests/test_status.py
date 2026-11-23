@@ -180,6 +180,8 @@ def test_valid_admission_reports_checked_pinned_revision_and_digest(tmp_path, ca
     assert run_status("--project", str(project)) == 0
     human = capsys.readouterr().out
     assert "approved by:" in human and approval["by"] in human
+    assert approval["review_digest"] in human  # the exact digest, not a shortened one
+    assert approval["commit"] in human  # and the approved commit
     # approval consumed the draft: an approved proposal is history, never pending (spec 0040)
     assert report["work_pending"]["proposals"] == []
     assert current["proposal"]

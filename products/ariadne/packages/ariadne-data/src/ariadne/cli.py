@@ -290,7 +290,8 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
             args.dir or args.project,
             assume_yes=args.yes,
             stdin=stdin,
-            stdout=sys.stderr if args.json else sys.stdout,  # JSON: stdout is the result only
+            stdout=sys.stdout,  # the terminal check stays on the original streams
+            prompt=sys.stderr if args.json else None,  # JSON: only the prompt text moves
         )
         return _emit(result, args)
     project = Path(args.project).resolve()

@@ -500,13 +500,9 @@ def _render(report: dict) -> str:
     )
     approval = project["admission"].get("approval")
     if approval is not None:
-        lines.append(
-            _row(
-                "approved by:",
-                f"{approval.get('by')} at {approval.get('at')} "
-                f"(review {str(approval.get('review_digest'))[:12]}…)",
-            )
-        )
+        lines.append(_row("approved by:", f"{approval.get('by')} at {approval.get('at')}"))
+        lines.append(_row("review digest:", str(approval.get("review_digest"))))
+        lines.append(_row("approved commit:", str(approval.get("commit"))))
     bound = project["admission"].get("bound_release")
     if bound is not None:
         lines.append(
