@@ -71,7 +71,9 @@ def test_is_fresh_reports_stale_after_source_change(tmp_path: Path) -> None:
     reloaded, _ = load_knowledge_base(tmp_root)
     stale_kb = KnowledgeBase(root=reloaded.root, pages=reloaded.pages, index_dir=index_dir)
     assert not stale_kb.is_fresh()
-    assert stale_kb.fingerprint().digest != stale_kb.stored_fingerprint().digest
+    stored = stale_kb.stored_fingerprint()
+    assert stored is not None
+    assert stale_kb.fingerprint().digest != stored.digest
 
 
 def test_is_fresh_restored_after_rebuild(tmp_path: Path) -> None:

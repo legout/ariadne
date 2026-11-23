@@ -27,6 +27,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -724,10 +725,15 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert instance._measure is None  # not yet: direct construction has no transport
         app = build_app(instance, toolset="analyst")
         result = asyncio.run(app.call_tool("get_metric", {"name": "plain_total"}))
-        from mcp.types import CallToolResult  # pyright: ignore[reportMissingImports] — [mcp] extra
+        from mcp.types import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+            CallToolResult,
+            TextContent,
+        )
 
         assert isinstance(result, CallToolResult) and not result.is_error
-        assert json.loads(result.content[0].text)["rows"] == [{"plain_total": 60.0}]
+        assert json.loads(cast(TextContent, result.content[0]).text)["rows"] == [
+            {"plain_total": 60.0}
+        ]
         assert instance._measure is _mcp_result_bytes  # installed at the seam
         factory_built = make_runtime(served)
         app2 = build_app(lambda: factory_built, toolset="analyst")

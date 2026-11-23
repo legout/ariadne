@@ -321,6 +321,7 @@ def test_legacy_flat_kb_projects_reference_edges_only(tmp_path):
     loaded = load_graph_state(tmp_path / "lance", fingerprint)
     zero_index = build_graph_state(kb._knowledge_index(), fingerprint, EXTRACTOR_VERSION)
     assert loaded == zero_index
+    assert loaded is not None
     assert loaded.edge_count == 2  # two Extracted References, title-keyed
     assert all(
         e.origin == GRAPH_EDGE_ORIGIN_EXTRACTED
@@ -498,6 +499,7 @@ def test_search_entity_candidates_returns_scored_review_candidates(categorized_k
     alias_hits = search_entity_candidates(
         tmp_path / "lance", "Platform", expected_fingerprint=fingerprint
     )
+    assert alias_hits is not None
     assert any(c.entity.id == "entity:lumio" for c in alias_hits)
     # Candidates are read-only: no source file changed.
     after = {p.name: p.read_bytes() for p in sorted(tmp_path.rglob("*.md"))}

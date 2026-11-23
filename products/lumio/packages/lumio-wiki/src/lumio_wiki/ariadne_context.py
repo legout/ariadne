@@ -2307,7 +2307,7 @@ class PublishedContextPageMetadata(msgspec.Struct, frozen=True):
     review_after: str | None
 
 
-class PublishedContextPage(PublishedContextPageMetadata):
+class PublishedContextPage(PublishedContextPageMetadata, frozen=True):
     """One complete visible canonical page with immutable body and views.
 
     ``native`` is empty when the page is unprofiled; ``native`` and

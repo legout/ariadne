@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import lumio_wiki as lw
@@ -144,7 +145,7 @@ def test_missing_extra_error_is_actionable(monkeypatch):
 
     monkeypatch.setattr(importlib, "import_module", block_openai)
     with pytest.raises(MissingSemanticExtraError, match=r"pip install 'lumio-wiki\[llm\]'"):
-        SemanticDreamReviewer(object(), model="fake-model")
+        SemanticDreamReviewer(cast(Any, object()), model="fake-model")
 
 
 def test_cli_semantic_review_reports_and_stages(monkeypatch, kb_root: Path, capsys):

@@ -156,6 +156,7 @@ def test_s3_compat_remote_fingerprint_sidecar_is_canonical(remote_location):
     from lumio_lancedb.index import _load_fingerprint
 
     loaded = _load_fingerprint(loc)
+    assert loaded is not None
     assert loaded.digest == "s3_compat-canonical-fingerprint"
 
     # The sidecar object exists at the documented key in the object store.
@@ -275,6 +276,7 @@ def test_s3_compat_remote_graph_tables_build_load_and_parity(remote_location):
     loaded = load_graph_state(graph_loc, fp)
     zero_index = build_graph_state(kb._knowledge_index(), fp, EXTRACTOR_VERSION)
     assert loaded == zero_index
+    assert loaded is not None
     assert loaded.edge_count >= 1  # the fixture's accepted Claim
 
     # Stale fingerprint: truthful fallback, never a raise.

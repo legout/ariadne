@@ -54,9 +54,10 @@ def assert_installed_wheel(wheel: Path) -> None:
     name = wheel.name.split("-", 1)[0].replace("_", "-")
     root = name.replace("-", "_")
     distribution = importlib.metadata.distribution(name)
-    installed_root = Path(distribution.locate_file(root)).resolve()
+    installed_root = Path(str(distribution.locate_file(root))).resolve()
     assert installed_root.is_relative_to(Path(sys.prefix).resolve()), installed_root
     module = importlib.import_module(root)
+    assert module.__file__ is not None
     assert Path(module.__file__).resolve() == installed_root / "__init__.py"
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     # Index installs omit origin metadata; member bytes still bind the artifact.
@@ -78,10 +79,12 @@ def assert_installed_wheel(wheel: Path) -> None:
             if member.startswith(f"{root}/") and not member.endswith("/"):
                 raw = archive.read(member)
                 assert (source / member).read_bytes() == raw, f"stale source member: {member}"
-                assert Path(distribution.locate_file(member)).read_bytes() == raw, member
+                assert Path(str(distribution.locate_file(member))).read_bytes() == raw, member
                 members[member] = hashlib.sha256(raw).hexdigest()
         metadata = next(p for p in archive.namelist() if p.endswith(".dist-info/METADATA"))
-        assert distribution.read_text("METADATA").encode() == archive.read(metadata)
+        installed_metadata = distribution.read_text("METADATA")
+        assert installed_metadata is not None
+        assert installed_metadata.encode() == archive.read(metadata)
     assert members
     print(
         "wheel_identity:",

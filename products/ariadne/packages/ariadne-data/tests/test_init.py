@@ -114,6 +114,7 @@ def test_scaffold_creates_native_kb_and_expected_inputs(tmp_path):
     # finalize writes knowledge/computations/<metric>.md for the first governed metric
     assert {"metrics", "policies", "computations"} <= categories
     manifest = load_source_reference_manifest(target / "knowledge")  # the KB root
+    assert manifest is not None
     assert manifest.namespace == NAMESPACE and manifest.sources == {}  # unadmitted
 
     notes = (target / "data" / "seed_notes.md").read_text(encoding="utf-8")

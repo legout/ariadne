@@ -892,6 +892,7 @@ def _nested_unrepresented_changes(
         ) -> None:
             if base_record is None or candidate_record is None:
                 record = candidate_record if base_record is None else base_record
+                assert record is not None  # one side is non-None by the guard above
                 residual = _residual_members(record, leaves)
                 if residual:
                     changes.append(
