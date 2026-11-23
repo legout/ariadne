@@ -795,7 +795,7 @@ def migrate_project(project: str | Path) -> dict:
     if active is not None:
         revision = active["candidate_revision"]
     else:
-        revision = current["commit"] if current is not None else proposals._current_head(root)
+        revision = draft.first_write_base(root)  # incl. the approved source baseline
     if revision is None:
         raise MigrationError(f"{root}: no commits to migrate from")
     files = _read_revision(root, revision)
@@ -821,7 +821,7 @@ def migrate_project(project: str | Path) -> dict:
     # spec 0040 §3.3: migrate writes into the one active draft (superseding spec 0039
     # §7.1's own proposal); a candidate that moved since the pin refuses (compare-and-set).
     result = draft.apply_migration(
-        root, expected, writes, tuple(deletes), base_revision=None if active else revision
+        root, expected, writes, tuple(deletes), expect_base=None if active else revision
     )
     return {
         "status": "draft",

@@ -600,3 +600,47 @@ def test_migrate_refuses_when_the_draft_moved_after_the_pin(tmp_path, monkeypatc
     monkeypatch.setattr(migrate, "convert_documents", convert_then_edit)
     with pytest.raises(ValueError, match="stale"):
         migrate.migrate_project(project)
+
+
+def test_migrate_with_no_draft_builds_on_the_approved_source_baseline(tmp_path):
+    """Finding 4 (second pass): with no slot the first write builds on the REAL first-write
+    base — the approved source baseline included — so the converted candidate keeps an
+    approved registry change instead of forcing the served/HEAD revision over it."""
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    head = _git(project, "rev-parse", "HEAD").strip()
+    registry = (project / "ariadne.yaml").read_text(encoding="utf-8")
+    (project / "ariadne.yaml").write_text(registry + "\n# approved source baseline marker\n")
+    _git(project, "add", "ariadne.yaml")
+    _git(project, "commit", "-q", "-m", "baseline with an approved registry change")
+    baseline = _git(project, "rev-parse", "HEAD").strip()
+    assert baseline != head
+    draft.set_source_baseline(project, baseline)
+    assert draft.first_write_base(project) == baseline
+
+    result = migrate.migrate_project(project)
+
+    kept = _git(project, "show", f"{result['revision']}:ariadne.yaml")
+    assert "approved source baseline marker" in kept
+
+
+def test_migrate_refuses_when_the_first_write_base_moves_while_converting(tmp_path, monkeypatch):
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    real = migrate.convert_documents
+
+    def convert_then_a_baseline_lands(files):
+        (project / "ariadne.yaml").write_text(
+            (project / "ariadne.yaml").read_text(encoding="utf-8") + "\n# landed meanwhile\n"
+        )
+        _git(project, "add", "ariadne.yaml")
+        _git(project, "commit", "-q", "-m", "a source approval landed")
+        draft.set_source_baseline(project, _git(project, "rev-parse", "HEAD").strip())
+        return real(files)
+
+    monkeypatch.setattr(migrate, "convert_documents", convert_then_a_baseline_lands)
+    with pytest.raises(ValueError, match="no longer the base"):
+        migrate.migrate_project(project)
+    assert draft.status(project) is None  # nothing was written

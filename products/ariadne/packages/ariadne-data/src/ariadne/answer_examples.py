@@ -272,10 +272,11 @@ def save_candidate_example(submission: Any, project: str | Path, base_revision: 
     record = _normalize_submission(submission)
     active = draft.status(project)
     expected = None if active is None else (active["generation"], active["candidate_revision"])
+    first_base = None if active is not None else draft.first_write_base(project)
     selected_revision = (
         active["candidate_revision"]
         if active is not None
-        else proposals._validate_revision(project, base_revision)
+        else proposals._validate_revision(project, first_base or base_revision)
     )
     # Preserve captured provenance; a candidate cannot relabel the reader's pin.
     record["citations"] = []
@@ -333,7 +334,7 @@ def save_candidate_example(submission: Any, project: str | Path, base_revision: 
     ]
     # one compare-and-set write: a stale pin refuses, a refused first write leaves no draft
     try:
-        written = draft.edit_pages(project, expected, pages)
+        written = draft.edit_pages(project, expected, pages, expect_base=first_base)
     except Exception as exc:
         if active is None or isinstance(exc, ValueError):
             # a refused FIRST write leaves no draft behind, and a refusal wrote nothing:

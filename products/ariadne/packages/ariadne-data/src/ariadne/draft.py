@@ -146,6 +146,15 @@ def _default_base(project: Path) -> str | None:
     return commit
 
 
+def first_write_base(project: str | Path) -> str | None:
+    """The revision the NEXT first write would build on: the approved source baseline when
+    it still descends from the served revision, else the served revision, else HEAD (None for
+    a repository without commits). Callers that read before writing pin THIS value and pass it
+    as ``expect_base``; ``mutate`` re-derives it under the project lock and refuses a move."""
+    project = Path(project).resolve()
+    return _default_base(project) or _served_revision(project) or proposals._current_head(project)
+
+
 def _served_revision(project: Path) -> str | None:
     from ariadne import admission  # lazy: admission imports proposals at load
 
@@ -270,6 +279,7 @@ def mutate(
     *,
     needs_fresh=False,
     base_revision: str | None = None,
+    expect_base: str | None = None,
 ) -> tuple[Any, dict]:
     """Run ``op(proposal, candidate_revision)`` against the draft under the project
     lock, compare-and-set on ``expected``. ``expected=None`` creates the draft first
@@ -290,6 +300,12 @@ def mutate(
         active = _check_expected(slot_before, expected)
         created: str | None = None
         if active is None:
+            if expect_base is not None and first_write_base(project) != expect_base:
+                raise ValueError(
+                    "the base this write was prepared against is no longer the base a new draft "
+                    "would build on (a release or source approval landed meanwhile) — nothing "
+                    "was written; repeat the operation"
+                )
             started = proposals.start_proposal(
                 project, base_revision=base_revision or _default_base(project), _lock_held=True
             )
@@ -359,13 +375,16 @@ def edit_artifact(
     return {**result, "draft": view}
 
 
-def edit_pages(project: str | Path, expected: Expected, pages: list) -> dict:
+def edit_pages(
+    project: str | Path, expected: Expected, pages: list, *, expect_base: str | None = None
+) -> dict:
     """One complete native knowledge-page batch into the draft."""
     project = Path(project).resolve()
     result, view = mutate(
         project,
         expected,
         lambda proposal, revision: proposals.edit_page_batch(project, proposal, revision, pages),
+        expect_base=expect_base,
     )
     return {**result, "draft": view}
 
@@ -376,7 +395,7 @@ def apply_migration(
     writes: dict[str, str],
     deletes: tuple[str, ...],
     *,
-    base_revision: str | None = None,
+    expect_base: str | None = None,
 ) -> dict:
     """The migration commit (spec 0039 §7) written into the active draft."""
     project = Path(project).resolve()
@@ -387,7 +406,7 @@ def apply_migration(
         lambda proposal, revision: proposals.migration_commit(
             project, proposal, revision, writes, deletes
         ),
-        base_revision=base_revision,
+        expect_base=expect_base,
     )
     return {**result, "draft": view}
 

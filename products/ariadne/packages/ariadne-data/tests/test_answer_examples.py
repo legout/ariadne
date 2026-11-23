@@ -910,3 +910,33 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
     assert validated_b["ok"] is False
     assert any("8192-byte bound" in e for e in validated_b["errors"]), validated_b
     assert not any("missing structured arguments" in e for e in validated_b["errors"])
+
+
+def test_a_save_prepared_against_one_base_refuses_when_the_first_write_base_moves(
+    tmp_path, monkeypatch, capsys
+):
+    """Finding 4 (second pass): with no active draft the save pins the first-write base it
+    checked citations against; if another approval moves it before the write, the save
+    refuses instead of writing into the newer base."""
+    from ariadne import answer_examples, draft
+
+    root, _api, _review = _example_release(tmp_path / "project")
+    assert draft.status(root) is None
+    real = answer_examples._verify_citation
+    moved = {"done": False}
+
+    def verify_then_move(proj, revision, ref):
+        out = real(proj, revision, ref)
+        if not moved["done"]:
+            moved["done"] = True
+            monkeypatch.setattr(draft, "first_write_base", lambda *_a, **_k: "0" * 40)
+        return out
+
+    monkeypatch.setattr(answer_examples, "_verify_citation", verify_then_move)
+    submission = _submission(_SMALL_RESULT)
+    submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
+    capsys.readouterr()
+    assert mcp_save(root, submission) == 1
+    monkeypatch.undo()
+    assert "no longer the base" in json.loads(capsys.readouterr().err)["error"]["message"]
+    assert draft.status(root) is None  # nothing was written
