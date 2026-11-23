@@ -164,8 +164,9 @@ def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict
     previous: dict[str, tuple[dict, dict]] = {}
     try:
         grants = authoring_sources._load_grants(project)
-    except authoring_sources.SourceApprovalPending:
-        grants = []  # a display never crashes on the journal; the prompt itself refuses below
+    except authoring_sources.SourceApprovalPending as exc:
+        # incomplete prior identities must never be shown as NEW: report it and do not prompt
+        raise ApprovalRefused(str(exc)) from exc
     for grant in grants:
         if grant["source"]["name"] in names:
             own = {}
@@ -214,6 +215,22 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
     if not ask(stdin, stdout, "Grant read access for authoring to these exact sources?"):
         raise ApprovalRefused("refused at the prompt — no grant was written")
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        # finish any interrupted approval FIRST (before the pin recheck and the live checks): an
+        # unresolved journal is the only rollback record and must never be replaced
+        try:
+            draft.recover(project)
+        except BaseException as exc:
+            raise ApprovalRefused(
+                "not approved; recovery pending — a previous source approval could not be "
+                "recovered; run 'ariadne draft status' once the cause is fixed. "
+                f"Cause: {exc}"
+            ) from exc
+        if draft.source_txn_pending(project):
+            raise ApprovalRefused(
+                "not approved; recovery pending — a previous source approval is still "
+                "unresolved (its commit could not be confirmed); nothing was changed; run "
+                "'ariadne draft status' to retry"
+            )
         # recheck the displayed generation, revision AND resolved identity under the lock
         current = draft._load_slot(project)
         if (
@@ -245,8 +262,8 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         # all three files back; after it everything is cleanup. grants.lock (taken after
         # project.lock) is held from the journal until the commit or the rollback is complete.
         with draft.grants_lock(project):
-            draft.begin_source_txn(project)
             try:
+                draft.begin_source_txn(project)  # journal creation is inside the protected block
                 draft.set_source_baseline(project, view["candidate_revision"])
                 draft.consume(project, record["id"])
                 result = authoring_sources.record_grants(
@@ -259,11 +276,24 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                     _grants_held=True,
                 )
                 draft.commit_source_txn(project)  # THE commit point
+            except draft.UnresolvedSourceTxn:
+                raise  # never touch (let alone roll back) a journal that is not ours
+            except draft.CommitSyncPending as pending:
+                raise ApprovalRefused(
+                    "recovery pending — the approval was renamed to its commit marker but the "
+                    "directory sync did not complete, so it is NOT confirmed: reads stay refused "
+                    "and the next 'ariadne draft' command retries the sync (the approval then "
+                    f"stands). Cause: {pending}"
+                ) from pending
             except BaseException as failure:
-                if (project / draft.TXN_COMMITTED_REL).exists():
-                    raise  # cannot happen: the commit's own failures are handled inside it
                 try:
-                    draft.rollback_source_txn(project)
+                    draft.rollback_source_txn(project)  # also removes a journal this attempt made
+                except draft.JournalRemnant as remnant:
+                    raise ApprovalRefused(
+                        "not approved (all three files were restored), but the journal remnant "
+                        "could not be removed: reads stay refused until it is removed — run "
+                        f"'ariadne draft status' to retry. Cause: {remnant}"
+                    ) from failure
                 except BaseException:
                     raise ApprovalRefused(
                         "not approved; recovery pending — the rollback of an interrupted source "
@@ -274,8 +304,8 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 raise
             try:
                 draft.end_source_txn(project)  # post-commit cleanup
-            except BaseException:
-                pass  # healed by the next draft operation
+            except Exception:
+                pass  # reads wait until the next operation retries the cleanup
     return {
         "approved": "sources",
         "sources": [e["name"] for e in new],

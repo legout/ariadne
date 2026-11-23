@@ -408,6 +408,9 @@ def _load_grants(project: Path, *, _held: bool = False) -> list[dict]:
     project = Path(project)
     if _held:
         return _read_grants_file(project)
+    if not (project / proposals.ARIADNE_STATE_DIR).is_dir():
+        return []  # an absent state directory has no grants and no pending journal; diagnosis
+        # never bootstraps state (no lock file is created)
     with draft.grants_lock(project):
         if draft.source_txn_pending(project):
             raise SourceApprovalPending(_PENDING_MESSAGE)

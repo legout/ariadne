@@ -26,6 +26,7 @@ Rules enforced here:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import stat
@@ -492,21 +493,43 @@ def grants_lock(project: str | Path):
 
 
 def source_txn_pending(project: str | Path) -> bool:
-    """True while a source-approval journal exists (a reader must refuse; see item 7)."""
-    return (Path(project) / TXN_REL).exists()
+    """True while a source-approval journal OR committed marker exists: a reader must refuse
+    (item 7 and the pending rule of §3.4.2.5) and never fall back to the grants file."""
+    project = Path(project)
+    return (project / TXN_REL).exists() or (project / TXN_COMMITTED_REL).exists()
+
+
+class UnresolvedSourceTxn(ValueError):
+    """A previous source approval is unresolved (journal or marker present): it must be
+    recovered first; a journal is never replaced."""
+
+
+class CommitSyncPending(OSError):
+    """The commit rename happened but its directory sync failed or was interrupted: the
+    approval is PENDING until confirmed (spec 0040 §3.4.2.5): no rollback, marker kept, readers
+    refused, the next project-lock holder retries the sync."""
+
+
+class JournalRemnant(OSError):
+    """All three files were restored and synced, but the journal could not be removed: the
+    approval failed; reads stay refused until the remnant is removed."""
 
 
 def _read_bytes(path: Path) -> str | None:
-    return path.read_text(encoding="utf-8") if path.is_file() else None
+    """The file's exact bytes as base64 (the journal round-trips bytes, never normalized text)."""
+    return base64.b64encode(path.read_bytes()).decode("ascii") if path.is_file() else None
 
 
 def begin_source_txn(project: Path) -> None:
     """Journal a source approval BEFORE its three state changes. The journal keeps the
-    previous bytes of the grants, the source baseline and the draft slot. The caller holds the
-    project lock AND ``grants.lock`` until the commit or the rollback is complete. The approval
-    is committed exactly when the journal is renamed to ``source_txn.committed`` and the
-    directory is synced (:func:`commit_source_txn`); nothing before that counts."""
-    (project / TXN_COMMITTED_REL).unlink(missing_ok=True)  # stale cleanup of an old approval
+    previous BYTES of the grants, the source baseline and the draft slot. The caller holds the
+    project lock AND ``grants.lock`` until the commit or the rollback is complete, and has run
+    :func:`recover` first: an unresolved journal or marker is never replaced (refused here)."""
+    if source_txn_pending(project):
+        raise UnresolvedSourceTxn(
+            "a previous source approval is unresolved — run 'ariadne draft status' to recover "
+            "it first; nothing was changed"
+        )
     _store_json(
         project / TXN_REL,
         {
@@ -519,28 +542,48 @@ def begin_source_txn(project: Path) -> None:
 
 def commit_source_txn(project: Path) -> None:
     """THE commit point: rename the journal to the committed marker, then sync the directory.
-    A failure of the rename is before the commit point (the caller rolls back); a directory-sync
-    failure after the rename is post-commit — the marker is visible and the approval stands."""
+    A failure of the rename is before the commit point (the caller rolls back). A failed or
+    interrupted directory sync leaves the approval PENDING: the marker stays, nothing is rolled
+    back or swallowed, and :class:`CommitSyncPending` is raised."""
     os.replace(project / TXN_REL, project / TXN_COMMITTED_REL)
     try:
         proposals._fsync_path((project / TXN_REL).parent)
-    except OSError:
-        pass  # post-commit: recovery or a crash re-derives the state from the single marker file
+    except BaseException as exc:  # an interruption takes the same pending path
+        raise CommitSyncPending(f"the commit directory sync did not complete: {exc!r}") from exc
 
 
 def end_source_txn(project: Path) -> None:
-    """Post-commit cleanup: remove the committed marker."""
+    """Post-commit cleanup: remove the committed marker, then sync (best effort)."""
     (project / TXN_COMMITTED_REL).unlink(missing_ok=True)
+    try:
+        proposals._fsync_path((project / TXN_COMMITTED_REL).parent)
+    except OSError:
+        pass
 
 
-def _restore(path: Path, text: str | None) -> None:
-    if text is None:
+def _confirm_committed(project: Path) -> None:
+    """Recovery of a committed marker (caller holds both locks): retry the directory sync. On
+    success the approval stands: remove the marker (cleanup, errors swallowed and retried by a
+    later operation) so readers are admitted again. On failure the marker stays: the approval
+    stays pending and reads stay refused."""
+    try:
+        proposals._fsync_path((project / TXN_COMMITTED_REL).parent)
+    except OSError:
+        return
+    try:
+        end_source_txn(project)
+    except OSError:
+        pass
+
+
+def _restore(path: Path, data: bytes | None) -> None:
+    if data is None:
         path.unlink(missing_ok=True)
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
@@ -549,13 +592,17 @@ def _restore(path: Path, text: str | None) -> None:
 def rollback_source_txn(project: Path) -> None:
     """Restore the grants, the baseline and the slot to the journaled bytes (identical bytes:
     idempotent), then remove the journal. The caller holds the project lock and ``grants.lock``.
-    A failure leaves the journal in place so the next project-lock holder finishes the job."""
+    A failure leaves the journal in place so the next project-lock holder finishes the job; a
+    failure only of the journal's own removal is :class:`JournalRemnant` (restoration durable)."""
     journal = project / TXN_REL
     if not journal.is_file():
         return
     try:
         txn = json.loads(journal.read_text(encoding="utf-8"))
-        previous = {k: txn[k] for k in ("grants", "baseline", "slot")}
+        previous = {
+            k: (None if txn[k] is None else base64.b64decode(txn[k]))
+            for k in ("grants", "baseline", "slot")
+        }
     except (OSError, ValueError, KeyError, TypeError):
         raise ValueError(
             f"{journal}: unreadable approval journal — this needs human resolution"
@@ -563,9 +610,15 @@ def rollback_source_txn(project: Path) -> None:
     _restore(project / GRANTS_REL, previous["grants"])
     _restore(project / BASELINE_REL, previous["baseline"])
     _restore(project / DRAFT_REL, previous["slot"])
-    proposals._fsync_path(journal.parent)
-    journal.unlink()
-    proposals._fsync_path(journal.parent)
+    proposals._fsync_path(journal.parent)  # the three restored states are durable here
+    try:
+        journal.unlink()
+    except OSError as exc:
+        raise JournalRemnant(f"the journal could not be removed: {exc}") from exc
+    try:
+        proposals._fsync_path(journal.parent)  # deletion cleanup only
+    except OSError:
+        pass
 
 
 def recover(project: Path) -> None:
@@ -573,16 +626,18 @@ def recover(project: Path) -> None:
 
     - A source-approval journal (``source_txn.json``) means the approval never committed: the
       grants, baseline and slot return to their journaled bytes and the journal is removed. A
-      ``source_txn.committed`` marker is only removed (the grant stays effective).
+      ``source_txn.committed`` marker: the directory sync is retried; on success the marker is
+      removed (the grant stays effective), on failure the approval stays pending.
     - A calculation approval whose release is already serving but whose generation was never
       retired (a failure after ``current.json`` was published) retires it now."""
     from ariadne import admission  # lazy: admission imports this module
 
-    if (project / TXN_REL).exists() or (project / TXN_COMMITTED_REL).exists():
+    if source_txn_pending(project):
         with grants_lock(project):  # project.lock (held by the caller) first, then grants.lock
             if (project / TXN_REL).exists():
                 rollback_source_txn(project)  # uncommitted: undo all three files
-            end_source_txn(project)  # committed (or leftover) marker: cleanup only
+            elif (project / TXN_COMMITTED_REL).exists():
+                _confirm_committed(project)  # committed: retry the sync; success admits readers
     slot = _load_slot(project)
     if slot is not None and slot["state"] == "active":
         served = admission.load_current(project)

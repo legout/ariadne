@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -264,6 +265,14 @@ def test_status_never_opens_compiles_or_connects_and_changes_no_files(
     assert report["project"]["admission"]["state"] == "valid"
     assert report["ready"] is True  # reported from metadata alone
     assert tree_hash(project) == before  # no project file changed
+
+    # an empty / uninitialized directory: diagnosis never bootstraps state (no .ariadne, no locks)
+    empty = tmp_path / "empty-cwd"
+    empty.mkdir()
+    subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    status_json(capsys, "--project", str(empty))
+    assert not (empty / ".ariadne").exists()
+    assert tree_hash(empty) == tree_hash(empty)  # and nothing else appeared
 
 
 # ------------------------------------------------------------------- [AC5]
@@ -617,3 +626,25 @@ def test_an_active_draft_shows_its_recovery_command_while_a_release_is_serving(t
     assert report["ready"] is True  # the served release still serves
     steps = " ".join(report["next_steps"])
     assert "ariadne approve" in steps and "new sources first" in steps
+
+
+def test_a_stuck_source_approval_rollback_is_reported_as_pending_recovery(
+    tmp_path, capsys, monkeypatch
+):
+    """Item 5: a journal that cannot be rolled back shows as a SOURCE APPROVAL pending recovery
+    with `ariadne draft status` — not as a generic unreadable draft."""
+    from ariadne import draft
+
+    project = admitted_project(tmp_path)
+    draft.begin_source_txn(project)  # an interrupted approval's journal
+    monkeypatch.setattr(
+        draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck"))
+    )
+    report = status_json(capsys, "--project", str(project))
+    (entry,) = report["work_pending"]["proposals"]
+    assert (
+        entry["state"] == "source_approval_pending" and "ariadne draft status" in entry["command"]
+    )
+    steps = " ".join(report["next_steps"])
+    assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
+    assert "unreadable" not in steps

@@ -114,6 +114,8 @@ def _entries_view(entries: list[dict] | None) -> list[dict]:
 def _approvals(root: Path) -> dict | None:
     try:
         return {g["source"]["name"]: g for g in authoring_sources._load_grants(root)}
+    except authoring_sources.SourceApprovalPending:
+        return None  # reported as a pending source approval by _managed_proposals
     except Exception:
         return None
 
@@ -164,9 +166,22 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
     """Pending work = the ONE active draft (spec 0040 §3.3). Consumed and discarded
     proposals are history, never pending."""
     pending: list[dict] = []
+    if not (root / proposals.ARIADNE_STATE_DIR).is_dir():
+        return pending  # diagnosis never bootstraps state: no directory, no draft, no locks
     try:
         view = draft.status(root)
     except Exception as exc:
+        if draft.source_txn_pending(root):
+            # a stuck rollback or unconfirmed commit: a source approval pending recovery, not
+            # a generic unreadable draft
+            return [
+                {
+                    "id": "draft",
+                    "state": "source_approval_pending",
+                    "reason": str(exc),
+                    "command": f"ariadne draft status --project {root}",
+                }
+            ]
         return [{"id": "draft", "state": "unreadable", "reason": str(exc)}]
     if view is None:
         return pending
@@ -340,7 +355,12 @@ def _proposal_steps(root: str, pending: list[dict]) -> list[str]:
     """Next steps for the one active draft — only commands that exist (spec 0040 §3.1.2)."""
     steps = []
     for entry in pending:
-        if entry.get("state") == "unreadable":
+        if entry.get("state") == "source_approval_pending":
+            steps.append(
+                f"a source approval is pending recovery — run `{entry.get('command')}` to "
+                f"recover it ({entry.get('reason')})"
+            )
+        elif entry.get("state") == "unreadable":
             steps.append(
                 f"human resolution required: the draft is unreadable ({entry.get('reason')})"
             )

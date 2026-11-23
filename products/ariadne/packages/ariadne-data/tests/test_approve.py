@@ -504,9 +504,11 @@ def test_a_journal_cleanup_failure_after_the_grant_is_not_a_failed_approval(tmp_
     monkeypatch.undo()
     assert outcome["approved"] == "sources"
     resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
-    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
-    assert draft.status(project) is None  # recovery drops the marker; the grant survives
+    # the marker is still there: reads wait until the next operation retries the cleanup
+    assert authoring_sources.approval_state(project, resolved, digest)["state"] == "in-progress"
+    assert draft.status(project) is None  # recovery confirms and drops the marker
     assert not (project / draft.TXN_COMMITTED_REL).exists()
+    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
 
 
 def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calculation_approval(
@@ -810,14 +812,16 @@ def _fault(monkeypatch, project, boundary):
         raise OSError(msg)
 
     if boundary == "journal write":
-        real_store = draft._store_json
-        monkeypatch.setattr(
-            draft,
-            "_store_json",
-            lambda path, doc: (
-                boom("journal") if path.name == "source_txn.json" else real_store(path, doc)
-            ),
-        )
+        fired = {"done": False}
+
+        def jsync(path):
+            # the journal store's own directory sync: the journal NAME is already installed
+            if not fired["done"] and (project / draft.TXN_REL).exists():
+                fired["done"] = True
+                boom("journal sync")
+            return real_sync(path)
+
+        monkeypatch.setattr(proposals, "_fsync_path", jsync)
     elif boundary == "baseline write":
         monkeypatch.setattr(draft, "set_source_baseline", lambda *_a, **_k: boom("baseline"))
     elif boundary == "draft consume":
@@ -891,18 +895,70 @@ def test_a_fault_before_the_commit_point_fails_and_restores_all_three_files(
     assert _granted(project, result) is False
 
 
-@pytest.mark.parametrize("boundary", ["commit directory sync", "marker removal"])
-def test_a_fault_after_the_commit_point_reports_success_and_heals_on_the_next_operation(
-    tmp_path, monkeypatch, boundary
-):
+def test_a_marker_removal_failure_after_the_commit_still_reports_success(tmp_path, monkeypatch):
+    """After a SUCCESSFUL commit sync the marker removal is cleanup: success is reported; reads
+    wait until the next operation retries the cleanup (owner rule, 0040 §3.4.2.5)."""
     project, _api, result = _project_with_new_source(tmp_path)
-    _fault(monkeypatch, project, boundary)
+    _fault(monkeypatch, project, "marker removal")
     outcome, _shown = _run(project, Tty())
     monkeypatch.undo()
-    assert outcome["approved"] == "sources"  # reported success
-    assert (project / GRANTS).exists()  # the grant is effective and durable
-    assert draft.status(project) is None  # the next operation heals the slot ...
-    assert not (project / draft.TXN_COMMITTED_REL).exists()  # ... and removes the marker
+    assert outcome["approved"] == "sources" and (project / GRANTS).exists()
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    assert authoring_sources.approval_state(project, resolved, digest)["state"] == "in-progress"
+    assert draft.status(project) is None and not (project / draft.TXN_COMMITTED_REL).exists()
+    assert _granted(project, result) is True
+
+
+@pytest.mark.parametrize("failure", [OSError("commit sync failed"), KeyboardInterrupt()])
+def test_a_failed_or_interrupted_commit_sync_is_pending_until_the_next_holder_confirms_it(
+    tmp_path, monkeypatch, capsys, failure
+):
+    """The owner rule: a failed (or interrupted) directory sync after the commit rename leaves the
+    approval PENDING — marker kept, no rollback, readers refused; a failure exits non-zero through
+    the real CLI with "recovery pending"; the next project-lock holder retries the sync: success
+    confirms the approval, failure keeps it pending."""
+    from ariadne.cli import main as cli
+
+    project, _api, result = _project_with_new_source(tmp_path)
+    real_sync = proposals._fsync_path
+    state = {"fail": True, "first": True}
+
+    def sync(path):
+        if state["fail"] and (project / draft.TXN_COMMITTED_REL).exists():
+            if state["first"]:  # the commit sync itself: failed or interrupted
+                state["first"] = False
+                raise failure
+            raise OSError("sync still failing")  # the recovery retry: a plain failure
+        return real_sync(path)
+
+    monkeypatch.setattr(proposals, "_fsync_path", sync)
+    if isinstance(failure, KeyboardInterrupt):
+        # an interruption during the sync takes the same pending path (gate closed, no rollback)
+        with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
+            _run(project, Tty())
+    else:
+        with monkeypatch.context() as m:
+            m.setattr(sys, "stdin", Tty("yes\n"))
+            out_tty = io.StringIO()
+            out_tty.isatty = lambda: True  # type: ignore[method-assign]
+            m.setattr(sys, "stdout", out_tty)
+            err = io.StringIO()
+            m.setattr(sys, "stderr", err)
+            code = cli(["approve", "--project", str(project)])
+        assert code == 1 and "recovery pending" in err.getvalue()
+    assert (project / draft.TXN_COMMITTED_REL).exists()  # marker kept, no rollback
+    assert (project / GRANTS).exists()
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    with pytest.raises(authoring_sources.SourceApprovalPending):  # a read is refused
+        authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
+
+    draft.status(project)  # the next holder retries the sync: it fails again -> still pending
+    assert (project / draft.TXN_COMMITTED_REL).exists()
+    assert authoring_sources.approval_state(project, resolved, digest)["state"] == "in-progress"
+
+    state["fail"] = False
+    draft.status(project)  # the retry succeeds: the approval stands, readers are admitted
+    assert not (project / draft.TXN_COMMITTED_REL).exists()
     assert _granted(project, result) is True
 
 
@@ -980,3 +1036,109 @@ def test_a_crash_with_the_grants_already_replaced_is_rolled_back_by_the_next_hol
     assert draft.status(project) is not None  # the next lock holder restores all three files
     assert _state_bytes(project) == before and not (project / draft.TXN_REL).exists()
     assert _granted(project, result) is False  # no grant is effective
+
+
+# ------------------------------------- journal edges, second approver, bytes (r1fix5 items 2-4)
+
+
+def test_a_journal_removal_failure_after_a_full_restore_is_a_failed_approval_not_pending(
+    tmp_path, monkeypatch
+):
+    """Item 2: once the three files are restored and synced, a failure removing the journal is
+    deletion cleanup: the approval is reported failed (never 'recovery pending') and reads stay
+    refused until the remnant is removed."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+    real_unlink = Path.unlink
+
+    def unlink(self, *a, **k):
+        if self.name == "source_txn.json":
+            raise OSError("unlink refused")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    with pytest.raises(approve.ApprovalRefused, match="journal remnant") as raised:
+        _run(project, Tty())
+    assert "recovery pending" not in str(raised.value)
+    assert _state_bytes(project)["grants"] == before["grants"]  # restored and durable
+    assert _state_bytes(project)["slot"] == before["slot"]
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    with pytest.raises(authoring_sources.SourceApprovalPending):  # reads stay refused
+        authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
+    monkeypatch.undo()
+    assert draft.status(project) is not None and not (project / draft.TXN_REL).exists()
+
+
+def test_an_unlink_error_on_a_committed_marker_never_breaks_draft_status(tmp_path, monkeypatch):
+    """Item 2: post-commit garbage that cannot be removed does not make `draft status` (or an MCP
+    draft lookup) fail and does not hide the draft state; a later operation retries it."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: None)  # leave the marker
+    _run(project, Tty())
+    monkeypatch.undo()
+    real_unlink = Path.unlink
+
+    def unlink(self, *a, **k):
+        if self.name == "source_txn.committed":
+            raise OSError("unlink refused")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert draft.status(project) is None  # no exception; the committed draft state is not hidden
+    assert (project / draft.TXN_COMMITTED_REL).exists()
+    monkeypatch.undo()
+    assert draft.status(project) is None and not (project / draft.TXN_COMMITTED_REL).exists()
+    assert _granted(project, result) is True
+
+
+def test_a_second_approver_recovers_the_first_journal_and_never_takes_its_baseline(
+    tmp_path, monkeypatch
+):
+    """Item 3 (prompt-race seam, no second process): operator 1 leaves an unresolved journal
+    (baseline written, consume and rollback failed); operator 2, already at the prompt for the
+    same generation, must recover it FIRST — never replace the only rollback journal — so when
+    operator 2 also fails, the unapproved baseline of operator 1 is not left behind."""
+    project, _api, _result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+
+    def operator_one_fails_and_leaves_a_journal():
+        with monkeypatch.context() as m:
+            m.setattr(draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck")))
+            with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
+                _run(project, Tty())
+        assert (project / draft.TXN_REL).exists() and (project / draft.BASELINE_REL).exists()
+
+    with pytest.raises(OSError, match="consume"):
+        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    monkeypatch.undo()
+    assert _state_bytes(project) == before  # no unapproved baseline survived
+    assert not (project / draft.TXN_REL).exists()
+    assert not (project / draft.BASELINE_REL).exists()
+
+
+def test_the_journal_round_trips_bytes_including_crlf(tmp_path, monkeypatch):
+    """Item 4: a rollback restores the grants and baseline files byte for byte — a CRLF file
+    stays CRLF (the journal stores bytes, not normalized text)."""
+    project, _api, _result = _project_with_new_source(tmp_path)
+    head = proposals._current_head(project)
+    (project / GRANTS).write_bytes(b'{"version": 1,\r\n "grants": []}\r\n')
+    (project / draft.BASELINE_REL).write_bytes(f'{{"commit":\r\n "{head}"}}\r\n'.encode())
+    before = _state_bytes(project)
+    assert b"\r\n" in (before["grants"] or b"")
+    assert b"\r\n" in (before["baseline"] or b"")
+    _fault(monkeypatch, project, "draft consume")
+    with pytest.raises(OSError, match="consume"):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert _state_bytes(project) == before  # exact bytes, CRLF included
+
+
+def test_previous_identities_refuse_to_show_new_instead_of_changed_when_a_journal_appears(tmp_path):
+    """Item 5: a journal appearing between classification and rendering must not silently turn a
+    CHANGED source into NEW: the display refuses with the pending message and does not prompt."""
+    project, _api, _result = _project_with_new_source(tmp_path)
+    draft.begin_source_txn(project)
+    with pytest.raises(approve.ApprovalRefused, match="in progress or was interrupted"):
+        approve._previous_identities(project, {"extra"})
