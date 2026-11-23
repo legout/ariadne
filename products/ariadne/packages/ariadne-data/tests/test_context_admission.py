@@ -37,14 +37,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from integration.tests.admit_support import admit_cli  # noqa: E402
 from integration.tests.legacy_cli_support import main as cli  # noqa: E402
 
+from ariadne import context as context_module  # noqa: E402
 from ariadne import (  # noqa: E402
-    admission,
     proposals,
 )
-from ariadne import context as context_module  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.context import (  # noqa: E402
     _canonical_digest,
@@ -56,6 +54,7 @@ from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     NATIVE_METRIC_PAGE,
     UNSAFE_GRAIN_MODEL_YML,
+    admit_library,
     approved,
     branch_of,
     complete_bundle_project,
@@ -426,42 +425,16 @@ def admit(
     destination: Path | None = None,
     expected: str = "none",
 ) -> int:
-    """The human admission journey. An INTEGRATED candidate activates through
-    the composite preview the operator confirms (spec0032 §10): pass
-    ``destination`` to run that preview→confirm flow; without it the call is
-    the plain display/admission path."""
-    argv = [
-        "--project",
-        str(project),
-        "--proposal",
-        review["proposal"],
-        "--revision",
-        review["revision"],
-        "--reviewed-digest",
-        review["review_digest"],
-        *(f"--confirm-mapping={selection}" for selection in confirm_mapping),
-    ]
-    if destination is not None:
-        composite = admission.overall_review(
-            project,
-            review["proposal"],
-            review["revision"],
-            review["review_digest"],
-            destination=str(destination),
-            expected_current=expected,
-            scope=["public"],
-            confirm_mappings=list(confirm_mapping),
-        )
-        argv += [
-            "--context-destination",
-            str(destination),
-            "--context-expected-current",
-            expected,
-            f"--overall-digest={composite['digest']}",
-        ]
-    if confirm:
-        argv.append("--confirm")
-    return admit_cli(argv)
+    """The admission journey through the supported library calls (``admit_library``): the
+    composite preview the operator confirms (spec0032 §10), then the pinned activation."""
+    return admit_library(
+        project,
+        review,
+        confirm=confirm,
+        confirm_mappings=confirm_mapping,
+        destination=destination,
+        expected_current=expected,
+    )
 
 
 def mapping_view(result: dict, representation: str, mapping_id: str) -> dict:
@@ -782,8 +755,6 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     anything."""
     from lumio_wiki.git_authoring import GitAuthoringError
 
-    from tests.test_git_admission import admit as composite_admit
-
     project, _api, review = admitted_candidate(tmp_path / "proj")
 
     for bad in (
@@ -792,18 +763,13 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
         "order-number:nope",
         "not-a-selection",
     ):
-        assert composite_admit(project, review, extra=("--confirm-mapping", bad)) == 1, bad
+        assert admit(project, review, confirm_mapping=(bad,)) == 1, bad
         error = json.loads(capsys.readouterr().err)
         assert "error" in error, bad
         assert not (project / CURRENT).exists()
 
     # the hypothesis refusal names the classification rule
-    assert (
-        composite_admit(
-            project, review, extra=("--confirm-mapping", "order-number:local-to-global-prefix")
-        )
-        == 1
-    )
+    assert admit(project, review, confirm_mapping=("order-number:local-to-global-prefix",)) == 1
     message = json.loads(capsys.readouterr().err)["error"]["message"]
     assert "hypothesis" in message and "asserted" in message
 

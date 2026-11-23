@@ -1114,7 +1114,7 @@ def _admit_registry_project(project: Path) -> None:
     assert validated["ok"] is True, validated["errors"]
     review = api.review_proposal(started["proposal"])
     destination = project.parent / f"{project.name}-published"
-    assert admit(project, review, extra=("--context-destination", str(destination))) == 0
+    assert admit(project, review, destination=destination) == 0
 
 
 def test_facade_over_sqlite_plus_parquet_registry(tmp_path, sqlite_db, duck):

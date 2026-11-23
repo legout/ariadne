@@ -31,6 +31,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -3566,3 +3567,84 @@ def test_observation_facts_carry_the_effective_source_binding():
         source_binding="a" * 64,
     )
     assert observations(same)["observed_at"] == bound_observations["observed_at"]
+
+
+def admit_library(
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    confirm_mappings: Sequence[str] = (),
+    destination: Path | str | None = None,
+    expected_current: str | None = None,
+    private_profile: str | None = None,
+    storage_profile: str | None = None,
+    reviewed_digest: str | None = None,
+    visibility: Sequence[str] = ("public",),
+) -> int:
+    """Fixture/engine admission through the SUPPORTED library calls (the same ones
+    ``ariadne approve`` makes): ``overall_review`` for the composite, then ``admit_revision``
+    pinned to the draft slot's generation and served base exactly as the approval adapter pins
+    them. Prints the JSON result to stdout, or one JSON error object to stderr, and returns
+    0/1 so the existing admission cases keep their shape. The real prompt/consent path is
+    proven separately through ``ariadne approve`` (tests/test_approve_pty.py)."""
+    from getpass import getuser
+
+    from ariadne import admission, draft
+
+    digest = reviewed_digest or review["review_digest"]
+    if expected_current is None:
+        current = admission.load_current(project)
+        expected_current = (
+            current["bound_release"]["knowledge"]["published_version"]
+            if current is not None and current.get("bound_release")
+            else "none"
+        )
+    destination = destination if destination is not None else project.parent / "published"
+    try:
+        composite = admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            digest,
+            destination=str(destination),
+            expected_current=expected_current,
+            scope=list(visibility),
+            confirm_mappings=list(confirm_mappings),
+            storage_profile=storage_profile,
+            private_profile=private_profile,
+        )
+        if not confirm:
+            print(json.dumps(composite))
+            return 0
+        slot = draft._load_slot(project)
+        pin = None
+        if (
+            slot is not None
+            and slot["state"] == "active"
+            and slot["proposal"] == review["proposal"]
+        ):
+            pin = {
+                "generation": slot["generation"],
+                "base_served_revision": slot["base_served_revision"],
+            }
+        result = admission.admit_revision(
+            project,
+            review["proposal"],
+            review["revision"],
+            digest,
+            confirmed_by=f"human:{getuser()}",
+            confirm_mappings=list(confirm_mappings),
+            overall_preview=composite,
+            confirmed_overall_digest=composite["digest"],
+            private_profile=private_profile,
+            draft_pin=pin,
+        )
+    except Exception as exc:
+        print(
+            json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(result))
+    return 0

@@ -29,7 +29,6 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -38,7 +37,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from integration.tests.admit_support import admit_cli  # noqa: E402
 
 from ariadne import admission as admission_module  # noqa: E402
 from ariadne import proposals  # noqa: E402
@@ -51,6 +49,7 @@ from tests.test_git_authoring import (  # noqa: E402
     NATIVE_POLICY_PAGE,
     NATIVE_POLICY_REL,
     UNSAFE_GRAIN_MODEL_YML,
+    admit_library,
     approved,
     branch_of,
     commit_native_document,
@@ -97,50 +96,30 @@ def admitted_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> t
     return review, {"started": started, "validated": validated}
 
 
-def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tuple default
-    project: Path, review: dict, *, confirm: bool = True, extra: Sequence[str] = ()
+def admit(
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    extra: Sequence[str] = (),
+    destination: Path | None = None,
 ) -> int:
-    # Spec0035 composite admission through the real CLI: the display call shows
-    # the composite preview; only re-running with --confirm and that preview's
-    # exact digest activates. The synthetic fixture operator publishes with
-    # public visibility to a stable destination OUTSIDE the project; the
-    # expected-current baseline is the currently admitted publication ('none'
-    # for the first) — a real compare-and-swap, never a fabricated pointer.
-    current = project / CURRENT
-    expected = (
-        json.loads(current.read_text(encoding="utf-8"))["bound_release"]["knowledge"][
-            "published_version"
-        ]
-        if current.exists()
-        else "none"
-    )
-    argv = [
-        "--project",
-        str(project),
-        "--proposal",
-        review["proposal"],
-        "--revision",
-        review["revision"],
-        "--reviewed-digest",
-        review["review_digest"],
-        "--context-destination",
-        str(project.parent / "published"),
-        "--context-expected-current",
-        expected,
-        "--visibility",
-        "public",
-        *extra,
-    ]
-    if not confirm:
-        return admit_cli(argv)  # display-only: the composite preview, no activation
-    preview = io.StringIO()
-    with redirect_stdout(preview):
-        code = admit_cli(argv)
-    if code != 0:
-        return code  # the real CLI refusal (its stderr) reaches the caller unchanged
-    return admit_cli(
-        [*argv, "--confirm", "--overall-digest", json.loads(preview.getvalue())["digest"]]
-    )
+    """Admission through the supported library calls (see ``admit_library``). ``extra`` keeps
+    the few option-shaped cases: ``--reviewed-digest X``, ``--context-private-profile P``,
+    ``--context-expected-current V``."""
+    options: dict = {}
+    items = list(extra)
+    while items:
+        flag = items.pop(0)
+        value = items.pop(0)
+        options[
+            {
+                "--reviewed-digest": "reviewed_digest",
+                "--context-private-profile": "private_profile",
+                "--context-expected-current": "expected_current",
+            }[flag]
+        ] = value
+    return admit_library(project, review, confirm=confirm, destination=destination, **options)
 
 
 def test_initial_proposal_refuses_unselected_knowledge_symlink_without_mutation(tmp_path):
@@ -316,14 +295,8 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     assert saved["candidate_revision"] != revision
     assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
     assert not (project / "staging" / "answer_examples").exists()
-    assert asyncio.run(fresh.search_examples("events")) == []
-    hits = asyncio.run(
-        fresh.search_examples(
-            "events",
-            proposal=saved["proposal"],
-            revision=saved["candidate_revision"],
-        )
-    )
+    # the served-or-active-draft read contract (spec 0040): the draft's own Example is found
+    hits = asyncio.run(fresh.search_examples("events"))
     assert hits and hits[0]["id"] == f"entity:{saved['id']}" and hits[0]["status"] == "draft"
     fresh.con.close()
 
