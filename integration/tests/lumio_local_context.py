@@ -606,6 +606,14 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     # the MCP tool's bounded refusal (its error mapping carries the message, not the code)
     assert "exceeds its byte ceiling" in refused["error"]["message"]
     assert "required content is never dropped" in refused["error"]["message"]
+    # the typed refusal and the exact configured bound, on the supported LIBRARY seam
+    from ariadne.discovery import DiscoveryRuntime
+
+    with pytest.raises(query_results.QueryResultError) as typed:
+        asyncio.run(DiscoveryRuntime.open_project(project).search_context("meridian"))
+    body = typed.value.refusal()
+    assert body["error"]["code"] == "result_byte_limit"
+    assert body["error"]["exhausted_bound"]["response_bytes"] == tightened
     config.write_text(original)
     assert library_cli("search_context", project, "meridian") == 0
     capsys.readouterr()
@@ -1307,6 +1315,10 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         assert code == 1 and not failure.out
         refused = json.loads(failure.err)
         assert "exceeds its byte ceiling" in refused["error"]["message"]
+        with pytest.raises(query_results.QueryResultError) as typed:
+            asyncio.run(DiscoveryRuntime.open_project(project).resolve_term("order number"))
+        assert typed.value.refusal()["error"]["code"] == "result_byte_limit"
+        assert typed.value.refusal()["error"]["exhausted_bound"]["response_bytes"] == under
         config.write_text(original)
         assert library_cli("resolve_term", project, "order number") == 0
         capsys.readouterr()

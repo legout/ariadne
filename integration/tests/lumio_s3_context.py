@@ -556,14 +556,22 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     # Refresh before both the wrong-current check and the later fault preview.
     # B's draft was consumed by its approval: re-review on a fresh live generation, which
     # holds exactly the served B revision
-    proposal_c = api.start_proposal()["proposal"]
+    started_c = api.start_proposal()
+    proposal_c = started_c["proposal"]
+    # the review needs the candidate's OWN validation evidence (B's belongs to B's proposal)
+    checked_c = api.validate_proposal(proposal_c, started_c["candidate_revision"])
+    assert checked_c["ok"] is True, checked_c["errors"]
     review_b = api.review_proposal(proposal_c)
-    assert review_b["revision"] == b_rev
+    assert review_b["revision"] == checked_c["revision"] == b_rev
     # Blocked expected state: the finite documented family is Core's
     # preview ValueError or the direct native GitAuthoringError guard; the
     # refused operation and the byte-identical descriptor are the oracle.
-    with pytest.raises((ValueError, GitAuthoringError)):
+    with pytest.raises((ValueError, GitAuthoringError)) as wrong_current:
         _s3_preview(project, review_b, "none")
+    # it must refuse for the INTENDED reason (the active version is not the expected one),
+    # never for missing validation evidence or any unrelated error
+    assert "active version" in str(wrong_current.value), str(wrong_current.value)
+    assert "validation" not in str(wrong_current.value).lower()
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
 
     # --- One controlled required-write/persistence failure at the Core
