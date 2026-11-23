@@ -24,7 +24,6 @@ from the fixture rows, never derived from runtime output.
 """
 
 import asyncio
-import io
 import json
 import os
 import sys
@@ -883,11 +882,11 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     started = api.start_proposal()
     approved(api, project, started)
 
-    from integration.tests.legacy_cli_support import main as cli
+    from ariadne.cli import main as cli
 
-    assert cli(["list-metrics", "--project", str(project)]) == 1
+    assert cli(["metrics", "--json", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)["error"]
-    assert "no valid admission" in error["message"]
+    assert "no admitted snapshot" in error["message"]
 
     validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
     assert validated["ok"] is True
@@ -895,19 +894,19 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     assert admit(project, review) == 0
     capsys.readouterr()  # the admit envelope is not part of the CLI output below
 
-    assert cli(["list-metrics", "--project", str(project)]) == 0
+    assert cli(["metrics", "--json", "--project", str(project)]) == 0
     listed = json.loads(capsys.readouterr().out)
     names = [entry["name"] for entry in listed if isinstance(entry, dict)]
     assert "events::events.event_count" in names
 
-    assert cli(["get-metric", "event_count", "--project", str(project)]) == 0
+    assert cli(["query", "event_count", "--json", "--project", str(project)]) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["rows"] == [{"event_count": 3}]
     assert answer["admission"]["route"] == "git-review-admission"
 
     # --served is a retired selector (spec 0027 §6): the parser refuses the
     # old spelling before any mutation — no compatibility route behind it
-    assert cli(["list-metrics", "--project", str(project), "--served", str(project)]) == 1
+    assert cli(["metrics", "--project", str(project), "--served", str(project)]) == 1
     assert "unrecognized arguments" in json.loads(capsys.readouterr().err)["error"]["message"]
 
 
@@ -915,14 +914,14 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     tmp_path, monkeypatch, capsys
 ):
     """Example writes stay project-scoped; ad-hoc metric results are ephemeral."""
-    from integration.tests.legacy_cli_support import main as cli
+    from tests.mcp_inproc import run as mcp
 
     project = complete_bundle_project(tmp_path)
     select_revision4_fixture(project)
     api = AuthoringProject(project)
     review, _journey = admitted_ready(api, project, _policy_edit("Revised admitted body."))
     assert admit(project, review) == 0
-    capsys.readouterr()  # the admit envelope is not part of the CLI output below
+    capsys.readouterr()  # the admit envelope is not part of the output below
 
     operator_desk = tmp_path / "operator-desk"
     operator_desk.mkdir()
@@ -943,13 +942,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         "attestation": "self-declared",
         "sources": ["metrics/event-count.md"],
     }
-    assert (
-        cli(
-            ["save-example", "--project", str(project)],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 0
-    )
+    assert mcp(project, "save_example", {"submission": submission}) == 0
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     assert saved["base_revision"] == review["revision"]
@@ -957,42 +950,18 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
     assert not (project / "staging").exists()
     assert not (operator_desk / "staging").exists()  # nothing escaped to the CWD
-    assert cli(["search-examples", "events total", "--project", str(project)]) == 0
-    assert json.loads(capsys.readouterr().out) == []  # unadmitted draft stays hidden
-    assert (
-        cli(
-            [
-                "search-examples",
-                "events total",
-                "--project",
-                str(project),
-                "--proposal",
-                saved["proposal"],
-                "--revision",
-                saved["candidate_revision"],
-            ]
-        )
-        == 0
-    )
+    # the active draft's own example is labeled draft in the served-plus-draft read
+    assert mcp(project, "search_examples", {"query": "events total"}) == 0
     preview = json.loads(capsys.readouterr().out)
     assert preview[0]["id"] == f"entity:{saved['id']}" and preview[0]["status"] == "draft"
 
-    assert (
-        cli(
-            ["define-metric", "--project", str(project)],
-            stdin=io.StringIO(
-                json.dumps(
-                    {
-                        "name": "event_ids_cli",
-                        "description": "Ad-hoc count of event ids",
-                        "source": "events.events",
-                        "expression": "COUNT(id)",
-                    }
-                )
-            ),
-        )
-        == 0
-    )
+    adhoc_request = {
+        "name": "event_ids_cli",
+        "description": "Ad-hoc count of event ids",
+        "source": "events.events",
+        "expression": "COUNT(id)",
+    }
+    assert mcp(project, "define_metric", {"definition": adhoc_request}) == 0
     adhoc = json.loads(capsys.readouterr().out)
     assert adhoc["persistence"] == {"status": "not_saved"}
     assert "staged_as" not in adhoc and "staged_context_as" not in adhoc
@@ -1000,53 +969,12 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert not list((project / "staging" / "context_layer" / "metrics").glob("*.md"))
     assert not (operator_desk / "staging").exists()  # still nothing in the CWD
 
-    # An explicit save into the existing candidate is revision-checked.
-    assert (
-        cli(
-            [
-                "save-example",
-                "--project",
-                str(project),
-                "--proposal",
-                saved["proposal"],
-                "--expected-revision",
-                saved["candidate_revision"],
-            ],
-            stdin=io.StringIO(
-                json.dumps({**submission, "question": "How many event ids exist in total"})
-            ),
-        )
-        == 0
-    )
+    # A second save joins the SAME active draft (one draft per project, spec 0040).
+    second_submission = {**submission, "question": "How many event ids exist in total"}
+    assert mcp(project, "save_example", {"submission": second_submission}) == 0
     second = json.loads(capsys.readouterr().out)
     assert second["proposal"] == saved["proposal"]
     assert second["candidate_revision"] != saved["candidate_revision"]
-
-    # The removed selector is rejected by argument parsing before any writes.
-    explicit = tmp_path / "explicit-staging"
-    refs_before = run_git(
-        project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
-    ).splitlines()
-    branch_before = branch_of(project, saved["proposal"])
-    status_before = run_git(project, "status", "--porcelain", "--untracked-files=all")
-    assert (
-        cli(
-            ["save-example", "--project", str(project), "--staging", str(explicit)],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 1
-    )
-    refusal = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "unrecognized arguments" in refusal and "--staging" in refusal
-    assert not explicit.exists() and not (operator_desk / "staging").exists()
-    assert (
-        run_git(
-            project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
-        ).splitlines()
-        == refs_before
-    )
-    assert branch_of(project, saved["proposal"]) == branch_before
-    assert run_git(project, "status", "--porcelain", "--untracked-files=all") == status_before
 
 
 # ------------- [7] review fix pass: bound baselines and pinned serving
