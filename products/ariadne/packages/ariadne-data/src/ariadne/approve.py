@@ -217,7 +217,8 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         # ONE recoverable transaction (finding 1): journal first; the grant file is the
         # commit point and is written LAST, so only a committed grant authorizes reads. Any
         # failure restores the previous baseline and the active draft.
-        draft.begin_source_txn(project, len(authoring_sources._load_grants(project)) + len(new))
+        expected_grants = len(authoring_sources._load_grants(project)) + len(new)
+        draft.begin_source_txn(project, expected_grants)
         try:
             draft.set_source_baseline(project, view["candidate_revision"])
             draft.consume(project, record["id"])
@@ -231,8 +232,20 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
             )
         except BaseException:
             draft.recover(project)  # rolls back (grants not committed), drops the journal
-            raise
-        draft.end_source_txn(project)
+            # the reported outcome must match the commit point: when the grant file IS
+            # committed (a rollback that could not run), the approval happened
+            if len(authoring_sources._load_grants(project)) < expected_grants:
+                raise
+            result = {
+                "grants": len(new),
+                "approval_digest": authoring_sources.approval_digest(
+                    authoring_sources.resolved_digest(new), bindings
+                ),
+            }
+        try:
+            draft.end_source_txn(project)
+        except OSError:
+            pass  # post-commit cleanup: the next draft operation drops the journal
     return {
         "approved": "sources",
         "sources": [e["name"] for e in new],

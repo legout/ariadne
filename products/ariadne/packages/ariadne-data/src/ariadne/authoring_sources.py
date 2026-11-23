@@ -426,8 +426,27 @@ def _store_grants(project: Path, grants: list[dict]) -> None:
         fh.write("\n")
         fh.flush()
         os.fsync(fh.fileno())
+    previous = path.read_bytes() if path.is_file() else None
     os.replace(tmp, path)
-    proposals._fsync_path(path.parent)
+    try:
+        proposals._fsync_path(path.parent)
+    except BaseException:
+        # not durably committed: put the previous grants back so a failed sync never leaves
+        # an effective grant behind a failed approval (best effort; the caller's recovery
+        # reads the file and treats whatever is committed as the truth)
+        try:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                fd, back = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(previous)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(back, path)
+        except OSError:
+            pass
+        raise
 
 
 def record_grants(

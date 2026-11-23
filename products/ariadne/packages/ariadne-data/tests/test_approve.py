@@ -450,3 +450,48 @@ def test_a_served_base_that_changes_between_display_and_yes_refuses(pty_project)
     assert code == 1 and "changed between display and confirmation" in shown, shown
     served = admission.load_current(project)
     assert served is not None  # the other approval's release serves; this one added nothing
+
+
+def test_a_directory_sync_failure_after_grant_replacement_rolls_everything_back(
+    tmp_path, monkeypatch
+):
+    """Finding 1 (second pass): one injected directory-sync error AFTER the grant file was
+    replaced must leave the previous grants, the baseline and the active draft — never an
+    effective grant behind a failed approval."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
+    real_sync = proposals._fsync_path
+    fired = {"done": False}
+
+    def sync(path):
+        # the directory sync right after the grant file was replaced
+        if not fired["done"] and (project / GRANTS).exists():
+            fired["done"] = True
+            raise OSError("dir sync failed")
+        return real_sync(path)
+
+    monkeypatch.setattr(proposals, "_fsync_path", sync)
+    with pytest.raises(OSError, match="dir sync failed"):
+        _run(project, Tty())
+    monkeypatch.undo()
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is False
+    assert not (project / GRANTS).exists()
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before
+    assert not (project / draft.BASELINE_REL).exists()
+    assert not (project / draft.TXN_REL).exists()
+
+
+def test_a_journal_cleanup_failure_after_the_grant_is_not_a_failed_approval(tmp_path, monkeypatch):
+    project, _api, result = _project_with_new_source(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("unlink failed")
+
+    monkeypatch.setattr(draft, "end_source_txn", boom)
+    outcome, _shown = _run(project, Tty())
+    monkeypatch.undo()
+    assert outcome["approved"] == "sources"
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
+    assert draft.status(project) is None  # recovery drops the journal; the grant survives
