@@ -31,6 +31,7 @@ import os
 import stat
 import tempfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -425,6 +426,21 @@ def discard(project: str | Path, expected: Expected) -> dict:
         proposals._git(["branch", "-m", record["branch"], branch], project)
         proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
     return {"discarded": True, "generation": slot["generation"], "branch": branch}
+
+
+@contextmanager
+def pinned(project: str | Path, expected: Expected):
+    """Hold the project lock and verify the draft is still exactly ``expected`` (generation
+    and candidate revision). Bounded reads happen BEFORE this; only the commit (a page write
+    or a retained receipt) runs inside, so a concurrent ``discard``/edit makes it refuse
+    instead of racing (spec 0040 §3.3.1)."""
+    project = Path(project).resolve()
+    if expected is None:
+        raise ValueError("a pinned commit needs the draft's generation and candidate revision")
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        recover(project)
+        _check_expected(_load_slot(project), expected)
+        yield
 
 
 # ------------------------------------------------ approval transaction + recovery

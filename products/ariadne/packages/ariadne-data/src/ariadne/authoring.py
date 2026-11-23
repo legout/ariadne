@@ -592,13 +592,21 @@ class AuthoringProject:
         proposal, _revision = self._active()
         return self.inputs(proposal, **kwargs)
 
+    def _pin(self) -> tuple[int, str]:
+        view = draft.status(self.project)
+        if view is None:
+            raise ValueError("there is no active draft — make an edit to open one")
+        return (view["generation"], view["candidate_revision"])
+
     def draft_refresh_schema(self, assets: list[dict]) -> dict:
-        proposal, revision = self._active()
-        return self.refresh_schema(proposal, revision, assets)
+        pin = self._pin()
+        proposal = draft.proposal_of(self.project, pin)
+        return refresh_schema(self.project, proposal, pin[1], assets, pin=pin)
 
     def draft_inspect_mapping(self, candidate: object, limits: object = None) -> dict:
-        proposal, revision = self._active()
-        return self.inspect_mapping(proposal, revision, candidate, limits=limits)
+        pin = self._pin()
+        proposal = draft.proposal_of(self.project, pin)
+        return inspect_mapping(self.project, proposal, pin[1], candidate, limits=limits, pin=pin)
 
     def draft_review(self, *, part: int = 1) -> dict:
         proposal, _revision = self._active()
@@ -2066,6 +2074,7 @@ def _schema_columns(catalog_table: dict, declared: dict) -> list[dict]:
 
 
 def _refresh_native_profiles(
+    pin: draft.Expected,
     project: Path,
     proposal: str,
     current: str,
@@ -2218,13 +2227,29 @@ def _refresh_native_profiles(
     # spec0035 §2/§6): the public writer validates the whole candidate
     # before any byte, stages only the written identities and commits once —
     # no sequential per-page commits, no partially refreshed candidate.
-    batch = proposals.edit_page_batch(
-        project,
-        proposal,
-        current,
-        [{"path": spec["path"], "content": spec["text"]} for spec in specs],
-        core_generated=True,
-    )
+    commit = {
+        "project": project,
+        "proposal": proposal,
+        "expected_revision": current,
+        "pages": [{"path": spec["path"], "content": spec["text"]} for spec in specs],
+    }
+    if pin is not None:  # MCP/draft route: the commit holds the original draft pin
+        with draft.pinned(project, pin):
+            batch = proposals.edit_page_batch(
+                commit["project"],
+                commit["proposal"],
+                commit["expected_revision"],
+                commit["pages"],
+                core_generated=True,
+            )
+    else:
+        batch = proposals.edit_page_batch(
+            commit["project"],
+            commit["proposal"],
+            commit["expected_revision"],
+            commit["pages"],
+            core_generated=True,
+        )
     written = set(batch["paths"])
     pages = [
         {
@@ -2251,6 +2276,8 @@ def refresh_schema(
     proposal: str,
     expected_revision: str,
     assets: list[dict] | tuple[dict, ...],
+    *,
+    pin: draft.Expected = None,
 ) -> dict:
     """The explicit physical schema refresh (plan §2 ``refresh_schema``, spec
     0010 §4; issue #41/K1): regenerate the core-owned schema facts and Dataset
@@ -2397,6 +2424,7 @@ def refresh_schema(
     # knowledge/ subtree (C6: the classic context_layer page-build route is
     # retired; old-capability candidates refused above, before any access).
     return _refresh_native_profiles(
+        pin,
         project,
         proposal,
         current,
@@ -3231,6 +3259,8 @@ def inspect_mapping(
     expected_revision: str,
     candidate: object,
     limits: object = None,
+    *,
+    pin: draft.Expected = None,
 ) -> dict:
     """The ONE typed mapping-inspection operation (plan §2 ``inspect_mapping``,
     spec 0010 §7; issue #43/K3): measure a structured candidate from exactly
@@ -3410,7 +3440,11 @@ def inspect_mapping(
             f"{effective['response_bytes']}-byte ceiling — lower the raw-example "
             "count or narrow the candidate; no receipt was retained"
         )
-    store_receipt(project, proposal, receipt)
+    if pin is not None:  # the receipt is retained only while the draft is still the pinned one
+        with draft.pinned(project, pin):
+            store_receipt(project, proposal, receipt)
+    else:
+        store_receipt(project, proposal, receipt)
     return envelope
 
 

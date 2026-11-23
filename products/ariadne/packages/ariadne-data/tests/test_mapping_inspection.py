@@ -39,7 +39,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne import execution, proposals  # noqa: E402
-from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.authoring import AuthoringProject, inspect_mapping  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import approved  # noqa: E402 — the operator's G3 step
 
@@ -1618,3 +1618,22 @@ def test_source_setup_failure_closes_the_owned_connection(tmp_path, monkeypatch)
     with pytest.raises(Exception, match="Connection Error|already closed|Cannot call"):
         created[1].execute("SELECT 1")  # closed: no partial ready session survives
     assert not (tmp_path / "data" / "missing.duckdb").exists()  # nothing was created
+
+
+def test_a_receipt_is_not_retained_after_the_draft_was_discarded(tmp_path):
+    """Finding 4: inspection commits its receipt under the ORIGINAL draft pin. A concurrent
+    `draft discard` between the bounded read and the commit makes the commit refuse instead
+    of retaining evidence for a retired draft."""
+    from ariadne import draft
+
+    project, api, started = approved_project(tmp_path)
+    view = draft.status(project)
+    assert view is not None
+    pin = (view["generation"], view["candidate_revision"])
+    draft.discard(project, pin)  # the race: the draft is retired while inspection is running
+    evidence_dir = project / ".ariadne" / "evidence"
+    with pytest.raises(ValueError, match="stale"):
+        inspect_mapping(
+            project, started["proposal"], started["candidate_revision"], prefix_candidate(), pin=pin
+        )
+    assert not list(evidence_dir.rglob("*.json")) if evidence_dir.exists() else True
