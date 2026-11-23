@@ -148,16 +148,25 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
             tables = sum(len(source["tables"]) for source in owned.catalog)
         finally:
             owned.close()
-        result = authoring_sources.record_grants(
-            project,
-            new,
-            authoring_sources.resolved_digest(new),
-            by=by,
-            generation=view["generation"],
-            _lock_held=True,
-        )
-        draft.set_source_baseline(project, view["candidate_revision"])
-        draft.consume(project, record["id"])
+        # ONE recoverable transaction (finding 1): journal first; the grant file is the
+        # commit point and is written LAST, so only a committed grant authorizes reads. Any
+        # failure restores the previous baseline and the active draft.
+        draft.begin_source_txn(project, len(authoring_sources._load_grants(project)) + len(new))
+        try:
+            draft.set_source_baseline(project, view["candidate_revision"])
+            draft.consume(project, record["id"])
+            result = authoring_sources.record_grants(
+                project,
+                new,
+                authoring_sources.resolved_digest(new),
+                by=by,
+                generation=view["generation"],
+                _lock_held=True,
+            )
+        except BaseException:
+            draft.recover(project)  # rolls back (grants not committed), drops the journal
+            raise
+        draft.end_source_txn(project)
     return {
         "approved": "sources",
         "sources": [e["name"] for e in new],

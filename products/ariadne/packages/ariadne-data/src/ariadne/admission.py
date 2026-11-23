@@ -1176,7 +1176,13 @@ def admit_revision(
                 proposals._store_record(project, record)
             except OSError:
                 pass
-            draft.consume(project, proposal)  # the approved generation is consumed (spec 0040)
+            # post-activation cleanup (spec 0040): the release is already serving, so a failure
+            # here must not read as a failed activation; draft.recover() retires the
+            # consumed generation on the next draft operation.
+            try:
+                draft.consume(project, proposal)
+            except Exception:
+                pass
     return {
         "route": ADMISSION_ROUTE,
         "project": str(project),

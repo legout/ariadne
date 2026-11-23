@@ -137,3 +137,93 @@ def test_an_edit_during_the_prompt_makes_the_approval_refuse(tmp_path):
     with pytest.raises(approve.ApprovalRefused, match="changed during the prompt"):
         _run(project, Tty(before_answer=edit_now))
     assert not (project / GRANTS).exists()
+
+
+def test_a_late_failure_during_source_approval_leaves_no_grant_and_the_draft_active(
+    tmp_path, monkeypatch
+):
+    """Finding 1: grant, baseline and draft retirement are one recoverable transaction.
+    A failure after the live checks (baseline write) preserves grants, baseline and draft."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(draft, "set_source_baseline", boom)
+    with pytest.raises(OSError, match="disk full"):
+        _run(project, Tty())
+    monkeypatch.undo()
+
+    assert not (project / GRANTS).exists()  # no effective grant
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is False
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before  # the draft is still active
+    assert not (project / draft.BASELINE_REL).exists()
+    assert not (project / draft.TXN_REL).exists()  # the journal is closed
+
+
+def test_a_failure_writing_the_slot_during_source_approval_rolls_back_the_baseline(
+    tmp_path, monkeypatch
+):
+    project, _api, _result = _project_with_new_source(tmp_path)
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
+    monkeypatch.setattr(draft, "consume", lambda *_a, **_k: (_ for _ in ()).throw(OSError("io")))
+    with pytest.raises(OSError):
+        _run(project, Tty())
+    monkeypatch.undo()
+    assert not (project / GRANTS).exists()
+    assert not (project / draft.BASELINE_REL).exists()
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before
+
+
+def test_a_crash_after_the_grant_commit_rolls_forward_on_the_next_draft_operation(
+    tmp_path, monkeypatch
+):
+    """Only a committed grant authorizes reads; a journal left behind AFTER the grant was
+    written is dropped, not rolled back (the grant stays effective)."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: None)  # crash before close
+    outcome, _shown = _run(project, Tty())
+    monkeypatch.undo()
+    assert outcome["approved"] == "sources" and (project / draft.TXN_REL).exists()
+    assert draft.status(project) is None  # recovery under the lock; the grant survives
+    assert not (project / draft.TXN_REL).exists()
+    resolved, digest = authoring_sources.candidate_sources(project, result["revision"])
+    assert authoring_sources.approval_state(project, resolved, digest)["approved"] is True
+
+
+def test_a_failure_after_activation_reports_success_and_the_slot_self_heals(tmp_path, monkeypatch):
+    """Finding 1: once current.json is published, a failing `draft.consume` is
+    post-activation cleanup: the release is serving, the call reports success and the next
+    draft operation retires the consumed generation."""
+    from ariadne import admission
+    from tests.test_git_admission import _policy_edit, admitted_ready
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(api, project, _policy_edit("Healed body."))
+    real_consume = draft.consume
+    monkeypatch.setattr(draft, "consume", lambda *_a, **_k: (_ for _ in ()).throw(OSError("io")))
+    composite = admission.overall_review(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        destination=tmp_path / "published",
+        expected_current="none",
+    )
+    out = admission.admit_revision(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:test",
+        overall_preview=composite,
+        confirmed_overall_digest=composite["digest"],
+    )
+    monkeypatch.setattr(draft, "consume", real_consume)
+    assert out["commit"] == review["revision"]  # success is reported; the release is serving
+    served = admission.load_current(project)
+    assert served is not None and served["commit"] == review["revision"]
+    assert draft.status(project) is None  # self-healed: the consumed generation is retired

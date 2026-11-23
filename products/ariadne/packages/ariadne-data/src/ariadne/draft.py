@@ -166,9 +166,12 @@ def _view(project: Path, slot: dict | None) -> dict | None:
 
 
 def status(project: str | Path) -> dict | None:
-    """The active draft's identity and staleness, or ``None`` without one.
-    Read-only: it takes no lock and never mutates."""
+    """The active draft's identity and staleness, or ``None`` without one. Reading first
+    completes or undoes an interrupted approval (so a half-finished one never shows)."""
     project = Path(project).resolve()
+    if (project / proposals.ARIADNE_STATE_DIR).is_dir():
+        with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+            recover(project)
     return _view(project, _load_slot(project))
 
 
@@ -264,6 +267,7 @@ def mutate(
     _preflight(project)
     proposals._require_git_identity(project)
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        recover(project)
         slot_before = _load_slot(project)
         previous = (project / DRAFT_REL).read_bytes() if (project / DRAFT_REL).is_file() else None
         if slot_before is not None and slot_before["state"] == "active":
@@ -397,6 +401,7 @@ def discard(project: str | Path, expected: Expected) -> dict:
         raise ValueError("discard needs the draft's generation and candidate revision")
     _preflight(project)
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        recover(project)
         slot = _check_expected(_load_slot(project), expected)
         assert slot is not None
         record = proposals._load_record(project, slot["proposal"])
@@ -414,6 +419,80 @@ def discard(project: str | Path, expected: Expected) -> dict:
         proposals._git(["branch", "-m", record["branch"], branch], project)
         proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
     return {"discarded": True, "generation": slot["generation"], "branch": branch}
+
+
+# ------------------------------------------------ approval transaction + recovery
+
+TXN_REL = proposals.ARIADNE_STATE_DIR / "approval_txn.json"
+
+
+def _read_bytes(path: Path) -> str | None:
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def begin_source_txn(project: Path, expected_grants: int) -> None:
+    """Journal a source approval BEFORE its three state changes (baseline, slot, grants).
+    The grant file is the commit point: only a committed grant authorizes reads. The caller
+    holds the project lock. A crash or failure leaves this journal; :func:`recover` then
+    rolls the baseline and the slot back unless the grants were committed."""
+    _store_json(
+        project / TXN_REL,
+        {
+            "expected_grants": expected_grants,
+            "baseline": _read_bytes(project / BASELINE_REL),
+            "slot": _read_bytes(project / DRAFT_REL),
+        },
+    )
+
+
+def end_source_txn(project: Path) -> None:
+    (project / TXN_REL).unlink(missing_ok=True)
+
+
+def _restore(path: Path, text: str | None) -> None:
+    if text is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+
+
+def recover(project: Path) -> None:
+    """Complete or undo an interrupted approval. The caller holds the project lock.
+
+    - A journaled source approval whose grants were committed rolls forward (the journal is
+      dropped); otherwise the baseline and slot return to their journaled bytes.
+    - A calculation approval whose release is already serving but whose generation was never
+      retired (a failure after ``current.json`` was published) retires it now."""
+    from ariadne import admission, authoring_sources  # lazy: admission imports this module
+
+    journal = project / TXN_REL
+    if journal.is_file():
+        try:
+            txn = json.loads(journal.read_text(encoding="utf-8"))
+            expected = int(txn["expected_grants"])
+        except (OSError, ValueError, KeyError, TypeError):
+            raise ValueError(
+                f"{journal}: unreadable approval journal — this needs human resolution"
+            ) from None
+        if len(authoring_sources._load_grants(project)) < expected:
+            _restore(project / BASELINE_REL, txn.get("baseline"))
+            _restore(project / DRAFT_REL, txn.get("slot"))
+        journal.unlink(missing_ok=True)
+    slot = _load_slot(project)
+    if slot is not None and slot["state"] == "active":
+        served = admission.load_current(project)
+        if (
+            served is not None
+            and served["proposal"] == slot["proposal"]
+            and served["commit"] == slot["candidate_revision"]
+        ):
+            consume(project, slot["proposal"])
 
 
 def consume(project: Path, proposal: str) -> None:
@@ -446,6 +525,7 @@ def rebase(project: str | Path, expected: Expected) -> dict:
     _preflight(project)
     proposals._require_git_identity(project)
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        recover(project)
         slot = _check_expected(_load_slot(project), expected)
         assert slot is not None
         record = _coherent(project, slot)
