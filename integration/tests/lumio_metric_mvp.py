@@ -347,6 +347,12 @@ def write_page(path, meta, body):
     path.write_text("---\n" + yaml.safe_dump(meta, sort_keys=False) + "---" + body)
 
 
+def next_draft(api):
+    """Approval consumes the active draft (spec 0040 §3.4.2.6): the next change is the NEXT
+    draft, started on the served revision. Returns its proposal id."""
+    return api.start_proposal()["proposal"]
+
+
 def reconcile_knowledge(project, proposal, previous):
     tree = worktree_of(project, proposal)
     run_git(tree, "add", "-f", "--", "knowledge", "context_integration.yaml")
@@ -516,13 +522,14 @@ def test_local_revenue_release_and_later_policy_isolation(tmp_path):
         with pytest.raises(query_results.QueryResultError):
             revenue(runtime)
         runtime._limits = old_limits
-        tree = worktree_of(project, review["proposal"])
+        proposal = next_draft(api)  # approval consumed the first draft (spec 0040 §3.4.2.6)
+        tree = worktree_of(project, proposal)
         policy = tree / "knowledge/policies/cancelled-orders.md"
         policy.write_text(CANCELLATION + "\nLater reviewed policy text.\n")
-        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
-        checked = api.validate_proposal(review["proposal"], revised)
+        revised = reconcile_knowledge(project, proposal, review["revision"])
+        checked = api.validate_proposal(proposal, revised)
         assert checked["ok"] is True, checked["errors"]
-        later = api.review_proposal(review["proposal"])
+        later = api.review_proposal(proposal)
         activate(project, later, preview(project, later, destination, review["revision"]))
         assert revenue(runtime)["context"] == context
         assert "Later reviewed policy text." not in "".join(context["policies"])
@@ -612,15 +619,16 @@ def test_hidden_required_policy_cannot_activate(tmp_path):
     previous = current_bytes(project)
     runtime = QueryRuntime.open_project(project)
     try:
-        tree = worktree_of(project, review["proposal"])
+        proposal = next_draft(api)
+        tree = worktree_of(project, proposal)
         hidden_text = CANCELLATION.replace("visibility: public", "visibility: restricted").replace(
             "title: Cancelled Orders", "title: Hidden Trade Secret"
         )
         (tree / "knowledge/policies/cancelled-orders.md").write_text(hidden_text)
-        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
-        checked = api.validate_proposal(review["proposal"], revised)
+        revised = reconcile_knowledge(project, proposal, review["revision"])
+        checked = api.validate_proposal(proposal, revised)
         assert checked["ok"] is True, checked["errors"]
-        hidden = api.review_proposal(review["proposal"])
+        hidden = api.review_proposal(proposal)
         with pytest.raises(ValueError, match="Policy Closure") as refused:
             preview(project, hidden, destination, review["revision"])
         assert "Hidden Trade Secret" not in str(refused.value)
@@ -846,7 +854,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
                     ValueError, match=f"unsupported integrated MVP operation: {name}"
                 ):
                     asyncio.run(getattr(deferred, name)(*args))
-            assert cli(["list-metrics", "--project", str(project)]) == 0
+            assert cli(["metrics", "--json", "--project", str(project)]) == 0
             assert json.loads(capsys.readouterr().out)[0]["name"] == "retail_sales::orders.revenue"
         # Q2 (spec0029 §1.2): the superseded refusals serve natively where
         # their native admission exists. This fixture pins no multi-fact
@@ -857,7 +865,7 @@ def test_capability_refusals_and_source_free_catalog(tmp_path, monkeypatch, caps
         with pytest.raises(PlannerError) as graphless:
             asyncio.run(runtime.query_metrics({"metrics": ["revenue"]}))
         assert graphless.value.code == "not_admitted"
-        assert cli(["list-datasets", "--project", str(project)]) == 0
+        assert cli(["datasets", "--json", "--project", str(project)]) == 0
         listed = json.loads(capsys.readouterr().out)
         assert next(d for d in listed if d["table"] == "orders")["source"] == "orders"
     finally:
