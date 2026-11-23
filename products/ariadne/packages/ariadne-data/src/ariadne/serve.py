@@ -796,20 +796,15 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
 
         @app.tool()
         @_tool_errors
-        async def save_example(
-            submission: dict,
-            proposal: str | None = None,
-            expected_revision: str | None = None,
-        ) -> dict:
-            """Save one explicit answer example as an unadmitted Git proposal draft —
-            an EXPLICIT user-confirmed submission only:
-            present the bounded record (result excerpt/digest, method/arguments,
-            question/interpretation/parameters, the EXACT submitted result SQL
-            text — the sql_provenance the save will retain verbatim, so the user
-            can assess sensitive literals —, sources, submitter attestation)
-            for user confirmation BEFORE calling this. Never a governed write or
-            admission, and never transcript harvesting; nothing about the example changes
-            the served catalog. Same contract as ``ariadne save-example``.
+        async def save_example(submission: dict) -> dict:
+            """Save one explicit answer example into the ACTIVE DRAFT (the first write opens
+            it) — an EXPLICIT user-confirmed submission only: present the bounded record
+            (result excerpt/digest, method/arguments, question/interpretation/parameters,
+            the EXACT submitted result SQL text — the sql_provenance the save will retain
+            verbatim, so the user can assess sensitive literals —, sources, submitter
+            attestation) for user confirmation BEFORE calling this. Never a governed write
+            or approval, and never transcript harvesting; nothing about the example changes
+            the served catalog. The human approves it later with `ariadne approve`.
 
             Args:
                 submission: {question, interpretation, parameters?, method:
@@ -817,15 +812,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     observed Ariadne envelope (metric/sql/columns/rows/governed),
                     submitter (self-declared), attestation, sources: cited admitted
                     metric/Policy paths}. Malformed input stores nothing.
-                proposal: an existing candidate ID; omit to start a new proposal.
-                expected_revision: the exact current candidate revision; required with proposal.
             """
             discovery = DiscoveryRuntime.open_project(project)
-            # source-free authoring — the source builder is
-            # never constructed for an Example save.
-            return discovery.save_example(
-                submission, proposal=proposal, expected_revision=expected_revision
-            )
+            # source-free authoring: the source builder is never constructed here
+            return discovery.save_example(submission)
 
         @app.tool()
         @_tool_errors
@@ -834,43 +824,24 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             limit: int = 10,
             include_history: bool = False,
             include_sql: bool = False,
-            proposal: str | None = None,
-            revision: str | None = None,
         ) -> list[dict]:
             """Search saved answer examples as labeled references (draft/stable,
             staleness, provenance, path) — historical evidence to check a METHOD
-            against, never a cached answer. Similar words are not equivalence:
+            against, never a cached answer. Reads the SERVED release's examples plus
+            the active draft's own (labeled draft). Similar words are not equivalence:
             compare dates, filters, grain, metric identity and served Policies,
-            and rerun fresh. Never executes a query. Same contract as
-            ``ariadne search-examples``; stale/closed records stay history unless
-            include_history is set.
+            and rerun fresh. Never executes a query; stale/closed records stay history
+            unless include_history is set.
 
             Args:
                 query: terms ranked against question/interpretation.
                 limit: maximum records returned.
-                proposal: explicitly select one Git authoring candidate; requires revision.
-                revision: the proposal's exact current candidate commit.
                 include_history: include stale/superseded/rejected records, labeled.
                 include_sql: additionally return each hit's stored sql_provenance
                     as provenance.sql — the EXACT submitted result SQL as
                     historical evidence (null when no submitted SQL was recorded);
                     never executed, never a ranking input, never wider history.
             """
-            if (proposal is None) != (revision is None):
-                raise ValueError("proposal and revision must be supplied together")
-            if proposal is not None:
-                assert revision is not None
-                from ariadne import answer_examples
-
-                return answer_examples.search_candidate(
-                    project,
-                    query,
-                    proposal=proposal,
-                    revision=revision,
-                    limit=limit,
-                    include_history=include_history,
-                    include_sql=include_sql,
-                )
             discovery = DiscoveryRuntime.open_project(project)
             return await discovery.search_examples(
                 query, limit=limit, include_history=include_history, include_sql=include_sql
