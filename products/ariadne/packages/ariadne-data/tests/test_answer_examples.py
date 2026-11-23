@@ -1,6 +1,5 @@
 """Git-backed Answer Example input, provenance and size boundaries (spec 0027)."""
 
-import io
 import json
 import sys
 from pathlib import Path
@@ -13,7 +12,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from integration.tests.legacy_cli_support import main as cli  # noqa: E402
 
 from tests.test_cli import create_git_demo_project, error_payload  # noqa: E402
 from tests.test_git_authoring import run_git, worktree_of  # noqa: E402
@@ -24,9 +22,35 @@ def project(tmp_path_factory):
     return create_git_demo_project(tmp_path_factory.mktemp("answer-examples") / "project")
 
 
-def run_cli(project, *args, stdin=None):
-    root, _db = project
-    return cli([*args, "--project", str(root)], stdin=stdin)
+def _tool(root, tool, arguments):
+    """Call one REAL MCP tool in-process; print the payload to stdout (exit 0) or one JSON
+    error object to stderr (exit 1), so the assertions read the tool's actual output."""
+    import sys
+
+    from tests.mcp_inproc import call
+
+    is_error, out = call(root, tool, arguments)
+    if tool == "search_examples" and not is_error:
+        out = out if isinstance(out, list) else ([] if out in ("", None) else [out])
+    if is_error:
+        message = out if isinstance(out, str) else json.dumps(out)
+        message = message.removeprefix(f"Error executing tool {tool}: ")
+        print(json.dumps({"error": {"type": "ToolError", "message": message}}), file=sys.stderr)
+        return 1
+    print(json.dumps(out))
+    return 0
+
+
+def mcp_save(root, submission):
+    return _tool(root, "save_example", {"submission": submission})
+
+
+def mcp_search(root, query, *, include_sql=False, include_history=False):
+    return _tool(
+        root,
+        "search_examples",
+        {"query": query, "include_sql": include_sql, "include_history": include_history},
+    )
 
 
 def _submission(result, /, **overrides):
@@ -86,15 +110,6 @@ def _record_revision(project, proposal):
     from ariadne import proposals
 
     return proposals._load_record(project, proposal)["candidate_revision"]
-
-
-def _cli_for(project):
-    from integration.tests.legacy_cli_support import main as cli
-
-    def cli_run(*args, stdin=None):
-        return cli([*args, "--project", str(project)], stdin=stdin)
-
-    return cli_run
 
 
 def _example_release(root):
@@ -191,7 +206,6 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     the explicit candidate preview labels the draft; opt-in returns the exact
     submitted SQL verbatim; and no step ever opens the DuckDB source."""
     import hashlib
-    import io
     import json
 
     import yaml
@@ -200,14 +214,13 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     from tests.test_git_authoring import worktree_of
 
     project, api, review = _example_release(tmp_path / "project")
-    cli_run = _cli_for(project)
 
     db_path = project / "data" / "orders.duckdb"
     db_before = db_path.read_bytes()
     result = {**_SMALL_RESULT, "sql": _EXACT_SQL}
     submission = _submission(result)
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project, submission) == 0
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     assert saved["path"] == f"knowledge/answer-examples/{saved['id']}.md"
@@ -229,24 +242,13 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         ).hexdigest()
     )
 
-    # Ordinary search is admitted-only; candidate search is explicit and labeled.
-    assert cli_run("search-examples", "gross margin region") == 0
-    assert json.loads(capsys.readouterr().out) == []
-    selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
-    assert cli_run("search-examples", "gross margin region", *selectors) == 0
+    # Search reads the served release PLUS the active draft's own Example, labeled draft.
+    assert mcp_search(project, "gross margin region") == 0
     default = json.loads(capsys.readouterr().out)
     assert len(default) == 1 and default[0]["status"] == "draft"
     assert "rows" not in default[0] and "sql" not in default[0]["provenance"]
 
-    assert (
-        cli_run(
-            "search-examples",
-            "gross margin region",
-            *selectors,
-            "--include-sql",
-        )
-        == 0
-    )
+    assert mcp_search(project, "gross margin region", include_sql=True) == 0
     opted_in = json.loads(capsys.readouterr().out)
     assert opted_in[0]["provenance"]["sql"] == {
         "source": "submitted_result.sql",
@@ -270,7 +272,7 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
         ),
     )
 
-    assert cli_run("search-examples", "gross margin region") == 0
+    assert mcp_search(project, "gross margin region") == 0
     admitted = json.loads(capsys.readouterr().out)
     assert len(admitted) == 1 and admitted[0]["status"] == "stable"
     hit = admitted[0]
@@ -282,7 +284,7 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     assert hit["stale"] is False
     assert "sql" not in hit["provenance"]
     assert "rows" not in hit
-    assert cli_run("search-examples", "gross margin region", "--include-sql") == 0
+    assert mcp_search(project, "gross margin region", include_sql=True) == 0
     admitted_sql = json.loads(capsys.readouterr().out)
     assert admitted_sql[0]["provenance"]["sql"] == {
         "source": "submitted_result.sql",
@@ -295,38 +297,17 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
 def test_oversize_excerpt_and_sql_refuse_before_creating_a_candidate(project, capsys):
     refs_before = _refs(project)
     too_many_rows = {**_SMALL_RESULT, "rows": [{"value": "x" * 9000}]}
-    assert (
-        run_cli(
-            project,
-            "save-example",
-            stdin=io.StringIO(json.dumps(_submission(too_many_rows))),
-        )
-        == 1
-    )
+    assert mcp_save(project[0], _submission(too_many_rows)) == 1
     assert "8192" in error_payload(capsys.readouterr().err)["message"]
     assert _refs(project) == refs_before
 
     oversized_sql = {**_SMALL_RESULT, "sql": f"-- {'x' * 70_000}"}
-    assert (
-        run_cli(
-            project,
-            "save-example",
-            stdin=io.StringIO(json.dumps(_submission(oversized_sql))),
-        )
-        == 1
-    )
+    assert mcp_save(project[0], _submission(oversized_sql)) == 1
     assert "65536" in error_payload(capsys.readouterr().err)["message"]
     assert _refs(project) == refs_before
 
     oversized_record = _submission(_SMALL_RESULT, interpretation="x" * 65_000)
-    assert (
-        run_cli(
-            project,
-            "save-example",
-            stdin=io.StringIO(json.dumps(oversized_record)),
-        )
-        == 1
-    )
+    assert mcp_save(project[0], oversized_record) == 1
     message = error_payload(capsys.readouterr().err)["message"]
     assert "encoded example record" in message and "65536" in message
     assert _refs(project) == refs_before
@@ -357,7 +338,7 @@ def test_invalid_citations_and_method_or_sql_provenance_refuse_without_refs(
 ):
     refs_before = _refs(project)
     submission = _submission(_SMALL_RESULT, **overrides)
-    assert run_cli(project, "save-example", stdin=io.StringIO(json.dumps(submission))) == 1
+    assert mcp_save(project[0], submission) == 1
     assert message.lower() in error_payload(capsys.readouterr().err)["message"].lower()
     assert _refs(project) == refs_before
 
@@ -374,19 +355,9 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
     started = api.start_proposal()
     approved(api, project, started)
     capsys.readouterr()
-    assert (
-        run_cli(
-            (project, None),
-            "save-example",
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            started["candidate_revision"],
-            stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT, sources=[]))),
-        )
-        == 0
-    )
+    assert mcp_save(project, _submission(_SMALL_RESULT, sources=[])) == 0  # into the active draft
     saved = json.loads(capsys.readouterr().out)
+    assert saved["proposal"] == started["proposal"]
     root = project
     valid_page = (worktree_of(project, saved["proposal"]) / saved["path"]).read_text("utf-8")
     question = yaml.safe_load(valid_page.split("---")[1])["ariadne_profile"]["native"]["question"]
@@ -418,13 +389,8 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
         saved["candidate_revision"],
         [{"path": no_sql_path, "content": no_sql_content}],
     )
-    selectors = ["--proposal", saved["proposal"], "--revision", no_sql["revision"]]
-    assert (
-        run_cli(
-            (project, None), "search-examples", "gross margin region", *selectors, "--include-sql"
-        )
-        == 0
-    )
+    assert no_sql["revision"]
+    assert mcp_search(project, "gross margin region", include_sql=True) == 0
     hits = json.loads(capsys.readouterr().out)
     assert (
         next(hit for hit in hits if hit["id"] == "entity:legacy-without-sql")["provenance"]["sql"]
@@ -469,7 +435,7 @@ def test_define_metric_examples_retain_only_the_actual_operation_arguments(proje
             },
         },
     )
-    assert run_cli(project, "save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project[0], submission) == 0
     saved = json.loads(capsys.readouterr().out)
     page = _candidate_page(project, saved)
     metadata = yaml.safe_load(page.read_text(encoding="utf-8").split("---", 2)[1])
@@ -485,7 +451,6 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     proof, not a mock of the code under test). The boundary is restored
     before the human admission, which legitimately needs validation."""
     import asyncio
-    import io
     import json
     from datetime import UTC, datetime
 
@@ -493,7 +458,6 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     from ariadne.query import QueryRuntime
 
     project, api, review = _example_release(tmp_path / "project")
-    cli_run = _cli_for(project)
     db_path = project / "data" / "orders.duckdb"
     db_before = db_path.read_bytes()
 
@@ -515,13 +479,10 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
 
     with monkeypatch.context() as clock:  # clock scoped to the save seam only
         clock.setattr(answer_examples, "datetime", _FrozenDatetime)
-        assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+        assert mcp_save(project, submission) == 0
         saved = json.loads(capsys.readouterr().out)
 
-        assert cli_run("search-examples", "gross margin region") == 0
-        assert json.loads(capsys.readouterr().out) == []
-        selectors = ["--proposal", saved["proposal"], "--revision", saved["candidate_revision"]]
-        assert cli_run("search-examples", "gross margin region", *selectors) == 0
+        assert mcp_search(project, "gross margin region") == 0
         hits = json.loads(capsys.readouterr().out)
         assert len(hits) == 1 and hits[0]["status"] == "draft"
 
@@ -569,7 +530,6 @@ def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, caps
     the Entity id and the canonical title, the writer's identity guard holds,
     and the original native question bytes are preserved verbatim in every
     persisted record; nothing is overwritten."""
-    import io
     import json
 
     import yaml
@@ -578,23 +538,12 @@ def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, caps
     from tests.test_git_authoring import worktree_of
 
     project, api, review = _example_release(tmp_path / "project")
-    cli_run = _cli_for(project)
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
 
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project, submission) == 0
     first = json.loads(capsys.readouterr().out)
-    assert (
-        cli_run(
-            "save-example",
-            "--proposal",
-            first["proposal"],
-            "--expected-revision",
-            first["candidate_revision"],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 0
-    )
+    assert mcp_save(project, submission) == 0  # the active draft takes a second Example
     second = json.loads(capsys.readouterr().out)
     assert second["id"] != first["id"]
     assert second["proposal"] == first["proposal"]
@@ -626,7 +575,7 @@ def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, caps
             review["revision"],
         ),
     )
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project, submission) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["id"] not in (first["id"], second["id"])
     assert third["proposal"] != first["proposal"]
@@ -861,7 +810,6 @@ def test_native_example_history_deletion_refuses(tmp_path, capsys):
     public Core validation with a named diagnostic carrying the persisted
     identity and baseline path (identity-keyed via the public SDK capture,
     never a filename guess, never a floating HEAD)."""
-    import io
     import json
 
     from integration.tests.lumio_metric_mvp import activate, preview, reconcile_knowledge
@@ -869,10 +817,9 @@ def test_native_example_history_deletion_refuses(tmp_path, capsys):
     from tests.test_git_authoring import approved, worktree_of
 
     project, api, review = _example_release(tmp_path / "project")
-    cli_run = _cli_for(project)
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project, submission) == 0
     saved = json.loads(capsys.readouterr().out)
     current = _record_revision(project, saved["proposal"])
     validated = api.validate_proposal(saved["proposal"], current)
@@ -911,7 +858,6 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
     caption line, of the structured native.answer.excerpt and of the 64 KiB
     whole-page bound. A valid control validates cleanly BEFORE any malformed
     body, so the named refusals are attributable."""
-    import io
     import json
     import re
 
@@ -919,12 +865,11 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
     from tests.test_git_authoring import approved, worktree_of
 
     project, api, review = _example_release(tmp_path / "project")
-    cli_run = _cli_for(project)
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
 
     # valid control: the CLI save validates cleanly before any malformed body
-    assert cli_run("save-example", stdin=io.StringIO(json.dumps(submission))) == 0
+    assert mcp_save(project, submission) == 0
     saved = json.loads(capsys.readouterr().out)
     current = _record_revision(project, saved["proposal"])
     control = api.validate_proposal(saved["proposal"], current)
