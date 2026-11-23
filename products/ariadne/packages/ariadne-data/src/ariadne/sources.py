@@ -44,6 +44,7 @@ import json
 import os
 import re
 import threading
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -440,6 +441,13 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
             "reference an environment variable with connection_env: <NAME>"
         )
     for key, value in entry.items():  # under ANY key, not just ``connection``
+        if isinstance(value, str) and any(unicodedata.category(ch) == "Cc" for ch in value):
+            # the approval prompt prints these fields on the human's terminal (spec 0040
+            # §3.5): a control character could disguise the target being consented to
+            raise ValueError(
+                f"{where}: {key} contains a control character — source declarations are "
+                "plain text (spec 0040 §3.4)"
+            )
         if isinstance(value, str) and DSN_RE.match(value):
             raise ValueError(
                 f"{where}: {key} carries an inline connection string (ADR-0010): "

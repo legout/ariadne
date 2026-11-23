@@ -21,10 +21,19 @@ no agent surface.
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any
 
-from ariadne import admission, authoring, authoring_sources, draft, execution, proposals
+from ariadne import (
+    admission,
+    authoring,
+    authoring_inputs,
+    authoring_sources,
+    draft,
+    execution,
+    proposals,
+)
 from ariadne import profile_pair as profiles
 
 SOURCE_FILES = frozenset({"ariadne.yaml"})
@@ -105,23 +114,75 @@ def classify(project: Path, view: dict, record: dict) -> dict:
     }
 
 
-def _identity_lines(entries: list[dict]) -> list[str]:
+def esc(value: object) -> str:
+    """Make an untrusted value safe to print on the human's terminal: every control
+    character (C0, DEL, C1, including ESC and CR) becomes a visible ``\\xNN``/``\\uNNNN``."""
+    out = []
+    for ch in str(value):
+        if unicodedata.category(ch) == "Cc" or ch in "\u2028\u2029":
+            out.append(f"\\x{ord(ch):02x}" if ord(ch) < 256 else f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _identity_lines(entries: list[dict], *, prefix: str = "  ") -> list[str]:
+    """One escaped line per source with its COMPLETE identity: type, path or URI (DSN
+    variable name for postgres), table, read-only flag, storage profile with endpoint
+    variable, region variable and scopes."""
     lines = []
     for entry in entries:
         where = entry.get("path") or f"${entry.get('connection_env')}"
+        parts = [f"{esc(entry['name'])}: {esc(entry['type'])} {esc(where)}"]
+        if entry.get("table"):
+            parts.append(f"table={esc(entry['table'])}")
+        parts.append("read-only" if entry.get("read_only", True) else "WRITABLE")
         storage = entry.get("storage")
-        extra = f" (storage {storage['name']})" if isinstance(storage, dict) else ""
-        lines.append(f"  {entry['name']}: {entry['type']} {where}{extra}")
+        if isinstance(storage, dict):
+            parts.append(
+                f"storage={esc(storage['name'])}"
+                f" endpoint-var={esc(storage.get('endpoint_url_env'))}"
+                f" region-var={esc(storage.get('region_env'))}"
+                f" scopes={esc(','.join(storage.get('scopes') or []))}"
+            )
+        lines.append(prefix + " ".join(parts))
     return lines
+
+
+def _previous_identities(project: Path, names: set[str]) -> dict[str, dict]:
+    """The identity each named source had before this draft: the served release's, else
+    the newest source grant's (None when it is brand new)."""
+    previous: dict[str, dict] = {}
+    for grant in authoring_sources._load_grants(project):
+        if grant["source"]["name"] in names:
+            previous[grant["source"]["name"]] = grant["source"]
+    served = admission.load_current(project)
+    for entry in (served or {}).get("sources") or []:
+        if entry["name"] in names:
+            previous[entry["name"]] = entry
+    return previous
 
 
 def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, stdout) -> dict:
     new = kind["new"]
     bindings = authoring_sources.storage_bindings_from_identity(new)  # offline; refuses early
+    previous = _previous_identities(project, {e["name"] for e in new})
     stdout.write("Source approval (no source has been read):\n")
-    stdout.write("\n".join(_identity_lines(new)) + "\n")
+    for entry in new:
+        old = previous.get(entry["name"])
+        if old is None:
+            stdout.write(
+                f"NEW source:\n{chr(10).join(_identity_lines([entry], prefix='    + '))}\n"
+            )
+        else:
+            stdout.write(
+                f"CHANGED source {esc(entry['name'])}:\n"
+                f"{chr(10).join(_identity_lines([old], prefix='    - '))}\n"
+                f"{chr(10).join(_identity_lines([entry], prefix='    + '))}\n"
+            )
+    stdout.write(f"Grant delta: {len(new)} source(s) will be granted read access for authoring.\n")
     if bindings:
-        stdout.write(f"Effective bindings: {json.dumps(bindings, sort_keys=True)}\n")
+        stdout.write(f"Effective bindings: {esc(json.dumps(bindings, sort_keys=True))}\n")
     stdout.write("Live checks (attach, catalog enumeration) run only after you answer yes.\n")
     by = attribution(project)
     if not ask(stdin, stdout, "Grant read access for authoring to these exact sources?"):
@@ -141,8 +202,13 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         ):
             raise ApprovalRefused("the source identity changed during the prompt — nothing changed")
         # live checks inside the transaction: any failure raises before the grant
+        # the host-owned profiling deadline bounds setup and catalog reads: an unreachable
+        # remote cannot hold the project lock (spec 0040 §3.4.2.4)
+        limits = authoring_inputs.project_profiling_limits(project)
         owned = execution.DuckDBExecution(
-            authoring_sources.identity_registry(new, bindings), locked=True
+            authoring_sources.identity_registry(new, bindings),
+            budget=execution.DeadlineBudget(limits["execution_seconds"]),
+            locked=True,
         )
         try:
             tables = sum(len(source["tables"]) for source in owned.catalog)
@@ -176,19 +242,48 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
     }
 
 
-def _summary(review: dict, composite: dict, selections: list) -> list[str]:
+def _diff_lines(project: Path, record: dict, review: dict, limit: int = 120) -> list[str]:
+    """The changed artifacts and definitions: the escaped, bounded unified diff of the
+    draft against its base — the content the operator is actually confirming."""
+    out = proposals._git(
+        ["diff", "--no-color", "--no-ext-diff", record["base_revision"], review["revision"]],
+        project,
+        check=False,
+    ).stdout.splitlines()
+    shown = [f"    {esc(line)}" for line in out[:limit]]
+    if len(out) > limit:
+        shown.append(f"    … {len(out) - limit} more diff line(s) — run 'ariadne diff' for all")
+    return shown
+
+
+def _summary(
+    project: Path, record: dict, review: dict, composite: dict, selected: list[dict]
+) -> list[str]:
     report = review["report"] or {}
     lines = [
         f"Calculation approval of draft revision {review['revision'][:12]}",
         f"Review digest: {review['review_digest']}",
         f"Composite digest: {composite['digest']}",
-        "Changes:",
-        *(f"  {c['change']} {c['path']}" for c in review["changes"]),
-        f"Validation: {report.get('status')}",
+        f"Validation: {esc(report.get('status'))}",
+        "Changed artifacts:",
+        *(f"  {esc(c['change'])} {esc(c['path'])}" for c in review["changes"]),
+        "Changed content:",
+        *_diff_lines(project, record, review),
     ]
-    if selections:
-        lines.append("Mapping confirmations (numbered):")
-        lines += [f"  {n}. {s}" for n, s in enumerate(selections, 1)]
+    if selected:
+        lines.append("Mapping confirmations (numbered; each is confirmed ONLY by this approval):")
+        for number, item in enumerate(selected, 1):
+            assertion = item["assertion"]
+            lines.append(f"  {number}. {esc(item['selection'])} claim={esc(assertion['claim'])}")
+            lines.append(
+                f"     {esc(assertion['from'])} -> {esc(assertion['to'])} "
+                f"family={esc(assertion['family'])} digest={esc(assertion['assertion_digest'])}"
+            )
+            lines.append(
+                f"     declaration: {esc(json.dumps(assertion['declaration'], sort_keys=True))}"
+            )
+            for receipt in assertion["receipts"]:
+                lines.append(f"     evidence: {esc(json.dumps(receipt, sort_keys=True))}")
     return lines
 
 
@@ -221,7 +316,19 @@ def approve_calculation(
         # demand registered original-source retention for every citation, which today's
         # default admission (no --context-private-profile) never required.
     )
-    stdout.write("\n".join(_summary(review, composite, confirm_mappings)) + "\n")
+    shown = admission.admission_review(
+        project,
+        proposal,
+        review["revision"],
+        review["review_digest"],
+        confirm_mappings=confirm_mappings,
+    )
+    stdout.write(
+        "\n".join(
+            _summary(project, record, review, composite, shown.get("mapping_selections") or [])
+        )
+        + "\n"
+    )
     by = attribution(project)
     if not ask(stdin, stdout, "Approve and serve exactly this revision?"):
         raise ApprovalRefused("refused at the prompt — nothing was changed")

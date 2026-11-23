@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import approve, authoring_sources, draft  # noqa: E402
+from ariadne import approve, authoring_sources, draft, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from tests.test_git_authoring import complete_bundle_project, write_parquet  # noqa: E402
 
@@ -227,3 +227,87 @@ def test_a_failure_after_activation_reports_success_and_the_slot_self_heals(tmp_
     served = admission.load_current(project)
     assert served is not None and served["commit"] == review["revision"]
     assert draft.status(project) is None  # self-healed: the consumed generation is retired
+
+
+# ------------------------------------------------ finding 3: what the prompt shows
+
+
+def test_add_refuses_a_source_path_with_a_control_character(tmp_path):
+    """Finding 3 (security): a control character (ESC, CR) in a source path could disguise
+    the consent target on the terminal — refused at entry validation."""
+    for bad in ("data/ok.parquet\x1b[2K\rdata/evil.parquet", "data/a\rb.parquet"):
+        with pytest.raises(ValueError, match="control character"):
+            authoring_sources.add_sources(
+                complete_bundle_project(tmp_path / str(abs(hash(bad)))),
+                None,
+                [{"name": "x", "type": "parquet", "path": bad}],
+            )
+
+
+def test_the_display_escapes_control_characters_in_every_untrusted_field():
+    assert approve.esc("a\x1b[31mb\rc\u0085d") == "a\\x1b[31mb\\x0dc\\x85d"
+
+
+def test_the_source_prompt_shows_the_new_identity_and_the_grant_delta(tmp_path):
+    project, _api, _result = _project_with_new_source(tmp_path)
+    _outcome, shown = _run(project, Tty())
+    assert "NEW source" in shown and "extra" in shown and "extra.parquet" in shown
+    assert "Grant delta: 3 source(s)" in shown and "read-only" in shown  # events, labels, extra
+
+
+def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
+    project, _api, _result = _project_with_new_source(tmp_path)
+    _run(project, Tty())  # grant all three sources first
+    write_parquet(project / "data" / "extra2.parquet", [(1,)], ["n"])
+    # a new draft changes the path of the granted source "extra" (a registry edit)
+    first = draft.edit_artifact(project, None, "data/seed_notes.md", "x\n")["draft"]
+    import yaml
+
+    doc = yaml.safe_load(
+        proposals.read_artifact(project, draft_proposal(project), "ariadne.yaml")["content"]
+    )
+    for entry in doc["sources"]:
+        if entry["name"] == "extra":
+            entry["path"] = "data/extra2.parquet"
+    draft.edit_artifact(
+        project,
+        (first["generation"], draft.status(project)["candidate_revision"]),
+        "ariadne.yaml",
+        yaml.safe_dump(doc, sort_keys=False),
+    )
+    # the seed-notes edit is not a source change: remove it so the draft is sources-only
+    view = draft.status(project)
+    draft.edit_artifact(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        "data/seed_notes.md",
+        (project / "data" / "seed_notes.md").read_text(encoding="utf-8"),
+    )
+    _outcome, shown = _run(project, Tty())
+    assert "CHANGED source extra" in shown
+    assert "    - extra: parquet" in shown and "extra.parquet" in shown
+    assert "    + extra: parquet" in shown and "extra2.parquet" in shown
+
+
+def draft_proposal(project):
+    view = draft.status(project)
+    return draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
+
+
+def test_an_unreachable_source_times_out_within_the_host_deadline_not_the_lock(
+    tmp_path, monkeypatch
+):
+    """Finding 3: the live checks draw the host-owned deadline, so an unreachable remote
+    cannot hold the project lock indefinitely."""
+    seen = {}
+    real = approve.execution.DuckDBExecution
+
+    class Spy(real):
+        def __init__(self, registry, **kwargs):
+            seen["budget"] = kwargs.get("budget")
+            super().__init__(registry, **kwargs)
+
+    monkeypatch.setattr(approve.execution, "DuckDBExecution", Spy)
+    project, _api, _result = _project_with_new_source(tmp_path)
+    _run(project, Tty())
+    assert seen["budget"] is not None and seen["budget"].seconds > 0
