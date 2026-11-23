@@ -3003,10 +3003,7 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
     # Spec rev 1 acceptance 1/AC6-local at the public seam: the hand-derived
     # trap values (NA 300/300, EMEA 400/400) come back governed through the
     # runtime, the local JSON CLI, and the MCP tool — one implementation.
-    import io
-
-    from integration.tests.legacy_cli_support import main as cli_main
-
+    from ariadne.cli import main as cli_main
     from ariadne.serve import build_app
 
     project, view = _t5_admitted(tmp_path)
@@ -3056,13 +3053,11 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         assert policy_view["verification_tier"] == "unverified"
         assert policy_view["freshness"]["state"] == "unknown"
 
-    # the local JSON CLI returns the SAME value over its own runtime instance
-    request_file = tmp_path / "request.json"
-    request_file.write_text(json.dumps(request), encoding="utf-8")
+    # the local JSON CLI (`ariadne query --by`, one metric, no filter) returns the SAME value
+    # as the runtime's single-metric call; the multi-metric request has no CLI form
     capsys.readouterr()  # drop the admission receipt: the CLI writes exactly one JSON value
     code = cli_main(
-        ["query-metrics", "--project", str(project), "--file", str(request_file)],
-        io.StringIO(""),
+        ["query", "orders_total", "--by", "region", "--json", "--project", str(project)]
     )
     assert code == 0
 
@@ -3082,7 +3077,8 @@ def test_t5_admitted_graph_returns_same_rows_and_context_over_runtime_cli_and_mc
         return normalized
 
     cli_result = json.loads(capsys.readouterr().out)
-    assert _normalized(cli_result) == _normalized(result)
+    single = asyncio.run(runtime.get_metric("orders_total", ["region"]))
+    assert _normalized(cli_result) == _normalized(single)
 
     # the MCP tool is a thin adapter over the same runtime method
     app = build_app(runtime)
@@ -3303,17 +3299,12 @@ def test_t5_cli_query_metrics_error_keeps_the_planner_code_and_candidates(tmp_pa
     # fields (spec rev 1: error codes and candidate/retry information are API
     # fields, message prose is not) — an unknown metric reports code
     # unknown_metric plus the real candidates over the admitted graph.
-    import io
-
-    from integration.tests.legacy_cli_support import main as cli_main
+    from ariadne.cli import main as cli_main
 
     project, _view = _t5_admitted(tmp_path)
-    request_file = tmp_path / "bad-request.json"
-    request_file.write_text(json.dumps({"metrics": ["no_such_metric"]}), encoding="utf-8")
     capsys.readouterr()  # drop the admission receipt: the CLI writes one JSON error
     code = cli_main(
-        ["query-metrics", "--project", str(project), "--file", str(request_file)],
-        io.StringIO(""),
+        ["query", "no_such_metric", "--filter", "region = 'NA'", "--project", str(project)]
     )
     assert code == 1
     captured = capsys.readouterr()
