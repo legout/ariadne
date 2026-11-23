@@ -217,3 +217,38 @@ def test_the_generated_agents_page_names_only_current_commands(tmp_path):
     text = (project / "AGENTS.md").read_text()
     assert "ariadne approve" in text and "ariadne draft edit" in text
     assert "ariadne-skill" not in text and "ariadne-authoring" not in text
+
+
+def test_a_dangling_symlink_record_is_refused_at_preflight_and_never_replaced(tmp_path):
+    project = tmp_path / "proj"
+    project.mkdir()
+    git(project, "init", "-q")
+    identity(project)
+    (project / ".ariadne").mkdir()
+    gone = tmp_path / "temporarily-unavailable.json"
+    (project / ".ariadne" / "profile.json").symlink_to(gone)
+    with pytest.raises(ValueError, match="already records a private profile"):
+        init.init_project(project)
+    assert (project / ".ariadne" / "profile.json").is_symlink() and not gone.exists()
+    assert not profile_pair.config_dir().exists()  # nothing else was created
+
+
+def test_the_record_is_published_no_replace_when_created_after_the_preflight(tmp_path):
+    project = tmp_path / "proj"
+    (project / ".ariadne").mkdir(parents=True)
+    lumio, sibling = tmp_path / "l.json", tmp_path / "l.ariadne.json"
+    path = project / ".ariadne" / "profile.json"
+    real = profile_pair.write_private
+
+    def racing(target, text):
+        path.write_text("{}")  # an operator record appears between check and publish
+        return real(target, text)
+
+    original = profile_pair.write_private
+    profile_pair.write_private = racing  # type: ignore[assignment]
+    try:
+        with pytest.raises(ValueError, match="already exists"):
+            profile_pair.record(project, lumio, sibling)
+    finally:
+        profile_pair.write_private = original
+    assert path.read_text() == "{}"

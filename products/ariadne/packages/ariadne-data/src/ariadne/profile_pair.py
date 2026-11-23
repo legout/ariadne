@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -109,18 +108,21 @@ def load_sibling(path: Path) -> dict:
 
 
 def record(project: Path, lumio_profile: Path, sibling: Path) -> None:
-    """Record both paths in ``.ariadne/profile.json`` (atomic)."""
+    """Record both paths in ``.ariadne/profile.json``: published no-replace (``O_EXCL`` temp,
+    fsync, ``link``), so an existing record — even a dangling symlink, or one created after
+    the preflight — is never replaced."""
     path = project / RECORD_REL
-    if path.exists():
+    if path.exists() or path.is_symlink():
         raise ValueError(f"{path}: a private profile record already exists — never replaced")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"lumio_profile": str(lumio_profile), "ariadne_settings": str(sibling)}, fh)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    text = (
+        json.dumps({"lumio_profile": str(lumio_profile), "ariadne_settings": str(sibling)}) + "\n"
+    )
+    try:
+        write_private(path, text)
+    except FileExistsError:
+        raise ValueError(
+            f"{path}: a private profile record already exists — never replaced"
+        ) from None
 
 
 def load(project: Path) -> dict:

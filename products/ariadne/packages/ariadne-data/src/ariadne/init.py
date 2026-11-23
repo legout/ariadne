@@ -512,7 +512,8 @@ def init_project(target: str | Path, *, assume_yes: bool = False, stdin=None, st
         )
     # EVERY target file is checked before anything (repository, profile, files) is created
     preflight_targets(target)
-    if (target / profile_pair.RECORD_REL).exists():
+    record_path = target / profile_pair.RECORD_REL
+    if record_path.exists() or record_path.is_symlink():  # a dangling link counts
         raise ValueError(
             f"init refuses: {profile_pair.RECORD_REL} already records a private profile for "
             "this directory without a complete project — it is never replaced silently; "
