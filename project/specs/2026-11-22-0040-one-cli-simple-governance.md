@@ -223,10 +223,13 @@ sources with `governed:false` and state what the answer rests on.
       recoverable transaction with a single commit point**: the approval journal is
       renamed to its committed form and the directory is synced. A failure before that
       point rolls all three back and is reported as a failure; a failure after it is
-      cleanup and the approval is reported as successful. While the journal of an
-      unfinished or interrupted approval exists, authoring reads that depend on grants
-      refuse with a clear message instead of using the grants file. (Owner decision
-      2026-11-23 at B1 review R1.)
+      cleanup and the approval is reported as successful. If the directory sync after
+      the rename fails, the approval stays **pending**: the command reports "recovery
+      pending", and a later operation retries the sync. The approval stands once the
+      sync is confirmed. While the journal or the committed marker of an unfinished or
+      interrupted approval exists, authoring reads that depend on grants refuse with a
+      clear message instead of using the grants file. (Owner decision 2026-11-23 at
+      B1 review R1; the pending rule for a failed sync was added the same day.)
    6. The approved draft generation is **consumed**. The source declarations it
       contains are committed to the project as the new *approved source baseline*. The
       next edit starts a new draft generation on top of it, so a calculation draft sees
