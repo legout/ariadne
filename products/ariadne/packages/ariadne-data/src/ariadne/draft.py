@@ -300,15 +300,17 @@ def mutate(
         active = _check_expected(slot_before, expected)
         created: str | None = None
         if active is None:
-            if expect_base is not None and first_write_base(project) != expect_base:
+            # ONE snapshot under the lock: the slot (read above) and the effective base are
+            # captured together, and the draft opens on EXACTLY the commit verified here —
+            # never on a HEAD read that a native Git commit (no Ariadne lock) may have moved
+            base = base_revision or first_write_base(project)
+            if expect_base is not None and base != expect_base:
                 raise ValueError(
                     "the base this write was prepared against is no longer the base a new draft "
                     "would build on (a release or source approval landed meanwhile) — nothing "
                     "was written; repeat the operation"
                 )
-            started = proposals.start_proposal(
-                project, base_revision=base_revision or _default_base(project), _lock_held=True
-            )
+            started = proposals.start_proposal(project, base_revision=base, _lock_held=True)
             created = started["proposal"]
             generation = (slot_before["generation"] if slot_before else 0) + 1
             active = {

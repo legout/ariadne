@@ -605,17 +605,21 @@ def test_migrate_refuses_when_the_draft_moved_after_the_pin(tmp_path, monkeypatc
 def test_migrate_with_no_draft_builds_on_the_approved_source_baseline(tmp_path):
     """Finding 4 (second pass): with no slot the first write builds on the REAL first-write
     base — the approved source baseline included — so the converted candidate keeps an
-    approved registry change instead of forcing the served/HEAD revision over it."""
+    approved registry change instead of forcing the served/HEAD revision over it. The baseline
+    is a commit that DIFFERS from HEAD (a child of it on a side branch), as in a real source
+    approval, so selecting HEAD would lose the marker."""
     from ariadne import draft
 
     project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
     head = _git(project, "rev-parse", "HEAD").strip()
+    _git(project, "checkout", "-q", "-b", "approved-sources")
     registry = (project / "ariadne.yaml").read_text(encoding="utf-8")
     (project / "ariadne.yaml").write_text(registry + "\n# approved source baseline marker\n")
     _git(project, "add", "ariadne.yaml")
     _git(project, "commit", "-q", "-m", "baseline with an approved registry change")
     baseline = _git(project, "rev-parse", "HEAD").strip()
-    assert baseline != head
+    _git(project, "checkout", "-q", "-")  # HEAD returns to the pre-baseline commit
+    assert _git(project, "rev-parse", "HEAD").strip() == head != baseline
     draft.set_source_baseline(project, baseline)
     assert draft.first_write_base(project) == baseline
 
@@ -623,6 +627,38 @@ def test_migrate_with_no_draft_builds_on_the_approved_source_baseline(tmp_path):
 
     kept = _git(project, "show", f"{result['revision']}:ariadne.yaml")
     assert "approved source baseline marker" in kept
+
+
+def test_migrate_opens_the_draft_on_the_verified_commit_when_head_moves_before_start(
+    tmp_path, monkeypatch
+):
+    """Finding 4 (third pass): a native Git commit (no Ariadne lock) landing between the
+    verified base read and the proposal start must not become the draft's base: the draft
+    opens on exactly the commit that was verified."""
+    from ariadne import draft, proposals
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    verified = _git(project, "rev-parse", "HEAD").strip()
+    real = proposals.start_proposal
+
+    def head_moves_then_start(*args, **kwargs):
+        (project / "ariadne.yaml").write_text(
+            (project / "ariadne.yaml").read_text(encoding="utf-8") + "\n# native commit\n"
+        )
+        _git(project, "add", "ariadne.yaml")
+        _git(project, "commit", "-q", "-m", "a native commit lands")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(proposals, "start_proposal", head_moves_then_start)
+    migrate.migrate_project(project)
+    monkeypatch.undo()
+    view = draft.status(project)
+    assert view is not None
+    record = proposals._load_record(
+        project, draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
+    )
+    assert record["base_revision"] == verified
+    assert _git(project, "rev-parse", "HEAD").strip() != verified  # HEAD really moved
 
 
 def test_migrate_refuses_when_the_first_write_base_moves_while_converting(tmp_path, monkeypatch):
