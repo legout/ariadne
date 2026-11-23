@@ -223,6 +223,15 @@ sources with `governed:false` and state what the answer rests on.
         unchanged;
       - it authorizes bounded **reads for authoring only**: profiling, inspection,
         schema refresh and preview.
+
+      The grant, the consumed draft generation and the new source baseline form **one
+      recoverable transaction with a single commit point**: the approval journal is
+      renamed to its committed form and the directory is synced. A failure before that
+      point rolls all three back and is reported as a failure; a failure after it is
+      cleanup and the approval is reported as successful. While the journal of an
+      unfinished or interrupted approval exists, authoring reads that depend on grants
+      refuse with a clear message instead of using the grants file. (Owner decision
+      2026-11-23 at B1 review R1.)
    6. The approved draft generation is **consumed**. The source declarations it
       contains are committed to the project as the new *approved source baseline*. The
       next edit starts a new draft generation on top of it, so a calculation draft sees
