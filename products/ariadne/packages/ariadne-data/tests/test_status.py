@@ -695,6 +695,11 @@ def test_status_never_reports_an_uncommitted_grant_as_current_when_the_first_loc
 
     project = complete_bundle_project(tmp_path / "proj")
     (project / ".ariadne").mkdir(exist_ok=True)
+    # one declared source: the scaffold display's second grants read is then the deciding one
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: events\n    type: parquet\n    path: data/events.parquet\n",
+        encoding="utf-8",
+    )
     registry = authoring_sources.sources.load_registry(project / "ariadne.yaml")
     resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
     grants = [
