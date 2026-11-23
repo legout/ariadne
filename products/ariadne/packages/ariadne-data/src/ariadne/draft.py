@@ -199,7 +199,23 @@ def status_readonly(project: str | Path) -> dict | None:
         raise UnconfirmedSourceApproval(
             "a source approval is pending recovery — run 'ariadne draft status' to recover it"
         )
-    return _view(project, _load_slot(project))
+    slot = _load_slot(project)
+    if slot is not None and slot["state"] == "active" and _already_activated(project, slot):
+        return None  # recover() would retire it: omit it from pending work, writing nothing
+    return _view(project, slot)
+
+
+def _already_activated(project: Path, slot: dict) -> bool:
+    """The SAME proposal and revision match ``recover`` uses: the served release IS this slot's
+    candidate (a failure after ``current.json`` was published left the slot active)."""
+    from ariadne import admission  # lazy: admission imports this module
+
+    served = admission.load_current(project)
+    return (
+        served is not None
+        and served["proposal"] == slot["proposal"]
+        and served["commit"] == slot["candidate_revision"]
+    )
 
 
 def status(project: str | Path) -> dict | None:
@@ -663,8 +679,6 @@ def recover(project: Path) -> None:
       removed (the grant stays effective), on failure the approval stays pending.
     - A calculation approval whose release is already serving but whose generation was never
       retired (a failure after ``current.json`` was published) retires it now."""
-    from ariadne import admission  # lazy: admission imports this module
-
     if source_txn_pending(project):
         with grants_lock(project):  # project.lock (held by the caller) first, then grants.lock
             if (project / TXN_REL).exists():
@@ -672,14 +686,8 @@ def recover(project: Path) -> None:
             elif (project / TXN_COMMITTED_REL).exists():
                 _confirm_committed(project)  # committed: retry the sync; success admits readers
     slot = _load_slot(project)
-    if slot is not None and slot["state"] == "active":
-        served = admission.load_current(project)
-        if (
-            served is not None
-            and served["proposal"] == slot["proposal"]
-            and served["commit"] == slot["candidate_revision"]
-        ):
-            consume(project, slot["proposal"])
+    if slot is not None and slot["state"] == "active" and _already_activated(project, slot):
+        consume(project, slot["proposal"])
 
 
 def consume(project: Path, proposal: str) -> None:

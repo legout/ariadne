@@ -219,6 +219,20 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         # unresolved journal is the only rollback record and must never be replaced
         try:
             draft.recover(project)
+        except draft.RollbackCleanup as cleanup:
+            # a PRIOR approval's journal was durably restored and is gone; only the cleanup sync
+            # after its removal failed or was interrupted: cleanup only, never "recovery pending"
+            raise ApprovalRefused(
+                "not approved; an earlier source approval was rolled back (its files are restored "
+                "and its journal is gone) but the cleanup sync after the removal did not "
+                f"complete — cleanup only. Nothing of this approval was changed. Cause: {cleanup}"
+            ) from cleanup
+        except draft.JournalRemnant as remnant:
+            raise ApprovalRefused(
+                "not approved; an earlier source approval was rolled back (its files are restored) "
+                "but its journal remnant could not be removed: reads stay refused until it is "
+                f"removed — run 'ariadne draft status' to retry. Cause: {remnant}"
+            ) from remnant
         except BaseException as exc:
             raise ApprovalRefused(
                 "not approved; recovery pending — a previous source approval could not be "

@@ -569,6 +569,11 @@ def _render(report: dict) -> str:
     proposals_pending = report["work_pending"]["proposals"]
     if proposals_pending:
         entry = proposals_pending[0]
+        if entry.get("state") == "source_approval_pending":
+            lines.append(_row("draft:", f"pending — a source approval; run {entry.get('command')}"))
+            proposals_pending = []
+    if proposals_pending:
+        entry = proposals_pending[0]
         lines.append(
             _row(
                 "draft:",

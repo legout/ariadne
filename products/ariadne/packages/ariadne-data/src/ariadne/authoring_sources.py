@@ -421,7 +421,12 @@ def _load_grants(project: Path, *, _held: bool = False) -> list[dict]:
     if DIAGNOSIS.get() and not (project / draft.GRANTS_LOCK_REL).exists():
         if draft.source_txn_pending(project):
             raise SourceApprovalPending(_PENDING_MESSAGE)
-        return _read_grants_file(project)
+        grants = _read_grants_file(project)
+        # re-sample AFTER the unlocked read: if the first lock appeared (a writer started) or a
+        # journal/marker exists, the unlocked read may be an uncommitted grant — never call it
+        # current; fall through to the normal locked path (which refuses while pending)
+        if not (project / draft.GRANTS_LOCK_REL).exists() and not draft.source_txn_pending(project):
+            return grants
     with draft.grants_lock(project):
         if draft.source_txn_pending(project):
             raise SourceApprovalPending(_PENDING_MESSAGE)

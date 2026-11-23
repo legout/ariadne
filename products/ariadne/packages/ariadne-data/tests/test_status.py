@@ -671,3 +671,65 @@ def test_status_reports_a_pending_source_approval_without_recovering_or_writing(
         assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
         assert tree_hash(project) == before  # no file created or changed
         assert (project / target).exists()  # and no recovery ran
+
+
+def test_status_never_reports_an_uncommitted_grant_as_current_when_the_first_lock_appears(
+    tmp_path, capsys, monkeypatch
+):
+    """Blocker 1: the unlocked diagnostic read races the FIRST creation of grants.lock. Between
+    the lock-absent check and the grants read a writer creates the lock, the journal and replaces
+    the grants file: status must not call that state current (it falls to the locked path and
+    reports pending). And a status of an empty project creates no lock file."""
+    from ariadne import authoring_sources, draft
+
+    project = complete_bundle_project(tmp_path / "proj")
+    (project / ".ariadne").mkdir(exist_ok=True)
+    real_read = authoring_sources._read_grants_file
+
+    def writer_starts_during_the_read(proj):
+        if not (proj / draft.GRANTS_LOCK_REL).exists():
+            draft.grants_lock(proj).__enter__()  # the writer takes the first lock ... (held)
+            draft.begin_source_txn(proj)  # ... journals ...
+            registry = authoring_sources.sources.load_registry(proj / "ariadne.yaml")
+            resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
+            authoring_sources._store_grants(
+                proj,
+                [
+                    {
+                        "source": e,
+                        "source_digest": authoring_sources.resolved_digest([e]),
+                        "binding": None,
+                        "postgres_binding": None,
+                        "by": "human:w",
+                        "at": "2026-01-01T00:00:00+00:00",
+                        "generation": 1,
+                        "seq": n,
+                    }
+                    for n, e in enumerate(resolved, 1)
+                ],
+            )  # ... and replaces the grants file (uncommitted)
+        return real_read(proj)
+
+    monkeypatch.setattr(authoring_sources, "_read_grants_file", writer_starts_during_the_read)
+    monkeypatch.setattr(draft, "grants_lock", lambda _p: _NullLock())  # the writer still "holds" it
+    report = status_json(capsys, "--project", str(project))
+    sources_view = report["sources"]
+    assert (
+        sources_view.get("scaffold") is None or sources_view["scaffold"].get("approval") is not True
+    )
+    assert (sources_view.get("scaffold") or {}).get("effective_approval") != "current"
+
+    empty = tmp_path / "empty-project"
+    empty.mkdir()
+    subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    monkeypatch.undo()
+    status_json(capsys, "--project", str(empty))
+    assert not (empty / ".ariadne").exists()
+
+
+class _NullLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False

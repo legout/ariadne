@@ -1302,3 +1302,94 @@ def test_an_interruption_in_a_cleanup_region_keeps_the_phase_outcome(tmp_path, m
         assert "recovery pending" not in str(raised.value)
         assert not (project / draft.TXN_REL).exists()
         assert _granted(project, result) is False
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt(), OSError("unlink sync failed")])
+def test_a_prior_journal_restored_then_interrupted_at_its_cleanup_is_cleanup_only(
+    tmp_path, monkeypatch, failure
+):
+    """Blocker 3: operator A leaves a journal; operator B, already at the prompt, consents and
+    recovers it. After A's journal was durably restored and removed, an interruption or an
+    OSError at the cleanup sync is CLEANUP ONLY: B's approval stops with that distinct message
+    (never "recovery pending"/"incomplete restore"), the journal is gone and no grant is
+    effective."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+
+    def operator_one_fails_and_leaves_a_journal():
+        with monkeypatch.context() as m:
+            m.setattr(draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck")))
+            with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
+                _run(project, Tty())
+        assert (project / draft.TXN_REL).exists()
+        # B recovers A's journal after consent; the cleanup sync after its removal fails
+        real_sync, real_unlink = proposals._fsync_path, Path.unlink
+        state = {"armed": False}
+
+        def unlink(self, *a, **k):
+            out = real_unlink(self, *a, **k)
+            if self.name == "source_txn.json":
+                state["armed"] = True
+            return out
+
+        def sync(path):
+            if state["armed"] and not (project / draft.TXN_REL).exists():
+                state["armed"] = False
+                raise failure
+            return real_sync(path)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+
+    with pytest.raises(approve.ApprovalRefused, match="cleanup only") as raised:
+        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    monkeypatch.undo()
+    assert "recovery pending" not in str(raised.value)
+    assert "incomplete" not in str(raised.value)
+    assert not (project / draft.TXN_REL).exists()  # the journal is gone
+    assert _state_bytes(project) == before  # restored durably
+    assert _granted(project, result) is False  # no grant is effective
+
+
+def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, monkeypatch, capsys):
+    """Blocker 2: the failed-`draft.consume` journey (release serving, slot still active):
+    the read-only `status` omits that already-activated slot — no stale draft, no rebase hint —
+    exactly as the recovering lookup would, and writes nothing."""
+    from ariadne import admission
+    from ariadne.cli import main as cli
+    from tests.test_git_admission import _policy_edit, admitted_ready
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    review, _journey = admitted_ready(api, project, _policy_edit("Serving body."))
+    real_consume = draft.consume
+    monkeypatch.setattr(draft, "consume", lambda *_a, **_k: (_ for _ in ()).throw(OSError("io")))
+    composite = admission.overall_review(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        destination=tmp_path / "published",
+        expected_current="none",
+    )
+    admission.admit_revision(
+        project,
+        review["proposal"],
+        review["revision"],
+        review["review_digest"],
+        confirmed_by="human:test",
+        overall_preview=composite,
+        confirmed_overall_digest=composite["digest"],
+    )
+    monkeypatch.setattr(draft, "consume", real_consume)
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
+    assert json.loads(slot_before)["state"] == "active"  # served, yet the slot is still active
+    capsys.readouterr()
+    assert cli(["status", "--json", "--project", str(project)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["work_pending"]["proposals"] == []  # no stale draft ...
+    assert "rebase" not in " ".join(report["next_steps"])  # ... and no rebase hint
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before  # status wrote nothing
+    assert cli(["status", "--project", str(project)]) == 0
+    assert "draft:" in capsys.readouterr().out
