@@ -270,9 +270,27 @@ def test_status_never_opens_compiles_or_connects_and_changes_no_files(
     empty = tmp_path / "empty-cwd"
     empty.mkdir()
     subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    empty_before = tree_hash(empty)
     status_json(capsys, "--project", str(empty))
     assert not (empty / ".ariadne").exists()
-    assert tree_hash(empty) == tree_hash(empty)  # and nothing else appeared
+    assert tree_hash(empty) == empty_before  # and nothing else appeared
+
+    # a directory holding only `.ariadne/`: the read-only view takes no lock, so no lock file
+    only_state = tmp_path / "only-state"
+    (only_state / ".ariadne").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(only_state)], check=True)
+    listing = sorted(
+        p.relative_to(only_state).as_posix()
+        for p in only_state.rglob("*")
+        if ".git/" not in p.as_posix() + "/"
+    )
+    status_json(capsys, "--project", str(only_state))
+    after = sorted(
+        p.relative_to(only_state).as_posix()
+        for p in only_state.rglob("*")
+        if ".git/" not in p.as_posix() + "/"
+    )
+    assert after == listing and not (only_state / ".ariadne" / "locks").exists()
 
 
 # ------------------------------------------------------------------- [AC5]
@@ -628,23 +646,28 @@ def test_an_active_draft_shows_its_recovery_command_while_a_release_is_serving(t
     assert "ariadne approve" in steps and "new sources first" in steps
 
 
-def test_a_stuck_source_approval_rollback_is_reported_as_pending_recovery(
+def test_status_reports_a_pending_source_approval_without_recovering_or_writing(
     tmp_path, capsys, monkeypatch
 ):
-    """Item 5: a journal that cannot be rolled back shows as a SOURCE APPROVAL pending recovery
-    with `ariadne draft status` — not as a generic unreadable draft."""
+    """Blockers 2 (second pass, spec 0016 AC4): with a journal or a committed marker present,
+    `status` reports a source approval pending recovery with `ariadne draft status` and creates
+    or changes NO file and executes NO recovery: the marker/journal still exist afterwards even
+    though a recovery would now succeed."""
     from ariadne import draft
 
-    project = admitted_project(tmp_path)
-    draft.begin_source_txn(project)  # an interrupted approval's journal
-    monkeypatch.setattr(
-        draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck"))
-    )
-    report = status_json(capsys, "--project", str(project))
-    (entry,) = report["work_pending"]["proposals"]
-    assert (
-        entry["state"] == "source_approval_pending" and "ariadne draft status" in entry["command"]
-    )
-    steps = " ".join(report["next_steps"])
-    assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
-    assert "unreadable" not in steps
+    for kind in ("journal", "marker"):
+        project = admitted_project(tmp_path / kind)
+        draft.begin_source_txn(project)
+        if kind == "marker":
+            draft.commit_source_txn(project)  # rename + a working sync: recovery WOULD succeed
+        target = draft.TXN_REL if kind == "journal" else draft.TXN_COMMITTED_REL
+        assert (project / target).exists()
+        before = tree_hash(project)
+        report = status_json(capsys, "--project", str(project))
+        (entry,) = report["work_pending"]["proposals"]
+        assert entry["state"] == "source_approval_pending"
+        assert "ariadne draft status" in entry["command"]
+        steps = " ".join(report["next_steps"])
+        assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
+        assert tree_hash(project) == before  # no file created or changed
+        assert (project / target).exists()  # and no recovery ran

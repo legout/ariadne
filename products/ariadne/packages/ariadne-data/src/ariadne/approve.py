@@ -288,6 +288,11 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
             except BaseException as failure:
                 try:
                     draft.rollback_source_txn(project)  # also removes a journal this attempt made
+                except draft.RollbackCleanup as cleanup:
+                    raise ApprovalRefused(
+                        "not approved (all three files were restored and the journal is gone); "
+                        f"the cleanup sync after its removal did not complete. Cause: {cleanup}"
+                    ) from failure
                 except draft.JournalRemnant as remnant:
                     raise ApprovalRefused(
                         "not approved (all three files were restored), but the journal remnant "
@@ -304,7 +309,7 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 raise
             try:
                 draft.end_source_txn(project)  # post-commit cleanup
-            except Exception:
+            except BaseException:  # cleanup region only: even an interruption keeps the success
                 pass  # reads wait until the next operation retries the cleanup
     return {
         "approved": "sources",

@@ -952,7 +952,8 @@ def test_a_failed_or_interrupted_commit_sync_is_pending_until_the_next_holder_co
     with pytest.raises(authoring_sources.SourceApprovalPending):  # a read is refused
         authoring_sources._effective_grant(project, resolved, digest, "p", result["revision"])
 
-    draft.status(project)  # the next holder retries the sync: it fails again -> still pending
+    with pytest.raises(draft.UnconfirmedSourceApproval):  # the retry fails again -> still pending
+        draft.status(project)
     assert (project / draft.TXN_COMMITTED_REL).exists()
     assert authoring_sources.approval_state(project, resolved, digest)["state"] == "in-progress"
 
@@ -1135,10 +1136,169 @@ def test_the_journal_round_trips_bytes_including_crlf(tmp_path, monkeypatch):
     assert _state_bytes(project) == before  # exact bytes, CRLF included
 
 
-def test_previous_identities_refuse_to_show_new_instead_of_changed_when_a_journal_appears(tmp_path):
-    """Item 5: a journal appearing between classification and rendering must not silently turn a
-    CHANGED source into NEW: the display refuses with the pending message and does not prompt."""
-    project, _api, _result = _project_with_new_source(tmp_path)
-    draft.begin_source_txn(project)
+def test_a_journal_appearing_after_classification_refuses_before_any_consent(tmp_path, monkeypatch):
+    """Blocker 4: through the approval entry point, with a PRIOR GRANT for a changed identity: a
+    journal appears after classification and before the prior identities are read. The pending
+    response is returned and consent is never requested (no prompt, nothing changed)."""
+    import yaml
+
+    project = complete_bundle_project(tmp_path)
+    write_parquet(project / "data" / "later.parquet", [(1,)], ["n"])
+    authoring_sources.add_sources(
+        project, None, [authoring_sources.source_entry("data/later.parquet", name="later")]
+    )
+    _run(project, Tty())  # grant it: the prior identity
+    write_parquet(project / "data" / "later2.parquet", [(1,)], ["n"])
+    first = draft.edit_artifact(project, None, "data/seed_notes.md", "x\n")["draft"]
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (first["generation"], view["candidate_revision"]),
+        "data/seed_notes.md",
+        (project / "data" / "seed_notes.md").read_text(encoding="utf-8"),
+    )
+    doc = yaml.safe_load(
+        proposals.read_artifact(project, draft_proposal(project), "ariadne.yaml")["content"]
+    )
+    for entry in doc["sources"]:
+        if entry["name"] == "later":
+            entry["path"] = "data/later2.parquet"  # a CHANGED identity of a granted source
+    view = _view(project)
+    draft.edit_artifact(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        "ariadne.yaml",
+        yaml.safe_dump(doc, sort_keys=False),
+    )
+    real = approve._previous_identities
+
+    def journal_appears_first(proj, names):
+        draft.begin_source_txn(proj)  # after classification, before the prior identities
+        return real(proj, names)
+
+    monkeypatch.setattr(approve, "_previous_identities", journal_appears_first)
+    asked = {"n": 0}
+
+    class Counting(Tty):
+        def readline(self, *a):
+            asked["n"] += 1
+            return super().readline(*a)
+
+    slot_before = (project / draft.DRAFT_REL).read_bytes()
     with pytest.raises(approve.ApprovalRefused, match="in progress or was interrupted"):
-        approve._previous_identities(project, {"extra"})
+        _run(project, Counting())
+    assert asked["n"] == 0  # consent was never requested
+    assert (project / draft.DRAFT_REL).read_bytes() == slot_before  # nothing changed
+
+
+def test_a_pending_approval_stops_every_draft_mutation_but_cleanup_alone_does_not(
+    tmp_path, monkeypatch, capsys
+):
+    """Blocker 1: a marker whose confirmation sync still fails is PENDING: `draft status`
+    reports it (non-zero, through the CLI) and every mutation refuses and changes nothing — the
+    typed edit opens no generation. A marker whose sync succeeds but whose REMOVAL fails is
+    cleanup only: lookups and mutations proceed."""
+    from ariadne.authoring import AuthoringProject
+    from ariadne.cli import main as cli
+
+    project, _api, _result = _project_with_new_source(tmp_path)
+    monkeypatch.setattr(draft, "end_source_txn", lambda *_a, **_k: None)  # leave the marker
+    _run(project, Tty())
+    monkeypatch.undo()
+    assert (project / draft.TXN_COMMITTED_REL).exists()
+    real_sync = proposals._fsync_path
+
+    def failing(path):
+        if (project / draft.TXN_COMMITTED_REL).exists():
+            raise OSError("sync still failing")
+        return real_sync(path)
+
+    monkeypatch.setattr(proposals, "_fsync_path", failing)
+    slot_before = (
+        (project / draft.DRAFT_REL).read_bytes() if (project / draft.DRAFT_REL).exists() else None
+    )
+    capsys.readouterr()
+    assert cli(["draft", "status", "--json", "--project", str(project)]) == 1
+    reported = json.loads(capsys.readouterr().out)
+    assert (
+        reported["source_approval_pending"] is True
+        and "ariadne draft status" in reported["command"]
+    )
+    for operation in (
+        lambda: AuthoringProject(project).apply_edit(
+            {"kind": "seed_notes", "content": "pending edit\n"}
+        ),
+        lambda: draft.open_draft(project),
+        lambda: draft.edit_artifact(project, None, "data/seed_notes.md", "y\n"),
+    ):
+        with pytest.raises(draft.UnconfirmedSourceApproval):
+            operation()
+    after = (
+        (project / draft.DRAFT_REL).read_bytes() if (project / draft.DRAFT_REL).exists() else None
+    )
+    assert after == slot_before  # no generation was opened
+    assert (project / draft.TXN_COMMITTED_REL).exists()
+
+    monkeypatch.undo()  # the sync succeeds now, but the marker REMOVAL fails: cleanup only
+    real_unlink = Path.unlink
+
+    def unlink(self, *a, **k):
+        if self.name == "source_txn.committed":
+            raise OSError("unlink refused")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert draft.status(project) is None  # lookups proceed
+    view = draft.open_draft(project)  # and so do mutations
+    assert view["generation"] >= 1
+
+
+@pytest.mark.parametrize("region", ["post-commit cleanup", "rollback cleanup"])
+def test_an_interruption_in_a_cleanup_region_keeps_the_phase_outcome(tmp_path, monkeypatch, region):
+    """Blocker 3: Ctrl-C at the cleanup sync. After a successful commit it is still a SUCCESS (the
+    grant is effective); after a full restore it is the failed approval with its cleanup note,
+    not 'recovery pending'."""
+    project, _api, result = _project_with_new_source(tmp_path)
+    real_sync = proposals._fsync_path
+    if region == "post-commit cleanup":
+
+        def sync(path):
+            if (
+                not (project / draft.TXN_COMMITTED_REL).exists()
+                and (project / GRANTS).exists()
+                and not (project / draft.TXN_REL).exists()
+            ):
+                raise KeyboardInterrupt  # the cleanup sync after the marker removal
+            return real_sync(path)
+
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+        outcome, _shown = _run(project, Tty())
+        monkeypatch.undo()
+        assert outcome["approved"] == "sources"
+        assert _granted(project, result) is True
+    else:
+        _fault(monkeypatch, project, "draft consume")
+        state = {"armed": False}
+
+        def sync(path):
+            # after the journal is gone the cleanup sync is interrupted
+            if state["armed"] and not (project / draft.TXN_REL).exists():
+                raise KeyboardInterrupt
+            return real_sync(path)
+
+        real_unlink = Path.unlink
+
+        def unlink(self, *a, **k):
+            out = real_unlink(self, *a, **k)
+            if self.name == "source_txn.json":
+                state["armed"] = True
+            return out
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+        with pytest.raises(approve.ApprovalRefused, match="cleanup sync") as raised:
+            _run(project, Tty())
+        monkeypatch.undo()
+        assert "recovery pending" not in str(raised.value)
+        assert not (project / draft.TXN_REL).exists()
+        assert _granted(project, result) is False

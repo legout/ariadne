@@ -188,6 +188,20 @@ def _view(project: Path, slot: dict | None) -> dict | None:
     }
 
 
+def status_readonly(project: str | Path) -> dict | None:
+    """The active draft's view WITHOUT recovery, locks or any write (diagnosis only): raises
+    :class:`UnconfirmedSourceApproval` when a journal or marker exists (never retries, never
+    removes). An absent state directory has no draft."""
+    project = Path(project).resolve()
+    if not (project / proposals.ARIADNE_STATE_DIR).is_dir():
+        return None
+    if source_txn_pending(project):
+        raise UnconfirmedSourceApproval(
+            "a source approval is pending recovery — run 'ariadne draft status' to recover it"
+        )
+    return _view(project, _load_slot(project))
+
+
 def status(project: str | Path) -> dict | None:
     """The active draft's identity and staleness, or ``None`` without one. Reading first
     completes or undoes an interrupted approval (so a half-finished one never shows)."""
@@ -510,6 +524,19 @@ class CommitSyncPending(OSError):
     refused, the next project-lock holder retries the sync."""
 
 
+class UnconfirmedSourceApproval(ValueError):
+    """A source approval's commit marker exists and the directory sync could not be confirmed:
+    the approval is PENDING (spec 0040 §3.4.2.5). Draft lookups report it and every draft
+    mutation refuses: the baseline and slot are not yet confirmed as approved."""
+
+    command = "ariadne draft status"
+
+
+class RollbackCleanup(OSError):
+    """All three files were restored and the journal is gone; only the cleanup sync after the
+    removal failed or was interrupted: a failed approval with a cleanup note."""
+
+
 class JournalRemnant(OSError):
     """All three files were restored and synced, but the journal could not be removed: the
     approval failed; reads stay refused until the remnant is removed."""
@@ -562,14 +589,18 @@ def end_source_txn(project: Path) -> None:
 
 
 def _confirm_committed(project: Path) -> None:
-    """Recovery of a committed marker (caller holds both locks): retry the directory sync. On
-    success the approval stands: remove the marker (cleanup, errors swallowed and retried by a
-    later operation) so readers are admitted again. On failure the marker stays: the approval
-    stays pending and reads stay refused."""
+    """Recovery of a committed marker (caller holds both locks): retry the directory sync. A
+    FAILED confirmation raises :class:`UnconfirmedSourceApproval` (the approval stays pending:
+    marker kept, reads and draft mutations refused). After a SUCCESSFUL confirmation the marker
+    removal is cleanup only: its errors are swallowed and a later operation retries it."""
     try:
         proposals._fsync_path((project / TXN_COMMITTED_REL).parent)
-    except OSError:
-        return
+    except OSError as exc:
+        raise UnconfirmedSourceApproval(
+            "a source approval is pending: its commit could not be confirmed (the directory "
+            f"sync failed: {exc}); no draft operation can proceed until it is — fix the "
+            "cause and run 'ariadne draft status' to retry; nothing was changed"
+        ) from exc
     try:
         end_source_txn(project)
     except OSError:
@@ -617,8 +648,10 @@ def rollback_source_txn(project: Path) -> None:
         raise JournalRemnant(f"the journal could not be removed: {exc}") from exc
     try:
         proposals._fsync_path(journal.parent)  # deletion cleanup only
-    except OSError:
-        pass
+    except BaseException as exc:  # an interruption here is still only cleanup of a done rollback
+        raise RollbackCleanup(
+            f"the cleanup sync after the journal removal failed: {exc!r}"
+        ) from exc
 
 
 def recover(project: Path) -> None:

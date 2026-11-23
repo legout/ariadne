@@ -169,19 +169,19 @@ def _managed_proposals(root: Path, approvals: dict | None) -> list[dict]:
     if not (root / proposals.ARIADNE_STATE_DIR).is_dir():
         return pending  # diagnosis never bootstraps state: no directory, no draft, no locks
     try:
-        view = draft.status(root)
+        view = draft.status_readonly(root)  # never recovers, locks or writes
+    except draft.UnconfirmedSourceApproval as exc:
+        # a journal or marker: a source approval pending recovery, reported with the command;
+        # status retries nothing and removes nothing
+        return [
+            {
+                "id": "draft",
+                "state": "source_approval_pending",
+                "reason": str(exc),
+                "command": f"ariadne draft status --project {root}",
+            }
+        ]
     except Exception as exc:
-        if draft.source_txn_pending(root):
-            # a stuck rollback or unconfirmed commit: a source approval pending recovery, not
-            # a generic unreadable draft
-            return [
-                {
-                    "id": "draft",
-                    "state": "source_approval_pending",
-                    "reason": str(exc),
-                    "command": f"ariadne draft status --project {root}",
-                }
-            ]
         return [{"id": "draft", "state": "unreadable", "reason": str(exc)}]
     if view is None:
         return pending
@@ -449,6 +449,14 @@ def build_report(args: argparse.Namespace, *, skill_targets=None) -> dict:
         head_revision=_git_head_revision(root, repo_root),
     )
 
+    token = authoring_sources.DIAGNOSIS.set(True)  # a diagnosis never creates a lock file
+    try:
+        return _build_report(args, root, git, repo_ok, identity_ok, skill_targets)
+    finally:
+        authoring_sources.DIAGNOSIS.reset(token)
+
+
+def _build_report(args, root, git, repo_ok, identity_ok, skill_targets) -> dict:
     admitted = _managed_admission(root)
     approvals = _approvals(root)
     pending = _managed_proposals(root, approvals)

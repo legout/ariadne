@@ -22,6 +22,7 @@ ungranted one.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -387,6 +388,12 @@ def propose_sources(
 # ----------------------------------------------- operator-owned source grants
 
 
+# Read-only diagnosis (``ariadne status``): a grants read must not create the lock file. Set only
+# by status; when set and no lock file exists yet, no writer has ever run (a writer creates it
+# before any journal), so the journal check and the read need no lock.
+DIAGNOSIS = contextvars.ContextVar("ariadne_grants_diagnosis", default=False)
+
+
 class SourceApprovalPending(ValueError):
     """A source approval is unfinished or interrupted: grants authorize nothing until it
     finishes or is recovered (spec 0040 §3.4.2.5)."""
@@ -411,6 +418,10 @@ def _load_grants(project: Path, *, _held: bool = False) -> list[dict]:
     if not (project / proposals.ARIADNE_STATE_DIR).is_dir():
         return []  # an absent state directory has no grants and no pending journal; diagnosis
         # never bootstraps state (no lock file is created)
+    if DIAGNOSIS.get() and not (project / draft.GRANTS_LOCK_REL).exists():
+        if draft.source_txn_pending(project):
+            raise SourceApprovalPending(_PENDING_MESSAGE)
+        return _read_grants_file(project)
     with draft.grants_lock(project):
         if draft.source_txn_pending(project):
             raise SourceApprovalPending(_PENDING_MESSAGE)

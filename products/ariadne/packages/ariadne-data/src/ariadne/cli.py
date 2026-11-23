@@ -189,7 +189,18 @@ def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
 
     project = Path(args.project).resolve()
     if args.draft_command == "status":
-        view = draft.status(project)
+        try:
+            view = draft.status(project)
+        except draft.UnconfirmedSourceApproval as exc:
+            _emit(
+                {
+                    "source_approval_pending": True,
+                    "message": str(exc),
+                    "command": exc.command,
+                },
+                args,
+            )
+            return 1  # pending is not a clean state
         return _emit(view if view is not None else {"draft": None}, args)
     if args.draft_command == "edit":
         edit = _read_json(None if args.file == "-" else args.file, stdin, "the edit file")
