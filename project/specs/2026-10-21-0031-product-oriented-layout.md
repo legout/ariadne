@@ -213,6 +213,16 @@ provided, it explicitly selects shared coordination tests and the existing joint
 scenarios, including the two non-default filenames above. It is documented as
 shared coverage, not as the complete native suites of both products.
 
+**Owner-approved slow-test deselection amendment — 2026-11-24** (#141,
+decision 2 of the test-diet proposal on epic #139): the Lumio native
+selection (`products/lumio/pytest.ini`) registers the `slow` marker and
+deselects it by default (`addopts = -m "not slow"`), which removes the three
+wheel-isolation files from a routine local run. CI opts back in on its
+Lumio step (`-m "slow or not slow"`, pinned by the root layout test), so CI
+remains where the wheel tests run; a focused run of such a file passes
+`-m slow`. The root shared selection, Core's native selection and the lint
+rules are unchanged. This amendment changes no other selection.
+
 Document three explicit verification profiles: Ariadne, Lumio, and shared/joint.
 Keep their test import namespaces distinct, with intentional helper imports and
 no accidental private `lumio` application namespace. Preserve native checks in
