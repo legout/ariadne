@@ -162,3 +162,32 @@ def test_the_compiled_sql_is_authorized_before_binding(served, capsys, monkeypat
     monkeypatch.setattr(preview.authoring, "_authorize_statement", refuse)
     code, out, err = _run(["preview", "event_count", "--project", str(served), "--json"], capsys)
     assert code == 1 and out == "" and "approved registry" in err
+
+
+def test_an_identity_under_a_pending_source_approval_is_refused_before_it_is_read(
+    served, capsys, monkeypatch
+):
+    write_parquet(served / "data" / "peek.parquet", [(7, "p")], ["id", "label"])
+    authoring_sources.add_sources(
+        served, None, [authoring_sources.source_entry("data/peek.parquet", name="peek")]
+    )
+    _edit(served, PEEK, _pin(served))
+    view = draft.status(served)
+    _, digest = authoring_sources.candidate_sources(served, view["candidate_revision"])
+    authoring_sources.grant_candidate(
+        served,
+        draft.proposal_of(served, _pin(served)),
+        view["candidate_revision"],
+        digest,
+        by="human:test",
+    )
+    _validate(served)
+    # the grant exists, but its approval is unfinished: it authorizes nothing (§3.4.2.5)
+    monkeypatch.setattr(draft, "source_txn_pending", lambda _project: True)
+    monkeypatch.setattr(draft, "recover", lambda _project: None)
+    opened = []
+    monkeypatch.setattr("ariadne.preview.DuckDBExecution", lambda *a, **k: opened.append(a) or None)
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
+    assert code == 1 and out == ""
+    assert "in progress or was interrupted" in json.loads(err)["error"]["message"]
+    assert opened == []  # nothing was opened
