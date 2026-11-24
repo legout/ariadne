@@ -127,11 +127,11 @@ def test_retire_stale_retires_a_draft_whose_record_points_elsewhere(tmp_path):
     record_path = project / proposals.PROPOSALS_REL / f"{_read(project)['proposal']}.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     record_path.write_text(json.dumps({**record, "project": "/elsewhere"}), encoding="utf-8")
-    # an interrupted source approval whose journal holds the old ACTIVE slot
-    draft.begin_source_txn(project)
     with pytest.raises(ValueError, match="belongs to"):
         draft.status(project)
 
+    # an interrupted source approval whose journal holds the old ACTIVE slot
+    draft.begin_source_txn(project)
     assert draft.retire_stale(project)["state"] == "retired"
     assert not draft.source_txn_pending(project)  # the journal cannot resurrect the slot
     assert draft.retire_stale(project)["state"] == "retired"  # idempotent

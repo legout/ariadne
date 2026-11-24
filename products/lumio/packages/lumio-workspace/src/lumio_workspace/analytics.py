@@ -980,10 +980,10 @@ class AnalyticsService:
                 "approval_digest": approval["approval_digest"],
                 "review_generation": generation,
             }
+            self._release_source_draft(updated)  # decided: it no longer holds the slot
             self.state.finish_review_task(
                 self.workspace_id, operation.operation_id, "data_granted", updated
             )
-            self._release_source_draft(updated)  # decided: it no longer holds the slot
             return updated
 
         if response["stage"] == "submission":
