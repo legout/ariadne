@@ -54,7 +54,10 @@ def preview(
         tree.mkdir()
         authoring._materialize(project, proposal, revision, tree)
         session = _DiscoverySession(
-            tree / "semantic_layer", tree / "context_layer", None, registry=registry,
+            tree / "semantic_layer",
+            tree / "context_layer",
+            None,
+            registry=registry,
             project_root=project,
         )
         if session._catalog_error:
@@ -78,9 +81,7 @@ def preview(
                     sql = compile_(execution.con)  # per-request live audits
                     authoring._authorize_statement(name, sql, approved)
                 else:
-                    check_grain_preserving(
-                        execution.con, session._metric_datasets(name)[0].source
-                    )
+                    check_grain_preserving(execution.con, session._metric_datasets(name)[0].source)
                 assert_single_statement(sql)
                 execution.bind(sql)
                 bounded = execution.fetch_bounded(sql, limits, budget)

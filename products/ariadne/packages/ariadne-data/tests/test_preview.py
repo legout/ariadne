@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports]
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -83,9 +84,7 @@ def test_preview_returns_the_draft_result_while_query_serves_the_old_definition(
     assert code == 0 and json.loads(out)["rows"] == [{"event_count": 3}]
 
 
-def test_a_new_source_refuses_before_its_grant_and_previews_after_the_exact_grant(
-    served, capsys
-):
+def test_a_new_source_refuses_before_its_grant_and_previews_after_the_exact_grant(served, capsys):
     write_parquet(served / "data" / "peek.parquet", [(7, "p"), (8, "q")], ["id", "label"])
     entry = authoring_sources.source_entry("data/peek.parquet", name="peek")
     authoring_sources.add_sources(served, None, [entry])
@@ -99,7 +98,10 @@ def test_a_new_source_refuses_before_its_grant_and_previews_after_the_exact_gran
     view = draft.status(served)
     resolved, digest = authoring_sources.candidate_sources(served, view["candidate_revision"])
     authoring_sources.grant_candidate(
-        served, draft.proposal_of(served, _pin(served)), view["candidate_revision"], digest,
+        served,
+        draft.proposal_of(served, _pin(served)),
+        view["candidate_revision"],
+        digest,
         by="human:test",
     )
     _validate(served)  # before any calculation approval
@@ -109,16 +111,15 @@ def test_a_new_source_refuses_before_its_grant_and_previews_after_the_exact_gran
     assert draft.status(served) is not None  # nothing was approved or served
 
 
-def test_a_changed_identity_is_refused_and_an_older_binding_is_never_substituted(
-    served, capsys
-):
+def test_a_changed_identity_is_refused_and_an_older_binding_is_never_substituted(served, capsys):
     """`events` is served; repointing it at another file is a new identity, not the old one."""
     write_parquet(served / "data" / "other.parquet", [(9, "z")], ["id", "label"])
-    entry = authoring_sources.source_entry("data/other.parquet", name="events")
-    authoring_sources.add_sources(served, None, [entry])
-    code, out, err = _run(
-        ["preview", "event_count", "--json", "--project", str(served)], capsys
-    )
+    doc = yaml.safe_load((served / "ariadne.yaml").read_text(encoding="utf-8"))
+    for entry in doc["sources"]:
+        if entry["name"] == "events":
+            entry["path"] = "data/other.parquet"
+    draft.edit_artifact(served, None, "ariadne.yaml", yaml.safe_dump(doc, sort_keys=False))
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
     assert code == 1 and out == ""
     assert "events" in json.loads(err)["error"]["message"]
 
@@ -144,13 +145,16 @@ def test_the_compiled_sql_is_authorized_before_binding(served, capsys, monkeypat
     seen = []
     real = authoring._authorize_statement
     monkeypatch.setattr(
-        preview.authoring, "_authorize_statement",
+        preview.authoring,
+        "_authorize_statement",
         lambda name, sql, approved: (seen.append((sql, set(approved))), real(name, sql, approved)),
     )
     _edit(served, EDITED)
     _validate(served)
+    seen.clear()  # validation authorizes too; keep only preview's calls
     assert _run(["preview", "event_count", "--project", str(served), "--json"], capsys)[0] == 0
-    assert seen and "SUM(" in seen[0][0] and seen[0][1] == {"events", "labels"}
+    assert seen[-1][0] == "SELECT SUM(id) AS event_count FROM (SELECT * FROM events.events)"
+    assert seen[-1][1] == {"events", "labels"}
 
     def refuse(*_a):
         raise ValueError("outside the approved registry")
