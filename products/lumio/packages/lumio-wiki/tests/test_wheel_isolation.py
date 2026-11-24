@@ -26,7 +26,6 @@ import os
 import shutil
 import subprocess
 import sys
-import venv
 import zipfile
 from pathlib import Path
 
@@ -37,8 +36,13 @@ from packaging.specifiers import SpecifierSet
 
 # Building and installing into a fresh venv is expensive; skip under the
 # standard fast suite unless explicitly requested or running from the repo
-# root (where the workspace is available).
-pytestmark = pytest.mark.slow
+# root (where the workspace is available). venvs and installs go through uv
+# only (owner decision, epic #139): without uv the module skips, no pip
+# fallback.
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required to build and install"),
+]
 
 
 # A categorized KB whose canonical graph is the chain
@@ -125,10 +129,6 @@ def _write_graph_kb(root: Path) -> Path:
     return root
 
 
-def _has_uv() -> bool:
-    return shutil.which("uv") is not None
-
-
 def _build_wheel(wheel_dir: Path) -> Path:
     """Build the lumio-wiki wheel into ``wheel_dir`` and return its path."""
     return _build_workspace_wheel(wheel_dir, "lumio-wiki", "lumio_wiki-*.whl")
@@ -136,30 +136,32 @@ def _build_wheel(wheel_dir: Path) -> Path:
 
 def _build_workspace_wheel(wheel_dir: Path, package: str, wheel_glob: str) -> Path:
     """Build one workspace package's wheel and return its path (shared
-    build/fallback shape for lumio-wiki and lumio-lancedb)."""
+    build shape for lumio-wiki and lumio-lancedb)."""
     wheel_dir.mkdir(parents=True, exist_ok=True)
     # Build from the workspace root so uv resolves the workspace member.
     workspace_root = Path(__file__).parents[3]
-    if _has_uv():
-        cmd = ["uv", "build", "--package", package, "--wheel", "--out-dir", str(wheel_dir)]
-    else:
-        # Fallback: build directly from the package directory.
-        pkg = workspace_root / "packages" / package
-        cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(wheel_dir), str(pkg)]
+    cmd = ["uv", "build", "--package", package, "--wheel", "--out-dir", str(wheel_dir)]
     subprocess.run(cmd, cwd=str(workspace_root), check=True, capture_output=True)
     wheels = list(wheel_dir.glob(wheel_glob))
     assert len(wheels) == 1, f"expected exactly one wheel, got {wheels}"
     return wheels[0]
 
 
-def _create_isolated_venv(venv_dir: Path) -> tuple[Path, Path]:
-    """Create a fresh venv and return (python, pip)."""
-    venv.create(venv_dir, with_pip=True, clear=True)
+def _create_isolated_venv(venv_dir: Path) -> Path:
+    """Create a fresh venv with the runner's interpreter (no pip) and return its python."""
+    subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(venv_dir)], check=True, capture_output=True
+    )
     if os.name == "nt":  # pragma: no cover
-        python = venv_dir / "Scripts" / "python.exe"
-    else:
-        python = venv_dir / "bin" / "python"
-    return python, python
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _uv_pip(python: Path, *args: str) -> None:
+    """Install requirements into the venv behind ``python`` with ``uv pip install``."""
+    subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), *args], check=True, capture_output=True
+    )
 
 
 def _assert_heavyweight_not_importable(python: Path) -> None:
@@ -194,20 +196,12 @@ def isolated_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
     venv_dir = tmp_path_factory.mktemp("venv")
 
     wheel_path = _build_wheel(wheel_dir)
-    python = _create_isolated_venv(venv_dir)[0]
+    python = _create_isolated_venv(venv_dir)
 
     # Install ONLY lumio-wiki (no optional extras, no lumio app).
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-deps", str(wheel_path)],
-        check=True,
-        capture_output=True,
-    )
+    _uv_pip(python, "--no-deps", str(wheel_path))
     # Install runtime dependencies (msgpack, msgspec) from PyPI.
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "msgpack>=1.0", "msgspec[yaml]>=0.21.1"],
-        check=True,
-        capture_output=True,
-    )
+    _uv_pip(python, "msgpack>=1.0", "msgspec[yaml]>=0.21.1")
 
     return {
         "python": python,
@@ -428,6 +422,67 @@ def test_doctor_runs_from_isolated_install(isolated_wheel_env: dict):
     assert "extra[llm]:" in result.stdout
     # In the isolated install, documents/llm/lancedb must be absent.
     assert "not installed" in result.stdout
+
+
+# Issue #101, AC4 + AC6: the base wheel stays model-free. These two proofs use
+# this module's base venv instead of a second identical one (epic #139 #140).
+def test_base_wheel_doctor_reports_llm_not_installed(isolated_wheel_env: dict):
+    """AC4/AC6: ``doctor`` reports the llm extra as not installed from the base wheel."""
+    python = isolated_wheel_env["python"]
+    bin_dir = python.parent
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    result = subprocess.run(
+        [str(script), "doctor"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "extra[llm]: not installed" in result.stdout
+    assert "lumio-wiki[llm]" in result.stdout
+
+
+def test_base_wheel_llm_distiller_fails_actionably(isolated_wheel_env: dict, tmp_path: Path):
+    """AC4/AC6: requesting ``--distiller llm`` from the base install fails actionably.
+
+    The base wheel has no ``openai`` module, so the CLI must detect the
+    missing extra and emit the exact install command — never a masked
+    missing-config error (ADR-0010, PRD user story 18). Provider env vars are
+    SET so the only reason for failure is the missing extra.
+    """
+    python = isolated_wheel_env["python"]
+    bin_dir = python.parent
+    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
+    kb_root = tmp_path / "kb"
+    subprocess.run([str(script), "init", str(kb_root)], check=True, capture_output=True)
+    # A version-2 Knowledge Base requires the Entity contract (ADR-0021): the
+    # Maintainer declares the ``page`` Entity Type in the control file's
+    # ontology, and the distilled page declares a stable ``entity:<slug>`` id.
+    control_file = kb_root / "lumio.yaml"
+    control_file.write_text(
+        control_file.read_text(encoding="utf-8").replace(
+            "  entity_types:\n  predicates:",
+            "  entity_types:\n    page: {}\n  predicates:",
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "source.txt"
+    source.write_text("some source text", encoding="utf-8")
+
+    # Set provider env vars so the ONLY failure reason is the missing extra.
+    env = dict(os.environ)
+    env["LUMIO_PROVIDER_MODEL"] = "fake-model"
+    env["LUMIO_PROVIDER_BASE_URL"] = "http://localhost:1/v1"
+    env["LUMIO_PROVIDER_API_KEY"] = "fake-key"
+    result = subprocess.run(
+        [str(script), "ingest", str(kb_root), str(source), "--distiller", "llm"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "pip install 'lumio-wiki[llm]'" in result.stderr, (
+        "the base wheel must name the exact install command for the missing extra"
+    )
 
 
 def test_isolated_init_ingest_publish_journey(isolated_wheel_env: dict, tmp_path: Path):
@@ -785,18 +840,10 @@ def test_isolated_skill_upgrade_from_prior_wheel(
     assert hashlib.sha256(prior_wheel.read_bytes()).hexdigest() == (
         "043bc432fa361ef2a7827644f84c77b2cfb7c8c13cbcae1fae61cc9ddf9e113a"
     )
-    python = _create_isolated_venv(tmp_path / "upgrade-venv")[0]
+    python = _create_isolated_venv(tmp_path / "upgrade-venv")
     bin_dir = python.parent
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-deps", str(prior_wheel)],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "msgpack>=1.0", "msgspec[yaml]>=0.21.1"],
-        check=True,
-        capture_output=True,
-    )
+    _uv_pip(python, "--no-deps", str(prior_wheel))
+    _uv_pip(python, "msgpack>=1.0", "msgspec[yaml]>=0.21.1")
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
     home = tmp_path / "upgrade-home"
     home.mkdir()
@@ -810,19 +857,7 @@ def test_isolated_skill_upgrade_from_prior_wheel(
     )
     assert installed.returncode == 0, installed.stderr
 
-    subprocess.run(
-        [
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--force-reinstall",
-            "--no-deps",
-            str(isolated_wheel_env["wheel"]),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    _uv_pip(python, "--reinstall", "--no-deps", str(isolated_wheel_env["wheel"]))
     stale = subprocess.run(
         [str(script), "skill", "status", "--agent", "codex"],
         capture_output=True,
@@ -1065,17 +1100,10 @@ def s3_journey_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
     venv_dir = tmp_path_factory.mktemp("venv-s3")
     wiki_wheel = _build_wheel(wheel_dir)
     lance_wheel = _build_lumio_lancedb_wheel(wheel_dir)
-    python = _create_isolated_venv(venv_dir)[0]
+    python = _create_isolated_venv(venv_dir)
     # One resolver run over both wheels (extras included) so lumio-lancedb's
-    # lumio-wiki requirement is satisfied by the local wheel, not PyPI. The
-    # pip fallback MUST run through the venv's own python — never the test
-    # runner's — or the install lands in the wrong environment.
-    targets = [f"{wiki_wheel}[s3]", f"{lance_wheel}[s3]"]
-    if _has_uv():
-        cmd = ["uv", "pip", "install", "--python", str(python), *targets]
-    else:
-        cmd = [str(python), "-m", "pip", "install", *targets]
-    subprocess.run(cmd, check=True, capture_output=True, cwd=str(venv_dir))
+    # lumio-wiki requirement is satisfied by the local wheel, not PyPI.
+    _uv_pip(python, f"{wiki_wheel}[s3]", f"{lance_wheel}[s3]")
     return {"python": python, "venv": venv_dir}
 
 
