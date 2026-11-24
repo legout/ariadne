@@ -220,12 +220,10 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         try:
             draft.recover(project)
         except draft.RollbackCleanup as cleanup:
-            # a PRIOR approval's journal was durably restored and is gone; only the cleanup sync
-            # after its removal failed or was interrupted: cleanup only, never "recovery pending"
+            # a PRIOR approval's journal was durably restored and is gone; the shared outcome says
+            # whether its cleanup finished: the wrapper only adds the refusal context
             raise ApprovalRefused(
-                "not approved; an earlier source approval was rolled back (its files are restored "
-                "and its journal is gone) but the cleanup after the removal did not "
-                f"complete — cleanup only. Nothing of this approval was changed. Cause: {cleanup}"
+                f"not approved; nothing of this approval was changed. {cleanup}"
             ) from cleanup
         except draft.RemovalUnconfirmed as unconfirmed:
             raise ApprovalRefused(
@@ -310,10 +308,7 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 try:
                     draft.rollback_source_txn(project)  # also removes a journal this attempt made
                 except draft.RollbackCleanup as cleanup:
-                    raise ApprovalRefused(
-                        "not approved (all three files were restored and the journal is gone); "
-                        f"the cleanup after its removal did not complete. Cause: {cleanup}"
-                    ) from failure
+                    raise ApprovalRefused(f"not approved. {cleanup}") from failure
                 except draft.RemovalUnconfirmed as unconfirmed:
                     raise ApprovalRefused(
                         "not approved (all three files were durably restored), but whether the "

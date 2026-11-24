@@ -1481,19 +1481,67 @@ def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, m
 
 
 def _cleanup_path_lines():
-    """(filename, line) of EVERY line from the restore sync to the end of the journal removal and
-    its sync: ``rollback_source_txn`` from the restore sync through ``done = True`` (the end of the
-    deferred region) and all of ``_remove_journal``."""
+    """The cleanup path's lines, located WITHOUT any source comment: through the AST of the two
+    functions that make up the path. Returns ``(restore_sync_line, finish_end, remove_range,
+    raise_lines)``: the line of the restore sync (the first ``_fsync_path`` call of
+    ``_finish_rollback``), the last line of its deferred ``with`` body, every line of
+    ``_remove_journal``, and the lines of its three typed ``raise`` statements by class."""
+    import ast
+    import inspect
+    import textwrap
+
+    def tree_of(fn):
+        src, start = inspect.getsourcelines(fn)
+        return ast.parse(textwrap.dedent("".join(src))), start - 1
+
+    tree, off = tree_of(draft._finish_rollback)
+    sync = next(
+        n.lineno + off
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "_fsync_path"
+    )
+    with_node = next(n for n in ast.walk(tree) if isinstance(n, ast.With))
+    finish_end = max(getattr(n, "end_lineno", 0) or 0 for n in ast.walk(with_node)) + off
+    tree, off = tree_of(draft._remove_journal)
+    lines = {
+        n.lineno + off
+        for n in ast.walk(tree)
+        if isinstance(n, ast.stmt) and not isinstance(n, ast.FunctionDef)
+    }
+    raises = {
+        n.exc.func.id: n.lineno + off
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Raise)
+        and isinstance(n.exc, ast.Call)
+        and isinstance(n.exc.func, ast.Name)
+    }
+    return sync, finish_end, sorted(lines), raises
+
+
+def _lines_of_the_path():
+    sync, finish_end, remove_lines, _raises = _cleanup_path_lines()
     import inspect
 
-    lines = []
-    src, start = inspect.getsourcelines(draft.rollback_source_txn)
-    first = next(i for i, ln in enumerate(src) if "_fsync_path(journal.parent)  # the three" in ln)
-    last = next(i for i, ln in enumerate(src) if ln.strip() == "done = True")  # end of the removal
-    lines.extend((draft.__file__, start + i) for i in range(first, last + 1))
-    src, start = inspect.getsourcelines(draft._remove_journal)
-    lines.extend((draft.__file__, start + i) for i in range(len(src)))
-    return lines
+    _src, start = inspect.getsourcelines(draft._finish_rollback)
+    in_region = lambda n: sync <= n <= finish_end  # noqa: E731
+    return in_region, sorted(remove_lines)
+
+
+def _trace_lines(record):
+    """A tracer recording the lines of ``draft.py`` executed (no signal)."""
+
+    def tracer(frame, event, arg):
+        if frame.f_code.co_filename != draft.__file__:
+            return None
+
+        def local(frame, event, arg):
+            if event == "line":
+                record.add(frame.f_lineno)
+            return local
+
+        return local
+
+    return tracer
 
 
 def _sigint_on_line(target):
@@ -1504,11 +1552,11 @@ def _sigint_on_line(target):
     state = {"fired": False}
 
     def tracer(frame, event, arg):
-        if frame.f_code.co_filename != target[0]:
+        if frame.f_code.co_filename != draft.__file__:
             return None
 
         def local(frame, event, arg):
-            if event == "line" and frame.f_lineno == target[1] and not state["fired"]:
+            if event == "line" and frame.f_lineno == target and not state["fired"]:
                 state["fired"] = True
                 os.kill(os.getpid(), signal.SIGINT)
             return local
@@ -1521,38 +1569,96 @@ def _sigint_on_line(target):
 _CLEANUP_TYPES = ("RollbackCleanup", "JournalRemnant", "RemovalUnconfirmed")
 
 
-@pytest.mark.parametrize("unlink_fails", [False, True], ids=["unlink-ok", "unlink-fails"])
+def _variant_patches(monkeypatch, variant, project=None):
+    """The four variants of the path: successful cleanup, unlink failure, removal sync failure
+    after the unlink, failed inspection (unlink fails and the inspection stat errors too)."""
+    real_unlink, real_sync, real_lstat = Path.unlink, proposals._fsync_path, os.lstat
+    state = {"unlinked": False}
+
+    def unlink(self, *a, **k):
+        if self.name == "source_txn.json" and variant in ("unlink fails", "inspection fails"):
+            raise OSError("unlink refused")
+        out = real_unlink(self, *a, **k)
+        if self.name == "source_txn.json":
+            state["unlinked"] = True
+        return out
+
+    def sync(path):
+        if variant == "sync fails" and state["unlinked"]:
+            state["unlinked"] = False
+            raise OSError("removal sync failed")
+        return real_sync(path)
+
+    def lstat(path, *a, **k):
+        if variant == "inspection fails" and str(path).endswith("source_txn.json"):
+            raise PermissionError(13, "inspection refused")
+        return real_lstat(path, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(proposals, "_fsync_path", sync)
+    monkeypatch.setattr(os, "lstat", lstat)
+
+
+_VARIANTS = {
+    "successful cleanup": None,  # a held interrupt is the ONLY event: a finished cleanup
+    "unlink fails": "JournalRemnant",
+    "sync fails": "RollbackCleanup",
+    "inspection fails": "RemovalUnconfirmed",
+}
+
+
+@pytest.mark.parametrize("variant", list(_VARIANTS))
 def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_pending(
-    tmp_path, monkeypatch, capsys, unlink_fails
+    tmp_path, monkeypatch, capsys, variant
 ):
-    """The class, not one gap: a REAL SIGINT delivered on entry to EACH line from the restore sync
-    to the end of the removal sync (line tracer, as the reviewer did) is held across the path,
-    which runs to one of its three cleanup outcomes — on the draft CLI path and on the two-prompt
-    approval journey. Never "recovery pending", never an escaping KeyboardInterrupt from inside
-    the region; the three files stay restored. ``unlink-fails`` also drives the classification
-    lines (the lstat inspection) that only run after a first failure."""
+    """The class, not one gap: a REAL SIGINT delivered on entry to EACH line the variant executes
+    from the restore sync to the end of the removal sync is HELD across the path, which runs to its
+    typed outcome, reported WITH the held interrupt — on the draft CLI path and on the two-prompt
+    approval journey. Never "recovery pending"/"incomplete", never an escaping KeyboardInterrupt.
+    The traced line set is NOT a lower bound: it must EQUAL the lines the variant executes without
+    any signal (the independent oracle), include the restore-sync line and that variant's typed
+    ``raise`` line (found through the AST, not a source comment), and the files stay restored."""
     import sys
 
     from ariadne.cli import main as cli
 
-    lines = _cleanup_path_lines()
-    fired_lines = set()
-    for index, target in enumerate(lines):
-        # --- the draft CLI path
-        root = tmp_path / f"cli{int(unlink_fails)}-{index}"
-        root.mkdir()
+    in_region, remove_lines = _lines_of_the_path()
+    sync, _finish_end, _remove, raises = _cleanup_path_lines()
+    expected_type = _VARIANTS[variant]
+
+    def run_cli(root):
         project, _api, result = _project_with_new_source(root)
         before = _state_bytes(project)
         draft.begin_source_txn(project)
-        real_unlink = Path.unlink
-        if unlink_fails:
+        return project, result, before
 
-            def failing(self, *a, **k):
-                if self.name == "source_txn.json":
-                    raise OSError("unlink refused")
-                return real_unlink(self, *a, **k)
+    # --- the oracle: the lines this variant executes with NO signal
+    root = tmp_path / "baseline"
+    root.mkdir()
+    project, result, before = run_cli(root)
+    executed: set[int] = set()
+    _variant_patches(monkeypatch, variant)
+    old = sys.gettrace()
+    sys.settrace(_trace_lines(executed))
+    try:
+        cli(["draft", "status", "--json", "--project", str(project)])
+    finally:
+        sys.settrace(old)
+        monkeypatch.undo()
+    capsys.readouterr()
+    targets = sorted(n for n in executed if in_region(n) or n in remove_lines)
+    assert sync in targets  # the restore sync's own line is part of the path
+    if expected_type:
+        assert raises[expected_type] in targets  # the variant reaches its typed raise
+    assert len(targets) >= 5
 
-            monkeypatch.setattr(Path, "unlink", failing)
+    fired_lines = set()
+    for index, target in enumerate(targets):
+        # --- the draft CLI path
+        root = tmp_path / f"cli-{index}"
+        root.mkdir()
+        project, result, before = run_cli(root)
+        _variant_patches(monkeypatch, variant)
         tracer, state = _sigint_on_line(target)
         capsys.readouterr()
         old = sys.gettrace()
@@ -1563,42 +1669,37 @@ def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_
             sys.settrace(old)
             monkeypatch.undo()
         err = capsys.readouterr().err
-        if not state["fired"]:
-            continue  # a line this variant does not execute (the other branch covers it)
-        fired_lines.add(target[1])
+        assert state["fired"], (variant, target)
+        fired_lines.add(target)
         error = json.loads(err)["error"]
-        assert error["type"] in _CLEANUP_TYPES, (target[1], error)
-        assert "recovery pending" not in error["message"].lower(), (target[1], error)
+        assert error["type"] in _CLEANUP_TYPES, (variant, target, error)
+        if expected_type:
+            assert error["type"] == expected_type, (variant, target, error)
+        assert "recovery pending" not in error["message"].lower(), (variant, target, error)
+        assert "Ctrl-C" in error["message"], (variant, target, error)  # the held interrupt is told
         assert code == 1  # one JSON error object; never an escaping KeyboardInterrupt
-        assert _state_bytes(project) == before, target[1]
+        assert _state_bytes(project) == before, (variant, target)
         assert _granted(project, result) is False
 
         # --- the two-prompt approval journey (operator B recovers operator A's journal)
-        root2 = tmp_path / f"pr{int(unlink_fails)}-{index}"
+        root2 = tmp_path / f"pr-{index}"
         root2.mkdir()
         project, _api, result = _project_with_new_source(root2)
         before = _state_bytes(project)
         _fault(monkeypatch, project, "draft consume")
         tracer, state = _sigint_on_line(target)
 
-        def operator_one_fails_and_leaves_a_journal():
+        def operator_one_fails_and_leaves_a_journal(
+            project=project, tracer=tracer, variant=variant
+        ):
             with monkeypatch.context() as m:
                 m.setattr(
                     draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck"))
                 )
                 with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
                     _run(project, Tty())
-            if unlink_fails:
-                monkeypatch.setattr(Path, "unlink", failing_for(project))
+            _variant_patches(monkeypatch, variant)
             sys.settrace(tracer)
-
-        def failing_for(_project):
-            def failing(self, *a, **k):
-                if self.name == "source_txn.json":
-                    raise OSError("unlink refused")
-                return real_unlink(self, *a, **k)
-
-            return failing
 
         old = sys.gettrace()
         try:
@@ -1607,15 +1708,81 @@ def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_
         finally:
             sys.settrace(old)
             monkeypatch.undo()
-        assert state["fired"], target[1]
+        assert state["fired"], (variant, target)
         message = str(raised.value)
-        assert "recovery pending" not in message and "incomplete" not in message, (
-            target[1],
-            message,
-        )
-        assert _state_bytes(project) == before, target[1]
+        assert "recovery pending" not in message and "incomplete" not in message, (target, message)
+        assert "Ctrl-C" in message, (variant, target, message)  # differs from the no-signal reply
+        if variant == "successful cleanup":  # ONE consistent statement: the cleanup finished
+            assert "cleanup finished" in message and "did not complete" not in message
+            assert "fix the cause" not in message, message
+        assert _state_bytes(project) == before, (variant, target)
         assert _granted(project, result) is False
-    assert len(fired_lines) >= 6  # the tracer really walked the path
+    assert fired_lines == set(targets)  # EVERY line of the executed path was exercised
+
+
+def test_a_fault_with_a_held_interrupt_differs_from_the_no_signal_reply(
+    tmp_path, monkeypatch, capsys
+):
+    """Finding 1.3: on a fault path the reply WITH a held interrupt differs from the no-signal
+    reply (a recorded interrupt never disappears) while carrying the same typed outcome."""
+    import signal
+    import sys
+
+    from ariadne.cli import main as cli
+
+    def reply(with_interrupt):
+        root = tmp_path / ("held" if with_interrupt else "plain")
+        root.mkdir()
+        project, _api, _result = _project_with_new_source(root)
+        draft.begin_source_txn(project)
+        _variant_patches(monkeypatch, "unlink fails")
+        if with_interrupt:
+            real = draft._remove_journal
+
+            def interrupt_then_remove(journal):
+                os.kill(os.getpid(), signal.SIGINT)
+                return real(journal)
+
+            monkeypatch.setattr(draft, "_remove_journal", interrupt_then_remove)
+        capsys.readouterr()
+        cli(["draft", "status", "--json", "--project", str(project)])
+        monkeypatch.undo()
+        return json.loads(capsys.readouterr().err)["error"]
+
+    plain, held = reply(False), reply(True)
+    assert plain["type"] == held["type"] == "JournalRemnant"
+    assert "Ctrl-C" not in plain["message"] and "Ctrl-C" in held["message"]
+    assert sys.gettrace() is None
+
+
+def test_the_interrupt_envelope_does_not_mistake_an_inaccessible_state_for_absence(
+    tmp_path, monkeypatch, capsys
+):
+    """Finding 3: interrupted with the search permission of `.ariadne` withdrawn and a journal
+    present, `ariadne draft edit - --json` stays in the 130 envelope and says the pending status
+    could not be confirmed — never "no source approval is pending" — on 3.12 and 3.14 alike."""
+    from ariadne.cli import main as cli
+
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions")
+    project, _api, _result = _project_with_new_source(tmp_path)
+    draft.begin_source_txn(project)
+
+    class Interrupted(io.StringIO):
+        def read(self, *a):
+            os.chmod(project / ".ariadne", 0o000)  # withdrawn while the command is reading stdin
+            raise KeyboardInterrupt
+
+    capsys.readouterr()
+    try:
+        code = cli(["draft", "edit", "-", "--json", "--project", str(project)], stdin=Interrupted())
+    finally:
+        os.chmod(project / ".ariadne", 0o755)
+    error = json.loads(capsys.readouterr().err)["error"]
+    assert code == 130 and error["type"] == "KeyboardInterrupt"
+    assert "could not be confirmed" in error["message"]
+    assert "no source approval is pending" not in error["message"]
+    assert draft.source_txn_pending(project)  # the journal was really there
 
 
 def test_ctrl_c_at_the_approve_consent_prompt_cancels_without_recovery_advice(

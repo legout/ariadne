@@ -881,3 +881,83 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
     assert "ariadne draft status" in message
     assert draft.source_txn_pending(project)  # the remnant is still there; a retry removes it
     assert draft.status(project) is None and not draft.source_txn_pending(project)
+
+
+_SIGINT_LAUNCHER = """
+import os, signal, sys
+from ariadne import draft
+count = int(os.environ["ARIADNE_TEST_SIGINTS"])
+state = {"fired": False}
+
+def tracer(frame, event, arg):
+    if frame.f_code.co_filename != draft.__file__:
+        return None
+    def local(frame, event, arg):
+        if event == "line" and frame.f_code.co_name == "_finish_rollback" and not state["fired"]:
+            if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
+                state["fired"] = True
+                for _ in range(count):
+                    os.kill(os.getpid(), signal.SIGINT)
+        return local
+    return local
+
+sys.settrace(tracer)
+import threading; threading.settrace(tracer)
+from ariadne import serve
+raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"]))
+"""
+
+
+def _restore_sync_line() -> int:
+    import ast
+    import inspect
+    import textwrap
+
+    from ariadne import draft
+
+    src, start = inspect.getsourcelines(draft._finish_rollback)
+    tree = ast.parse(textwrap.dedent("".join(src)))
+    call = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "_fsync_path"
+    )
+    return call.lineno + start - 1
+
+
+@pytest.mark.parametrize("sigints", [1, 2])
+def test_stdio_server_holds_a_real_sigint_in_the_cleanup_window_then_shuts_down(tmp_path, sigints):
+    """Finding 1 on the SHIPPED backend: in the real `ariadne serve` stdio process (SIGINT handler
+    = asyncio.Runner._on_sigint) a real SIGINT — or two — delivered on the restore sync's line of
+    the cleanup window is HELD: the client still receives the typed tool result (the journal is
+    removed, the files restored), and only AFTER it is the held interrupt handed to the server's
+    own handler, which shuts it down as designed. A second SIGINT does not preempt the outcome."""
+    from ariadne import draft
+
+    project = complete_bundle_project(tmp_path / "proj")
+    draft.begin_source_txn(project)  # an interrupted approval's journal: the first lookup recovers
+
+    async def run() -> tuple[str, int | None]:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", _SIGINT_LAUNCHER, str(project)],
+            env={
+                **os.environ,
+                "PYTHONPATH": str(REPO_ROOT / "src"),
+                "ARIADNE_TEST_SIGINTS": str(sigints),
+                "ARIADNE_TEST_LINE": str(_restore_sync_line()),
+            },
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=60)
+                text = "".join(getattr(block, "text", "") for block in result.content)
+                return text, None
+
+    message, _ = asyncio.run(run())
+    # the typed result reached the client: a finished cleanup (the held interrupt was the only
+    # event)
+    assert "Ctrl-C" in message and "durably restored" in message, message
+    assert "Nothing needs fixing" in message, message
+    assert not draft.source_txn_pending(project)  # the journal was removed despite the signal(s)

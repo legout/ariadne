@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from datetime import date, time
 from decimal import Decimal
@@ -183,20 +184,35 @@ def _expected(project: Path) -> tuple[int, str] | None:
     return None if view is None else (view["generation"], view["candidate_revision"])
 
 
+def _pending_state_for_interrupt(project: Path) -> str:
+    """Read (never write) whether a source approval is pending, for the interrupt envelope:
+    ``os.lstat`` per file, so only a DEFINITE absence (FileNotFoundError) means "not pending"; an
+    inaccessible state says the status could not be confirmed. Same on every Python version."""
+    from ariadne import draft
+
+    unknown = False
+    for rel in (draft.TXN_REL, draft.TXN_COMMITTED_REL):
+        try:
+            os.lstat(project / rel)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            unknown = True
+            continue
+        return "a source approval is still pending recovery"
+    if unknown:
+        return "whether a source approval is pending could not be confirmed (state inaccessible)"
+    return "no source approval is pending"
+
+
 def _draft_commands_interruptible(args: argparse.Namespace, stdin: Any, project: Path) -> int:
     """Draft commands run recovery, so an interrupt from its cleanup path stays inside the error
     envelope (reported with the outcome the path reached). Scoped to the draft surface: every other
     command — notably `approve` at its consent prompt — keeps its own Ctrl-C behavior."""
-    from ariadne import draft
-
     try:
         return _draft_commands(args, stdin)
     except KeyboardInterrupt:
-        state = (
-            "a source approval is still pending recovery"
-            if draft.source_txn_pending(project)
-            else "no source approval is pending"
-        )
+        state = _pending_state_for_interrupt(project)
         print(
             json.dumps(
                 {

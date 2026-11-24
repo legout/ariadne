@@ -26,7 +26,9 @@ Rules enforced here:
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import functools
 import json
 import os
 import signal
@@ -550,10 +552,11 @@ class UnconfirmedSourceApproval(ValueError):
     command = "ariadne draft status"
 
 
-def _guidance(headline: str, *, journal_gone: bool) -> str:
-    """The shared guidance of the three cleanup outcomes (rendered by every consumer: the CLI error
+def _guidance(headline: str, *, journal_gone: bool, needs_retry: bool = True) -> str:
+    """The shared guidance of the cleanup outcomes (rendered by every consumer: the CLI error
     envelope, MCP ``ToolError`` and the approval's own report): what is already safe, what stays
-    refused and why, and how to retry."""
+    refused and why, and how to retry. ``needs_retry=False`` is for an outcome whose only event was
+    a held Ctrl-C: the cleanup FINISHED, so there is no cause to fix."""
     refused = (
         "nothing stays refused: the journal is gone (grant-backed reads are refused only while a "
         "journal remains)"
@@ -561,17 +564,30 @@ def _guidance(headline: str, *, journal_gone: bool) -> str:
         else "grant-backed reads stay refused while the journal remains, because it is the only "
         "record that the approval did not commit"
     )
+    tail = (
+        "To retry: fix the cause (for example the permissions of the project's .ariadne "
+        "directory), then run 'ariadne draft status' in that project."
+        if needs_retry
+        else "Nothing needs fixing: run the command again if you still want it."
+    )
     return (
         f"{headline} Already safe: all three files (grants, source baseline, draft slot) were "
-        f"durably restored and no new grant is effective. Still refused: {refused}. To retry: fix "
-        "the cause (for example the permissions of the project's .ariadne directory), then run "
-        "'ariadne draft status' in that project."
+        f"durably restored and no new grant is effective. Still refused: {refused}. {tail}"
     )
 
 
+_HELD_NOTE = (
+    " An interrupt (Ctrl-C) also arrived during the cleanup, was held until it ended, and is "
+    "delivered afterwards (the command stops here)."
+)
+
+
 class RollbackCleanup(OSError):
-    """All three files were restored and the journal is gone; only the cleanup sync after the
-    removal failed or was interrupted: a failed approval with a cleanup note."""
+    """All three files were restored and the journal is gone. ``finished`` says whether the
+    cleanup itself completed: ``True`` when the only event was a held Ctrl-C (nothing to fix),
+    ``False`` when the removal's sync failed or was interrupted (a cleanup note)."""
+
+    finished = False
 
 
 class RemovalUnconfirmed(OSError):
@@ -683,11 +699,118 @@ def rollback_source_txn(project: Path) -> None:
     _restore(project / GRANTS_REL, previous["grants"])
     _restore(project / BASELINE_REL, previous["baseline"])
     _restore(project / DRAFT_REL, previous["slot"])
-    # From the restore sync's return to the end of the journal removal NO statement is an
-    # interruptible gap: a SIGINT arriving in this window is HELD (main thread; elsewhere nothing
-    # is delivered anyway), the path runs to one of its three outcomes, and only then is the held
-    # interrupt reported. A failure of the restore sync itself is NOT cleanup: it propagates.
+    _finish_rollback(journal)
+
+
+def _is_shipped_stdio_handler(handler) -> bool:
+    """True for the SIGINT handler the shipped ``ariadne serve`` stdio process runs under: the
+    ``functools.partial`` of the ASYNCIO RUNNER's bound ``_on_sigint`` that ``asyncio.Runner.run``
+    (and so ``anyio.run``) installs. Identified by TYPE (a partial whose function is bound to an
+    ``asyncio.Runner`` instance), with the method name only as a second check — so a rename of the
+    private method alone cannot silently widen or narrow it; any other custom handler (an
+    embedding host's) is never matched."""
+    return (
+        isinstance(handler, functools.partial)
+        and isinstance(getattr(handler.func, "__self__", None), asyncio.Runner)
+        and getattr(handler.func, "__name__", "") == "_on_sigint"
+    )
+
+
+class _Held:
+    """The interrupts recorded while a region ran, and the handler to hand them to afterwards."""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.handover: Any = None  # the shipped server's own handler, handed the held interrupts
+
+    @property
+    def interrupted(self) -> bool:
+        return self.count > 0
+
+
+@contextmanager
+def _deferred_interrupt():
+    """Hold SIGINT for the region: a recording handler replaces the default handler — or the
+    shipped stdio server's handler (``asyncio.Runner._on_sigint``) — and is restored afterwards.
+    ``signal.signal`` works in the main thread only (and only the main thread receives
+    ``KeyboardInterrupt``): elsewhere, or when the process runs any OTHER custom disposition (an
+    embedding host's policy), the region is a plain pass-through that cannot fail."""
+    held = _Held()
+    current = signal.getsignal(signal.SIGINT)
+    shipped = _is_shipped_stdio_handler(current)
+    if threading.current_thread() is not threading.main_thread() or not (
+        shipped or current is signal.default_int_handler
+    ):
+        yield held
+        return
+
+    def record(_signum, _frame):
+        held.count += 1
+
+    previous = signal.signal(signal.SIGINT, record)
+    held.handover = previous if shipped else None
+    try:
+        yield held
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+# How long after the typed result is queued the held interrupt is handed to the stdio server's own
+# handler: its reply must reach the client first (the server then shuts down as designed).
+_HANDOVER_GRACE_SECONDS = 0.3
+
+
+def _hand_over(held: _Held) -> None:
+    """After the region, deliver the held interrupts to the shipped server's own handler (the
+    first cancels its main task; a second forces the exit, as a double Ctrl-C does there), but only
+    AFTER a short grace so the typed result is sent first. A no-op for every other disposition."""
+    if held.handover is None or not held.count:
+        return
+    handler = held.handover
+
+    def deliver():
+        handler(signal.SIGINT, None)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # no loop in this thread: deliver in place
+        for _ in range(held.count):
+            deliver()
+        return
+    for number in range(held.count):
+        loop.call_later(_HANDOVER_GRACE_SECONDS * (number + 1), deliver)
+
+
+def _final_outcome(outcome: OSError | None, interrupted: bool) -> OSError | None:
+    """The single reported result of the cleanup path: the typed outcome, with a note when an
+    interrupt was also held (a recorded interrupt never disappears and the reply differs from the
+    no-signal reply); or, when the interrupt was the ONLY event, a truthful finished-cleanup
+    outcome (no "fix the cause" advice)."""
+    if outcome is not None:
+        if interrupted:
+            outcome.args = (f"{outcome}{_HELD_NOTE}",)
+        return outcome
+    if interrupted:
+        finished = RollbackCleanup(
+            _guidance(
+                "The earlier approval was rolled back and the cleanup finished." + _HELD_NOTE,
+                journal_gone=True,
+                needs_retry=False,
+            )
+        )
+        finished.finished = True
+        return finished
+    return None
+
+
+def _finish_rollback(journal: Path) -> None:
+    """From the RESTORE SYNC's return to the end of the journal removal NO statement is an
+    interruptible gap: the sync itself runs inside the deferred region (a SIGINT arriving in this
+    window is HELD, main thread), the path runs to one of its outcomes, and only then is the held
+    interrupt reported alongside it. A failure of the restore sync itself is NOT cleanup: it
+    propagates (the restore is unconfirmed)."""
     outcome: OSError | None = None
+    interrupted = False
     done = False
     try:
         with _deferred_interrupt() as held:
@@ -697,52 +820,19 @@ def rollback_source_txn(project: Path) -> None:
             except OSError as typed:  # RollbackCleanup | JournalRemnant | RemovalUnconfirmed
                 outcome = typed
             done = True
-        if outcome is not None:
-            raise outcome
-        if held.interrupted:
-            raise RollbackCleanup(_interrupted_message())
+        interrupted = held.interrupted
+        _hand_over(held)
+        final = _final_outcome(outcome, interrupted)
+        if final is not None:
+            raise final
     except KeyboardInterrupt as exc:
         # only reachable around the deferred region: before it (the restore sync is not confirmed:
         # propagate) or after the cleanup finished (report the outcome the path reached)
         if not done:
             raise
-        raise (outcome or RollbackCleanup(_interrupted_message())) from exc
-
-
-def _interrupted_message() -> str:
-    return _guidance(
-        "The journal removal finished, but an interrupt (Ctrl-C) arrived during the cleanup and "
-        "was held until it ended: cleanup only, the approval did not commit.",
-        journal_gone=True,
-    )
-
-
-@contextmanager
-def _deferred_interrupt():
-    """Hold SIGINT for the region: a recording handler replaces the default one and is restored
-    afterwards. ``signal.signal`` works in the main thread only (and only the main thread receives
-    ``KeyboardInterrupt``): elsewhere, or when the process already runs a custom SIGINT
-    disposition, the region is a plain pass-through that cannot fail."""
-
-    class Held:
-        interrupted = False
-
-    held = Held()
-    if (
-        threading.current_thread() is not threading.main_thread()
-        or signal.getsignal(signal.SIGINT) is not signal.default_int_handler
-    ):
-        yield held
-        return
-
-    def record(_signum, _frame):
-        held.interrupted = True
-
-    previous = signal.signal(signal.SIGINT, record)
-    try:
-        yield held
-    finally:
-        signal.signal(signal.SIGINT, previous)
+        final = _final_outcome(outcome, True)
+        assert final is not None
+        raise final from exc
 
 
 def _remove_journal(journal: Path) -> None:
