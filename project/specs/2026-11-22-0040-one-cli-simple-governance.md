@@ -236,7 +236,8 @@ sources with `governed:false` and state what the answer rests on.
       commands and the approval prompt) the outcome is reported before the interrupt is
       delivered. In the MCP server transports the interrupt shuts the server down once
       the cleanup has run: the state stays consistent, the reply may be lost, and the
-      client runs `draft status` again to see the outcome. (Owner decision 2026-11-24 at
+      client runs `draft status` again to see the outcome. The server process exits when
+      the client closes or restarts its connection. (Owner decisions 2026-11-24 at
       B1 review R1.)
    6. The approved draft generation is **consumed**. The source declarations it
       contains are committed to the project as the new *approved source baseline*. The
