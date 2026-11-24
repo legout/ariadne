@@ -7,7 +7,7 @@ One **foreman** agent session runs this project. It triages GitHub issues, route
 - Repository: `legout/ariadne`. Default branch: `main`.
 - Setup: `uv sync` (all workspace members; see `CONTRIBUTING.md`).
 - Focused test (serial, never `-n auto`; RAM and `/tmp` are tight):
-  - Ariadne Core: `cd products/ariadne/packages/ariadne-data && uv run pytest -q --basetemp=/tmp/<issue>-bt tests/<file>.py`, then delete the basetemp.
+  - Ariadne Core: `cd products/ariadne/packages/ariadne-data && PYTHONPATH=../../../.. uv run pytest -q --basetemp=/tmp/<issue>-bt tests/<file>.py` (tests import `integration`; CI runs them pair-installed), then delete the basetemp.
   - Lumio: `cd products/lumio && uv run pytest -q packages/<member>/tests/<file>.py`.
   - Shared: `uv run pytest -q tests/<file>.py` from the root.
   - Lint the touched area with its own config: `uv run ruff check .` in the root, `products/lumio`, or `products/ariadne/packages/ariadne-data` (with `--extra dev`).
