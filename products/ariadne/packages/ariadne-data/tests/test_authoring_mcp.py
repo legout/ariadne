@@ -884,26 +884,49 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 
 
 _SIGINT_LAUNCHER = """
-import os, signal, sys
-from ariadne import draft
+import json, os, signal, sys, time
 marker = os.environ["ARIADNE_TEST_MARKER"]
+with open(marker + ".pid", "w") as fh:  # the server child's own pid, written before anything else
+    fh.write(str(os.getpid()))
+from ariadne import draft
+want = int(os.environ["ARIADNE_TEST_SIGINTS"])
+target = int(os.environ.get("ARIADNE_TEST_TARGET_PID") or os.getpid())
+fault = os.environ.get("ARIADNE_TEST_FAULT", "")
 state = {"fired": False}
+
+def record(index, status, exc, frame):
+    # one line per send: written only AFTER os.kill returned (status "returned") or raised
+    # (status "raised"); a skipped call writes nothing
+    with open(marker, "a") as fh:
+        fh.write(json.dumps({"i": index, "status": status, "exc": exc, "pid": target,
+                             "fn": frame.f_code.co_name, "line": frame.f_lineno}) + chr(10))
 
 def tracer(frame, event, arg):
     if frame.f_code.co_filename != draft.__file__:
         return None
     def local(frame, event, arg):
-        if event == "line" and frame.f_code.co_name == "_finish_rollback" and not state["fired"]:
-            if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
-                state["fired"] = True
-                for _ in range(int(os.environ["ARIADNE_TEST_SIGINTS"])):
-                    try:
-                        if os.environ.get("ARIADNE_TEST_SKIP_KILL") != "1":
-                            os.kill(os.getpid(), signal.SIGINT)
-                    finally:
-                        # the SEND marker: written only AFTER the call returned (or raised)
-                        with open(marker, "a") as fh:
-                            fh.write("sent" + chr(10))
+        if event != "line" or state["fired"]:
+            return local
+        if frame.f_code.co_name != os.environ["ARIADNE_TEST_FUNC"]:
+            return local
+        if frame.f_lineno != int(os.environ["ARIADNE_TEST_LINE"]):
+            return local
+        state["fired"] = True
+        if fault == "stall":
+            time.sleep(float(os.environ["ARIADNE_TEST_STALL"]))
+        if fault == "commit":  # a rollback that turned into a commit (a marker, no journal)
+            journal = os.path.join(sys.argv[1], str(draft.TXN_REL))
+            os.replace(journal, os.path.join(sys.argv[1], str(draft.TXN_COMMITTED_REL)))
+        for index in range(1, want + 1):
+            if fault == "skip" or (fault == "skip_second" and index == 2):
+                continue  # a skipped call writes nothing
+            signum = 10**9 if fault == "raise" else signal.SIGINT
+            try:
+                os.kill(target, signum)
+            except BaseException as exc:
+                record(index, "raised", type(exc).__name__, frame)
+                raise
+            record(index, "returned", None, frame)
         return local
     return local
 
@@ -952,27 +975,62 @@ def _disposition(project: Path) -> str:
     return "journal" if os.path.lexists(project / draft.TXN_REL) else "none"
 
 
+def _function_line(name: str) -> tuple[str, int]:
+    """(function name, line of its first executable statement) in ``draft``, found through the
+    AST: a trace point in a DIFFERENT place than the restore sync, for the negative cases."""
+    import ast
+    import inspect
+    import textwrap
+
+    from ariadne import draft
+
+    fn = getattr(draft, name)
+    src, start = inspect.getsourcelines(fn)
+    tree = ast.parse(textwrap.dedent("".join(src)))
+    body = next(n for n in tree.body if isinstance(n, ast.FunctionDef)).body
+    first = next(  # skip the docstring: it produces no line event
+        n for n in body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+    )
+    return name, first.lineno + start - 1
+
+
 def _run_stdio_sigint_case(
     tmp_path: Path,
     sigints: int,
     launcher: str = _SIGINT_LAUNCHER,
-    skip_kill: bool = False,
+    fault: str = "",
     change_seed: bool = True,
+    where: tuple[str, int] | None = None,
+    decoy: bool = False,
+    call_wait: float = 15,
+    evidence_wait: float = 15,
+    stall: float = 0,
 ) -> dict:
-    """What this proves, and no more: in the REAL ``ariadne serve`` stdio process a real SIGINT
-    (or two) that arrives during the rollback cleanup leaves a consistent project state, the
-    server STOPS SERVING, and a later ``ariadne draft status`` reports the outcome (the strict
-    timing subclassification — late vs missing vs crossing the close — is settled at the final
-    review, plan 0040-B1 V). The launcher does not touch the installed SIGINT handler.
+    """What this proves, and no more: in the REAL ``ariadne serve`` stdio process, a real SIGINT
+    that the server process SENDS TO ITSELF at the cleanup line (one, or two), WITNESSED PER SIGNAL,
+    leaves a consistent project state, and a later ``ariadne draft status`` reports the outcome
+    truthfully.
+
+    It does NOT prove (and no assertion here claims): that the server's own handler received the
+    signal through an independent witness — the self-send to the server's own pid implies it, and
+    "the server stopped serving" is not used as proof of receipt; nor the strict timing
+    classification (late, missing, crossing the close), which is settled at the final candidate
+    review (plan 0040-B1 V). The launcher does not touch the installed SIGINT handler.
 
     Preconditions that cannot pass silently: the MCP session initialized and served a request
     BEFORE the window; the seed really changed the three journaled files after the journal was
-    written. Independent witnesses: the child's tracer writes a SEND marker only AFTER ``os.kill``
-    returns (a marker before the call proves nothing); and the server STOPS SERVING — a request
-    sent after the marker fails or gets no reply, the observable effect of the Runner's own
-    handler on the first SIGINT. The byte states and the journal's disposition are read BEFORE any
-    fresh ``draft status``. Nothing is asserted about the interrupted tool's reply or the server's
-    exit status (owner decisions)."""
+    written. Send evidence: the child's tracer writes one marker per send, ONLY AFTER ``os.kill``
+    returned (``returned``) or raised (``raised``); a skipped call writes nothing. The test waits
+    for the COMPLETE evidence before anything else ("send evidence missing" if the wait expires)
+    and requires, per requested signal: the target pid equals the server child's own pid (written
+    by the child at startup), the function and line are the restore sync of ``_finish_rollback``
+    (located through the AST), and the call returned — or, for the SECOND signal only, raised the
+    Runner's synchronous ``KeyboardInterrupt`` (that signal was delivered). The byte states and the
+    journal's disposition are read BEFORE any fresh ``draft status``; the disposition must be
+    ``none`` or ``journal`` (a commit marker in the rollback case fails). Nothing is asserted about
+    the interrupted tool's reply or the server's exit status (owner decisions)."""
+    import subprocess as sp
+
     from ariadne import authoring_sources, draft
 
     project = complete_bundle_project(tmp_path / "proj")
@@ -989,20 +1047,31 @@ def _run_stdio_sigint_case(
     changed = _journaled_state(project)
     assert all(changed[name] != before[name] for name in before), "the seed must differ"
     marker = tmp_path / "sigint-witness"
-    seen: dict = {"initialized": False, "served_before": False, "serving_after": None}
+    func, line = where or ("_finish_rollback", _restore_sync_line())
+    seen: dict = {"initialized": False, "served_before": False}
+    decoy_proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) if decoy else None
+
+    def markers() -> list[dict]:
+        if not marker.exists():
+            return []
+        lines = marker.read_text().split("\n")[:-1]  # complete lines only
+        return [json.loads(entry) for entry in lines]
 
     async def run() -> None:
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+            "ARIADNE_TEST_SIGINTS": str(sigints),
+            "ARIADNE_TEST_FUNC": func,
+            "ARIADNE_TEST_LINE": str(line),
+            "ARIADNE_TEST_MARKER": str(marker),
+            "ARIADNE_TEST_FAULT": fault,
+            "ARIADNE_TEST_STALL": str(stall),
+        }
+        if decoy_proc is not None:
+            env["ARIADNE_TEST_TARGET_PID"] = str(decoy_proc.pid)
         params = StdioServerParameters(
-            command=sys.executable,
-            args=["-c", launcher, str(project)],
-            env={
-                **os.environ,
-                "PYTHONPATH": str(REPO_ROOT / "src"),
-                "ARIADNE_TEST_SIGINTS": str(sigints),
-                "ARIADNE_TEST_LINE": str(_restore_sync_line()),
-                "ARIADNE_TEST_MARKER": str(marker),
-                "ARIADNE_TEST_SKIP_KILL": "1" if skip_kill else "0",
-            },
+            command=sys.executable, args=["-c", launcher, str(project)], env=env
         )
         try:
             async with stdio_client(params) as (read, write):
@@ -1011,30 +1080,47 @@ def _run_stdio_sigint_case(
                     seen["initialized"] = True
                     await asyncio.wait_for(session.list_tools(), timeout=20)
                     seen["served_before"] = True  # a request BEFORE the window was served
-                    try:  # this lookup triggers the recovery whose cleanup window gets the signal
-                        await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=15)
-                    except BaseException:  # the reply MAY be lost: the server was shut down
+                    try:  # this lookup triggers the recovery whose cleanup line gets the signal
+                        await asyncio.wait_for(
+                            session.call_tool("draft_status", {}), timeout=call_wait
+                        )
+                    except BaseException:  # the reply MAY be lost
                         pass
-                    for _ in range(100):  # the send marker is written after os.kill returned
-                        if marker.exists() and marker.read_text().count("sent") >= sigints:
-                            break
+                    deadline = time.monotonic() + evidence_wait  # the COMPLETE send evidence first
+                    while time.monotonic() < deadline and len(markers()) < sigints:
                         await asyncio.sleep(0.05)
-                    try:  # a request AFTER the window: the server must have stopped serving
-                        await asyncio.wait_for(session.list_tools(), timeout=5)
-                        seen["serving_after"] = True
-                    except BaseException:
-                        seen["serving_after"] = False
         except BaseException:  # the server going away may surface as a closed stream
             pass
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        if decoy_proc is not None:
+            decoy_proc.kill()
+            decoy_proc.wait()
     assert seen["initialized"], "the MCP session must initialize"
     assert seen["served_before"], "a request before the window must have been served"
-    sent = marker.read_text().count("sent") if marker.exists() else 0
-    assert sent == sigints, f"the send marker (written after os.kill) shows {sent}/{sigints} sends"
-    assert seen["serving_after"] is False, "the server must stop serving after the window"
-    after = _journaled_state(project)  # BEFORE any fresh `draft status` could recover anything
-    pre = _disposition(project)
+    sent = markers()
+    assert len(sent) == sigints, (
+        f"send evidence missing: {len(sent)}/{sigints} markers after {evidence_wait:g}s"
+    )
+    server_pid = int(Path(f"{marker}.pid").read_text())
+    for number, mark in enumerate(sent, start=1):
+        assert mark["pid"] == server_pid, (
+            f"send {number} targeted pid {mark['pid']}, not the server child's pid {server_pid}"
+        )
+        assert (mark["fn"], mark["line"]) == ("_finish_rollback", _restore_sync_line()), (
+            f"send {number} came from another function or line: {mark['fn']}:{mark['line']}"
+        )
+        delivered_by_raise = (
+            number == 2 and mark["status"] == "raised" and mark["exc"] == "KeyboardInterrupt"
+        )
+        assert mark["status"] == "returned" or delivered_by_raise, (
+            f"send {number} failed: os.kill {mark['status']} {mark['exc']}"
+        )
+    pre = _disposition(project)  # BEFORE any fresh `draft status` could recover anything
+    assert pre in ("none", "journal"), f"a commit marker in the rollback case (disposition {pre!r})"
+    after = _journaled_state(project)
     assert after == before, "the three files must hold their previous (journaled) bytes"
     return {"project": project, "pre": pre}
 
@@ -1052,6 +1138,7 @@ def _fresh_status(project: Path):
             str(project),
         ],
         env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        cwd=project,  # the bare retry's context IS the project
         capture_output=True,
         text=True,
         timeout=120,
@@ -1060,8 +1147,10 @@ def _fresh_status(project: Path):
 
 def _valid_retry(command: str, project: Path) -> bool:
     """A retry command validated AS A COMMAND: the shipped bare ``ariadne draft status`` (its
-    context is the project), or ``--project`` followed by THIS fixture's project path. Any other
-    path is rejected: a retry that inspects another project is no retry."""
+    context is the project: the fresh CLI runs in the project directory), or ``--project``
+    followed by an ABSOLUTE path equal to THIS fixture's project path. A relative operand is
+    rejected (it resolves against the caller's cwd and can report on another project), as is any
+    other path: a retry that inspects another project is no retry."""
     import shlex
 
     try:
@@ -1074,7 +1163,8 @@ def _valid_retry(command: str, project: Path) -> bool:
         len(parts) == 5
         and parts[:3] == ["ariadne", "draft", "status"]
         and parts[3] == "--project"
-        and Path(parts[4]).resolve() == Path(project).resolve()
+        and Path(parts[4]).is_absolute()
+        and os.path.realpath(parts[4]) == os.path.realpath(project)
     )
 
 
@@ -1108,6 +1198,10 @@ def _assert_fresh_status(project: Path, done, pre: str) -> None:
         return
     assert pre in ("journal", "marker"), f"an error with nothing pending ({pre!r}): {done.stderr}"
     if done.stdout.strip():
+        # Owner decision 2026-11-24: `draft status --json` reports the SAME pending shape for an
+        # interrupted rollback (a retained journal) and for a commit that could not be confirmed
+        # (a retained marker); both are truthfully pending. So the flag, the retry command and the
+        # artifacts on disk are asserted — no keyword heuristics on the message.
         payload = json.loads(done.stdout)
         assert payload.get("source_approval_pending") is True, done.stdout
         command = payload.get("command", "")
@@ -1129,34 +1223,83 @@ def _assert_fresh_status(project: Path, done, pre: str) -> None:
 
 
 @pytest.mark.parametrize("sigints", [1, 2])
-def test_stdio_server_stops_serving_and_stays_consistent_after_a_sigint_in_the_cleanup(
+def test_stdio_server_self_sent_sigint_at_the_cleanup_line_leaves_a_consistent_state(
     tmp_path, sigints
 ):
-    """In the real `ariadne serve` stdio process a real SIGINT — or two — that arrives during the
-    rollback cleanup leaves a consistent project state, the server stops serving, and a later
-    `ariadne draft status` in a FRESH process reports the outcome for that state."""
+    """In the real `ariadne serve` stdio process a real SIGINT — or two — that the server sends to
+    itself at the cleanup line, witnessed per signal, leaves a consistent project state, and a
+    later `ariadne draft status` in a FRESH process reports the outcome truthfully. (It does not
+    prove receipt by an independent witness or the strict timing: see `_run_stdio_sigint_case`.)"""
     case = _run_stdio_sigint_case(tmp_path, sigints)
     _assert_fresh_status(case["project"], _fresh_status(case["project"]), case["pre"])
 
 
+def _another_line() -> tuple[str, int]:
+    """The first statement of ``_finish_rollback``: it runs before the restore sync."""
+    return _function_line("_finish_rollback")
+
+
 @pytest.mark.parametrize(
-    ("what", "kwargs", "failure"),
+    ("what", "sigints", "kwargs", "failure"),
     [
-        ("a launcher that fails", {"launcher": _FAILING_LAUNCHER}, "MCP session must initialize"),
         (
-            "a skipped send (the marker is written, os.kill is not called)",
-            {"skip_kill": True},
-            "server must stop serving",
+            "a launcher that fails",
+            1,
+            {"launcher": _FAILING_LAUNCHER},
+            "MCP session must initialize",
         ),
-        ("an unchanged seed", {"change_seed": False}, "the seed must differ"),
+        (
+            "a skipped send (no call, no marker)",
+            1,
+            {"fault": "skip", "evidence_wait": 1},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "the second signal skipped (only one of two sent)",
+            2,
+            {"fault": "skip_second", "evidence_wait": 1},
+            "send evidence missing: 1/2",
+        ),
+        (
+            "a marker wait that expires (the send stalls past the wait)",
+            1,
+            {"fault": "stall", "stall": 5, "call_wait": 1, "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s",
+        ),
+        (
+            "a call that raises something other than the second-signal KeyboardInterrupt",
+            1,
+            {"fault": "raise"},
+            "send 1 failed: os.kill raised",
+        ),
+        ("a send to a decoy pid", 1, {"decoy": True}, "targeted pid .*, not the server child's"),
+        (
+            "a send from another line of the cleanup function",
+            1,
+            {"where": _another_line()},
+            "came from another function or line",
+        ),
+        (
+            "a send from another function",
+            1,
+            {"where": _function_line("_remove_journal")},
+            "came from another function or line",
+        ),
+        (
+            "a rollback that turned into a commit marker before the repair",
+            1,
+            {"fault": "commit"},
+            "a commit marker in the rollback case",
+        ),
+        ("an unchanged seed", 1, {"change_seed": False}, "the seed must differ"),
     ],
 )
-def test_the_stdio_test_cannot_pass_without_a_server_a_send_and_a_changed_seed(
-    tmp_path, what, kwargs, failure
+def test_the_stdio_test_rejects_each_false_positive_for_its_own_reason(
+    tmp_path, what, sigints, kwargs, failure
 ):
-    """Each protection fails for its OWN reason."""
+    """Each protection fails for its OWN named reason."""
     with pytest.raises(AssertionError, match=failure):
-        _run_stdio_sigint_case(tmp_path, 1, **kwargs)
+        _run_stdio_sigint_case(tmp_path, sigints, **kwargs)
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -1221,6 +1364,8 @@ def test_the_fresh_status_check_decides_on_structure(tmp_path, monkeypatch, caps
         "ariadne draft status --project",
         "ariadne draft status --json",
         "ariadne draft status --project /somewhere/else",
+        f"ariadne draft status --project {os.path.relpath(marker)}",  # a RELATIVE operand
+        "ariadne draft status --project ../marker",
     ):
         with pytest.raises(AssertionError, match="valid retry command"):
             _assert_fresh_status(
