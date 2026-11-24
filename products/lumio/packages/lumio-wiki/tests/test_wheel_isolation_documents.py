@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import venv
+import sys
 from pathlib import Path
 
 import pytest
@@ -74,13 +74,16 @@ def _build_wheel(wheel_dir: Path) -> Path:
 
 
 def _create_isolated_venv(venv_dir: Path) -> Path:
-    venv.create(venv_dir, with_pip=True, clear=True)
+    subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(venv_dir)], check=True, capture_output=True
+    )
     return venv_dir / "bin" / "python"
 
 
-def _pip(python: Path, *args: str) -> subprocess.CompletedProcess:
+def _uv_pip(python: Path, *args: str) -> subprocess.CompletedProcess:
+    """Install requirements into the venv behind ``python`` with ``uv pip install``."""
     return subprocess.run(
-        [str(python), "-m", "pip", *args],
+        ["uv", "pip", "install", "--python", str(python), *args],
         check=False,
         capture_output=True,
         text=True,
@@ -103,7 +106,7 @@ def documents_wheel_env(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     venv_dir = tmp_path_factory.mktemp("documents_venv")
     python = _create_isolated_venv(venv_dir)
-    install = _pip(python, "install", f"{wheel_path}[documents]")
+    install = _uv_pip(python, f"{wheel_path}[documents]")
     assert install.returncode == 0, f"[documents] install failed:\n{install.stderr}"
 
     return python
