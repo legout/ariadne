@@ -885,7 +885,7 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 
 
 _SIGINT_LAUNCHER = """
-import json, os, signal, sys, time
+import json, os, signal, sys, threading, time
 marker = os.environ["ARIADNE_TEST_MARKER"]
 own = os.getpid()
 with open(marker + ".pid", "w") as fh:  # the server child's own pid, written before anything else
@@ -894,29 +894,68 @@ from ariadne import draft
 want = int(os.environ["ARIADNE_TEST_SIGINTS"])
 target = int(os.environ.get("ARIADNE_TEST_TARGET_PID") or own)
 fault = os.environ.get("ARIADNE_TEST_FAULT", "")
-state = {"fired": False}
-events = []  # every os.kill the interpreter actually performed: (pid, signal)
+state = {"fired": False, "attempt": 0, "seq": 0}
+events = []
+# time base: every marker and audit record carries time.monotonic(). On Linux that is
+# CLOCK_MONOTONIC, one system-wide clock: the test process and this launcher share the time base.
 
 def audit(name, args):
-    # the audit event fires inside the real os.kill, BEFORE the syscall: it is the observation
-    # that the call was invoked, with its actual pid and signal; tracer control flow is not
-    if name == "os.kill":
-        events.append((int(args[0]), int(args[1])))
-        with open(marker + ".audit", "a") as fh:
-            fh.write(json.dumps({"pid": int(args[0]), "sig": int(args[1])}) + chr(10))
+    # fires inside the real os.kill, before the syscall: the pid and signal are the call's own
+    if name != "os.kill":
+        return
+    frame = sys._getframe(1)  # the Python frame that invoked os.kill (the call site)
+    state["seq"] += 1
+    event = {"seq": state["seq"], "pid": int(args[0]), "sig": int(args[1]),
+             "tid": threading.get_ident(), "fn": frame.f_code.co_name, "line": frame.f_lineno,
+             "attempt": state["attempt"], "t": time.monotonic()}
+    events.append(event)
+    with open(marker + ".audit", "a") as fh:
+        fh.write(json.dumps(event) + chr(10))
 
 sys.addaudithook(audit)
 
-def record(index, outcome, since, frame):
-    # a send marker is written ONLY when an os.kill audit event with the server's own pid and
-    # SIGINT was observed for this send; it carries the OBSERVED pid/signal and the call's outcome
-    matched = [e for e in events[since:] if e == (own, int(signal.SIGINT))]
-    if not matched:
-        return
-    pid, sig = matched[0]
+if fault == "audit_kbd":  # a SECOND audit hook aborts the second os.kill with a KeyboardInterrupt
+    def second(name, args):
+        if name == "os.kill" and state["seq"] == 2:
+            raise KeyboardInterrupt
+    sys.addaudithook(second)
+
+def do_kill(pid, sig):
+    os.kill(pid, sig)  # THE KILL
+
+def other_kill(pid, sig):
+    os.kill(pid, sig)
+
+KILL_LINE = do_kill.__code__.co_firstlineno + 1
+used = set()
+
+def frames(exc):
+    out, tb = [], exc.__traceback__
+    while tb is not None:
+        out.append([tb.tb_frame.f_code.co_name, os.path.basename(tb.tb_frame.f_code.co_filename)])
+        tb = tb.tb_next
+    return out
+
+def write_marker(row):
+    row["t"] = time.monotonic()
     with open(marker, "a") as fh:
-        fh.write(json.dumps({"i": index, "outcome": outcome, "pid": pid, "sig": sig,
-                             "fn": frame.f_code.co_name, "line": frame.f_lineno}) + chr(10))
+        fh.write(json.dumps(row) + chr(10))
+
+def record(index, outcome, since, frame, tid, tb):
+    # a marker is written ONLY for an event that is new, from this thread, from the launcher's own
+    # os.kill line, with the server's pid and SIGINT; it references that event's sequence number
+    for event in events[since:]:
+        if (event["pid"] == own and event["sig"] == int(signal.SIGINT) and event["tid"] == tid
+                and event["fn"] == "do_kill" and event["line"] == KILL_LINE
+                and event["seq"] not in used):
+            used.add(event["seq"])
+            write_marker({"i": index, "seq": event["seq"], "outcome": outcome, "tid": tid,
+                          "tb": tb, "fn": frame.f_code.co_name, "line": frame.f_lineno})
+            return
+
+def forge(index, seq, frame, tid):
+    write_marker({"i": index, "seq": seq, "outcome": "returned", "tid": tid, "tb": [],
+                  "fn": frame.f_code.co_name, "line": frame.f_lineno})
 
 def tracer(frame, event, arg):
     if frame.f_code.co_filename != draft.__file__:
@@ -929,55 +968,64 @@ def tracer(frame, event, arg):
         if frame.f_lineno != int(os.environ["ARIADNE_TEST_LINE"]):
             return local
         state["fired"] = True
+        tid = threading.get_ident()
         if fault == "stall":
             time.sleep(float(os.environ["ARIADNE_TEST_STALL"]))
         if fault == "commit":  # a rollback that turned into a commit (a marker, no journal)
             journal = os.path.join(sys.argv[1], str(draft.TXN_REL))
             os.replace(journal, os.path.join(sys.argv[1], str(draft.TXN_COMMITTED_REL)))
         for index in range(1, want + 1):
-            since = len(events)
-            outcome = "returned"
+            state["attempt"] = index
+            since, outcome, tb = len(events), "returned", []
             try:
                 if fault == "pass" or (fault == "skip_second" and index == 2):
                     pass  # the call replaced by nothing: no os.kill event
+                elif fault == "forge":  # an unconditional writer, no call at all
+                    forge(index, 999, frame, tid)
+                    continue
+                elif fault == "forge_double":  # a real first call, a second row on the same event
+                    if index == 1:
+                        do_kill(target, signal.SIGINT)
+                    else:
+                        forge(index, state["seq"], frame, tid)
+                        continue
+                elif fault == "held":  # a marker now, the real audit event only after the hold
+                    forge(index, 1, frame, tid)
+                    time.sleep(float(os.environ["ARIADNE_TEST_HOLD"]))
+                    do_kill(target, signal.SIGINT)
+                    continue
                 elif fault == "sig0":
-                    os.kill(target, 0)  # a real os.kill, but not SIGINT
+                    do_kill(target, 0)  # a real os.kill, but signal 0: not SIGINT
+                elif fault == "double":  # two audit events in one iteration
+                    do_kill(target, 0)
+                    do_kill(target, signal.SIGINT)
+                elif fault == "otherline":
+                    other_kill(target, signal.SIGINT)  # an event from another call site
+                elif fault == "thread":  # the kill moved into a worker thread and joined
+                    worker = threading.Thread(target=do_kill, args=(target, signal.SIGINT))
+                    worker.start()
+                    worker.join()
                 elif fault == "kbd_before" and index == 2:
                     raise KeyboardInterrupt  # raised BEFORE the syscall: no os.kill event
                 elif fault == "oserror":
-                    os.kill(target, signal.SIGINT)  # a real, audited send ...
+                    do_kill(target, signal.SIGINT)  # a real, audited send ...
                     raise OSError(5, "the call failed")  # ... that then reports an OSError
                 else:
-                    os.kill(target, signal.SIGINT)
+                    do_kill(target, signal.SIGINT)
             except BaseException as exc:
-                outcome = "raised " + type(exc).__name__
-                record(index, outcome, since, frame)
+                record(index, "raised " + type(exc).__name__, since, frame, tid, frames(exc))
                 raise
-            record(index, outcome, since, frame)
+            record(index, outcome, since, frame, tid, tb)
         return local
     return local
 
 sys.settrace(tracer)
-import threading; threading.settrace(tracer)
+threading.settrace(tracer)
 from ariadne import serve
 raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"]))
 """
 
 _FAILING_LAUNCHER = "raise SystemExit(50)"  # a launcher that fails: no server at all
-
-# an unconditional `finally` writer with NO call: it forges the old-style marker (pid/signal/outcome
-# written by control flow, not observed) next to the real launcher; no os.kill ever happens
-_FINALLY_LAUNCHER = _SIGINT_LAUNCHER.replace(
-    "                    os.kill(target, signal.SIGINT)\n            except BaseException as exc:",
-    "                    pass\n            except BaseException as exc:",
-).replace(
-    "            record(index, outcome, since, frame)\n        return local",
-    "            with open(marker, 'a') as fh:\n"
-    "                fh.write(json.dumps({'i': index, 'outcome': 'returned', 'pid': own,\n"
-    "                                     'sig': int(signal.SIGINT), 'fn': frame.f_code.co_name,\n"
-    "                                     'line': frame.f_lineno}) + chr(10))\n"
-    "        return local",
-)
 
 
 def _restore_sync_line() -> int:
@@ -1047,6 +1095,8 @@ def _run_stdio_sigint_case(
     evidence_wait: float = 15,
     stall: float = 0,
     linger: float = 0,
+    hold: float = 0,
+    wake_delay: float = 0,
 ) -> dict:
     """What this proves, and no more: in the REAL ``ariadne serve`` stdio process, a real SIGINT
     that the server process SENDS TO ITSELF at the cleanup line (one, or two), WITNESSED PER SIGNAL,
@@ -1061,16 +1111,27 @@ def _run_stdio_sigint_case(
 
     Preconditions that cannot pass silently: the MCP session initialized and served a request
     BEFORE the window; the seed really changed the three journaled files after the journal was
-    written. Send evidence: the child's tracer writes one marker per send, ONLY AFTER ``os.kill``
-    returned (``returned``) or raised (``raised``); a skipped call writes nothing. The test waits
-    for the COMPLETE evidence before anything else ("send evidence missing" if the wait expires)
-    and requires, per requested signal: the target pid equals the server child's own pid (written
-    by the child at startup), the function and line are the restore sync of ``_finish_rollback``
-    (located through the AST), and the call returned — or, for the SECOND signal only, raised the
-    Runner's synchronous ``KeyboardInterrupt`` (that signal was delivered). The byte states and the
-    journal's disposition are read BEFORE any fresh ``draft status``; the disposition must be
-    ``none`` or ``journal`` (a commit marker in the rollback case fails). Nothing is asserted about
-    the interrupted tool's reply or the server's exit status (owner decisions)."""
+    written.
+
+    Send evidence. A launcher audit hook records every ``os.kill`` EVENT with a sequence number,
+    the pid and signal number, the thread id, the call site (function and line of the frame that
+    invoked it) and the attempt, all taken from the event itself. A marker is written only for an
+    event that is NEW (matched at most once), from the tracer's own thread, from the launcher's own
+    ``os.kill`` line, with the server's pid and SIGINT, and references that event's sequence
+    number. Per requested signal there must be EXACTLY ONE ``os.kill`` event during its attempt;
+    the first signal must have returned; the SECOND signal may instead raise the Runner's
+    synchronous ``KeyboardInterrupt`` only if its traceback shows the Runner's ``_on_sigint`` and
+    the invoking call (inspected, the handler is neither replaced nor wrapped).
+
+    The deadline. Every marker and audit row carries ``time.monotonic()`` (on Linux the same
+    system-wide clock in this process and in the launcher); evidence written after the deadline
+    never counts, however late the poll wakes. The deciding snapshot — markers AND the audit log,
+    matched — is taken AT the deadline and its records are preserved before any teardown; the
+    post-teardown check compares those records and never changes the decision. The byte states
+    and the journal's disposition are read BEFORE any fresh ``draft status``; the disposition must
+    be ``none`` or ``journal`` (a commit marker in the rollback case fails). Nothing is asserted
+    about the interrupted tool's reply or the server's exit status (owner decisions). Protection
+    against deliberate edits to BOTH evidence files is out of scope."""
     import subprocess as sp
 
     from ariadne import authoring_sources, draft
@@ -1090,14 +1151,28 @@ def _run_stdio_sigint_case(
     assert all(changed[name] != before[name] for name in before), "the seed must differ"
     marker = tmp_path / "sigint-witness"
     func, line = where or ("_finish_rollback", _restore_sync_line())
-    seen: dict = {"initialized": False, "served_before": False, "at_deadline": None}
+    seen: dict = {"initialized": False, "served_before": False}
     decoy_proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) if decoy else None
 
-    def markers() -> list[dict]:
-        if not marker.exists():
+    def rows(suffix: str = "") -> list[dict]:
+        path = Path(f"{marker}{suffix}")
+        if not path.exists():
             return []
-        lines = marker.read_text().split("\n")[:-1]  # complete lines only
-        return [json.loads(entry) for entry in lines]
+        return [json.loads(entry) for entry in path.read_text().split("\n")[:-1]]  # whole lines
+
+    def snapshot(deadline: float) -> dict:
+        """The evidence AS OF the deadline: only rows stamped at or before it, markers AND audit."""
+        return {
+            "markers": [r for r in rows() if r["t"] <= deadline],
+            "audit": [r for r in rows(".audit") if r["t"] <= deadline],
+        }
+
+    def matched(snap: dict) -> list[dict]:
+        """The markers whose referenced audit event is in the snapshot (complete records)."""
+        events = {e["seq"]: e for e in snap["audit"]}
+        return [
+            {"marker": m, "event": events[m["seq"]]} for m in snap["markers"] if m["seq"] in events
+        ]
 
     async def run() -> None:
         env = {
@@ -1109,6 +1184,7 @@ def _run_stdio_sigint_case(
             "ARIADNE_TEST_MARKER": str(marker),
             "ARIADNE_TEST_FAULT": fault,
             "ARIADNE_TEST_STALL": str(stall),
+            "ARIADNE_TEST_HOLD": str(hold),
         }
         if decoy_proc is not None:
             env["ARIADNE_TEST_TARGET_PID"] = str(decoy_proc.pid)
@@ -1129,11 +1205,17 @@ def _run_stdio_sigint_case(
                     except BaseException:  # the reply MAY be lost
                         pass
                     deadline = time.monotonic() + evidence_wait  # the COMPLETE send evidence first
-                    while time.monotonic() < deadline and len(markers()) < sigints:
+                    seen["deadline"] = deadline
+                    while (
+                        time.monotonic() < deadline and len(matched(snapshot(deadline))) < sigints
+                    ):
                         await asyncio.sleep(0.05)
-                    # the count AT the deadline decides, and is preserved through the teardown: a
-                    # marker that arrives later cannot redeem an expired wait
-                    seen["at_deadline"] = len(markers())
+                    if wake_delay:  # test hook: a poll that wakes LATE, after the deadline
+                        await asyncio.sleep(wake_delay)
+                    # the deciding snapshot is taken AT the deadline (markers AND audit, matched by
+                    # their own timestamps) and the complete records are preserved BEFORE teardown
+                    seen["decision"] = snapshot(deadline)
+                    seen["matched"] = matched(seen["decision"])
                     if linger:  # test hook: a send delivered DURING the teardown
                         await asyncio.sleep(linger)
         except BaseException:  # the server going away may surface as a closed stream
@@ -1147,38 +1229,44 @@ def _run_stdio_sigint_case(
             decoy_proc.wait()
     assert seen["initialized"], "the MCP session must initialize"
     assert seen["served_before"], "a request before the window must have been served"
-    at_deadline = seen["at_deadline"]
-    sent = markers()  # read AFTER the teardown: it may be longer, but it never redeems the wait
-    assert at_deadline == sigints, (
-        f"send evidence missing: {at_deadline or 0}/{sigints} markers after {evidence_wait:g}s"
+    decision, done = seen["decision"], seen["matched"]
+    assert len(done) == sigints, (
+        f"send evidence missing: {len(done)}/{sigints} markers after {evidence_wait:g}s"
+        + (" (a marker has no os.kill audit event)" if len(decision["markers"]) > len(done) else "")
     )
-    assert len(sent) == sigints, f"send evidence changed after the deadline: {len(sent)}/{sigints}"
+    # the later (post-teardown) read can only EXTEND the evidence: the preserved records must be
+    # present and unchanged (records, not lengths); it never changes the decision
+    later_markers, later_audit = rows(), rows(".audit")
+    assert all(m in later_markers for m in decision["markers"]), "marker records changed"
+    assert all(e in later_audit for e in decision["audit"]), "audit records changed"
     server_pid = int(Path(f"{marker}.pid").read_text())
-    audit_file = Path(f"{marker}.audit")  # absent when no os.kill ever happened
-    audit = (
-        [json.loads(e) for e in audit_file.read_text().split("\n")[:-1]]
-        if audit_file.exists()
-        else []
-    )
-    for number, mark in enumerate(sent, start=1):
-        # tied to an OBSERVED os.kill invocation: the marker's pid and signal are the audit
-        # event's, and that event is in the child's audit log with the server's pid and SIGINT
-        assert mark["pid"] == server_pid, (
-            f"send {number} targeted pid {mark['pid']}, not the server child's pid {server_pid}"
+    used: dict = {}
+    for number, pair in enumerate(done, start=1):
+        mark, event = pair["marker"], pair["event"]
+        assert mark["seq"] not in used, (
+            f"markers {used[mark['seq']]} and {number} are backed by ONE os.kill event"
         )
-        assert mark["sig"] == int(signal.SIGINT), (
-            f"send {number} used signal {mark['sig']}, not SIGINT ({int(signal.SIGINT)})"
+        used[mark["seq"]] = number
+        attempt = [e for e in decision["audit"] if e["attempt"] == mark["i"]]
+        assert len(attempt) == 1, (
+            f"send {mark['i']}: {len(attempt)} os.kill events during the attempt, not exactly one"
         )
-        assert {"pid": mark["pid"], "sig": mark["sig"]} in audit, (
-            f"send {number} has no os.kill audit event"
+        assert event["pid"] == server_pid, (
+            f"send {number} targeted pid {event['pid']}, not the server child's pid {server_pid}"
         )
+        assert event["sig"] == int(signal.SIGINT), f"send {number} used signal {event['sig']}"
+        assert event["tid"] == mark["tid"], f"send {number}: the kill ran in another thread"
         assert (mark["fn"], mark["line"]) == ("_finish_rollback", _restore_sync_line()), (
             f"send {number} came from another function or line: {mark['fn']}:{mark['line']}"
         )
-        delivered_by_raise = number == 2 and mark["outcome"] == "raised KeyboardInterrupt"
-        assert mark["outcome"] == "returned" or delivered_by_raise, (
-            f"send {number} failed: os.kill {mark['outcome']}"
-        )
+        if number == 2 and mark["outcome"] == "raised KeyboardInterrupt":
+            names = [frame[0] for frame in mark["tb"]]
+            assert "_on_sigint" in names and "do_kill" in names, (
+                f"send 2: the KeyboardInterrupt did not propagate from the call through the "
+                f"Runner's handler (traceback: {names})"
+            )
+        else:
+            assert mark["outcome"] == "returned", f"send {number} failed: os.kill {mark['outcome']}"
     pre = _disposition(project)  # BEFORE any fresh `draft status` could recover anything
     assert pre in ("none", "journal"), f"a commit marker in the rollback case (disposition {pre!r})"
     after = _journaled_state(project)
@@ -1327,8 +1415,8 @@ def _another_line() -> tuple[str, int]:
         (
             "an unconditional `finally` writer with no call",
             1,
-            {"launcher": _FINALLY_LAUNCHER, "evidence_wait": 1},
-            "send 1 has no os.kill audit event",  # the forged marker exists, the call never did
+            {"fault": "forge", "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s .a marker has no os.kill audit event.",
         ),
         (
             "os.kill(pid, 0): a real call, but signal 0 and not SIGINT",
@@ -1341,6 +1429,48 @@ def _another_line() -> tuple[str, int]:
             2,
             {"fault": "kbd_before", "evidence_wait": 1},
             "send evidence missing: 1/2",
+        ),
+        (
+            "a second audit hook raising KeyboardInterrupt on the second os.kill event",
+            2,
+            {"fault": "audit_kbd", "evidence_wait": 2},
+            "did not propagate from the call through the Runner's handler|send evidence missing",
+        ),
+        (
+            "the kill moved into a worker thread and joined",
+            1,
+            {"fault": "thread", "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "two marker rows backed by one genuine audit row",
+            2,
+            {"fault": "forge_double", "evidence_wait": 2},
+            "ONE os.kill event|send evidence missing: 1/2",
+        ),
+        (
+            "two audit events in one iteration (signal 0, then SIGINT)",
+            1,
+            {"fault": "double", "evidence_wait": 2},
+            "2 os.kill events during the attempt, not exactly one",
+        ),
+        (
+            "a matching event from another line (another call site)",
+            1,
+            {"fault": "otherline", "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "the poll wakes after the deadline and the record completes after it",
+            1,
+            {"fault": "stall", "stall": 2, "call_wait": 1, "evidence_wait": 1, "wake_delay": 3},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "a no-call marker whose real audit event is held until after the snapshot",
+            1,
+            {"fault": "held", "hold": 4, "call_wait": 1, "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s .a marker has no os.kill audit event.",
         ),
         (
             "a marker wait that expires (the send stalls past the wait)",
