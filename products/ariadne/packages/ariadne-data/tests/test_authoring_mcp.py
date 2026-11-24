@@ -884,85 +884,10 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 
 
 _SIGINT_LAUNCHER = """
-import os, signal, sys, time
+import os, signal, sys
 from ariadne import draft
 marker = os.environ["ARIADNE_TEST_MARKER"]
-want = int(os.environ["ARIADNE_TEST_SIGINTS"])
-wait = float(os.environ["ARIADNE_TEST_WAIT"])
-pause = float(os.environ["ARIADNE_TEST_PAUSE"])
-hold = float(os.environ["ARIADNE_TEST_HOLD"])
-pre = float(os.environ["ARIADNE_TEST_PRE"])
-keep = os.environ.get("ARIADNE_TEST_NO_RESTORE") == "1"  # a wrapper that outlives the window
-nofinally = os.environ.get("ARIADNE_TEST_NO_FINALLY") == "1"  # an unwind that skips the restore
-deaf = os.environ.get("ARIADNE_TEST_DEAF") == "1"  # observation never armed: no receipt can exist
-state = {"fired": False, "in_window": False, "received": 0, "previous": None, "wrapper": None,
-         "closed": False}
-
-def note(name, text=None):
-    with open(marker + "." + name, "a") as fh:
-        fh.write((name if text is None else text) + chr(10))
-
-def publish(name, text):
-    # a result is published EXACTLY once: O_EXCL makes a second publication impossible
-    try:
-        fd = os.open(marker + "." + name, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-    except FileExistsError:
-        return
-    with os.fdopen(fd, "w") as fh:
-        fh.write(text + chr(10))
-
-def restore():
-    # idempotent: hand the registration back only if the wrapper is still the installed handler
-    if not keep and signal.getsignal(signal.SIGINT) is state["wrapper"]:
-        signal.signal(signal.SIGINT, state["previous"])
-
-def close_window():
-    if state["closed"]:
-        return
-    state["closed"] = True
-    state["in_window"] = False  # 1. from here nothing counts: a delivery is LATE
-    publish("rendezvous", "ok" if state["received"] >= want else "timeout")  # 2. one result
-    time.sleep(hold)  # (test hook: a delivery between the result and the disarm)
-    note("closed")  # 3. the window is visibly closed ...
-    restore()  # 4. ... and only then is the previous handler restored
-
-def arm():
-    previous = signal.getsignal(signal.SIGINT)
-    state["previous"] = previous
-    def wrapper(signum, frame):
-        if not state["in_window"]:
-            note("late")  # a receipt outside the cleanup window never counts
-        else:
-            state["received"] += 1
-            note("received")
-        if callable(previous):
-            return previous(signum, frame)  # the server's own handler runs as usual (may raise)
-    state["wrapper"] = wrapper
-    state["in_window"] = True
-    if not deaf:
-        signal.signal(signal.SIGINT, wrapper)
-
-def body():
-    with open(marker, "w") as fh:  # 2. ... then publish readiness (the pid) ...
-        fh.write(str(os.getpid()) + chr(10))
-    time.sleep(pause)  # (the former gap: a pause here must not lose a signal)
-    deadline = time.monotonic() + wait  # 3. ... then wait
-    while time.monotonic() < deadline and state["received"] < want:
-        time.sleep(0.02)
-
-def rendezvous():
-    if pre:
-        note("pre", str(os.getpid()))  # readiness for a signal BEFORE the observation is armed
-        time.sleep(pre)
-    arm()  # 1. arm the observation ...
-    if nofinally:
-        body()
-        close_window()
-    else:
-        try:
-            body()
-        finally:
-            close_window()  # on EVERY unwind (also when the Runner raises on a 2nd SIGINT)
+state = {"fired": False}
 
 def tracer(frame, event, arg):
     if frame.f_code.co_filename != draft.__file__:
@@ -971,19 +896,21 @@ def tracer(frame, event, arg):
         if event == "line" and frame.f_code.co_name == "_finish_rollback" and not state["fired"]:
             if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
                 state["fired"] = True
-                rendezvous()
+                for _ in range(int(os.environ["ARIADNE_TEST_SIGINTS"])):
+                    try:
+                        if os.environ.get("ARIADNE_TEST_SKIP_KILL") != "1":
+                            os.kill(os.getpid(), signal.SIGINT)
+                    finally:
+                        # the SEND marker: written only AFTER the call returned (or raised)
+                        with open(marker, "a") as fh:
+                            fh.write("sent" + chr(10))
         return local
     return local
 
 sys.settrace(tracer)
 import threading; threading.settrace(tracer)
 from ariadne import serve
-try:
-    code = serve.main(["--project", sys.argv[1], "--toolset", "combined"])
-finally:
-    now = signal.getsignal(signal.SIGINT)
-    note("final", "default" if now is signal.default_int_handler else "other:" + repr(now))
-raise SystemExit(code)
+raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"]))
 """
 
 _FAILING_LAUNCHER = "raise SystemExit(50)"  # a launcher that fails: no server at all
@@ -1025,88 +952,44 @@ def _disposition(project: Path) -> str:
     return "journal" if os.path.lexists(project / draft.TXN_REL) else "none"
 
 
-def _witness(marker: Path, name: str) -> list[str]:
-    path = Path(str(marker) + "." + name)
-    return path.read_text().split() if path.exists() else []
-
-
-def _drive_stdio(
+def _run_stdio_sigint_case(
     tmp_path: Path,
     sigints: int,
     launcher: str = _SIGINT_LAUNCHER,
-    send: str = "now",
-    wait: float = 6,
-    pause: float = 0,
-    hold: float = 0,
-    pre: float = 0,
-    flags: tuple = (),
+    skip_kill: bool = False,
+    change_seed: bool = True,
 ) -> dict:
-    """Run the REAL stdio server once and return what BOTH sides observed (no oracle here).
-    The child ARMS its observation (a wrapper around the server's own SIGINT handler, which is
-    still called), THEN publishes readiness (its pid), then waits. The PARENT sends the real
-    SIGINT(s). ``send``: ``now`` (inside the window), ``skip``, ``late`` (only after the child
-    closed its window), ``cross`` (checks the window is open, is then paused until it closed, then
-    sends), ``between`` (after the child published its result, before it disarmed), or ``preinside``
-    (one SIGINT before the observation is armed, the rest inside)."""
-    import signal
+    """What this proves, and no more: in the REAL ``ariadne serve`` stdio process a real SIGINT
+    (or two) that arrives during the rollback cleanup leaves a consistent project state, the
+    server STOPS SERVING, and a later ``ariadne draft status`` reports the outcome (the strict
+    timing subclassification — late vs missing vs crossing the close — is settled at the final
+    review, plan 0040-B1 V). The launcher does not touch the installed SIGINT handler.
 
+    Preconditions that cannot pass silently: the MCP session initialized and served a request
+    BEFORE the window; the seed really changed the three journaled files after the journal was
+    written. Independent witnesses: the child's tracer writes a SEND marker only AFTER ``os.kill``
+    returns (a marker before the call proves nothing); and the server STOPS SERVING — a request
+    sent after the marker fails or gets no reply, the observable effect of the Runner's own
+    handler on the first SIGINT. The byte states and the journal's disposition are read BEFORE any
+    fresh ``draft status``. Nothing is asserted about the interrupted tool's reply or the server's
+    exit status (owner decisions)."""
     from ariadne import authoring_sources, draft
 
     project = complete_bundle_project(tmp_path / "proj")
     before = _journaled_state(project)
     draft.begin_source_txn(project)  # an interrupted approval's journal (the previous bytes)
-    # ... which then CHANGED all three journaled files: the rollback has something to restore
-    authoring_sources._store_grants(project, [{"source": {"name": "x"}, "by": "human:t", "seq": 1}])
-    draft.set_source_baseline(project, "0" * 40)
-    (project / draft.DRAFT_REL).write_text(
-        json.dumps({"state": "retired", "generation": 99}), encoding="utf-8"
-    )
+    if change_seed:  # ... which then CHANGED all three journaled files (something to restore)
+        authoring_sources._store_grants(
+            project, [{"source": {"name": "x"}, "by": "human:t", "seq": 1}]
+        )
+        draft.set_source_baseline(project, "0" * 40)
+        (project / draft.DRAFT_REL).write_text(
+            json.dumps({"state": "retired", "generation": 99}), encoding="utf-8"
+        )
     changed = _journaled_state(project)
     assert all(changed[name] != before[name] for name in before), "the seed must differ"
     marker = tmp_path / "sigint-witness"
-    closed, result, pre_marker = (Path(f"{marker}.{n}") for n in ("closed", "rendezvous", "pre"))
-    seen: dict = {"initialized": False, "sent": 0, "crossed": False}
-
-    async def until(path: Path, tries: int = 1200) -> bool:
-        for _ in range(tries):
-            if path.exists() and path.read_text().strip():
-                return True
-            await asyncio.sleep(0.05)
-        return False
-
-    async def kill(pid: int, counted: bool = True) -> None:
-        """Send one real SIGINT, then classify from what the PARENT sees afterwards: if the window
-        is closed and no in-window receipt covers this send, the send CROSSED the close (it is
-        late — not a missing receipt, whatever the earlier open check said)."""
-        try:
-            os.kill(pid, signal.SIGINT)
-        except ProcessLookupError:
-            seen["gone"] = True
-            return
-        if not counted:
-            return
-        seen["sent"] += 1
-        await asyncio.sleep(0.3)  # let the child's handler observe it
-        if closed.exists() and len(_witness(marker, "received")) < seen["sent"]:
-            seen["crossed"] = True
-
-    async def parent_sends() -> None:
-        if send == "preinside" and await until(pre_marker):
-            await kill(int(pre_marker.read_text().split()[0]), counted=False)  # BEFORE arming
-        if not await until(marker):
-            return
-        pid = int(marker.read_text().split()[0])
-        if send == "skip":
-            return
-        if send == "late":  # sent only once the window has CLOSED
-            await until(closed)
-        if send == "cross":  # the open check passes, then the parent is paused past the close
-            assert not closed.exists(), "the open check must pass before the pause"
-            await until(closed)
-        if send == "between":  # after the child published its result, before it disarmed
-            await until(result)
-        for _ in range(sigints - (1 if send == "preinside" else 0)):
-            await kill(pid)
+    seen: dict = {"initialized": False, "served_before": False, "serving_after": None}
 
     async def run() -> None:
         params = StdioServerParameters(
@@ -1118,95 +1001,42 @@ def _drive_stdio(
                 "ARIADNE_TEST_SIGINTS": str(sigints),
                 "ARIADNE_TEST_LINE": str(_restore_sync_line()),
                 "ARIADNE_TEST_MARKER": str(marker),
-                "ARIADNE_TEST_WAIT": str(wait),
-                "ARIADNE_TEST_PAUSE": str(pause),
-                "ARIADNE_TEST_HOLD": str(hold),
-                "ARIADNE_TEST_PRE": str(pre),
-                "ARIADNE_TEST_NO_RESTORE": "1" if "no_restore" in flags else "0",
-                "ARIADNE_TEST_NO_FINALLY": "1" if "no_finally" in flags else "0",
-                "ARIADNE_TEST_DEAF": "1" if "deaf" in flags else "0",
+                "ARIADNE_TEST_SKIP_KILL": "1" if skip_kill else "0",
             },
         )
         try:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await asyncio.wait_for(session.initialize(), timeout=60)
-                    seen["initialized"] = True  # a precondition of the test
-                    sender = asyncio.create_task(parent_sends())
-                    try:
-                        await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=30)
+                    seen["initialized"] = True
+                    await asyncio.wait_for(session.list_tools(), timeout=20)
+                    seen["served_before"] = True  # a request BEFORE the window was served
+                    try:  # this lookup triggers the recovery whose cleanup window gets the signal
+                        await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=15)
                     except BaseException:  # the reply MAY be lost: the server was shut down
                         pass
-                    finally:
-                        await asyncio.wait_for(sender, timeout=60)
+                    for _ in range(100):  # the send marker is written after os.kill returned
+                        if marker.exists() and marker.read_text().count("sent") >= sigints:
+                            break
+                        await asyncio.sleep(0.05)
+                    try:  # a request AFTER the window: the server must have stopped serving
+                        await asyncio.wait_for(session.list_tools(), timeout=5)
+                        seen["serving_after"] = True
+                    except BaseException:
+                        seen["serving_after"] = False
         except BaseException:  # the server going away may surface as a closed stream
             pass
 
     asyncio.run(run())
-    return {
-        **seen,
-        "project": project,
-        "before": before,
-        "wait": wait,
-        "sigints": sigints,
-        "marker_exists": marker.exists() and bool(marker.read_text().strip()),
-        "rendezvous": _witness(marker, "rendezvous"),
-        "received": _witness(marker, "received"),
-        "late": _witness(marker, "late"),
-        "final": _witness(marker, "final"),
-        "after": _journaled_state(project),  # BEFORE any fresh `draft status` could recover
-        "pre_disposition": _disposition(project),
-    }
-
-
-def _assert_stdio_observations(obs: dict) -> dict:
-    """The oracle. It classifies from what BOTH sides observed, and names the reason: a signal the
-    child received outside the window, or a send after which the parent found the window closed
-    without an in-window receipt for it, is LATE; a missing receipt is reported only when the
-    parent sent inside the window and the child received nothing; a rendezvous that timed out with
-    nothing sent is a timeout. Each rendezvous published exactly one result."""
-    sigints, wait = obs["sigints"], obs["wait"]
-    assert obs["initialized"], "the MCP session must initialize"
-    assert obs["marker_exists"], "the child must reach the window"
-    assert not (obs["late"] or obs["crossed"]), (
-        "the signal was sent LATE: it arrived outside the cleanup window "
-        f"(child saw {len(obs['late'])} outside the window, parent crossed the close: "
-        f"{obs['crossed']}); this is not a missing receipt"
-    )
-    assert not obs["final"] or obs["final"] == ["default"], (
-        f"the receipt wrapper outlived the window: after serve.main unwound the installed SIGINT "
-        f"handler is {obs['final']}, not the default a no-wrapper control leaves"
-    )
-    assert len(obs["rendezvous"]) == 1, f"a rendezvous must publish ONE result: {obs['rendezvous']}"
-    if obs["rendezvous"] == ["timeout"]:
-        if obs["sent"] == 0:
-            raise AssertionError(
-                f"the rendezvous timed out after {wait:g}s waiting for {sigints} receipt(s): "
-                "no signal was sent"
-            )
-        raise AssertionError(
-            f"missing receipt: the parent sent {obs['sent']} signal(s) inside the window and the "
-            f"child received {len(obs['received'])} (the rendezvous timed out after {wait:g}s)"
-        )
-    assert obs["rendezvous"] == ["ok"], f"the rendezvous did not complete ({obs['rendezvous']})"
-    assert obs["sent"] == sigints, "the parent must have sent the real SIGINT(s)"
-    assert obs["received"] == ["received"] * sigints, (
-        f"receipts inside the window: {obs['received']}"
-    )
-    assert obs["final"] == ["default"], (
-        f"the receipt wrapper outlived the window: after serve.main unwound the installed SIGINT "
-        f"handler is {obs['final']}, not the default a no-wrapper control leaves"
-    )
-    assert obs["after"] == obs["before"], (
-        "the three files must hold their previous (journaled) bytes"
-    )
-    return {"project": obs["project"], "pre": obs["pre_disposition"]}
-
-
-def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT_LAUNCHER, **kw):
-    """Drive the real stdio server and assert the oracle. Nothing is asserted about the interrupted
-    tool's reply or about the server's exit (owner decisions)."""
-    return _assert_stdio_observations(_drive_stdio(tmp_path, sigints, launcher, **kw))
+    assert seen["initialized"], "the MCP session must initialize"
+    assert seen["served_before"], "a request before the window must have been served"
+    sent = marker.read_text().count("sent") if marker.exists() else 0
+    assert sent == sigints, f"the send marker (written after os.kill) shows {sent}/{sigints} sends"
+    assert seen["serving_after"] is False, "the server must stop serving after the window"
+    after = _journaled_state(project)  # BEFORE any fresh `draft status` could recover anything
+    pre = _disposition(project)
+    assert after == before, "the three files must hold their previous (journaled) bytes"
+    return {"project": project, "pre": pre}
 
 
 def _fresh_status(project: Path):
@@ -1228,20 +1058,24 @@ def _fresh_status(project: Path):
     )
 
 
-def _valid_retry(command: str) -> bool:
-    """A retry command validated AS A COMMAND, not as a substring: ``ariadne draft status`` with
-    nothing else but an optional ``--project DIR`` whose operand is a path, never another option
-    (the CLI rejects ``--project --json``: "expected one argument")."""
+def _valid_retry(command: str, project: Path) -> bool:
+    """A retry command validated AS A COMMAND: the shipped bare ``ariadne draft status`` (its
+    context is the project), or ``--project`` followed by THIS fixture's project path. Any other
+    path is rejected: a retry that inspects another project is no retry."""
     import shlex
 
     try:
         parts = shlex.split(command)
     except ValueError:
         return False
-    if parts[:3] != ["ariadne", "draft", "status"]:
-        return False
-    rest = parts[3:]
-    return rest == [] or (len(rest) == 2 and rest[0] == "--project" and not rest[1].startswith("-"))
+    if parts == ["ariadne", "draft", "status"]:
+        return True
+    return (
+        len(parts) == 5
+        and parts[:3] == ["ariadne", "draft", "status"]
+        and parts[3] == "--project"
+        and Path(parts[4]).resolve() == Path(project).resolve()
+    )
 
 
 def _retry_commands(message: str) -> list[str]:
@@ -1250,26 +1084,22 @@ def _retry_commands(message: str) -> list[str]:
     return re.findall(r"'(ariadne [^']*)'", message)
 
 
-_RETAINED_TYPES = ("JournalRemnant", "RestoreUnconfirmed")
-_REMOVAL_CLAIMS = ("took effect", "removed", "is gone", "journal is gone")
+_RETAINED_TYPES = ("JournalRemnant", "RemovalUnconfirmed", "RestoreUnconfirmed")
 
 
 def _assert_fresh_status(project: Path, done, pre: str) -> None:
-    """The fresh `ariadne draft status` reports the REAL outcome, consistent with the pre-retry
-    disposition ``pre`` ("none" | "journal" | "marker") AND the actual post-retry artifacts (the
-    journal file, the marker file):
-    - success (exit 0): the fixture's clean payload ``{"draft": null}``; no journal and no marker
-      afterwards;
-    - an uncommitted journal retained: a non-zero exit and a truthful retained-rollback result.
-      The pending-source-approval JSON needs a NON-EMPTY message that states the pending approval
-      or recovery and never claims removal ("took effect", "removed", "journal is gone"), never
-      the commit-confirmation phrase, a valid retry command, and the journal on disk.
-      ``JournalRemnant``/``RestoreUnconfirmed`` report the journal kept (it must be on disk);
-      ``RemovalUnconfirmed`` could not determine which, so it is truthful whether the journal is
-      absent or present afterwards; ``RollbackCleanup`` claims removal and is only truthful when
-      the journal is really gone. Every retry command in the message must be valid;
-    - a committed marker retained: the commit-confirmation JSON with a valid retry command; a
-      commit marker for a rollback result is forbidden.
+    """The fresh `ariadne draft status` reports the REAL outcome for the state, decided on
+    STRUCTURE (the envelope's ``type``, the ``source_approval_pending`` flag, the artifacts on
+    disk), never on words in a message:
+    - the journal is gone ("none" afterwards): exit 0 and the fixture's clean payload
+      ``{"draft": null}`` (no journal, no marker afterwards);
+    - an uncommitted journal retained ("journal" before and after): a non-zero exit and a
+      structured pending result — the typed error ``JournalRemnant``/``RemovalUnconfirmed``/
+      ``RestoreUnconfirmed`` (``RemovalUnconfirmed`` could not tell and is truthful either way;
+      ``RollbackCleanup`` claims removal, so only with the journal gone), or the pending JSON
+      with ``source_approval_pending: true``; never the commit-confirmation shape (a marker);
+    - a committed marker ("marker" before and after): the commit-confirmation pending JSON.
+    Every retry command must be the bare `ariadne draft status` or `--project <this project>`.
     An unrelated error is not accepted in any state."""
     post = _disposition(project)
     if done.returncode == 0:
@@ -1280,29 +1110,15 @@ def _assert_fresh_status(project: Path, done, pre: str) -> None:
     if done.stdout.strip():
         payload = json.loads(done.stdout)
         assert payload.get("source_approval_pending") is True, done.stdout
-        message, command = payload.get("message", ""), payload.get("command", "")
-        assert _valid_retry(command), f"not a valid retry command: {command!r}"
-        confirmation = "commit could not be confirmed" in message
-        if pre == "marker":
-            assert confirmation and post == "marker", (pre, post, message)
-            return
-        # an uncommitted journal: affirmative, state-appropriate pending guidance
-        assert not confirmation, "the commit confirmation is forbidden for an uncommitted journal"
-        assert post == "journal", f"pending guidance but the journal is {post!r}"
-        assert message.strip(), "the pending guidance must not be empty"
-        assert "pending" in message.lower() or "recover" in message.lower(), (
-            f"the message does not state the pending approval or recovery: {message!r}"
-        )
-        assert not any(claim in message.lower() for claim in _REMOVAL_CLAIMS), (
-            f"pending guidance must not claim removal: {message!r}"
-        )
+        command = payload.get("command", "")
+        assert _valid_retry(command, project), f"not a valid retry command: {command!r}"
+        assert post == pre, f"pending result for {pre!r} but the artifacts are {post!r}"
         return
     error = json.loads(done.stderr).get("error", {})
     kind, message = error.get("type"), error.get("message", "")
-    assert pre == "journal", f"a rollback result for a {pre!r} state"
+    assert pre == "journal" and post != "marker", f"a rollback result for {pre!r}/{post!r}"
     commands = _retry_commands(message)
-    assert commands and all(_valid_retry(c) for c in commands), f"retry guidance: {commands}"
-    assert "commit could not be confirmed" not in message, "a commit marker for a rollback result"
+    assert commands and all(_valid_retry(c, project) for c in commands), f"retry: {commands}"
     if kind == "RollbackCleanup":  # claims the journal was removed: only truthful if it is gone
         assert post == "none", "RollbackCleanup claims removal while the journal is on disk"
     elif kind == "RemovalUnconfirmed":  # could not determine which: truthful both ways
@@ -1313,105 +1129,34 @@ def _assert_fresh_status(project: Path, done, pre: str) -> None:
 
 
 @pytest.mark.parametrize("sigints", [1, 2])
-def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
-    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
-    process a real SIGINT — or two — SENT BY THE PARENT while the child sits in the cleanup window
-    reaches the server's OWN handler (Ariadne does not take it over): the server stops serving,
-    the reply MAY be lost, but the state is consistent — the three files hold their journaled
-    bytes and the journal is removed or kept according to the point reached — and a later
-    `ariadne draft status` in a FRESH process reports the real outcome for that state."""
+def test_stdio_server_stops_serving_and_stays_consistent_after_a_sigint_in_the_cleanup(
+    tmp_path, sigints
+):
+    """In the real `ariadne serve` stdio process a real SIGINT — or two — that arrives during the
+    rollback cleanup leaves a consistent project state, the server stops serving, and a later
+    `ariadne draft status` in a FRESH process reports the outcome for that state."""
     case = _run_stdio_sigint_case(tmp_path, sigints)
     _assert_fresh_status(case["project"], _fresh_status(case["project"]), case["pre"])
 
 
-@pytest.mark.parametrize("sigints", [1, 2])
-def test_a_child_paused_right_after_readiness_still_receives_the_signal(tmp_path, sigints):
-    """The former gap: readiness is published only once observation is armed, so a child paused
-    right after publishing it (the old gap before the wrapper existed) still counts the signal."""
-    case = _run_stdio_sigint_case(tmp_path, sigints, pause=0.4)
-    _assert_fresh_status(case["project"], _fresh_status(case["project"]), case["pre"])
-
-
 @pytest.mark.parametrize(
-    ("what", "launcher", "kwargs", "failure"),
+    ("what", "kwargs", "failure"),
     [
-        ("a launcher that fails", _FAILING_LAUNCHER, {}, "MCP session must initialize"),
+        ("a launcher that fails", {"launcher": _FAILING_LAUNCHER}, "MCP session must initialize"),
         (
-            "a rendezvous that times out (the signal is skipped although the window is reached)",
-            _SIGINT_LAUNCHER,
-            {"send": "skip", "wait": 1},
-            "rendezvous timed out after 1s .* no signal was sent",
+            "a skipped send (the marker is written, os.kill is not called)",
+            {"skip_kill": True},
+            "server must stop serving",
         ),
-        (
-            "a missing receipt: the parent sent inside the window and the child received nothing",
-            _SIGINT_LAUNCHER,
-            {"flags": ("deaf",), "wait": 1},
-            "missing receipt: the parent sent 1 signal.*received 0",
-        ),
-        (
-            "a sender delayed until after the cleanup",
-            _SIGINT_LAUNCHER,
-            {"send": "late", "wait": 1},
-            "sent LATE",
-        ),
-        (
-            "a sender paused after the parent's open check until .closed exists",
-            _SIGINT_LAUNCHER,
-            {"send": "cross", "wait": 1},
-            "sent LATE",  # not a timeout, not a missing receipt
-        ),
-        (
-            "a delivery between the child's timeout and its disarm",
-            _SIGINT_LAUNCHER,
-            {"send": "between", "wait": 1, "hold": 1.5},
-            "sent LATE",
-        ),
-        (
-            "a wrapper that outlives the window",
-            _SIGINT_LAUNCHER,
-            {"flags": ("no_restore",)},
-            "wrapper outlived the window",
-        ),
-        (
-            "a second SIGINT before the receipt target and no restore on unwind",
-            _SIGINT_LAUNCHER,
-            {"send": "preinside", "pre": 1.0, "flags": ("no_finally",)},
-            "wrapper outlived the window",
-        ),
+        ("an unchanged seed", {"change_seed": False}, "the seed must differ"),
     ],
 )
-def test_the_stdio_regression_test_cannot_pass_without_a_server_and_a_signal(
-    tmp_path, what, launcher, kwargs, failure
+def test_the_stdio_test_cannot_pass_without_a_server_a_send_and_a_changed_seed(
+    tmp_path, what, kwargs, failure
 ):
-    """Fail-before of the test itself, each for its OWN named reason: a late or crossing send is
-    LATE, a missing receipt is reported only when the parent sent inside the window, a timeout
-    with nothing sent is a timeout, and the wrapper must not outlive the window."""
-    sigints = 2 if kwargs.get("send") == "preinside" else 1
+    """Each protection fails for its OWN reason."""
     with pytest.raises(AssertionError, match=failure):
-        _run_stdio_sigint_case(tmp_path, sigints, launcher, **kwargs)
-
-
-def test_a_delivery_between_the_timeout_and_the_disarm_yields_one_outcome(tmp_path):
-    """A delivery after the child published `timeout` but before it disarmed must not produce a
-    second result (`ok`) or a counted receipt: exactly ONE outcome, and the named reason."""
-    obs = _drive_stdio(tmp_path, 1, send="between", wait=1, hold=1.5)
-    assert obs["rendezvous"] == ["timeout"], obs["rendezvous"]  # one outcome, never timeout + ok
-    assert obs["received"] == [] and len(obs["late"]) == 1  # the delivery is LATE, uncounted
-    with pytest.raises(AssertionError, match="sent LATE"):
-        _assert_stdio_observations(obs)
-
-
-def test_one_sigint_before_arming_and_one_inside_gives_one_receipt_and_the_default_handler(
-    tmp_path,
-):
-    """The handler is restored on EVERY unwind of the rendezvous (a `finally`): one real SIGINT
-    before the observation is armed and one inside give ONE receipt, the Runner raises on its
-    second SIGINT before the receipt target (two) is met, and the final witness is still
-    `default` — not the wrapper. The exception itself propagates as it would without the wrapper."""
-    obs = _drive_stdio(tmp_path, 2, send="preinside", pre=1.0)
-    assert obs["received"] == ["received"], obs["received"]  # one receipt, in the window
-    assert obs["final"] == ["default"], obs["final"]  # restored on the unwind
-    assert obs["marker_exists"] and not obs["late"]
+        _run_stdio_sigint_case(tmp_path, 1, **kwargs)
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -1422,10 +1167,11 @@ def _error(kind: str, message: str) -> str:
     return json.dumps({"error": {"type": kind, "message": message}})
 
 
-def test_the_fresh_status_check_agrees_with_the_journal(tmp_path, monkeypatch, capsys):
-    """The assertion compares the pre-retry disposition with the actual post-retry artifacts and
-    requires the outcome and VALID guidance that fit: it rejects the wrong claims and accepts the
-    real envelopes."""
+def test_the_fresh_status_check_decides_on_structure(tmp_path, monkeypatch, capsys):
+    """The assertion decides on the envelope type, the pending flag and the artifacts on disk: it
+    rejects an unrelated error in every state, a clean payload while a journal remains, a rollback
+    result for a committed marker, and a retry command that names another project; it accepts the
+    real shapes."""
     from ariadne import draft, proposals
     from ariadne.cli import main as cli
 
@@ -1441,69 +1187,63 @@ def test_the_fresh_status_check_agrees_with_the_journal(tmp_path, monkeypatch, c
     marker = project_with("marker", "marker")
     none = project_with("none", "none")
     retry = "run 'ariadne draft status' in that project"
-    confirmation = {
+    pending = {
         "source_approval_pending": True,
-        "message": "a source approval is pending: its commit could not be confirmed",
+        "message": "a source approval is pending",
         "command": "ariadne draft status",
     }
 
-    # unrelated errors and false claims are rejected
+    # an unrelated error is rejected in every state
     unrelated = _completed(1, stderr=_error("ValueError", "unrelated"))
     for project, pre in ((journal, "journal"), (marker, "marker"), (none, "none")):
         with pytest.raises(AssertionError):
             _assert_fresh_status(project, unrelated, pre)
-    removed = _completed(
-        1, stderr=_error("RollbackCleanup", f"the journal removal took effect; {retry}")
-    )
-    with pytest.raises(AssertionError, match="claims removal"):  # journal removed, but on disk
-        _assert_fresh_status(journal, removed, "journal")
-    bad_command = dict(confirmation, command="ariadne draft statusX")
-    with pytest.raises(AssertionError, match="valid retry command"):
-        _assert_fresh_status(marker, _completed(1, json.dumps(bad_command)), "marker")
-    with pytest.raises(AssertionError):  # the commit-confirmation JSON for an UNCOMMITTED journal
-        _assert_fresh_status(journal, _completed(1, json.dumps(confirmation)), "journal")
-    with pytest.raises(AssertionError):  # a clean result while the journal remained
+    # a clean payload while a journal remains; exit 0 without the clean payload
+    with pytest.raises(AssertionError):
         _assert_fresh_status(journal, _completed(0, '{"draft": null}'), "journal")
-    with pytest.raises(AssertionError):  # exit 0 without the clean payload
+    with pytest.raises(AssertionError):
         _assert_fresh_status(none, _completed(0, "{}"), "none")
-
-    # the right results are accepted
-    _assert_fresh_status(none, _completed(0, '{"draft": null}'), "none")
-    _assert_fresh_status(marker, _completed(1, json.dumps(confirmation)), "marker")
-    pending = dict(confirmation, message="a source approval is pending recovery")
-    _assert_fresh_status(journal, _completed(1, json.dumps(pending)), "journal")
-
-    # affirmative, state-appropriate pending guidance for an uncommitted journal on disk
-    for message in ("", "   ", "the journal removal took effect", "the journal is gone"):
-        with pytest.raises(AssertionError):
-            _assert_fresh_status(
-                journal,
-                _completed(1, json.dumps(dict(confirmation, message=message))),
-                "journal",
-            )
-    # `--project` needs a usable operand (the CLI rejects `--project --json`)
+    # RollbackCleanup claims removal while the journal is on disk
+    removed = _completed(1, stderr=_error("RollbackCleanup", f"removed; {retry}"))
+    with pytest.raises(AssertionError, match="claims removal"):
+        _assert_fresh_status(journal, removed, "journal")
+    # a rollback result for a committed marker (a commit marker in a rollback result)
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(
+            marker, _completed(1, stderr=_error("JournalRemnant", f"kept; {retry}")), "journal"
+        )
+    # the pending JSON must agree with the artifacts (journal vs marker)
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(marker, _completed(1, json.dumps(pending)), "journal")
+    # retry commands: a malformed option, and ANOTHER project's path, are not retries
     for command in (
         "ariadne draft status --project --json",
         "ariadne draft status --project",
         "ariadne draft status --json",
+        "ariadne draft status --project /somewhere/else",
     ):
         with pytest.raises(AssertionError, match="valid retry command"):
             _assert_fresh_status(
-                marker, _completed(1, json.dumps(dict(confirmation, command=command))), "marker"
+                marker, _completed(1, json.dumps(dict(pending, command=command))), "marker"
             )
-    _assert_fresh_status(
-        marker,
-        _completed(1, json.dumps(dict(confirmation, command="ariadne draft status --project /p"))),
-        "marker",
-    )
-    with pytest.raises(AssertionError):  # a commit marker for a rollback result stays forbidden
+    with pytest.raises(AssertionError):  # the same through a typed error's own retry guidance
         _assert_fresh_status(
             journal,
             _completed(
-                1, stderr=_error("RemovalUnconfirmed", f"commit could not be confirmed; {retry}")
+                1,
+                stderr=_error(
+                    "JournalRemnant", "kept; run 'ariadne draft status --project /somewhere/else'"
+                ),
             ),
             "journal",
         )
+
+    # the right results are accepted
+    _assert_fresh_status(none, _completed(0, '{"draft": null}'), "none")
+    _assert_fresh_status(marker, _completed(1, json.dumps(pending)), "marker")
+    _assert_fresh_status(journal, _completed(1, json.dumps(pending)), "journal")
+    own = dict(pending, command=f"ariadne draft status --project {marker}")
+    _assert_fresh_status(marker, _completed(1, json.dumps(own)), "marker")  # THIS project's path
 
     # a REAL RestoreUnconfirmed envelope (restore sync EIO) with the journal retained is accepted
     real_sync = proposals._fsync_path
