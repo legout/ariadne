@@ -113,8 +113,9 @@ def test_ac3_graph_expansion_measurably_lifts_recall(fixture_kb, gold_set):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def lancedb_report(fixture_kb, gold_set, tmp_path):
+@pytest.fixture(scope="module")
+def lancedb_report(fixture_kb, gold_set, tmp_path_factory):
+    """Built once per module; its tests only read the report."""
     pytest.importorskip("lancedb")
     adapter = ev.load_lancedb_adapter()
     assert adapter is not None, "lumio-lancedb adapter should load when lancedb is installed"
@@ -125,7 +126,7 @@ def lancedb_report(fixture_kb, gold_set, tmp_path):
         fixture_kb,
         gold_set,
         ks=K,
-        lancedb_index_dir=tmp_path / "lance",
+        lancedb_index_dir=tmp_path_factory.mktemp("lance"),
         embedder=embedder,
         lancedb_adapter=adapter,
     )
