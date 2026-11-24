@@ -884,9 +884,28 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 
 
 _SIGINT_LAUNCHER = """
-import os, signal, sys
+import os, signal, sys, time
 from ariadne import draft
 state = {"fired": False}
+marker = os.environ["ARIADNE_TEST_MARKER"]
+received = marker + ".received"
+want = int(os.environ["ARIADNE_TEST_SIGINTS"])
+
+def rendezvous():
+    # the PARENT sends the signal(s); this child only records what it RECEIVES, through a thin
+    # wrapper around whatever SIGINT handler the server runs under (which is then called as usual)
+    previous = signal.getsignal(signal.SIGINT)
+    def wrapper(signum, frame):
+        with open(received, "a") as fh:
+            fh.write("received\\n")
+        if callable(previous):
+            return previous(signum, frame)
+    signal.signal(signal.SIGINT, wrapper)
+    deadline = time.monotonic() + float(os.environ["ARIADNE_TEST_WAIT"])
+    while time.monotonic() < deadline:
+        if os.path.exists(received) and open(received).read().count("received") >= want:
+            break
+        time.sleep(0.02)
 
 def tracer(frame, event, arg):
     if frame.f_code.co_filename != draft.__file__:
@@ -895,11 +914,9 @@ def tracer(frame, event, arg):
         if event == "line" and frame.f_code.co_name == "_finish_rollback" and not state["fired"]:
             if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
                 state["fired"] = True
-                for _ in range(int(os.environ["ARIADNE_TEST_SIGINTS"])):
-                    # the child-side witness: written right BEFORE each signal is sent
-                    with open(os.environ["ARIADNE_TEST_MARKER"], "a") as marker:
-                        marker.write("sigint\\n")
-                    os.kill(os.getpid(), signal.SIGINT)
+                with open(marker, "w") as fh:  # the window witness: reached; the pid to signal
+                    fh.write(str(os.getpid()) + "\\n")
+                rendezvous()
         return local
     return local
 
@@ -938,12 +955,19 @@ def _journaled_state(project: Path) -> dict:
     }
 
 
-def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT_LAUNCHER) -> dict:
+def _run_stdio_sigint_case(
+    tmp_path: Path, sigints: int, launcher: str = _SIGINT_LAUNCHER, send: bool = True
+) -> dict:
     """The narrowed MCP-server guarantee on the REAL stdio process. Preconditions asserted here:
-    the MCP session initialized, a child-side witness proves each signal was sent, and the seeded
-    state really differed from the journaled one (so the rollback had something to restore). The
-    byte states and the journal's disposition are read BEFORE any fresh `draft status` can recover
-    anything. Nothing is asserted about the interrupted tool's reply (owner decision)."""
+    the MCP session initialized; the child reached the window (its marker, which holds its pid);
+    the PARENT sent the real SIGINT(s) itself and the child RECEIVED them (a receipt written by a
+    wrapper around the server's own handler) — so a skipped send fails even when the window was
+    reached; and the seeded state really differed from the journaled one (so the rollback had
+    something to restore). The byte states and the journal's disposition are read BEFORE any fresh
+    `draft status` can recover anything. Nothing is asserted about the interrupted tool's reply or
+    about the server's exit (owner decisions)."""
+    import signal
+
     from ariadne import authoring_sources, draft
 
     project = complete_bundle_project(tmp_path / "proj")
@@ -958,7 +982,24 @@ def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT
     changed = _journaled_state(project)
     assert all(changed[name] != before[name] for name in before), "the seed must differ"
     marker = tmp_path / "sigint-witness"
-    seen = {"initialized": False}
+    received = Path(str(marker) + ".received")
+    seen: dict = {"initialized": False, "sent": 0}
+
+    async def parent_sends() -> None:
+        """Wait for the child's window marker, then send the real SIGINT(s) to that pid."""
+        for _ in range(1200):
+            if marker.exists() and marker.read_text().strip():
+                break
+            await asyncio.sleep(0.05)
+        else:
+            return
+        if not send:
+            return
+        pid = int(marker.read_text().split()[0])
+        for _ in range(sigints):
+            os.kill(pid, signal.SIGINT)
+            seen["sent"] += 1
+            await asyncio.sleep(0.05)
 
     async def run() -> None:
         params = StdioServerParameters(
@@ -970,6 +1011,7 @@ def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT
                 "ARIADNE_TEST_SIGINTS": str(sigints),
                 "ARIADNE_TEST_LINE": str(_restore_sync_line()),
                 "ARIADNE_TEST_MARKER": str(marker),
+                "ARIADNE_TEST_WAIT": "6",
             },
         )
         try:
@@ -977,17 +1019,22 @@ def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT
                 async with ClientSession(read, write) as session:
                     await asyncio.wait_for(session.initialize(), timeout=60)
                     seen["initialized"] = True  # a precondition of the test
+                    sender = asyncio.create_task(parent_sends())
                     try:
                         await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=30)
                     except BaseException:  # the reply MAY be lost: the server was shut down
                         pass
+                    finally:
+                        await asyncio.wait_for(sender, timeout=30)
         except BaseException:  # the server going away may surface as a closed stream
             pass
 
     asyncio.run(run())
     assert seen["initialized"], "the MCP session must initialize"
-    assert marker.exists() and marker.read_text().count("sigint") == sigints, (
-        "the child-side witness must prove the injection point was hit and the signal sent"
+    assert marker.exists() and marker.read_text().strip(), "the child must reach the window"
+    assert seen["sent"] == sigints, "the parent must have sent the real SIGINT(s)"
+    assert received.exists() and received.read_text().count("received") == sigints, (
+        "the child must have RECEIVED the signal(s): a skipped send fails here"
     )
     after = _journaled_state(project)  # BEFORE any fresh `draft status` could recover anything
     journal_left = (project / draft.TXN_REL).exists()
@@ -995,21 +1042,10 @@ def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT
     return {"project": project, "journal_left": journal_left}
 
 
-@pytest.mark.parametrize("sigints", [1, 2])
-def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
-    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
-    process a real SIGINT — or two — in the cleanup window reaches the server's OWN handler
-    (Ariadne does not take it over): the server stops serving, the reply MAY be lost, but the state
-    is consistent — the three files hold their journaled bytes and the journal is removed or kept
-    according to the point reached — and a later `ariadne draft status` in a FRESH process reports
-    the outcome (nothing pending, or a pending approval with its cleanup guidance)."""
+def _fresh_status(project: Path):
     import subprocess
 
-    from ariadne import draft
-
-    case = _run_stdio_sigint_case(tmp_path, sigints)
-    project = case["project"]
-    done = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             "-m",
@@ -1025,21 +1061,100 @@ def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp
         text=True,
         timeout=120,
     )
-    if case["journal_left"]:  # a pending approval, with its cleanup guidance, until recovered
-        assert done.returncode in (0, 1)
-    else:
-        assert done.returncode == 0 and not draft.source_txn_pending(project)
-    assert not draft.source_txn_pending(project) or done.returncode != 0
+
+
+def _assert_fresh_status(project: Path, done) -> None:
+    """The fresh `ariadne draft status` reports the REAL outcome, consistent with the retained
+    state. Journal gone: exit 0 and the fixture's clean payload (`{"draft": null}`), no pending
+    transaction. Journal still there: a non-zero exit AND the structured pending-recovery result
+    (a pending source approval with its command, or one of the typed cleanup errors) carrying the
+    retry guidance — an unrelated error is not accepted."""
+    from ariadne import draft
+
+    pending = draft.source_txn_pending(project)
+    if not pending:
+        assert done.returncode == 0, (done.returncode, done.stderr)
+        assert json.loads(done.stdout) == {"draft": None}, done.stdout
+        return
+    assert done.returncode != 0, "a retained journal cannot be reported as success"
+    structured = None
+    if done.stdout.strip():
+        payload = json.loads(done.stdout)
+        if payload.get("source_approval_pending") is True:
+            structured = (payload.get("command", ""), payload.get("message", ""))
+    if structured is None and done.stderr.strip():
+        error = json.loads(done.stderr).get("error", {})
+        if error.get("type") in ("RollbackCleanup", "JournalRemnant", "RemovalUnconfirmed"):
+            structured = ("", error.get("message", ""))
+    assert structured is not None, ("not a pending-recovery result", done.stdout, done.stderr)
+    assert "ariadne draft status" in " ".join(structured), structured  # retry guidance
+    assert "durably restored" in structured[1] or structured[0], structured
+
+
+@pytest.mark.parametrize("sigints", [1, 2])
+def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
+    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
+    process a real SIGINT — or two — SENT BY THE PARENT while the child sits in the cleanup window
+    reaches the server's OWN handler (Ariadne does not take it over): the server stops serving,
+    the reply MAY be lost, but the state is consistent — the three files hold their journaled
+    bytes and the journal is removed or kept according to the point reached — and a later
+    `ariadne draft status` in a FRESH process reports the real outcome (nothing pending, or a
+    pending approval with its recovery command and retry guidance)."""
+    case = _run_stdio_sigint_case(tmp_path, sigints)
+    _assert_fresh_status(case["project"], _fresh_status(case["project"]))
 
 
 @pytest.mark.parametrize(
-    ("what", "launcher", "sigints"),
-    [("a launcher that fails", _FAILING_LAUNCHER, 1), ("a skipped signal", _SIGINT_LAUNCHER, 0)],
+    ("what", "launcher", "sigints", "send"),
+    [
+        ("a launcher that fails", _FAILING_LAUNCHER, 1, True),
+        ("a skipped send that still reaches the window", _SIGINT_LAUNCHER, 1, False),
+    ],
 )
 def test_the_stdio_regression_test_cannot_pass_without_a_server_and_a_signal(
-    tmp_path, what, launcher, sigints
+    tmp_path, what, launcher, sigints, send
 ):
     """Fail-before of the test itself: with a launcher that fails (no server, no session) or a
-    double that skips the signal (no witness), the stdio case must FAIL."""
+    parent that skips the send although the child reaches the window (marker without a signal,
+    nothing received), the stdio case must FAIL."""
     with pytest.raises(AssertionError):
-        _run_stdio_sigint_case(tmp_path, sigints, launcher)
+        _run_stdio_sigint_case(tmp_path, sigints, launcher, send)
+
+
+def test_the_fresh_status_check_rejects_an_unrelated_error_and_a_missing_payload(tmp_path):
+    """Fail-before of the fresh-status assertion: exit 1 with only an unrelated error on stderr
+    must not pass — with the journal retained (no structured pending result), and with the
+    journal gone (exit 0 and the clean payload are required)."""
+    import subprocess
+
+    from ariadne import draft
+
+    unrelated = subprocess.CompletedProcess(
+        [], 1, stdout="", stderr='{"error": {"type": "ValueError", "message": "unrelated"}}'
+    )
+    retained = complete_bundle_project(tmp_path / "retained")
+    draft.begin_source_txn(retained)  # the journal is retained
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(retained, unrelated)
+    gone = complete_bundle_project(tmp_path / "gone")  # no journal: success requires exit 0
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(gone, unrelated)
+    with pytest.raises(AssertionError):  # exit 0 without the clean status payload
+        _assert_fresh_status(gone, subprocess.CompletedProcess([], 0, stdout="{}", stderr=""))
+    # and the real shapes pass: the clean payload, and a structured pending result
+    _assert_fresh_status(
+        gone, subprocess.CompletedProcess([], 0, stdout='{"draft": null}', stderr="")
+    )
+    pending = subprocess.CompletedProcess(
+        [],
+        1,
+        stdout=json.dumps(
+            {
+                "source_approval_pending": True,
+                "message": "a source approval is pending: run 'ariadne draft status'",
+                "command": "ariadne draft status",
+            }
+        ),
+        stderr="",
+    )
+    _assert_fresh_status(retained, pending)
