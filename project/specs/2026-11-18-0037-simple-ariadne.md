@@ -7,6 +7,9 @@ publication. Revision 2 adds ad-hoc SQL, the run log, `lock_down` and saved answ
 examples, from the owner's 2026-11-19 answers: "Ja, ersetzt define_metric", "Warnen,
 nicht sperren", "Auf Zuruf, sofort nutzbar" and "Standard an, ohne Ergebniszeilen".
 
+**Scoped reconciliation:** the detailed approval and preview contract is in 0040;
+0041 records the 2026-11-24 C design decisions and remains proposed. No new
+execution authority follows from this reconciliation.
 
 **Owner decisions (Pi conversation 2026-11-18):** Ariadne becomes markedly simpler
 and faster to set up and use; reuse NVIDIA auto-ontology and Apache Ossie libraries
@@ -23,14 +26,19 @@ Evidence: [NVIDIA auto-ontology review](../research/2026-11-18-auto-ontology-com
 
 ## 1. Goal and target journey
 
-From an empty directory to a governed answer in four commands, with no IDs, revisions,
-digests, namespaces or hand-written selector files:
+From an empty directory to a governed answer, with no revision IDs, digests,
+namespaces or hand-written selector files ([0040](2026-11-22-0040-one-cli-simple-governance.md)
+owns approval; [0041](2026-11-24-0041-automatic-authoring.md) owns drafting):
 
 ```text
-ariadne init                          # creates Git repo, namespace, private profile, selector
-ariadne add s3://bucket/sales/orders  # source, file, database or document → automatic draft
-ariadne preview "revenue by month"    # query the draft (governed: false)
-ariadne approve                       # one human confirmation → served (governed: true)
+ariadne init
+ariadne add data/orders.parquet        # declare, do not read
+ariadne approve                        # grant the source, do not activate a release
+ariadne draft
+ariadne validate
+ariadne preview orders::orders.row_count  # granted source, governed: false
+ariadne approve                        # activate the reviewed calculation
+ariadne query orders::orders.row_count    # governed: true
 ```
 
 Questions without an approved metric still get an answer:
@@ -60,10 +68,10 @@ ariadne promote                       # optional: SQL → Ossie metric draft →
 |---|---|---|---|
 | D | 0038 Lean baseline: test-diet, then deslop | Removing tests that detect no reachable production failure, plus dead or legacy code; supersedes the proposed plan 0036 | — |
 | A | 0039 Python `>=3.12`, DuckDB `>=2.0` and Ossie 0.3 | Interpreter floor, DuckDB 2 port, Ossie loader/compiler, identity migration | D |
-| B | 0040 One CLI and simplified governance | `ariadne` subcommands, active draft, single approval, preview queries, change tiers | A |
-| C | 0041 Automatic authoring | Deterministic draft, optional LLM enrichment, auto-ontology and Ossie imports, Answer Examples, `promote`, run-log backlog | A (B for the `add` entry point) |
+| B | 0040 One CLI and simplified governance | B1: CLI, source-first approval and preview. B2: guarded SQL, context and run log. B3: change tiers and workspace, in a separate specification. | A |
+| C | 0041 Automatic authoring | Deterministic draft, optional enrichment, file imports, Answer Examples, `promote`, `gaps` | B2 landed; B3 shares C's candidate |
 
-Each sub-spec gets its own implementation plan and executes sequentially in the order D → A → B → C.
+D → A → B1 → B2 land in order; B3 and C share one plan and candidate after B2.
 A throwaway **`lock_down` spike** runs before B is shaped. It probes DuckDB
 `enable_external_access=false` + `allowed_directories` + `lock_configuration=true`
 against the trusted-catalog views, Delta/Iceberg/DuckLake and S3 storage profiles
@@ -126,17 +134,17 @@ admission) must keep at least one test that proves real behavior.
   contracts and bindings) are served only after `ariadne approve`. `approve` shows the
   complete summary and validation result, then requires interactive confirmation on a
   TTY. It records the Git identity and the approved digest in one step. MCP exposes no
-  approve operation, and the packaged skill forbids agents from running it. A source
-  added by the operator through `ariadne add` is approved by the same `approve`; no
-  separate source-approval step exists.
+  approve operation, and the packaged skill forbids agents from running it. The same
+  command is used first for a source-only grant, which does not activate a release.
 - **Knowledge changes** (tier K: Lumio pages, descriptions and synonyms not bound as a
   required Policy or computation) are served right after successful validation.
   Answers that use an unreviewed tier-K page carry `unreviewed: [page ids]` until
   `ariadne review` countersigns them. `ariadne revert <page>` restores the last
   reviewed state.
-- **Preview queries:** `ariadne preview` and MCP `query(draft=true)` compile the active
-  draft with the same compiler and guards. They return `governed: false` plus the draft
-  revision and are never stored as Answer Examples.
+- **Preview queries:** `ariadne preview` and MCP `preview` compile the active draft
+  with the same compiler and guards, using exact granted draft source identities.
+  They return `governed: false` and the draft revision and are never stored as Answer
+  Examples. Preview does not repoint a served calculation.
 - **Ad-hoc SQL** replaces `define_metric` and `query_records` (ADR-0005 and ADR-0019
   are superseded). The CLI `ariadne sql` and the MCP tool `sql` run one agent-written
   `SELECT`/`EXPLAIN`:
@@ -153,55 +161,53 @@ admission) must keep at least one test that proves real behavior.
   - relationships with their cardinality;
   - filter rules and Policies;
   - approved metrics that nearly match;
-  - the most similar Answer Examples including their SQL.
+  - the most similar in-scope Answer Examples; exact SQL only on explicit opt-in.
 - **Run log:** on by default in `.ariadne/runs.duckdb`, local and git-ignored.
-  - Per call it records: operation, question (when given), SQL, tables read, outcome,
-    error or refusal class, warnings, row count, duration, and the served revision.
-  - **It stores no result rows.** Retention is 90 days, configurable. It can be turned
-    off.
+  - Per call it records operation, relations, outcome, warnings, row count, duration
+    and revisions. Successful SQL may retain only safely normalized text; question
+    text, SQL literals and result values are never stored (0040 §4.5).
+  - Retention is 90 days, configurable. Logging can be turned off.
   - It is runtime state, not authored state, and never changes retrieval or models by
     itself.
 - The shared workspace server adopts the same tiers and single approval. Its browser
   review stays the human confirmation channel for remote users.
 
 ### C — Automatic authoring
-- `ariadne add <path|url|dsn|document>` detects the source type, for example a Delta
-  table via `_delta_log/`, Parquet/CSV/JSON, Iceberg, DuckDB/SQLite/Postgres, or a
-  document. It then profiles the source and writes a draft.
-- **Deterministic drafter (always available, no network):**
+- `ariadne add` declares an analytical source without reading it. After its source
+  grant, `ariadne draft` profiles it and writes a draft. Documents use Lumio intake
+  and the B3 knowledge-only route.
+- **Deterministic drafter (no model service required):**
   - Ossie datasets and fields with time roles.
   - Primary keys, and relationships whose foreign keys are data-confirmed with their
     cardinality.
   - Per-dataset metric candidates (row count, sums of numeric non-key measures).
   - An ODCS contract (types, nullability, uniqueness).
   - Lumio pages per dataset.
-- **Optional LLM enrichment** through any OpenAI-compatible endpoint (including NVIDIA
-  NIM): descriptions, synonyms, term names, metric proposals from Seed Notes and
-  documents, and document distillation. Without a configured model, the deterministic
-  draft is complete and usable.
-- **auto-ontology as an optional engine:** `ariadne import auto-ontology <url|file>`
-  pulls an Ossie export from a running auto-ontology server, or reads its YAML, and turns
-  it into a draft. It uses the `apache-ossie-nvidia-auto-ontology` converter as an
-  optional extra.
-- `ariadne import ossie|dbt|cube|snowflake|databricks <file>` uses the matching Apache
-  Ossie converters as optional extras.
+- **Optional LLM enrichment** through an operator-configured OpenAI-compatible
+  endpoint, only for explicitly allowlisted inputs. Document distillation stays with
+  Lumio. Without enrichment, the deterministic draft is complete and usable.
+- **auto-ontology file exchange:** `ariadne import auto-ontology <file>` reads an
+  Ossie export or converts server-native YAML through the optional NVIDIA converter.
+  No REST pull or server runtime in C.
+- `ariadne import ossie <file>` reads native Ossie directly. Imports from dbt, Cube,
+  Snowflake and Databricks use the matching optional Apache Ossie converters.
 - **Answer Examples on request:** `ariadne save-example` (MCP `save_example`) writes
   the question, intended meaning, SQL, tables read and a bounded result summary with
   its date as a Lumio page.
-  - It is tier K: immediately searchable and returned by `context`, marked
-    `unreviewed` until countersigned.
+  - It is tier K: searchable within its authorized scope after validation and marked
+    `unreviewed` until countersigned. Exact SQL in `context` is opt-in.
   - Retrieval uses Lumio search (lexical, or BM25 through `lumio-lancedb`); no
     separate JSONL or vector store.
   - Examples are method references, never cached answers.
 - **`ariadne promote`** turns a saved example's or the last run's SQL into an Ossie
   metric draft (tier C) when it is a single-aggregate shape the compiler can express.
   Otherwise it reports why not.
-- **Backlog from the run log:** `ariadne gaps` lists recurring ad-hoc questions,
-  tables and failure classes without an approved metric, as input for drafting. It
-  never acts automatically.
+- **Backlog from the run log:** `ariadne gaps` lists recurring normalized SQL shapes,
+  relations and failure classes, not question text. It never acts automatically or
+  infers metric coverage from relation names alone.
 - Every draft, whatever its origin, passes the same validation and tier rules as B.
-  Nothing generated is served as tier C without `approve`. ADR-0027 is revised:
-  host agents remain supported but are no longer required for authoring.
+  Nothing generated is served as tier C without `approve`. Host agents are optional
+  for authoring; ADR-0027's no-agent-package and no-agent-loop decision stands.
 
 ## 5. Invariants that survive
 
@@ -219,8 +225,9 @@ admission) must keep at least one test that proves real behavior.
 ## 6. Acceptance examples (umbrella level)
 
 1. A fresh machine with Python 3.12 runs `pip install ariadne-data` → `ariadne init` →
-   `ariadne add data/orders.parquet` → `ariadne preview "row count"` → `ariadne approve`
-   (confirmed) → `ariadne query <metric>`. The query returns `governed: true`. No step
+   the source declaration and grant → `ariadne draft` → `ariadne validate` →
+   `ariadne preview <metric>` → calculation `ariadne approve` → `ariadne query <metric>`.
+   The query returns `governed: true`. No step
    asks for an ID, revision, digest, namespace or YAML file.
 2. The same flow with a local Delta table under an S3-compatible path declared through
    the storage profile produces a draft with datasets, fields and a contract, without
@@ -243,9 +250,9 @@ admission) must keep at least one test that proves real behavior.
 10. An ad-hoc join that duplicates a fact across a 1:N relationship returns its
     result plus a fan-out warning naming the relationship.
 11. `ariadne save-example` followed by `ariadne context` with a paraphrased question
-    returns that example with its SQL and `unreviewed: true`.
-12. After ad-hoc runs, `.ariadne/runs.duckdb` holds SQL, tables and outcomes but no
-    result values. `ariadne gaps` lists the repeated question.
+    returns the in-scope Example with `unreviewed: true`; exact SQL requires opt-in.
+12. After ad-hoc runs, `ariadne gaps` reads the local run log and lists recurring
+    normalized SQL shapes, not question text, literals or result values.
 
 ## 7. Artifact reconciliation (project/)
 
@@ -253,10 +260,11 @@ admission) must keep at least one test that proves real behavior.
   - Single interactive approval and change tiers (B; supersedes the gate structure of
     ADR-0010, ADR-0016, ADR-0024 and ADR-0026 and the shared ADR-0029 where they
     conflict).
-  - Built-in drafting with optional LLM (C; revises ADR-0013 and ADR-0027).
+  - Built-in drafting with optional LLM (C; narrowly amends ADR-0013 and retains
+    ADR-0027's no-agent-loop boundary).
   - Ossie 0.3 as the semantic format (A; amends ADR-0008, which also loses its 3.14
     amendment).
-  - auto-ontology integrated only as an external service (C).
+  - Auto-ontology as file exchange only (C).
   - Guarded ad-hoc SQL with warnings, replacing structured ad-hoc metrics and record
     queries (B; supersedes ADR-0005 and ADR-0019, amends ADR-0015 for on-request
     tier-K examples).
@@ -279,6 +287,6 @@ admission) must keep at least one test that proves real behavior.
 - A: whether to use the `apache-ossie` Pydantic models or keep plain dict plus JSON Schema.
 - B: Git identity fallback wording; whether `review` can countersign selected pages or
   only all unreviewed pages.
-- C: the default metric-candidate heuristics; whether auto-ontology export is pulled over
-  REST or only file-imported first; which SQL shapes `promote` accepts.
+- C: candidate heuristics, file-only exchange and representable promotion shapes are
+  recorded in proposed 0041. The B3 publication contract remains a prerequisite.
 - B: the context-pack size budget and ranking; the exact warning classes.
