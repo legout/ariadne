@@ -1513,31 +1513,50 @@ def _anchors():
     return sync, yield_line, restore_line, raises
 
 
+def _install_next_line() -> int:
+    """The line right after ``previous = signal.signal(SIGINT, record)`` in ``_deferred_interrupt``
+    (the line the handler is already live on), found through the AST."""
+    import ast
+    import inspect
+    import textwrap
+
+    src, start = inspect.getsourcelines(draft._deferred_interrupt)
+    tree = ast.parse(textwrap.dedent("".join(src)))
+    install = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and getattr(n.value.func, "attr", "") == "signal"
+    )
+    body = next(f for f in tree.body if isinstance(f, ast.FunctionDef)).body
+    following = body[body.index(install) + 1]
+    return following.lineno + start - 1
+
+
+def _recorder_installed() -> bool:
+    """The window oracle: True exactly while Ariadne's recording SIGINT handler is the installed
+    disposition (the handler IS the window: no anchor line is assumed)."""
+    import signal
+
+    handler = signal.getsignal(signal.SIGINT)
+    code = getattr(handler, "__code__", None)
+    return code is not None and code.co_filename == draft.__file__ and code.co_name == "record"
+
+
 def _window_tracer(on_line):
     """A ``sys.settrace`` tracer calling ``on_line(co_name, lineno)`` for EVERY line event of
-    ``draft.py`` while the recording handler is installed: from the ``yield`` of
-    ``_deferred_interrupt`` (the handler is installed above it) through its handler-restore line
-    inclusive — the lines of the region, multiline statements and the ``with`` line on exit
-    included."""
-    _sync, yield_line, restore_line, _raises = _anchors()
-    state = {"active": False, "seen_restore": False}
+    ``draft.py`` reached while the recording handler is the installed disposition — from the first
+    line after the install (the ``try:`` that follows ``signal.signal``) through the handler-restore
+    line inclusive: lines of multiline statements and both ``with`` lines included."""
 
     def tracer(frame, event, arg):
         if frame.f_code.co_filename != draft.__file__:
             return None
 
         def local(frame, event, arg):
-            name = frame.f_code.co_name
-            if event == "line":
-                if name == "_deferred_interrupt":
-                    if frame.f_lineno == yield_line:
-                        state["active"], state["seen_restore"] = True, False
-                    elif frame.f_lineno == restore_line:
-                        state["seen_restore"] = True
-                if state["active"]:
-                    on_line(name, frame.f_lineno)
-            elif event == "return" and name == "_deferred_interrupt" and state["seen_restore"]:
-                state["active"] = False
+            if event == "line" and _recorder_installed():
+                on_line(frame.f_code.co_name, frame.f_lineno)
             return local
 
         return local
@@ -1620,6 +1639,7 @@ def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_
     from ariadne.cli import main as cli
 
     sync, _yield, _restore_line, raises = _anchors()
+    install_next = _install_next_line()
     expected_type = _VARIANTS[variant]
 
     # --- the oracle: every (function, line) event reached in the window with NO signal
@@ -1641,7 +1661,8 @@ def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_
     assert ("_finish_rollback", sync) in reached  # the restore sync's own line
     if expected_type:
         assert ("_remove_journal", raises[expected_type]) in reached
-    assert any(name == "_deferred_interrupt" for name, _l in reached)  # the handler restore
+    assert any(name == "_deferred_interrupt" for name, _l in reached)  # install-to-restore lines
+    assert ("_deferred_interrupt", install_next) in reached  # the try: right after the install
     assert any(name == "_finish_rollback" and lineno != sync for name, lineno in reached)
     assert len(targets) >= 8
 
@@ -1781,6 +1802,39 @@ def test_a_held_sigint_with_a_restore_sync_error_stays_recovery_pending_and_is_a
     assert "finished" not in message and "journal is gone" not in message
     assert (project / draft.TXN_REL).exists()
     assert _state_bytes(project) == before
+    assert _granted(project, result) is False
+
+    # --- the CURRENT attempt's own rollback (the source-consent seam): the draft consumption fails,
+    # then a real SIGINT is held and the rollback's restore sync raises EIO. The report surfaces
+    # the typed restore error WITH its interrupt note and keeps the original failure as context.
+    project, _api, result = _project_with_new_source(tmp_path / "own")
+    before = _state_bytes(project)
+    armed = {"on": False, "done": False}
+
+    def consume_fails(*_a, **_k):
+        armed["on"] = True  # the next directory sync is the rollback's restore sync
+        raise OSError("consume failed")
+
+    def own_sync(path):
+        if armed["on"] and not armed["done"]:
+            armed["done"] = True
+            os.kill(os.getpid(), signal.SIGINT)
+            time.sleep(0.05)  # let the recording handler run
+            raise OSError(5, "restore sync failed")
+        return real_sync(path)
+
+    monkeypatch.setattr(draft, "consume", consume_fails)
+    monkeypatch.setattr(proposals, "_fsync_path", own_sync)
+    with pytest.raises(approve.ApprovalRefused) as raised:
+        _run(project, Tty())
+    monkeypatch.undo()
+    message = str(raised.value)
+    assert "recovery pending" in message
+    assert "Ctrl-C" in message and "held" in message  # the typed error's interrupt note
+    assert "consume failed" in message  # the original failure stays as context
+    assert "finished" not in message and "journal is gone" not in message
+    assert (project / draft.TXN_REL).exists()  # the journal is kept
+    assert _state_bytes(project) == before  # the three states were restored
     assert _granted(project, result) is False
 
 

@@ -322,6 +322,15 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                         "could not be removed: reads stay refused until it is removed — run "
                         f"'ariadne draft status' to retry. Cause: {remnant}"
                     ) from failure
+                except draft.RestoreUnconfirmed as unconfirmed:
+                    # the rollback's restore sync failed: surface the typed error WITH its held-
+                    # interrupt note (if any) and keep the original failure as context; this is
+                    # recovery pending, never a finished cleanup
+                    raise ApprovalRefused(
+                        "not approved; recovery pending — the rollback of an interrupted source "
+                        "approval could not confirm its restore; the journal is kept and no grant "
+                        f"is effective. {unconfirmed} Original failure: {failure}"
+                    ) from failure
                 except BaseException:
                     raise ApprovalRefused(
                         "not approved; recovery pending — the rollback of an interrupted source "

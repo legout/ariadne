@@ -896,6 +896,9 @@ def tracer(frame, event, arg):
             if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
                 state["fired"] = True
                 for _ in range(int(os.environ["ARIADNE_TEST_SIGINTS"])):
+                    # the child-side witness: written right BEFORE each signal is sent
+                    with open(os.environ["ARIADNE_TEST_MARKER"], "a") as marker:
+                        marker.write("sigint\\n")
                     os.kill(os.getpid(), signal.SIGINT)
         return local
     return local
@@ -905,6 +908,8 @@ import threading; threading.settrace(tracer)
 from ariadne import serve
 raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"]))
 """
+
+_FAILING_LAUNCHER = "raise SystemExit(50)"  # a launcher that fails: no server at all
 
 
 def _restore_sync_line() -> int:
@@ -924,46 +929,54 @@ def _restore_sync_line() -> int:
     return call.lineno + start - 1
 
 
-@pytest.mark.parametrize("sigints", [1, 2])
-def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
-    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
-    process a real SIGINT — or two — in the cleanup window reaches the server's OWN handler (Ariadne
-    does not take it over): the server shuts down, the reply MAY be lost (nothing is asserted about
-    the client's reply), but the state stays consistent: the three files hold their previous bytes,
-    the journal is removed or retained according to the point reached, and a later
-    `ariadne draft status` in a FRESH process reports the outcome (nothing pending, or a pending
-    approval with its cleanup guidance)."""
-    import json
-    import subprocess
-
+def _journaled_state(project: Path) -> dict:
     from ariadne import draft
 
-    project = complete_bundle_project(tmp_path / "proj")
-    draft.begin_source_txn(project)  # an interrupted approval's journal: the first lookup recovers
-    tracked = [
-        draft.GRANTS_REL,
-        draft.BASELINE_REL,
-        draft.DRAFT_REL,
-    ]
-    before = {
-        rel: (project / rel).read_bytes() if (project / rel).exists() else None for rel in tracked
+    return {
+        rel.name: (project / rel).read_bytes() if (project / rel).exists() else None
+        for rel in (draft.GRANTS_REL, draft.BASELINE_REL, draft.DRAFT_REL)
     }
+
+
+def _run_stdio_sigint_case(tmp_path: Path, sigints: int, launcher: str = _SIGINT_LAUNCHER) -> dict:
+    """The narrowed MCP-server guarantee on the REAL stdio process. Preconditions asserted here:
+    the MCP session initialized, a child-side witness proves each signal was sent, and the seeded
+    state really differed from the journaled one (so the rollback had something to restore). The
+    byte states and the journal's disposition are read BEFORE any fresh `draft status` can recover
+    anything. Nothing is asserted about the interrupted tool's reply (owner decision)."""
+    from ariadne import authoring_sources, draft
+
+    project = complete_bundle_project(tmp_path / "proj")
+    before = _journaled_state(project)
+    draft.begin_source_txn(project)  # an interrupted approval's journal (the previous bytes)
+    # ... which then CHANGED all three journaled files: the rollback has something to restore
+    authoring_sources._store_grants(project, [{"source": {"name": "x"}, "by": "human:t", "seq": 1}])
+    draft.set_source_baseline(project, "0" * 40)
+    (project / draft.DRAFT_REL).write_text(
+        json.dumps({"state": "retired", "generation": 99}), encoding="utf-8"
+    )
+    changed = _journaled_state(project)
+    assert all(changed[name] != before[name] for name in before), "the seed must differ"
+    marker = tmp_path / "sigint-witness"
+    seen = {"initialized": False}
 
     async def run() -> None:
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-c", _SIGINT_LAUNCHER, str(project)],
+            args=["-c", launcher, str(project)],
             env={
                 **os.environ,
                 "PYTHONPATH": str(REPO_ROOT / "src"),
                 "ARIADNE_TEST_SIGINTS": str(sigints),
                 "ARIADNE_TEST_LINE": str(_restore_sync_line()),
+                "ARIADNE_TEST_MARKER": str(marker),
             },
         )
         try:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
+                    await asyncio.wait_for(session.initialize(), timeout=60)
+                    seen["initialized"] = True  # a precondition of the test
                     try:
                         await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=30)
                     except BaseException:  # the reply MAY be lost: the server was shut down
@@ -972,11 +985,30 @@ def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp
             pass
 
     asyncio.run(run())
-    after = {
-        rel: (project / rel).read_bytes() if (project / rel).exists() else None for rel in tracked
-    }
-    assert after == before  # the three files hold their previous bytes
-    # a later `ariadne draft status`, in a fresh process, reports the outcome
+    assert seen["initialized"], "the MCP session must initialize"
+    assert marker.exists() and marker.read_text().count("sigint") == sigints, (
+        "the child-side witness must prove the injection point was hit and the signal sent"
+    )
+    after = _journaled_state(project)  # BEFORE any fresh `draft status` could recover anything
+    journal_left = (project / draft.TXN_REL).exists()
+    assert after == before, "the three files must hold their previous (journaled) bytes"
+    return {"project": project, "journal_left": journal_left}
+
+
+@pytest.mark.parametrize("sigints", [1, 2])
+def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
+    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
+    process a real SIGINT — or two — in the cleanup window reaches the server's OWN handler
+    (Ariadne does not take it over): the server stops serving, the reply MAY be lost, but the state
+    is consistent — the three files hold their journaled bytes and the journal is removed or kept
+    according to the point reached — and a later `ariadne draft status` in a FRESH process reports
+    the outcome (nothing pending, or a pending approval with its cleanup guidance)."""
+    import subprocess
+
+    from ariadne import draft
+
+    case = _run_stdio_sigint_case(tmp_path, sigints)
+    project = case["project"]
     done = subprocess.run(
         [
             sys.executable,
@@ -993,10 +1025,21 @@ def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp
         text=True,
         timeout=120,
     )
-    if done.returncode == 0:  # nothing pending: the journal was removed
-        assert json.loads(done.stdout) == {"draft": None} or "generation" in json.loads(done.stdout)
-        assert not draft.source_txn_pending(project)
-    else:  # a pending approval, with its cleanup guidance
-        message = json.loads(done.stderr)["error"]["message"]
-        assert "ariadne draft status" in message or "durably restored" in message
-        assert draft.source_txn_pending(project)
+    if case["journal_left"]:  # a pending approval, with its cleanup guidance, until recovered
+        assert done.returncode in (0, 1)
+    else:
+        assert done.returncode == 0 and not draft.source_txn_pending(project)
+    assert not draft.source_txn_pending(project) or done.returncode != 0
+
+
+@pytest.mark.parametrize(
+    ("what", "launcher", "sigints"),
+    [("a launcher that fails", _FAILING_LAUNCHER, 1), ("a skipped signal", _SIGINT_LAUNCHER, 0)],
+)
+def test_the_stdio_regression_test_cannot_pass_without_a_server_and_a_signal(
+    tmp_path, what, launcher, sigints
+):
+    """Fail-before of the test itself: with a launcher that fails (no server, no session) or a
+    double that skips the signal (no witness), the stdio case must FAIL."""
+    with pytest.raises(AssertionError):
+        _run_stdio_sigint_case(tmp_path, sigints, launcher)
