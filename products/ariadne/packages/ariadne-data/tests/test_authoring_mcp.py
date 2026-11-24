@@ -873,7 +873,7 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
         finally:
             os.chmod(state_dir, 0o755)
         assert result.is_error, result
-        return "".join(block.text for block in result.content if hasattr(block, "text"))
+        return "".join(getattr(block, "text", "") for block in result.content)
 
     message = asyncio.run(run())
     assert "durably restored" in message and "no new grant is effective" in message
