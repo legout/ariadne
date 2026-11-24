@@ -26,9 +26,7 @@ Rules enforced here:
 
 from __future__ import annotations
 
-import asyncio
 import base64
-import functools
 import json
 import os
 import signal
@@ -582,6 +580,19 @@ _HELD_NOTE = (
 )
 
 
+_HELD_NOTE_PENDING = (
+    " An interrupt (Ctrl-C) also arrived during this step and was held; the restore is not "
+    "confirmed, so this stays recovery pending and the journal is kept. The interrupt is "
+    "delivered afterwards (the command stops here)."
+)
+
+
+class RestoreUnconfirmed(OSError):
+    """The restore sync failed: the restore is NOT confirmed, the journal is kept and the approval
+    stays recovery pending — never relabeled as a finished cleanup. Carries the held-interrupt
+    note when a Ctrl-C was recorded."""
+
+
 class RollbackCleanup(OSError):
     """All three files were restored and the journal is gone. ``finished`` says whether the
     cleanup itself completed: ``True`` when the only event was a held Ctrl-C (nothing to fix),
@@ -702,26 +713,11 @@ def rollback_source_txn(project: Path) -> None:
     _finish_rollback(journal)
 
 
-def _is_shipped_stdio_handler(handler) -> bool:
-    """True for the SIGINT handler the shipped ``ariadne serve`` stdio process runs under: the
-    ``functools.partial`` of the ASYNCIO RUNNER's bound ``_on_sigint`` that ``asyncio.Runner.run``
-    (and so ``anyio.run``) installs. Identified by TYPE (a partial whose function is bound to an
-    ``asyncio.Runner`` instance), with the method name only as a second check — so a rename of the
-    private method alone cannot silently widen or narrow it; any other custom handler (an
-    embedding host's) is never matched."""
-    return (
-        isinstance(handler, functools.partial)
-        and isinstance(getattr(handler.func, "__self__", None), asyncio.Runner)
-        and getattr(handler.func, "__name__", "") == "_on_sigint"
-    )
-
-
 class _Held:
-    """The interrupts recorded while a region ran, and the handler to hand them to afterwards."""
+    """The interrupts recorded while a region ran."""
 
     def __init__(self) -> None:
         self.count = 0
-        self.handover: Any = None  # the shipped server's own handler, handed the held interrupts
 
     @property
     def interrupted(self) -> bool:
@@ -730,16 +726,16 @@ class _Held:
 
 @contextmanager
 def _deferred_interrupt():
-    """Hold SIGINT for the region: a recording handler replaces the default handler — or the
-    shipped stdio server's handler (``asyncio.Runner._on_sigint``) — and is restored afterwards.
-    ``signal.signal`` works in the main thread only (and only the main thread receives
-    ``KeyboardInterrupt``): elsewhere, or when the process runs any OTHER custom disposition (an
-    embedding host's policy), the region is a plain pass-through that cannot fail."""
+    """Hold SIGINT for the region under the DEFAULT disposition only: a recording handler
+    replaces ``default_int_handler`` and is restored afterwards. ``signal.signal`` works in the
+    main thread only (and only the main thread receives ``KeyboardInterrupt``). Every other
+    disposition — the MCP servers' ``asyncio.Runner`` handler, uvicorn's, any embedding host's — and
+    any other thread is a plain pass-through that cannot fail: Ariadne never changes the Ctrl-C
+    behavior of a program that merely runs ``asyncio`` and calls it (spec 0040 §3.4.2.5)."""
     held = _Held()
-    current = signal.getsignal(signal.SIGINT)
-    shipped = _is_shipped_stdio_handler(current)
-    if threading.current_thread() is not threading.main_thread() or not (
-        shipped or current is signal.default_int_handler
+    if (
+        threading.current_thread() is not threading.main_thread()
+        or signal.getsignal(signal.SIGINT) is not signal.default_int_handler
     ):
         yield held
         return
@@ -748,37 +744,10 @@ def _deferred_interrupt():
         held.count += 1
 
     previous = signal.signal(signal.SIGINT, record)
-    held.handover = previous if shipped else None
     try:
         yield held
     finally:
         signal.signal(signal.SIGINT, previous)
-
-
-# How long after the typed result is queued the held interrupt is handed to the stdio server's own
-# handler: its reply must reach the client first (the server then shuts down as designed).
-_HANDOVER_GRACE_SECONDS = 0.3
-
-
-def _hand_over(held: _Held) -> None:
-    """After the region, deliver the held interrupts to the shipped server's own handler (the
-    first cancels its main task; a second forces the exit, as a double Ctrl-C does there), but only
-    AFTER a short grace so the typed result is sent first. A no-op for every other disposition."""
-    if held.handover is None or not held.count:
-        return
-    handler = held.handover
-
-    def deliver():
-        handler(signal.SIGINT, None)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:  # no loop in this thread: deliver in place
-        for _ in range(held.count):
-            deliver()
-        return
-    for number in range(held.count):
-        loop.call_later(_HANDOVER_GRACE_SECONDS * (number + 1), deliver)
 
 
 def _final_outcome(outcome: OSError | None, interrupted: bool) -> OSError | None:
@@ -803,26 +772,42 @@ def _final_outcome(outcome: OSError | None, interrupted: bool) -> OSError | None
     return None
 
 
+def _restore_unconfirmed(failed: OSError, interrupted: bool) -> RestoreUnconfirmed:
+    note = _HELD_NOTE_PENDING if interrupted else ""
+    error = RestoreUnconfirmed(
+        f"recovery pending: the restore sync failed ({failed}); the restore is not confirmed and "
+        "the journal is kept. Fix the cause, then run 'ariadne draft status' in that project."
+        f"{note}"
+    )
+    error.__cause__ = failed
+    return error
+
+
 def _finish_rollback(journal: Path) -> None:
     """From the RESTORE SYNC's return to the end of the journal removal NO statement is an
     interruptible gap: the sync itself runs inside the deferred region (a SIGINT arriving in this
-    window is HELD, main thread), the path runs to one of its outcomes, and only then is the held
-    interrupt reported alongside it. A failure of the restore sync itself is NOT cleanup: it
-    propagates (the restore is unconfirmed)."""
+    window is HELD, main thread, default disposition), the path runs to one of its outcomes, and
+    only then is the held interrupt reported alongside it. A failure of the restore sync itself is
+    NOT cleanup: the restore is unconfirmed, the journal stays and the error propagates ("recovery
+    pending") — with the held interrupt accounted for in its message, never relabeled."""
     outcome: OSError | None = None
-    interrupted = False
+    sync_error: OSError | None = None
     done = False
     try:
         with _deferred_interrupt() as held:
-            proposals._fsync_path(journal.parent)  # the three restored states are durable here
             try:
-                _remove_journal(journal)
-            except OSError as typed:  # RollbackCleanup | JournalRemnant | RemovalUnconfirmed
-                outcome = typed
+                proposals._fsync_path(journal.parent)  # the three restored states are durable here
+            except OSError as failed:
+                sync_error = failed
+            else:
+                try:
+                    _remove_journal(journal)
+                except OSError as typed:  # RollbackCleanup | JournalRemnant | RemovalUnconfirmed
+                    outcome = typed
             done = True
-        interrupted = held.interrupted
-        _hand_over(held)
-        final = _final_outcome(outcome, interrupted)
+        if sync_error is not None:
+            raise _restore_unconfirmed(sync_error, held.interrupted)
+        final = _final_outcome(outcome, held.interrupted)
         if final is not None:
             raise final
     except KeyboardInterrupt as exc:
@@ -830,6 +815,8 @@ def _finish_rollback(journal: Path) -> None:
         # propagate) or after the cleanup finished (report the outcome the path reached)
         if not done:
             raise
+        if sync_error is not None:
+            raise _restore_unconfirmed(sync_error, True) from exc
         final = _final_outcome(outcome, True)
         assert final is not None
         raise final from exc

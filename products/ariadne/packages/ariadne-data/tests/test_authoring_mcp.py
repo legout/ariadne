@@ -886,7 +886,6 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 _SIGINT_LAUNCHER = """
 import os, signal, sys
 from ariadne import draft
-count = int(os.environ["ARIADNE_TEST_SIGINTS"])
 state = {"fired": False}
 
 def tracer(frame, event, arg):
@@ -896,7 +895,7 @@ def tracer(frame, event, arg):
         if event == "line" and frame.f_code.co_name == "_finish_rollback" and not state["fired"]:
             if frame.f_lineno == int(os.environ["ARIADNE_TEST_LINE"]):
                 state["fired"] = True
-                for _ in range(count):
+                for _ in range(int(os.environ["ARIADNE_TEST_SIGINTS"])):
                     os.kill(os.getpid(), signal.SIGINT)
         return local
     return local
@@ -926,18 +925,31 @@ def _restore_sync_line() -> int:
 
 
 @pytest.mark.parametrize("sigints", [1, 2])
-def test_stdio_server_holds_a_real_sigint_in_the_cleanup_window_then_shuts_down(tmp_path, sigints):
-    """Finding 1 on the SHIPPED backend: in the real `ariadne serve` stdio process (SIGINT handler
-    = asyncio.Runner._on_sigint) a real SIGINT — or two — delivered on the restore sync's line of
-    the cleanup window is HELD: the client still receives the typed tool result (the journal is
-    removed, the files restored), and only AFTER it is the held interrupt handed to the server's
-    own handler, which shuts it down as designed. A second SIGINT does not preempt the outcome."""
+def test_stdio_server_sigint_in_the_cleanup_window_leaves_a_consistent_state(tmp_path, sigints):
+    """The narrowed MCP-server guarantee (spec 0040 §3.4.2.5): in the real `ariadne serve` stdio
+    process a real SIGINT — or two — in the cleanup window reaches the server's OWN handler (Ariadne
+    does not take it over): the server shuts down, the reply MAY be lost (nothing is asserted about
+    the client's reply), but the state stays consistent: the three files hold their previous bytes,
+    the journal is removed or retained according to the point reached, and a later
+    `ariadne draft status` in a FRESH process reports the outcome (nothing pending, or a pending
+    approval with its cleanup guidance)."""
+    import json
+    import subprocess
+
     from ariadne import draft
 
     project = complete_bundle_project(tmp_path / "proj")
     draft.begin_source_txn(project)  # an interrupted approval's journal: the first lookup recovers
+    tracked = [
+        draft.GRANTS_REL,
+        draft.BASELINE_REL,
+        draft.DRAFT_REL,
+    ]
+    before = {
+        rel: (project / rel).read_bytes() if (project / rel).exists() else None for rel in tracked
+    }
 
-    async def run() -> tuple[str, int | None]:
+    async def run() -> None:
         params = StdioServerParameters(
             command=sys.executable,
             args=["-c", _SIGINT_LAUNCHER, str(project)],
@@ -948,25 +960,43 @@ def test_stdio_server_holds_a_real_sigint_in_the_cleanup_window_then_shuts_down(
                 "ARIADNE_TEST_LINE": str(_restore_sync_line()),
             },
         )
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=60)
-                text = "".join(getattr(block, "text", "") for block in result.content)
-                # after the typed result the held interrupt is handed to the server's own handler
-                # (after a short grace): the server shuts down as designed, so a LATER call is
-                # no longer served
-                await asyncio.sleep(3)
-                try:
-                    await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=10)
-                    return text, 0  # still serving: the held interrupt was lost
-                except Exception:  # closed stream / cancelled / timeout: the server went down
-                    return text, 1
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    try:
+                        await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=30)
+                    except BaseException:  # the reply MAY be lost: the server was shut down
+                        pass
+        except BaseException:  # the server going away may surface as a closed stream
+            pass
 
-    message, shut_down = asyncio.run(run())
-    assert shut_down == 1, "the held interrupt was never handed to the server's own handler"
-    # the typed result reached the client: a finished cleanup (the held interrupt was the only
-    # event)
-    assert "Ctrl-C" in message and "durably restored" in message, message
-    assert "Nothing needs fixing" in message, message
-    assert not draft.source_txn_pending(project)  # the journal was removed despite the signal(s)
+    asyncio.run(run())
+    after = {
+        rel: (project / rel).read_bytes() if (project / rel).exists() else None for rel in tracked
+    }
+    assert after == before  # the three files hold their previous bytes
+    # a later `ariadne draft status`, in a fresh process, reports the outcome
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ariadne.cli",
+            "draft",
+            "status",
+            "--json",
+            "--project",
+            str(project),
+        ],
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if done.returncode == 0:  # nothing pending: the journal was removed
+        assert json.loads(done.stdout) == {"draft": None} or "generation" in json.loads(done.stdout)
+        assert not draft.source_txn_pending(project)
+    else:  # a pending approval, with its cleanup guidance
+        message = json.loads(done.stderr)["error"]["message"]
+        assert "ariadne draft status" in message or "durably restored" in message
+        assert draft.source_txn_pending(project)

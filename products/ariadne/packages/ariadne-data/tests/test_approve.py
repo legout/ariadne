@@ -1480,12 +1480,10 @@ def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, m
 # --------------------- item 1: no interruptible gap from the restore sync to the end of the removal
 
 
-def _cleanup_path_lines():
-    """The cleanup path's lines, located WITHOUT any source comment: through the AST of the two
-    functions that make up the path. Returns ``(restore_sync_line, finish_end, remove_range,
-    raise_lines)``: the line of the restore sync (the first ``_fsync_path`` call of
-    ``_finish_rollback``), the last line of its deferred ``with`` body, every line of
-    ``_remove_journal``, and the lines of its three typed ``raise`` statements by class."""
+def _anchors():
+    """Branch anchors found through the AST (no source comment): the restore sync's line, the
+    ``yield`` and the handler-restore lines of ``_deferred_interrupt`` (the window while the
+    recording handler is installed), and the line of each typed ``raise`` in ``_remove_journal``."""
     import ast
     import inspect
     import textwrap
@@ -1500,14 +1498,11 @@ def _cleanup_path_lines():
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "_fsync_path"
     )
-    with_node = next(n for n in ast.walk(tree) if isinstance(n, ast.With))
-    finish_end = max(getattr(n, "end_lineno", 0) or 0 for n in ast.walk(with_node)) + off
+    tree, off = tree_of(draft._deferred_interrupt)
+    yield_line = [n.lineno + off for n in ast.walk(tree) if isinstance(n, ast.Yield)][-1]
+    try_node = [n for n in ast.walk(tree) if isinstance(n, ast.Try)][-1]
+    restore_line = try_node.finalbody[0].lineno + off
     tree, off = tree_of(draft._remove_journal)
-    lines = {
-        n.lineno + off
-        for n in ast.walk(tree)
-        if isinstance(n, ast.stmt) and not isinstance(n, ast.FunctionDef)
-    }
     raises = {
         n.exc.func.id: n.lineno + off
         for n in ast.walk(tree)
@@ -1515,28 +1510,34 @@ def _cleanup_path_lines():
         and isinstance(n.exc, ast.Call)
         and isinstance(n.exc.func, ast.Name)
     }
-    return sync, finish_end, sorted(lines), raises
+    return sync, yield_line, restore_line, raises
 
 
-def _lines_of_the_path():
-    sync, finish_end, remove_lines, _raises = _cleanup_path_lines()
-    import inspect
-
-    _src, start = inspect.getsourcelines(draft._finish_rollback)
-    in_region = lambda n: sync <= n <= finish_end  # noqa: E731
-    return in_region, sorted(remove_lines)
-
-
-def _trace_lines(record):
-    """A tracer recording the lines of ``draft.py`` executed (no signal)."""
+def _window_tracer(on_line):
+    """A ``sys.settrace`` tracer calling ``on_line(co_name, lineno)`` for EVERY line event of
+    ``draft.py`` while the recording handler is installed: from the ``yield`` of
+    ``_deferred_interrupt`` (the handler is installed above it) through its handler-restore line
+    inclusive — the lines of the region, multiline statements and the ``with`` line on exit
+    included."""
+    _sync, yield_line, restore_line, _raises = _anchors()
+    state = {"active": False, "seen_restore": False}
 
     def tracer(frame, event, arg):
         if frame.f_code.co_filename != draft.__file__:
             return None
 
         def local(frame, event, arg):
+            name = frame.f_code.co_name
             if event == "line":
-                record.add(frame.f_lineno)
+                if name == "_deferred_interrupt":
+                    if frame.f_lineno == yield_line:
+                        state["active"], state["seen_restore"] = True, False
+                    elif frame.f_lineno == restore_line:
+                        state["seen_restore"] = True
+                if state["active"]:
+                    on_line(name, frame.f_lineno)
+            elif event == "return" and name == "_deferred_interrupt" and state["seen_restore"]:
+                state["active"] = False
             return local
 
         return local
@@ -1545,25 +1546,19 @@ def _trace_lines(record):
 
 
 def _sigint_on_line(target):
-    """A ``sys.settrace`` tracer delivering a REAL SIGINT to this process on entry to ``target``
-    (once) — what Ctrl-C does: the installed handler decides whether it raises or is held."""
+    """A window tracer delivering a REAL SIGINT to this process on the first entry to ``target``
+    (a ``(co_name, lineno)``) inside the window — what Ctrl-C does: the installed handler decides
+    whether it raises or is held."""
     import signal
 
     state = {"fired": False}
 
-    def tracer(frame, event, arg):
-        if frame.f_code.co_filename != draft.__file__:
-            return None
+    def on_line(name, lineno):
+        if not state["fired"] and (name, lineno) == target:
+            state["fired"] = True
+            os.kill(os.getpid(), signal.SIGINT)
 
-        def local(frame, event, arg):
-            if event == "line" and frame.f_lineno == target and not state["fired"]:
-                state["fired"] = True
-                os.kill(os.getpid(), signal.SIGINT)
-            return local
-
-        return local
-
-    return tracer, state
+    return _window_tracer(on_line), state
 
 
 _CLEANUP_TYPES = ("RollbackCleanup", "JournalRemnant", "RemovalUnconfirmed")
@@ -1611,53 +1606,51 @@ _VARIANTS = {
 def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_pending(
     tmp_path, monkeypatch, capsys, variant
 ):
-    """The class, not one gap: a REAL SIGINT delivered on entry to EACH line the variant executes
-    from the restore sync to the end of the removal sync is HELD across the path, which runs to its
-    typed outcome, reported WITH the held interrupt — on the draft CLI path and on the two-prompt
-    approval journey. Never "recovery pending"/"incomplete", never an escaping KeyboardInterrupt.
-    The traced line set is NOT a lower bound: it must EQUAL the lines the variant executes without
-    any signal (the independent oracle), include the restore-sync line and that variant's typed
-    ``raise`` line (found through the AST, not a source comment), and the files stay restored."""
+    """The class, not one gap: a REAL SIGINT delivered on entry to EVERY line event reached while
+    the recording handler is installed — the restore sync, both ``with`` lines (entry and exit),
+    lines inside multiline fault handling, the classification and the handler restore — is HELD
+    across the path, which runs to its typed outcome, reported WITH the held interrupt: on the
+    draft CLI path and on the two-prompt approval journey. Never "recovery pending"/"incomplete",
+    never an escaping KeyboardInterrupt. The point set is NOT filtered or a lower bound: it is
+    exactly the line events a no-signal baseline reaches in the window (the independent oracle),
+    anchored by the restore sync's line and the variant's own typed ``raise`` line (found through
+    the AST, not a source comment)."""
     import sys
 
     from ariadne.cli import main as cli
 
-    in_region, remove_lines = _lines_of_the_path()
-    sync, _finish_end, _remove, raises = _cleanup_path_lines()
+    sync, _yield, _restore_line, raises = _anchors()
     expected_type = _VARIANTS[variant]
 
-    def run_cli(root):
-        project, _api, result = _project_with_new_source(root)
-        before = _state_bytes(project)
-        draft.begin_source_txn(project)
-        return project, result, before
-
-    # --- the oracle: the lines this variant executes with NO signal
+    # --- the oracle: every (function, line) event reached in the window with NO signal
+    reached: set[tuple[str, int]] = set()
     root = tmp_path / "baseline"
     root.mkdir()
-    project, result, before = run_cli(root)
-    executed: set[int] = set()
+    project, _api, _result = _project_with_new_source(root)
+    draft.begin_source_txn(project)
     _variant_patches(monkeypatch, variant)
     old = sys.gettrace()
-    sys.settrace(_trace_lines(executed))
+    sys.settrace(_window_tracer(lambda name, lineno: reached.add((name, lineno))))
     try:
         cli(["draft", "status", "--json", "--project", str(project)])
     finally:
         sys.settrace(old)
         monkeypatch.undo()
     capsys.readouterr()
-    targets = sorted(n for n in executed if in_region(n) or n in remove_lines)
-    assert sync in targets  # the restore sync's own line is part of the path
+    targets = sorted(reached, key=lambda t: (t[1], t[0]))
+    assert ("_finish_rollback", sync) in reached  # the restore sync's own line
     if expected_type:
-        assert raises[expected_type] in targets  # the variant reaches its typed raise
-    assert len(targets) >= 5
+        assert ("_remove_journal", raises[expected_type]) in reached
+    assert any(name == "_deferred_interrupt" for name, _l in reached)  # the handler restore
+    assert any(name == "_finish_rollback" and lineno != sync for name, lineno in reached)
+    assert len(targets) >= 8
 
     fired_lines = set()
     for index, target in enumerate(targets):
         # --- the draft CLI path
         root = tmp_path / f"cli-{index}"
         root.mkdir()
-        project, result, before = run_cli(root)
+        project, result, before = _new_with_journal(root)
         _variant_patches(monkeypatch, variant)
         tracer, state = _sigint_on_line(target)
         capsys.readouterr()
@@ -1717,7 +1710,112 @@ def test_every_line_of_the_cleanup_path_yields_a_cleanup_outcome_never_recovery_
             assert "fix the cause" not in message, message
         assert _state_bytes(project) == before, (variant, target)
         assert _granted(project, result) is False
-    assert fired_lines == set(targets)  # EVERY line of the executed path was exercised
+    assert fired_lines == set(targets)  # EVERY reached line event was exercised
+
+
+def _new_with_journal(root):
+    project, _api, result = _project_with_new_source(root)
+    before = _state_bytes(project)
+    draft.begin_source_txn(project)
+    return project, result, before
+
+
+def test_a_held_sigint_with_a_restore_sync_error_stays_recovery_pending_and_is_accounted_for(
+    tmp_path, monkeypatch, capsys
+):
+    """Item 2: the recording handler is already active when the restore sync runs. An OSError
+    THERE keeps the conservative result (the restore is not confirmed: the journal stays,
+    "recovery pending") AND accounts for the recorded signal in the message — never a finished
+    cleanup. On the draft CLI path and on the two-prompt journey."""
+    import signal
+    import time
+
+    from ariadne.cli import main as cli
+
+    real_sync = proposals._fsync_path
+
+    def arm(project):
+        state = {"done": False}
+
+        def sync(path):
+            if not state["done"] and (project / draft.TXN_REL).exists():
+                state["done"] = True  # the FIRST sync after the journal exists: the restore sync
+                os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(0.05)  # let the recording handler run
+                raise OSError(5, "restore sync failed")
+            return real_sync(path)
+
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+
+    # --- the draft CLI path
+    project, result, before = _new_with_journal(tmp_path / "cli")
+    arm(project)
+    capsys.readouterr()
+    code = cli(["draft", "status", "--json", "--project", str(project)])
+    monkeypatch.undo()
+    message = json.loads(capsys.readouterr().err)["error"]["message"]
+    assert code == 1
+    assert "recovery pending" in message and "Ctrl-C" in message and "held" in message
+    assert "finished" not in message and "journal is gone" not in message
+    assert (project / draft.TXN_REL).exists()  # the journal is kept
+    assert _state_bytes(project) == before  # the three files hold their restored bytes
+    assert _granted(project, result) is False
+
+    # --- the two-prompt journey
+    project, _api, result = _project_with_new_source(tmp_path / "pr")
+    before = _state_bytes(project)
+    _fault(monkeypatch, project, "draft consume")
+
+    def operator_one_fails_and_leaves_a_journal():
+        with monkeypatch.context() as m:
+            m.setattr(draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck")))
+            with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
+                _run(project, Tty())
+        arm(project)
+
+    with pytest.raises(approve.ApprovalRefused) as raised:
+        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    monkeypatch.undo()
+    message = str(raised.value)
+    assert "recovery pending" in message and "Ctrl-C" in message
+    assert "finished" not in message and "journal is gone" not in message
+    assert (project / draft.TXN_REL).exists()
+    assert _state_bytes(project) == before
+    assert _granted(project, result) is False
+
+
+def test_an_ordinary_asyncio_caller_keeps_its_own_sigint_handler_in_the_region(tmp_path):
+    """Item 1: Ariadne defers only under the DEFAULT disposition. A program that merely runs
+    asyncio (its Runner installs its own SIGINT handler) and calls Ariadne is untouched: inside the
+    region its handler is still installed — the very same object — and RUNS when a SIGINT arrives;
+    nothing is held. The same for a plain custom handler."""
+    import asyncio
+    import signal
+
+    ran = []
+
+    def custom(_signum, _frame):
+        ran.append("custom")
+
+    previous = signal.signal(signal.SIGINT, custom)
+    try:
+        with draft._deferred_interrupt() as held:
+            assert signal.getsignal(signal.SIGINT) is custom
+            os.kill(os.getpid(), signal.SIGINT)  # delivered at the next bytecode boundary
+        assert ran == ["custom"] and not held.interrupted
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+    async def main():
+        runner_handler = signal.getsignal(signal.SIGINT)
+        assert runner_handler is not signal.default_int_handler  # asyncio.run installed its own
+        with draft._deferred_interrupt() as held:
+            assert signal.getsignal(signal.SIGINT) is runner_handler  # not taken over
+        assert not held.interrupted
+        assert signal.getsignal(signal.SIGINT) is runner_handler  # and still installed after
+        return True
+
+    assert asyncio.run(main()) is True
 
 
 def test_a_fault_with_a_held_interrupt_differs_from_the_no_signal_reply(
