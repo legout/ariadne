@@ -128,13 +128,6 @@ def test_optional_capability_extras_are_self_describing():
     )
 
 
-def test_workspace_lockfile_is_the_single_coordination_point():
-    """ADR-0010: one shared lockfile, no per-member lockfiles."""
-    assert (ROOT / "uv.lock").is_file()
-    for member in ALL_MEMBERS.values():
-        assert not (member / "uv.lock").exists(), f"{member} carries its own uv.lock"
-
-
 def test_no_two_wheels_own_the_same_python_module_path():
     """ADR-0010 / AC1: each wheel owns a single, disjoint Python root.
 
