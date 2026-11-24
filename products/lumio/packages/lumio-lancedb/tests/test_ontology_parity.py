@@ -157,12 +157,18 @@ TRAVERSAL_CASES = [
 ]
 
 
-def _projections(corpus_kb, tmp_path):
-    """Yield (label, kb) pairs: the base KB and the LanceDB-bound KB."""
+@pytest.fixture(scope="module")
+def lancedb_kb(corpus_kb, tmp_path_factory):
+    """The LanceDB-bound projection, built once per module; its tests only read it."""
     from lumio_lancedb.index import build_lancedb_index
 
+    return build_lancedb_index(corpus_kb, tmp_path_factory.mktemp("lance"))
+
+
+def _projections(corpus_kb, lancedb_kb):
+    """Yield (label, kb) pairs: the base KB and the LanceDB-bound KB."""
     yield "zero-index", corpus_kb
-    yield "lancedb", build_lancedb_index(corpus_kb, tmp_path / "lance")
+    yield "lancedb", lancedb_kb
 
 
 @pytest.mark.parametrize(
@@ -171,10 +177,10 @@ def _projections(corpus_kb, tmp_path):
     ids=[c[0] + "-" + c[1] + "-" + c[2] for c in TRAVERSAL_CASES],
 )
 def test_identical_traversal_across_projections(
-    corpus_kb, tmp_path, source, scope, direction, relationship_type, expected
+    corpus_kb, lancedb_kb, source, scope, direction, relationship_type, expected
 ):
     """Same bounded traversal, both projections, identical results."""
-    for _label, kb in _projections(corpus_kb, tmp_path):
+    for _label, kb in _projections(corpus_kb, lancedb_kb):
         assert (
             kb.related_pages(
                 source, scope=scope, direction=direction, relationship_type=relationship_type
@@ -183,8 +189,8 @@ def test_identical_traversal_across_projections(
         )
 
 
-def test_identical_shortest_paths_across_projections(corpus_kb, tmp_path):
-    for _label, kb in _projections(corpus_kb, tmp_path):
+def test_identical_shortest_paths_across_projections(corpus_kb, lancedb_kb):
+    for _label, kb in _projections(corpus_kb, lancedb_kb):
         both: dict[str, Any] = {"direction": GRAPH_DIRECTION_BOTH}
         # Canonical: obstore -> LanceDB travels through Lumio.
         assert kb.shortest_path("obstore", "LanceDB", **both) == ["obstore", "Lumio", "LanceDB"]
@@ -196,16 +202,16 @@ def test_identical_shortest_paths_across_projections(corpus_kb, tmp_path):
         assert kb.shortest_path("Lumio", "Sage Wiki", **both) is None
 
 
-def test_identical_authorization_before_expansion(corpus_kb, tmp_path):
+def test_identical_authorization_before_expansion(corpus_kb, lancedb_kb):
     """Visibility filtering is applied before expansion on both projections."""
-    for _label, kb in _projections(corpus_kb, tmp_path):
+    for _label, kb in _projections(corpus_kb, lancedb_kb):
         public = kb.related_pages("Lumio", candidate_titles=PUBLIC_TITLES)
         assert public == ["LanceDB"], "internal obstore/Sage Wiki must be filtered before expansion"
         # An internal seed under a public-only authorization set expands to nothing.
         assert kb.related_pages("Sage Wiki", candidate_titles=PUBLIC_TITLES) == []
 
 
-def test_identical_retrieval_eligibility_across_projections(corpus_kb, tmp_path):
+def test_identical_retrieval_eligibility_across_projections(corpus_kb, lancedb_kb):
     """Citation-ready retrieval selects the same eligible pages on both engines."""
     kwargs = {
         "graph_seed_titles": ["Lumio"],
@@ -214,7 +220,7 @@ def test_identical_retrieval_eligibility_across_projections(corpus_kb, tmp_path)
         "graph_max_depth": 1,
     }
     results = {}
-    for label, kb in _projections(corpus_kb, tmp_path):
+    for label, kb in _projections(corpus_kb, lancedb_kb):
         retrieved = kb.retrieve("deployable chat platform", limit=10, **kwargs)
         results[label] = {r.evidence.page_title for r in retrieved}
         assert retrieved, f"{label}: graph-expanded retrieval must return Evidence"
