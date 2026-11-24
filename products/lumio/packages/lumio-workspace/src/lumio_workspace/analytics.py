@@ -540,7 +540,7 @@ class AnalyticsService:
                             "the admitted declaration needs current native Source Approval"
                         )
                 else:
-                    started = self._joined_draft() or self.api.start_proposal()
+                    started = self._joined_draft(entries, storages) or self.api.start_proposal()
                     if self._declarations_present(started["candidate_revision"], entries, storages):
                         _resolved, source_digest = authoring_sources.candidate_sources(
                             self.project, started["candidate_revision"]
@@ -568,6 +568,7 @@ class AnalyticsService:
                     "native_candidate": proposed["revision"],
                     "source_digest": proposed["source_digest"],
                     "reused_source_declaration": reused,
+                    "joined_draft": bool(started.get("joined")),
                     "conversion": conversion,
                     "review_url": f"{self.external_url}/review/{current.operation_id}",
                     "review_generation": 0,
@@ -911,10 +912,13 @@ class AnalyticsService:
             return self._source_context(actor, operation)
         return self._contribution_context(actor, operation)
 
-    def _joined_draft(self) -> dict | None:
-        """Draft rule v2: with no active draft return None (the caller starts one). An
-        active draft owned by a data-granted request is ongoing work: join it. Any other
-        active draft (a pending request's, or nobody's) refuses as stale."""
+    def _joined_draft(
+        self, entries: list[dict] | None = None, storages: dict | None = None
+    ) -> dict | None:
+        """Draft rule v3: no active draft -> None (the caller starts one). Otherwise any
+        pending workspace operation on the active proposal makes it busy (stale). Idle with
+        granted work: a source request (entries given) joins only if its declaration is
+        already in the draft; a contribution (entries None) continues it. Else stale."""
         active = draft.status(self.project)
         if active is None:
             return None
@@ -925,19 +929,24 @@ class AnalyticsService:
             rows = connection.execute(
                 "SELECT status, json_extract(response_json, '$.native_base') "
                 "FROM operations WHERE workspace_id = ? "
-                "AND action = 'prepare_data_source' "
+                "AND action IN ('prepare_data_source', 'prepare_contribution') "
                 "AND json_extract(response_json, '$.native_proposal') = ?",
                 (self.workspace_id, proposal),
             ).fetchall()
-        for status, base in rows:
-            if status == "data_granted":
-                return {
-                    "proposal": proposal,
-                    "base_revision": base,
-                    "candidate_revision": active["candidate_revision"],
-                }
+        if not any(status.startswith("pending") for status, _ in rows):
+            for status, base in rows:
+                if status == "data_granted" and (
+                    entries is None
+                    or self._declarations_present(active["candidate_revision"], entries, storages)
+                ):
+                    return {
+                        "proposal": proposal,
+                        "base_revision": base,
+                        "candidate_revision": active["candidate_revision"],
+                        "joined": True,
+                    }
         raise AnalyticsError(
-            "stale: another draft is active and its request is not yet data-granted"
+            "stale: another draft is active and is pending, or the request adds to granted work"
         )
 
     def _release_source_draft(self, response: dict) -> None:
@@ -953,7 +962,11 @@ class AnalyticsService:
 
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
-        if not requested and operation.action == "prepare_data_source":
+        if (
+            not requested
+            and operation.action == "prepare_data_source"
+            and not operation.response.get("joined_draft")
+        ):
             self._release_source_draft(operation.response)
         response = {
             **operation.response,

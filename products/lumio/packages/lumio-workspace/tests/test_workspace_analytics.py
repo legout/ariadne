@@ -701,6 +701,18 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert sqlite_profile["tables"]["entries"]["sample_limit"] == 100
     assert opened
 
+    # Draft rule v3: the granted draft is idle, but a request adding a declaration
+    # that is not in it refuses as stale instead of joining.
+    with pytest.raises(AnalyticsError, match="stale"):
+        analytics.prepare_data_source(
+            contributor,
+            retry_key="request-adds-private",
+            project="retail",
+            source="private",
+            table="entries",
+            business_questions=["A new declaration cannot join granted work."],
+        )
+
     original = b"# Cancelled Orders\n\nOnly completed orders enter EUR revenue.\n"
     uploaded = intake.save(
         config.workspace_id,

@@ -345,14 +345,18 @@ B1 **cuts these callers over in the same candidate**:
 - the browser-reviewed source request records the source grant (§3.4.2), using the
   existing reviewer capability and one-use action;
 - the per-caller data grant stays separate and is checked as before.
-- Amendment 2026-11-24 (owner, draft rule v2): the workspace holds the one active draft
-  per §3.3. Only a browser **reject** (at either stage) discards the request's exact
-  draft, in the same one-use action. An approved or data-granted request keeps its draft
-  active as the project's ongoing work (refresh, validate, admit). A new source request
-  **joins** the active draft when it belongs to a data-granted request, and refuses as
-  stale when it belongs to a request still pending. Restore retires the slot.
-- AC11a: a rejected request discards its draft; a request made while another is pending
-  refuses as stale; a request made after a grant joins the granted request's draft.
+- Amendment 2026-11-24 (owner, draft rule v3): the workspace holds the one active draft
+  per §3.3. While any request on it is pending (a source request at either stage, or a
+  contribution not yet decided), every new request refuses as stale. A data-granted
+  request keeps its draft active as the project's ongoing work (refresh, validate,
+  admit); an idle new source request **joins** it only when its declaration is already in
+  that draft, otherwise it refuses as stale until the work is admitted or discarded. A
+  contribution continues the granted request's draft. A browser **reject** discards the
+  exact draft only for the request that created it; rejecting a joined request never
+  discards. Restore retires the slot.
+- AC11a: a request made while another is pending refuses as stale; a request made after
+  a grant joins the granted draft only if it adds no declaration, else refuses as stale;
+  rejecting the creating request discards its draft, rejecting a joined request keeps it.
 
 B2 removes the two query dispatches from the adapter in the same candidate that removes
 the operations, and reports them as unsupported. B adds **no** workspace `sql`. The

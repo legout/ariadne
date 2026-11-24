@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from ariadne import admission, execution
+from ariadne import admission, draft, execution
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from lumio_wiki.source_references import (
@@ -308,6 +308,34 @@ def test_managed_s3_selection_binds_effective_target(tmp_path, monkeypatch):
         prepared_b = analytics.prepare_data_source(
             contributor,
             retry_key="request-managed-s3-b",
+            project="retail",
+            source="events_s3",
+            table="events",
+            business_questions=["Grant the changed effective S3 target exactly."],
+        )
+        assert prepared_b["status"] == "pending_source_approval"
+        assert prepared_b["native_candidate"] == prepared["native_candidate"]
+        # Draft rule v3: B is pending, so a third request refuses as stale; rejecting
+        # B (it only joined A's draft) leaves A's granted draft active and usable.
+        with pytest.raises(AnalyticsError, match="stale"):
+            analytics.prepare_data_source(
+                contributor,
+                retry_key="request-managed-s3-c",
+                project="retail",
+                source="events_s3",
+                table="events",
+                business_questions=["Blocked while B is pending."],
+            )
+        context_reject = review.get(reviewer, prepared_b["task_id"])
+        review.decide(reviewer, prepared_b["task_id"], context_reject.action_digest, "reject")
+        kept = draft.status(project)
+        assert kept is not None and kept["candidate_revision"] == prepared["native_candidate"]
+        assert draft.proposal_of(project, (kept["generation"], kept["candidate_revision"])) == (
+            prepared["native_proposal"]
+        )
+        prepared_b = analytics.prepare_data_source(
+            contributor,
+            retry_key="request-managed-s3-b2",
             project="retail",
             source="events_s3",
             table="events",
