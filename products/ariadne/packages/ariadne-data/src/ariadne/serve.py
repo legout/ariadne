@@ -1013,8 +1013,8 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
         @app.tool()
         @_tool_errors
         async def preview(
-            metric: str, dimensions: list[str] | None = None, filters: list[str] | None = None
-        ) -> dict:
+            metric: str, dimensions: list[str] | None = None, filters: list[dict] | None = None
+        ) -> dict | CallToolResult:
             """Run a metric from the ACTIVE DRAFT over exactly the granted source
             identities — governed:false, never stored. Refuses an ungranted, pending,
             stale or invalid draft before reading any source.
@@ -1022,11 +1022,20 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             Args:
                 metric: metric name or full identity in the draft.
                 dimensions: dimensions to group by.
-                filters: row filters.
+                filters: row filters, [{field, op, value}] as in query_metrics.
             """
             from ariadne import preview as preview_module
 
-            return preview_module.preview(authoring_api.project, metric, dimensions, filters)
+            try:
+                return preview_module.preview(
+                    authoring_api.project,
+                    metric,
+                    dimensions,
+                    filters,
+                    response_measure=_mcp_result_bytes,
+                )
+            except QueryResultError as exc:  # isError + refusal, as get_metric
+                return _refusal(exc)
 
         @app.tool()
         @_tool_errors

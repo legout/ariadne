@@ -614,7 +614,10 @@ def _effective_grant(
     approved_at = ""
     missing = []
     for entry in resolved or []:
-        covering = _covering(project, entry, _entry_bindings(entry))
+        try:
+            covering = _covering(project, entry, _entry_bindings(entry))
+        except SourceApprovalPending as exc:
+            raise SourceApprovalPending(f"{exc} (checking source {entry['name']!r})") from exc
         if covering is None:
             missing.append(entry["name"])
         else:

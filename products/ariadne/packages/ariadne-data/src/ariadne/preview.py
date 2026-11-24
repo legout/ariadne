@@ -20,7 +20,8 @@ def preview(
     project: str | Path,
     metric: str,
     dimensions: list[str] | None = None,
-    filters: list[str] | None = None,
+    filters: list[dict] | None = None,
+    response_measure=None,
 ) -> dict:
     project = Path(project).resolve()
     view = draft.status(project)
@@ -103,5 +104,7 @@ def preview(
         "served_revision": view["served_revision"],
     }
     query_results.account_rows(limits, result, bounded.rows)
-    query_results.finalize_response(limits, result)
+    query_results.finalize_response(limits, result, response_measure=response_measure)
+    if budget.expired():  # no complete answer after expiry, as in governed get_metric
+        raise query_results.deadline_refusal(budget.seconds)
     return result
