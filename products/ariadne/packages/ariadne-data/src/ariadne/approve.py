@@ -224,9 +224,16 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
             # after its removal failed or was interrupted: cleanup only, never "recovery pending"
             raise ApprovalRefused(
                 "not approved; an earlier source approval was rolled back (its files are restored "
-                "and its journal is gone) but the cleanup sync after the removal did not "
+                "and its journal is gone) but the cleanup after the removal did not "
                 f"complete — cleanup only. Nothing of this approval was changed. Cause: {cleanup}"
             ) from cleanup
+        except draft.RemovalUnconfirmed as unconfirmed:
+            raise ApprovalRefused(
+                "not approved; an earlier source approval was rolled back (its files are durably "
+                "restored) but whether its journal was removed could not be confirmed: reads stay "
+                "refused until it is — fix the cause and run 'ariadne draft status' to retry. "
+                f"Cause: {unconfirmed}"
+            ) from unconfirmed
         except draft.JournalRemnant as remnant:
             raise ApprovalRefused(
                 "not approved; an earlier source approval was rolled back (its files are restored) "
@@ -305,7 +312,14 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 except draft.RollbackCleanup as cleanup:
                     raise ApprovalRefused(
                         "not approved (all three files were restored and the journal is gone); "
-                        f"the cleanup sync after its removal did not complete. Cause: {cleanup}"
+                        f"the cleanup after its removal did not complete. Cause: {cleanup}"
+                    ) from failure
+                except draft.RemovalUnconfirmed as unconfirmed:
+                    raise ApprovalRefused(
+                        "not approved (all three files were durably restored), but whether the "
+                        "journal was removed could not be confirmed: reads stay refused until it "
+                        "is — fix the cause and run 'ariadne draft status' to retry. "
+                        f"Cause: {unconfirmed}"
                     ) from failure
                 except draft.JournalRemnant as remnant:
                     raise ApprovalRefused(

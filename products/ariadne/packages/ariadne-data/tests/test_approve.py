@@ -1296,7 +1296,7 @@ def test_an_interruption_in_a_cleanup_region_keeps_the_phase_outcome(tmp_path, m
 
         monkeypatch.setattr(Path, "unlink", unlink)
         monkeypatch.setattr(proposals, "_fsync_path", sync)
-        with pytest.raises(approve.ApprovalRefused, match="cleanup sync") as raised:
+        with pytest.raises(approve.ApprovalRefused, match="cleanup") as raised:
             _run(project, Tty())
         monkeypatch.undo()
         assert "recovery pending" not in str(raised.value)
@@ -1304,15 +1304,71 @@ def test_an_interruption_in_a_cleanup_region_keeps_the_phase_outcome(tmp_path, m
         assert _granted(project, result) is False
 
 
-@pytest.mark.parametrize("failure", [KeyboardInterrupt(), OSError("unlink sync failed")])
-def test_a_prior_journal_restored_then_interrupted_at_its_cleanup_is_cleanup_only(
-    tmp_path, monkeypatch, failure
+# The journal-removal cleanup after a durable restore: one protected region (unlink + sync), three
+# outcomes — definite absence (cleanup only), a remnant, an inspection failure (unconfirmed).
+_CLEANUP_FAULTS = [
+    ("unlink before its effect", KeyboardInterrupt(), "remnant", True),
+    ("unlink before its effect", OSError("unlink refused"), "remnant", True),
+    ("unlink after its effect", KeyboardInterrupt(), "cleanup only", False),
+    ("unlink after its effect", OSError("unlink reported failure"), "cleanup only", False),
+    ("sync after the unlink", KeyboardInterrupt(), "cleanup only", False),  # the boundary
+    ("sync after the unlink", OSError("unlink sync failed"), "cleanup only", False),
+    ("directory unreadable", None, "confirm", True),
+]
+
+
+def _restore_modes(project):
+    os.chmod(project / ".ariadne", 0o755)
+
+
+def _skip_if_root_for(where):
+    if where == "directory unreadable" and os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions")
+
+
+def _inject_cleanup_fault(monkeypatch, project, where, failure):
+    """Arm ONE fault in the journal-removal cleanup region (after the durable restore)."""
+    real_unlink, real_sync = Path.unlink, proposals._fsync_path
+    state = {"armed": False}
+
+    def unlink(self, *a, **k):
+        if self.name != "source_txn.json":
+            return real_unlink(self, *a, **k)
+        if where == "unlink before its effect":
+            raise failure
+        if where == "unlink after its effect":
+            real_unlink(self, *a, **k)
+            raise failure
+        if where == "directory unreadable":
+            # withdraw directory search permission for real: the unlink AND the inspection stat
+            # that follows both get EACCES (restored by the test through ``_restore_modes``)
+            os.chmod(self.parent, 0o000)
+            return real_unlink(self, *a, **k)
+        out = real_unlink(self, *a, **k)
+        state["armed"] = True
+        return out
+
+    def sync(path):
+        if where == "sync after the unlink" and state["armed"]:
+            state["armed"] = False
+            raise failure
+        return real_sync(path)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(proposals, "_fsync_path", sync)
+
+
+@pytest.mark.parametrize(("where", "failure", "expected", "journal_remains"), _CLEANUP_FAULTS)
+def test_a_prior_journal_restored_then_faulted_at_its_cleanup_is_classified_exactly(
+    tmp_path, monkeypatch, where, failure, expected, journal_remains
 ):
-    """Blocker 3: operator A leaves a journal; operator B, already at the prompt, consents and
-    recovers it. After A's journal was durably restored and removed, an interruption or an
-    OSError at the cleanup sync is CLEANUP ONLY: B's approval stops with that distinct message
-    (never "recovery pending"/"incomplete restore"), the journal is gone and no grant is
-    effective."""
+    """Operator A leaves a journal; operator B, already at the prompt, consents and recovers it.
+    After the durable restore every fault in the removal cleanup (an interruption or an OSError at
+    the unlink before/after its effect, at the sync after it, or an unreadable directory) is
+    cleanup only — never "recovery pending", "incomplete restore" or a false "gone": a vanished
+    journal is "cleanup only", a remaining one a "remnant", an uninspectable one "could not be
+    confirmed" with retry advice. The restored bytes/state are asserted in every case."""
+    _skip_if_root_for(where)
     project, _api, result = _project_with_new_source(tmp_path)
     before = _state_bytes(project)
     _fault(monkeypatch, project, "draft consume")
@@ -1323,33 +1379,55 @@ def test_a_prior_journal_restored_then_interrupted_at_its_cleanup_is_cleanup_onl
             with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
                 _run(project, Tty())
         assert (project / draft.TXN_REL).exists()
-        # B recovers A's journal after consent; the cleanup sync after its removal fails
-        real_sync, real_unlink = proposals._fsync_path, Path.unlink
-        state = {"armed": False}
+        _inject_cleanup_fault(monkeypatch, project, where, failure)
 
-        def unlink(self, *a, **k):
-            out = real_unlink(self, *a, **k)
-            if self.name == "source_txn.json":
-                state["armed"] = True
-            return out
-
-        def sync(path):
-            if state["armed"] and not (project / draft.TXN_REL).exists():
-                state["armed"] = False
-                raise failure
-            return real_sync(path)
-
-        monkeypatch.setattr(Path, "unlink", unlink)
-        monkeypatch.setattr(proposals, "_fsync_path", sync)
-
-    with pytest.raises(approve.ApprovalRefused, match="cleanup only") as raised:
-        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    try:
+        with pytest.raises(approve.ApprovalRefused, match=expected) as raised:
+            _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
+    finally:
+        _restore_modes(project)
     monkeypatch.undo()
-    assert "recovery pending" not in str(raised.value)
-    assert "incomplete" not in str(raised.value)
-    assert not (project / draft.TXN_REL).exists()  # the journal is gone
-    assert _state_bytes(project) == before  # restored durably
+    message = str(raised.value)
+    assert "recovery pending" not in message and "incomplete" not in message
+    if expected == "confirm":
+        assert "ariadne draft status" in message  # actionable retry advice
+        assert "is gone" not in message and "cleanup only" not in message
+    assert (project / draft.TXN_REL).exists() is journal_remains
+    assert _state_bytes(project) == before  # restored durably, byte for byte
     assert _granted(project, result) is False  # no grant is effective
+    if journal_remains:  # a retry (any draft operation) removes it
+        assert draft.status(project) is not None and not (project / draft.TXN_REL).exists()
+
+
+@pytest.mark.parametrize(("where", "failure", "expected", "journal_remains"), _CLEANUP_FAULTS)
+def test_the_draft_cli_keeps_every_cleanup_fault_inside_its_error_envelope(
+    tmp_path, monkeypatch, capsys, where, failure, expected, journal_remains
+):
+    """The same table through the draft CLI path (`ariadne draft status`): the recovery's
+    cleanup fault — including a KeyboardInterrupt at the unlink/sync boundary — ends as one JSON
+    error object and a non-zero exit, with the same classification; never an escaping traceback."""
+    from ariadne.cli import main as cli
+
+    _skip_if_root_for(where)
+    project, _api, result = _project_with_new_source(tmp_path)
+    before = _state_bytes(project)
+    draft.begin_source_txn(project)  # an interrupted approval's journal (nothing else changed)
+    _inject_cleanup_fault(monkeypatch, project, where, failure)
+    capsys.readouterr()
+    try:
+        code = cli(["draft", "status", "--json", "--project", str(project)])
+    finally:
+        _restore_modes(project)
+    err = json.loads(capsys.readouterr().err)["error"]
+    monkeypatch.undo()
+    assert code != 0
+    if expected == "confirm":
+        assert "could not confirm" in err["message"]
+    else:
+        assert "journal" in err["message"]
+    assert (project / draft.TXN_REL).exists() is journal_remains
+    assert _state_bytes(project) == before
+    assert _granted(project, result) is False
 
 
 def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, monkeypatch, capsys):
@@ -1393,43 +1471,3 @@ def test_a_release_already_serving_leaves_no_pending_draft_in_status(tmp_path, m
     assert (project / draft.DRAFT_REL).read_bytes() == slot_before  # status wrote nothing
     assert cli(["status", "--project", str(project)]) == 0
     assert "draft:" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("when", ["before its effect", "after its effect"])
-def test_a_prior_journal_interrupted_at_the_unlink_is_cleanup_only(tmp_path, monkeypatch, when):
-    """Finding 2: operator A leaves a journal; B consents and recovers it. After the durable
-    restore, Ctrl-C AT the journal unlink — before or after its filesystem effect — is cleanup
-    only: B's report never says "recovery pending" or "incomplete restore"; a journal that
-    remains is a remnant (reads stay refused), an unlink that took effect leaves it gone."""
-    project, _api, result = _project_with_new_source(tmp_path)
-    before = _state_bytes(project)
-    _fault(monkeypatch, project, "draft consume")
-
-    def operator_one_fails_and_leaves_a_journal():
-        with monkeypatch.context() as m:
-            m.setattr(draft, "_restore", lambda *_a, **_k: (_ for _ in ()).throw(OSError("stuck")))
-            with pytest.raises(approve.ApprovalRefused, match="recovery pending"):
-                _run(project, Tty())
-        assert (project / draft.TXN_REL).exists()
-        real_unlink = Path.unlink
-
-        def unlink(self, *a, **k):
-            if self.name == "source_txn.json":
-                if when == "before its effect":
-                    raise KeyboardInterrupt
-                real_unlink(self, *a, **k)
-                raise KeyboardInterrupt
-            return real_unlink(self, *a, **k)
-
-        monkeypatch.setattr(Path, "unlink", unlink)
-
-    expected = "remnant" if when == "before its effect" else "cleanup only"
-    with pytest.raises(approve.ApprovalRefused, match=expected) as raised:
-        _run(project, Tty(before_answer=operator_one_fails_and_leaves_a_journal))
-    monkeypatch.undo()
-    assert "recovery pending" not in str(raised.value)
-    assert "incomplete" not in str(raised.value)
-    assert _state_bytes(project)["grants"] == before["grants"]  # restored durably
-    assert _state_bytes(project)["slot"] == before["slot"]
-    assert _granted(project, result) is False
-    assert (project / draft.TXN_REL).exists() is (when == "before its effect")

@@ -553,6 +553,11 @@ class RollbackCleanup(OSError):
     removal failed or was interrupted: a failed approval with a cleanup note."""
 
 
+class RemovalUnconfirmed(OSError):
+    """All three files were durably restored, but whether the journal is still there could not be
+    determined (the inspection itself failed): neither "gone" nor "remnant" may be claimed."""
+
+
 class JournalRemnant(OSError):
     """All three files were restored and synced, but the journal could not be removed: the
     approval failed; reads stay refused until the remnant is removed."""
@@ -658,22 +663,25 @@ def rollback_source_txn(project: Path) -> None:
     _restore(project / BASELINE_REL, previous["baseline"])
     _restore(project / DRAFT_REL, previous["slot"])
     proposals._fsync_path(journal.parent)  # the three restored states are durable here
+    # ONE protected cleanup region for the unlink AND its directory sync: after the durable
+    # restore everything below is cleanup, classified by three outcomes
     try:
         journal.unlink()
+        proposals._fsync_path(journal.parent)
     except BaseException as exc:
-        # after the durable restore, ANY failure or interruption throughout the removal is
-        # cleanup only; distinguish a journal that REMAINS from an unlink that took effect
-        if journal.exists():
-            raise JournalRemnant(f"the journal could not be removed: {exc!r}") from exc
-        raise RollbackCleanup(
-            f"the journal removal was interrupted after it took effect: {exc!r}"
-        ) from exc
-    try:
-        proposals._fsync_path(journal.parent)  # deletion cleanup only
-    except BaseException as exc:  # an interruption here is still only cleanup of a done rollback
-        raise RollbackCleanup(
-            f"the cleanup sync after the journal removal failed: {exc!r}"
-        ) from exc
+        try:
+            os.lstat(journal)
+        except FileNotFoundError:
+            # definite absence: the removal took effect (only its sync/interruption failed)
+            raise RollbackCleanup(
+                f"the journal removal took effect; the cleanup did not complete: {exc!r}"
+            ) from exc
+        except OSError as inspection:
+            raise RemovalUnconfirmed(
+                f"could not confirm whether the journal was removed ({inspection!r}); first "
+                f"failure: {exc!r}"
+            ) from exc
+        raise JournalRemnant(f"the journal could not be removed: {exc!r}") from exc
 
 
 def recover(project: Path) -> None:

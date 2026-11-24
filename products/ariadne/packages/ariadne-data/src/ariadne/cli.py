@@ -408,6 +408,22 @@ def main(argv: list[str] | None = None, stdin: Any = None) -> int:
     except QueryResultError as exc:
         print(json.dumps(exc.refusal(), default=_json_default), file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        # an interruption of a draft command (e.g. in the cleanup region of a recovery) stays in
+        # the error envelope: one JSON error object, non-zero exit
+        print(
+            json.dumps(
+                {
+                    "error": {
+                        "type": "KeyboardInterrupt",
+                        "message": "interrupted — rerun the command; "
+                        "'ariadne draft status' finishes any pending recovery",
+                    }
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 130
     except Exception as exc:  # one JSON error object, message verbatim
         error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, PlannerError):
