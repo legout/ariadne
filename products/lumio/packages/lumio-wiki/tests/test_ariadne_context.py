@@ -28,6 +28,7 @@ import shutil
 import subprocess
 from datetime import date
 from pathlib import Path
+from typing import Any, cast
 
 import msgspec
 import pytest
@@ -376,7 +377,7 @@ def test_ariadne_context_journey(tmp_path):
     with pytest.raises(TypeError):
         policy.native["verified"][0]["by"] = "x"
     with pytest.raises(TypeError):
-        policy.sources[0] = policy.sources[0]  # tuple refuses item assignment
+        cast(Any, policy.sources)[0] = policy.sources[0]  # tuple refuses item assignment
 
     reference = next(view for view in context.pages if view.entity_id == "entity:order-number")
     assert reference.content == (FIXTURE / "references/order-number.md").read_bytes().decode()
@@ -1611,6 +1612,7 @@ def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch,
         else:
             prefix = "prepared" if prepared else "admitted"
             target = f"s3://test-bucket/{prefix}"
+            assert store is not None
             s3_location = S3Location(store, prefix, store_uri="s3://test-bucket")
             private_store = prepared_metadata if prepared else metadata
         review = preview_publication(
@@ -1641,6 +1643,7 @@ def test_admission_rejects_foreign_source_subtree_binding(tmp_path, monkeypatch,
             location = PublishedFilesystemLocation(target, version=revision)
         else:
             prefix = "prepared" if prepared else "admitted"
+            assert store is not None
             raw = _get_bytes(store, f"{prefix}/{revision}/manifest.json")
             location = S3Location(store, prefix, version=revision, store_uri="s3://test-bucket")
         manifest = msgspec.json.decode(raw, type=S3Manifest)
@@ -1846,7 +1849,9 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
         read_published_context_page(PublishedFilesystemLocation(destination), expected, aurora_path)
     with pytest.raises(UnadmittedInputError):
         search_published_context_pages(
-            S3Location(InMemoryArtifactStore(), "kb", version=revision), expected, "zephyr"
+            S3Location(cast(Any, InMemoryArtifactStore()), "kb", version=revision),
+            expected,
+            "zephyr",
         )
 
     # --- List: exactly A+B metadata sorted by exact relative path, no bodies. ---
@@ -1866,7 +1871,7 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     assert policy_meta.review_after is None  # absent advisory fact stays absent
     assert all(not hasattr(meta, "body") and not hasattr(meta, "content") for meta in metas)
     with pytest.raises((TypeError, AttributeError)):  # records are immutable
-        metas[0].title = "X"
+        cast(Any, metas[0]).title = "X"
 
     # --- Read: one byte-exact canonical page with immutable identity. ---
     aurora = read_published_context_page(pinned, expected, aurora_path)
@@ -1927,6 +1932,7 @@ def test_scoped_published_navigation_includes_ordinary_pages(tmp_path):
     assert tuple(halcyon_hit.matched_terms) == ("halcyon",)
     assert halcyon_hit.excerpt == '  - "\\u0068alcyon"'
     assert (halcyon_hit.line_start, halcyon_hit.line_end) == (8, 8)
+    assert halcyon_hit.line_start is not None
     assert halcyon_hit.line_start < aurora.body_start_line
     assert halcyon_hit.section is None
     assert halcyon_hit.candidates_seen == 1 and halcyon_hit.results_dropped == 0

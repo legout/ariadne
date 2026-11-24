@@ -142,7 +142,9 @@ def serialize_graph(
         },
         "edge_count": state.edge_count,
     }
-    return msgpack.packb(payload, use_bin_type=True)
+    packed = msgpack.packb(payload, use_bin_type=True)
+    assert packed is not None  # packb returns None only when autoreset is off
+    return packed
 
 
 def _decode_edge(values: dict[str, object]) -> GraphEdge | None:

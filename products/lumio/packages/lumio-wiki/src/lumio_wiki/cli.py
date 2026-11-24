@@ -39,7 +39,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext, redirect_stdout, suppress
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
@@ -3906,30 +3906,34 @@ def _cmd_source_bootstrap(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
         return 0
     if command == "export":
-        print(f"Exported Source Baseline Snapshot: {result.output_path}")
-        print(f"  namespace:          {result.namespace}")
-        print(f"  revision:           {result.revision}")
-        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
-        print(f"  snapshot sha256:    {result.snapshot_sha256}")
+        exported = cast(BaselineExport, result)
+        print(f"Exported Source Baseline Snapshot: {exported.output_path}")
+        print(f"  namespace:          {exported.namespace}")
+        print(f"  revision:           {exported.revision}")
+        print(f"  bindings/versions:  {exported.binding_count}/{exported.version_count}")
+        print(f"  snapshot sha256:    {exported.snapshot_sha256}")
         print("Share the digest out-of-band; the snapshot carries no original bytes.")
     elif command == "inspect":
-        print("Baseline preview: ready" if result.ready else "Baseline preview: BLOCKED")
-        for blocker in result.blockers:
+        preview = cast(BaselinePreview, result)
+        print("Baseline preview: ready" if preview.ready else "Baseline preview: BLOCKED")
+        for blocker in preview.blockers:
             print(f"  blocker: {blocker}")
-        print(f"  namespace:          {result.namespace}")
-        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
-        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print(f"  namespace:          {preview.namespace}")
+        print(f"  versions to add/reuse: {preview.versions_to_add}/{preview.versions_to_reuse}")
+        print(f"  Confirmation digest: {preview.confirmation_digest}")
         print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
-    elif result.status == "preview":
+    elif cast(BaselineImport, result).status == "preview":
+        imported = cast(BaselineImport, result)
         print("Baseline import preview (no changes were made).")
-        for blocker in result.blockers:
+        for blocker in imported.blockers:
             print(f"  blocker: {blocker}")
-        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print(f"  Confirmation digest: {imported.confirmation_digest}")
         print("Re-run with --confirm <preview-digest> to import.")
     else:
-        print(f"Imported baseline metadata for revision {result.revision}.")
-        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
-        print(f"  provenance records: {result.provenance_records}")
+        imported = cast(BaselineImport, result)
+        print(f"Imported baseline metadata for revision {imported.revision}.")
+        print(f"  versions added/reused: {imported.versions_added}/{imported.versions_reused}")
+        print(f"  provenance records: {imported.provenance_records}")
         print("No original bytes were transferred or marked available.")
     return 0
 
@@ -4048,33 +4052,37 @@ def _cmd_source_handoff(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, **msgspec.to_builtins(result)}))
         return 0
     if command == "export":
-        print(f"Exported Source Handoff Bundle: {result.output_path}")
-        print(f"  namespace:          {result.namespace}")
-        print(f"  base/contribution:  {result.base_revision}/{result.revision}")
-        print(f"  bindings/versions:  {result.binding_count}/{result.version_count}")
-        print(f"  unique payloads:    {result.payload_count}")
-        print(f"  bundle sha256:      {result.bundle_sha256}")
+        exported = cast(HandoffExport, result)
+        print(f"Exported Source Handoff Bundle: {exported.output_path}")
+        print(f"  namespace:          {exported.namespace}")
+        print(f"  base/contribution:  {exported.base_revision}/{exported.revision}")
+        print(f"  bindings/versions:  {exported.binding_count}/{exported.version_count}")
+        print(f"  unique payloads:    {exported.payload_count}")
+        print(f"  bundle sha256:      {exported.bundle_sha256}")
         print("Share the digest out-of-band; the bundle stays private.")
     elif command == "inspect":
-        print("Handoff preview: ready" if result.ready else "Handoff preview: BLOCKED")
-        for blocker in result.blockers:
+        preview = cast(HandoffPreview, result)
+        print("Handoff preview: ready" if preview.ready else "Handoff preview: BLOCKED")
+        for blocker in preview.blockers:
             print(f"  blocker: {blocker}")
-        print(f"  namespace:          {result.namespace}")
-        print(f"  versions to add/reuse: {result.versions_to_add}/{result.versions_to_reuse}")
-        print(f"  artifacts to retain: {result.artifacts_to_retain}")
-        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print(f"  namespace:          {preview.namespace}")
+        print(f"  versions to add/reuse: {preview.versions_to_add}/{preview.versions_to_reuse}")
+        print(f"  artifacts to retain: {preview.artifacts_to_retain}")
+        print(f"  Confirmation digest: {preview.confirmation_digest}")
         print("Preview is read-only and grants no approval; confirmation binds this exact preview.")
-    elif result.status == "preview":
+    elif cast(HandoffImport, result).status == "preview":
+        imported = cast(HandoffImport, result)
         print("Handoff import preview (no changes were made).")
-        for blocker in result.blockers:
+        for blocker in imported.blockers:
             print(f"  blocker: {blocker}")
-        print(f"  Confirmation digest: {result.confirmation_digest}")
+        print(f"  Confirmation digest: {imported.confirmation_digest}")
         print("Re-run with --confirm <preview-digest> to import.")
     else:
-        print(f"Imported handoff for revision {result.revision}.")
-        print(f"  versions added/reused: {result.versions_added}/{result.versions_reused}")
-        print(f"  artifacts retained: {result.artifacts_retained}")
-        print(f"  provenance records: {result.provenance_records}")
+        imported = cast(HandoffImport, result)
+        print(f"Imported handoff for revision {imported.revision}.")
+        print(f"  versions added/reused: {imported.versions_added}/{imported.versions_reused}")
+        print(f"  artifacts retained: {imported.artifacts_retained}")
+        print(f"  provenance records: {imported.provenance_records}")
         print("Import retains verified originals additively; it grants no publication approval.")
     return 0
 

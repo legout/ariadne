@@ -21,11 +21,13 @@ oversized cell or continuing read crosses it.
 """
 
 import asyncio
+import io
 import json
 import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -723,10 +725,15 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert instance._measure is None  # not yet: direct construction has no transport
         app = build_app(instance, toolset="analyst")
         result = asyncio.run(app.call_tool("get_metric", {"name": "plain_total"}))
-        from mcp.types import CallToolResult  # pyright: ignore[reportMissingImports] — [mcp] extra
+        from mcp.types import (  # pyright: ignore[reportMissingImports] — [mcp] extra
+            CallToolResult,
+            TextContent,
+        )
 
         assert isinstance(result, CallToolResult) and not result.is_error
-        assert json.loads(result.content[0].text)["rows"]  # pyright: ignore[reportAttributeAccessIssue] == [{"plain_total": 60.0}]
+        assert json.loads(cast(TextContent, result.content[0]).text)["rows"] == [
+            {"plain_total": 60.0}
+        ]
         assert instance._measure is _mcp_result_bytes  # installed at the seam
         factory_built = make_runtime(served)
         app2 = build_app(lambda: factory_built, toolset="analyst")
@@ -821,7 +828,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(cli.QueryRuntime, "open_project", lambda *args, **kwargs: runtime)
         capsys.readouterr()
         code = cli.main(
-            ["query", "total", "--project", str(project)],
+            ["get-metric", "total", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         captured = capsys.readouterr()
         assert code == 1
@@ -836,7 +844,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         runtime.message = "small verbatim failure"
         capsys.readouterr()
         code = cli.main(
-            ["query", "total", "--project", str(project)],
+            ["get-metric", "total", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         assert code == 1
         assert json.loads(capsys.readouterr().err)["error"]["message"] == "small verbatim failure"
@@ -902,7 +911,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         registry.write_text(original_registry + "\nquery:\n  max_rows: 2\n", encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["query", "event_count", "--by", "label", "--json", "--project", str(project)],
+            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         captured = capsys.readouterr()
         assert code == 1
@@ -919,7 +929,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         registry.write_text(original_registry, encoding="utf-8")
         capsys.readouterr()
         code = cli.main(
-            ["query", "event_count", "--by", "label", "--json", "--project", str(project)],
+            ["get-metric", "event_count", "--dimension", "label", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         assert code == 0
         # row order is not part of the contract (no ORDER BY in the compiled
@@ -1100,7 +1111,8 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         assert admit(project, review) == 0
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(
-            ["query", "event_count", "--project", str(project)],
+            ["get-metric", "event_count", "--project", str(project)],
+            stdin=io.StringIO(""),
         )
         assert code == 1
         refusal = json.loads(capsys.readouterr().err)

@@ -1518,6 +1518,7 @@ def test_review_preserves_native_verified_metadata(tmp_path, capsys):
         loaded, report = load_knowledge_base(kb)
         assert report.is_valid, report
         page = next(p for p in loaded.pages if p.path == "concepts/hydraulic-press.md")
+        assert page.ariadne_profile is not None
         assert page.ariadne_profile.native["verified"] == [expected]
 
     def base_mutate(repo, kb):
@@ -1597,6 +1598,7 @@ def test_review_distinguishes_native_verified_date_from_string(tmp_path, capsys)
         loaded, report = load_knowledge_base(kb)
         assert report.is_valid, report
         page = next(p for p in loaded.pages if p.path == "concepts/hydraulic-press.md")
+        assert page.ariadne_profile is not None
         (entry,) = page.ariadne_profile.native["verified"]
         assert type(entry[True]) is expected_type
         assert entry == {"by": "human:alice", True: expected_on, "evidence": evidence}
@@ -1657,6 +1659,7 @@ def test_review_distinguishes_native_verified_date_from_string(tmp_path, capsys)
 @pytest.mark.parametrize("list_case", ["aliases_comma_item", "tags_comma_item"])
 def test_review_distinguishes_alias_tag_lists(list_case, tmp_path, capsys):
     """F3 lists: native values compared before rendering; unambiguous items."""
+    base_block = candidate_block = ""  # only the aliases case uses the blocks
     if list_case == "aliases_comma_item":
         field = "aliases"
         base_block = 'aliases:\n  - "Alpha, Beta"\n'

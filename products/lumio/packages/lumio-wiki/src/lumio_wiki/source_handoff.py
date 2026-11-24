@@ -32,7 +32,7 @@ import tarfile
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
@@ -612,7 +612,7 @@ def export_source_baseline(
         _BaselineVersion(
             source_id=source_id,
             content_hash=content_hash,
-            size=version.size,
+            size=cast(int, version.size),  # checked non-None when collected above
             content_type=version.content_type,
             filename=version.filename,
             origin_created_at=version.created_at,
@@ -1961,7 +1961,7 @@ def export_source_handoff(
         _HandoffVersion(
             source_id=source_id,
             content_hash=content_hash,
-            size=versions_by_key[(source_id, content_hash)].size,
+            size=cast(int, versions_by_key[(source_id, content_hash)].size),
             content_type=versions_by_key[(source_id, content_hash)].content_type,
             filename=versions_by_key[(source_id, content_hash)].filename,
             origin_created_at=versions_by_key[(source_id, content_hash)].created_at,

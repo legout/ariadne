@@ -7,6 +7,8 @@ distribution in miniature so this lane validates standalone; one integration
 test runs the real seeder once lane #2 merges.
 """
 
+import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -125,9 +127,9 @@ def demo_db(tmp_path):
 
 def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
     path = tmp_path / "events.parquet"
-    relation = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
-    assert relation is not None
-    relation.write_parquet(str(path))
+    sample = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
+    assert sample is not None
+    sample.write_parquet(str(path))
     registry = tmp_path / "ariadne.yaml"
     registry.write_text(
         yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),
@@ -144,9 +146,9 @@ def test_bounded_registry_profile_uses_only_sample_rows(tmp_path):
 
 def _selector_registry(tmp_path: Path) -> Path:
     path = tmp_path / "events.parquet"
-    relation = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
-    assert relation is not None
-    relation.write_parquet(str(path))
+    sample = duckdb.sql("SELECT i AS id, i % 2 AS category FROM range(20) t(i)")
+    assert sample is not None
+    sample.write_parquet(str(path))
     registry = tmp_path / "selector.yaml"
     registry.write_text(
         yaml.safe_dump({"sources": [{"name": "events", "type": "parquet", "path": str(path)}]}),
@@ -214,6 +216,39 @@ def test_null_spike_surfaces(demo_db):
     col = profile(demo_db)["tables"]["orders"]["columns"]["discount"]
     assert col["null_count"] == 12
     assert col["null_ratio"] == 0.5
+
+
+def test_cli_writes_profile_json(demo_db, tmp_path):
+    out = tmp_path / "profile.json"
+    # cwd=tmp_path: the repo's own ariadne.yaml (which declares sources) must
+    # not hijack an explicit --db run; PYTHONPATH keeps ariadne importable.
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
+    result = subprocess.run(
+        [sys.executable, "-m", "ariadne.profiler", "--db", str(demo_db), "--out", str(out)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    written = json.loads(out.read_text())
+    assert json.loads(result.stdout) == written  # stdout and file agree
+    assert written["tables"]["orders"]["columns"]["currency"]["top_value_share"] >= 0.8
+
+
+def test_cli_explicit_db_beats_ambient_registry(tmp_path, demo_db, monkeypatch, capsys):
+    """With an ambient ./ariadne.yaml present, an explicit --db still wins: the
+    registry applies only when NEITHER --sources nor --db is given."""
+    import ariadne.profiler as profiler_module
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ariadne.yaml").write_text(
+        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
+        encoding="utf-8",
+    )
+    profiler_module.main(["--db", str(demo_db), "--out", str(tmp_path / "p.json"), "--no-out"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["db_path"] == str(demo_db)  # legacy shape: --db won, registry ignored
 
 
 def _seed_real_demo_db(tmp_path):

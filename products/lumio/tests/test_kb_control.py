@@ -267,6 +267,7 @@ def test_absent_categories_falls_back_to_seed(tmp_path):
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
+    assert kb.control is not None
     assert [c.name for c in kb.control.categories] == [c.name for c in SEED_CATEGORY_CATALOG]
 
 
@@ -281,6 +282,7 @@ def test_empty_categories_falls_back_to_seed(tmp_path):
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
+    assert kb.control is not None
     assert [c.name for c in kb.control.categories] == [c.name for c in SEED_CATEGORY_CATALOG]
 
 
@@ -868,6 +870,7 @@ def test_declared_non_seed_categories_load_and_validate_clean(tmp_path):
     )
     kb, report = load_knowledge_base(root)
     assert report.is_valid, [i.message for i in report.issues]
+    assert kb.control is not None
     assert [c.name for c in kb.control.categories] == [
         "projects",
         "journal",
@@ -1002,6 +1005,7 @@ def test_categories_never_auto_created_from_content(tmp_path):
     kb, report = load_knowledge_base(root)
     assert not report.is_valid
     # The catalog still carries only ``concepts`` — never auto-extended.
+    assert kb.control is not None
     assert [c.name for c in kb.control.categories] == ["concepts"]
 
 

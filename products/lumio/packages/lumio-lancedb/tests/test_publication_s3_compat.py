@@ -446,6 +446,7 @@ def test_s3_compat_publish_builds_graph_projections_and_reader_parity(kb):
         EXTRACTOR_VERSION,
     )
     assert loaded == zero_index
+    assert loaded is not None
     assert loaded.edge_count == 1  # the fixture's single accepted Claim
 
     # Stale/mismatched fingerprint: disclosed fallback, never a raise.

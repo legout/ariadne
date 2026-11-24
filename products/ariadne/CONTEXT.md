@@ -101,8 +101,16 @@ _Avoid_: joined fact rows
 ### Authoring workflow
 
 **Authoring Agent**:
-The agent that profiles a database and drafts Context Layer and Semantic Layer artifacts from statistical profiles and documentation.
+An optional host agent that interprets profiles and domain evidence to propose Context Layer and Semantic Layer changes. It is not needed to produce a Deterministic Draft and cannot grant access or approve a calculation.
 _Avoid_: generator
+
+**Deterministic Draft**:
+A reproducible set of proposed model and knowledge edits derived from measured source profiles and the authored baseline. It is neither business-meaning confirmation nor admission.
+_Avoid_: generated truth
+
+**Enrichment**:
+Optional model suggestions about how to describe data or define metrics. It uses separately authorized inputs and grants no authority to the suggestions.
+_Avoid_: automatic approval
 
 **Authoring Proposal**:
 A proposed change to the project's authored artifacts, including source declarations, Seed Notes, Semantic Layer, Context Layer, Data Contracts, Contract Bindings and explicitly saved Answer Examples, based on an identified artifact revision and awaiting human review. It is distinct from served state and from the legacy ad-hoc Proposal.
@@ -137,7 +145,7 @@ The intake of a source document whose converted wording is retained rather than 
 _Avoid_: automatic approval, lossless binary conversion, policy extraction
 
 **Seed Notes**:
-The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; an input to the Authoring Agent alongside the statistical profile. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
+The human-owned data dictionary (`data/seed_notes.md`) carrying business rules that statistics cannot derive; a possible input to an Authoring Agent or to explicitly authorized Enrichment. It may be drafted by a harness from domain evidence, but its rules become authoritative only after human approval.
 _Avoid_: hints file
 
 **Business Onboarding**:
@@ -197,12 +205,20 @@ A legacy persisted Ad-hoc Metric definition awaiting its former human review rou
 _Avoid_: draft, candidate file
 
 **Answer Example**:
-An explicitly submitted knowledge page recording a question, intended meaning, used query method and bounded historical answer in the project's Lumio Knowledge Base. Review approves it as a reusable reference, not a Policy, governed definition or answer cache.
+An explicitly submitted knowledge page recording a question, intended meaning, ad-hoc SQL method (or a legacy method) and bounded historical answer in the project's Lumio Knowledge Base. Review approves it as a reusable reference, not a Policy, governed definition or answer cache.
 _Avoid_: query snippet, cached answer
 
 **SQL Provenance**:
 The historical SQL text retained from the submitted result of an Answer Example. It is evidence of what was submitted, not an executable reuse method or authenticated proof that a computation ran.
 _Avoid_: saved query, execution proof, query history
+
+**SQL-to-Metric Draft**:
+A proposed dataset-scoped measure extracted from a representable ad-hoc query, without inheriting source, join or approval authority from the submitted SQL.
+_Avoid_: Promotion, governed metric
+
+**Gap Report**:
+A read-only summary of recurring normalized ad-hoc SQL shapes. It indicates possible authoring work, not recurring business intent or proven metric coverage.
+_Avoid_: question history
 
 ### Context Layer knowledge
 

@@ -1,10 +1,19 @@
 # Specification 0040: One CLI, simple governance, guarded ad-hoc SQL (B1 + B2)
 
-**Status:** owner-approved, revision 3, 2026-11-22 ("freigabe" after presentation of r3). Approval authorizes the B1 plan and supervised B1 execution in an isolated candidate; integration/publication still need the owner. The r2 recheck
+**Status:** owner-approved revision 3, with scoped owner decisions recorded below.
+
+Revision 3 was approved 2026-11-22 ("freigabe" after presentation of r3). Approval
+covers the B1 plan and supervised B1 execution in an isolated candidate;
+integration and publication still need the owner. The r2 recheck
 (`s0040-review/recheck.md`) returned five bounded clarifications, all incorporated in
 r3: a source grant is separate from release activation, the workspace callers, the r4
 upgrade outcome, log refusals carry no text, and the warning example. This is sub-spec B of the
 [approved umbrella spec 0037 r2](2026-11-18-0037-simple-ariadne.md).
+
+**Scoped owner decisions, 2026-11-24 (0041 review):** §3.6 allows preview over
+exact granted draft identities before calculation approval; §4.4 makes exact Example
+SQL opt-in. These amendments do not change governed query or ad-hoc source bindings,
+or grant new execution or integration authority.
 
 Revision 1 received a design review from `openai-codex/gpt-6.2-sol`, and the verdict
 was "revise first". The review is stored at
@@ -125,10 +134,11 @@ sources with `governed:false` and state what the answer rests on.
 
    - `discover`, `list_metrics`, `search_context`, `list_context_pages`,
      `read_context_page`, `get_metric`, `list_datasets`, `query_metrics`, `query_detail`,
-     `save_example`, `search_examples`;
+     `save_example`, `search_examples`, `resolve_term`;
    - authoring: `authoring_read_artifact`, `authoring_edit_proposal` (now acting on the
      active draft without IDs), `authoring_inputs`, `authoring_refresh_schema`,
-     `authoring_inspect_mapping`.
+     `authoring_inspect_mapping`, `authoring_resolve_term` (also on the active draft,
+     without a proposal ID).
 
    B1 **adds** `draft_status` and `preview`. B1 **removes** `authoring_propose_sources`;
    agents propose a source by writing the same typed source edit through
@@ -141,7 +151,11 @@ sources with `governed:false` and state what the answer rests on.
    prompts once and sets a repository-local identity. With `--yes` and no identity, it
    refuses and prints the exact `git config` commands.
 2. It generates a random `urn:uuid` namespace and writes the private profile to
-   `~/.config/ariadne/<uuid>.json`. The profile is mode 0600 and holds:
+   `~/.config/ariadne/<uuid>.json` (the Lumio private-profile schema, unchanged), plus
+   an Ariadne-owned sibling `~/.config/ariadne/<uuid>.ariadne.json`. Both are mode 0600,
+   created atomically; the sibling has a strict schema, and both paths are recorded under
+   `.ariadne/`. (Clarified during B1 execution on 2026-11-22: the Lumio SDK profile
+   refuses unknown keys, and B makes no SDK change.) The Ariadne sibling holds:
    - the publication destination (default `~/.local/share/ariadne/published/<uuid>/`);
    - the default Visibility Scope `public`;
    - the run-log settings.
@@ -306,14 +320,15 @@ sources with `governed:false` and state what the answer rests on.
    generation**. They use the governed compiler, grain and fan-out guard, deadlines and
    caps.
 2. **Sources and identity.**
-   - The connection is built only from source identities bound by the **current served
-     approval**, and sealed with `lock_down`.
-   - Every dataset source the compiled SQL consumes must resolve to such an identity.
-     A draft dataset over a source that is new or changed in the draft refuses, and
-     names the source.
-   - A same-named table from an older destination is never used.
-   - Before binding, the actual compiled SQL is authorized against the approved
-     registry with the same pre-bind check validation uses (spec 0039).
+   - Use the source bindings of the exact draft revision. Every identity consumed must
+     be granted under §3.4.4 and the connection is sealed with `lock_down`. A completed
+     source grant is sufficient even if that identity is not yet served.
+   - Refuse and name the source before opening it if the exact draft identity is not
+     granted, cannot be matched to its effective destination, or depends on a pending
+     approval (§3.4.2). Never substitute the old same-named served source.
+   - Before binding, authorize the actual compiled SQL against the granted draft
+     registry with the same pre-bind check validation uses (spec 0039). Preview does
+     not alter the served release or widen workspace per-caller permissions (§3.7).
 3. The result carries `governed:false`, `draft_generation`, `draft_revision` and
    `served_revision`. It is never stored as an Answer Example and never cached.
 4. A draft that does not validate, or a stale draft, refuses with the reasons.
@@ -474,7 +489,9 @@ not a warning.
    - relationships with cardinality;
    - filter rules and required Policies, as advisory;
    - approved metrics that nearly match, with their identities;
-   - the most relevant Answer Examples with their SQL.
+   - the most relevant in-scope Answer Example summaries. Exact saved SQL is returned
+     only with CLI `--include-sql` or MCP `include_sql=true` (default false). This
+     neither widens visibility nor includes history; absent SQL is not recorded.
 2. It reads only the served release and its published knowledge. It never profiles or
    opens a source to fill a gap.
 3. It carries the `served_revision` it used. `context` and a later `sql` may use
@@ -517,7 +534,9 @@ not a warning.
    - Retention is 90 days (`run_log.retention_days` in the private profile). Old rows
      are deleted on the first write of each day. Deletion is not a secure-erase promise.
    - `run_log.enabled: false` stops all writes.
-6. The log is runtime state. Nothing reads it to change retrieval, models or examples.
+6. The log is runtime state and never changes retrieval, models or examples by
+   itself. C may read it on an explicit `gaps` or `promote --last` invocation; only
+   `promote` can propose a calculation draft (0041), never serve it.
 
 ### 4.6 Removals in B2
 
@@ -592,8 +611,9 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
    - A conflicting rebase leaves the draft exactly as before and names the files.
    - A discarded draft is never resurrected.
 9. **Preview isolation.** `preview` of an edited metric returns `governed:false` with
-   the draft revision, while `query` keeps serving the old definition. Preview over a
-   dataset whose source is new in the draft refuses.
+   the draft revision, while `query` keeps serving the old definition. Preview refuses
+   an ungranted new or changed identity without reading it, then succeeds after its
+   exact source grant without serving the new definition.
 10. **Migrated admission guarantees** hold through `approve`:
     - exact-revision binding;
     - stale or edited revision refusal;
@@ -667,8 +687,9 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
     comments. The file mode is 0600. When the log is unavailable, the query result is
     still returned with `run_log: unavailable`.
 18. **Context pack.** `ariadne context` returns a pack within budget with the relevant
-    dataset, relationship, observed values marked with their age, and an Answer Example
-    with SQL. Omissions are disclosed. No source is opened.
+    dataset, relationship, observed values marked with their age, and an authorized
+    Answer Example. Exact SQL is absent by default and present on explicit opt-in.
+    Omissions are disclosed. No source is opened.
 19. **Revision-4 upgrade.** An existing revision-4 project with a Policy Binding on
     `define_metric`, after installing the B2 build:
     - `status` names the build-identity refusal, and governed queries refuse with it;
@@ -688,12 +709,11 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
     B3 amends them.
   - **ADR-0030 "Guarded ad-hoc SQL over a supported subset"** supersedes ADR-0005 and
     ADR-0019. It amends spec 0032's operation table through `support_revision` 5.
-- **Superseded clauses** (one-line headers on the affected sections, with no rewriting
-  of history):
-  - umbrella 0037 §1 "four commands" and §4 B's first-source preview-before-approval
-    (replaced by §3.4 here);
-  - umbrella 0037 §4 B run log: "stores … question" and "SQL" (replaced by §4.5
-    here);
+- **Reconciled umbrella clauses:** 0037's first preview now follows the source grant
+  and precedes calculation approval (§3.4, §3.6); its run log and Example SQL rules
+  follow §4.5 and §4.4.
+- **Other superseded clauses** (one-line headers on the affected sections, with no
+  rewriting of history):
   - 0037 §4 B "tier K" (moved to the B3 spec);
   - spec 0039 §7.1 "migrate opens its own proposal" (now the active draft);
   - specs 0009, 0014, 0027 and 0032 in their CLI, ad-hoc and record parts;
