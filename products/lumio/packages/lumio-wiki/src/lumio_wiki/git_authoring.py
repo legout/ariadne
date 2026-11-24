@@ -214,12 +214,28 @@ def resolve_repository(kb_root: str | Path) -> tuple[Path, str]:
     root = Path(kb_root).resolve()
     if not root.is_dir():
         raise GitAuthoringError(f"Knowledge Base root is not a directory: {root}")
-    bare = _git(root, "rev-parse", "--is-bare-repository").decode().strip()
+    args = ("rev-parse", "--is-bare-repository", "--show-toplevel")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as exc:  # pragma: no cover - environment-dependent
+        raise GitAuthoringError(
+            "the Git executable is required for Git-native authoring but was not found"
+        ) from exc
+    # One spawn answers both questions: Git prints ``true`` before its
+    # ``--show-toplevel`` die() in a bare repository (exit flushes stdio).
+    bare, _, toplevel_text = result.stdout.decode().partition("\n")
     if bare == "true":
         raise GitAuthoringError(
             "a bare repository cannot be an authoring worktree; select a registered branch worktree"
         )
-    toplevel = Path(_git(root, "rev-parse", "--show-toplevel").decode().strip())
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise GitAuthoringError(f"git {' '.join(args)} failed: {detail}")
+    toplevel = Path(toplevel_text.strip())
     if toplevel.resolve() != root and not root.is_relative_to(toplevel.resolve()):
         raise GitAuthoringError(
             f"Knowledge Base root {root} is outside its Git repository {toplevel}"
