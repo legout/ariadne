@@ -1375,6 +1375,29 @@ def test_f1_ingest_requires_a_git_worktree(tmp_path):
     assert not (plain / "concepts" / "workbench_press.md").exists()
 
 
+def test_resolve_repository_pins_worktree_root_subdirectory_bare_and_nonrepo(tmp_path):
+    from lumio_wiki.git_authoring import resolve_repository
+
+    repo = _init_repo(tmp_path)
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "init")
+    kb = repo / "kb"
+    kb.mkdir()
+    worktree = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", str(worktree), "-b", "linked")
+    _git(repo, "clone", "-q", "--bare", str(repo), str(tmp_path / "bare.git"))
+    plain = tmp_path / "plain"
+    plain.mkdir()
+
+    # Expected roots are the paths this test created, never Git's own output.
+    assert resolve_repository(worktree) == (worktree.resolve(), "")
+    assert resolve_repository(repo) == (repo.resolve(), "")
+    assert resolve_repository(kb) == (repo.resolve(), "kb")
+    with pytest.raises(GitAuthoringError, match="bare repository cannot be an authoring worktree"):
+        resolve_repository(tmp_path / "bare.git")
+    with pytest.raises(GitAuthoringError, match="not a git repository"):
+        resolve_repository(plain)
+
+
 def test_f2_obsolete_branch_requires_git_reconciliation(tmp_path):
     repo = _init_repo(tmp_path)
     kb = _write_kb(repo)
