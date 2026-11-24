@@ -953,9 +953,18 @@ def test_stdio_server_holds_a_real_sigint_in_the_cleanup_window_then_shuts_down(
                 await session.initialize()
                 result = await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=60)
                 text = "".join(getattr(block, "text", "") for block in result.content)
-                return text, None
+                # after the typed result the held interrupt is handed to the server's own handler
+                # (after a short grace): the server shuts down as designed, so a LATER call is
+                # no longer served
+                await asyncio.sleep(3)
+                try:
+                    await asyncio.wait_for(session.call_tool("draft_status", {}), timeout=10)
+                    return text, 0  # still serving: the held interrupt was lost
+                except Exception:  # closed stream / cancelled / timeout: the server went down
+                    return text, 1
 
-    message, _ = asyncio.run(run())
+    message, shut_down = asyncio.run(run())
+    assert shut_down == 1, "the held interrupt was never handed to the server's own handler"
     # the typed result reached the client: a finished cleanup (the held interrupt was the only
     # event)
     assert "Ctrl-C" in message and "durably restored" in message, message
