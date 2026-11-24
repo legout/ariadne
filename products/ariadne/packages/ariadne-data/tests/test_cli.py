@@ -522,7 +522,7 @@ def test_removed_commands_have_no_alias(removed, capsys):
 def test_every_documented_subcommand_has_working_help(capsys):
     from ariadne.cli import build_parser
 
-    commands = [c for c in _TABLE if c != "preview"]  # preview lands with T7
+    commands = list(_TABLE)
     for command in commands:
         with pytest.raises(SystemExit) as exc:  # argparse prints the help, then exits 0
             build_parser().parse_args([command, "--help"])

@@ -78,6 +78,7 @@ AUTHORING_TOOLS = {
     "authoring_inspect_mapping",
     "authoring_resolve_term",
     "draft_status",
+    "preview",
 }
 
 # Never a tool on ANY surface (spec §5: source approval, Git Review

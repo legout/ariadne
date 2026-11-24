@@ -29,7 +29,7 @@ The three registrations:
   ``authoring_edit_proposal`` (typed artifact edits, native page batches and typed
   source declarations — no proposal or base IDs), ``authoring_inputs``,
   ``authoring_refresh_schema``, ``authoring_inspect_mapping``,
-  ``authoring_resolve_term`` and ``draft_status``. No query operation; the
+  ``authoring_resolve_term``, ``preview`` and ``draft_status``. No query operation; the
   registration starts without a governed catalog (AC5).
 - **combined** (the ``ariadne-serve`` default) — their union.
 
@@ -1009,6 +1009,24 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 part: which bounded part of the matches (default 1).
             """
             return authoring_api.resolve_term_in_draft(request, part=part)
+
+        @app.tool()
+        @_tool_errors
+        async def preview(
+            metric: str, dimensions: list[str] | None = None, filters: list[str] | None = None
+        ) -> dict:
+            """Run a metric from the ACTIVE DRAFT over exactly the granted source
+            identities — governed:false, never stored. Refuses an ungranted, pending,
+            stale or invalid draft before reading any source.
+
+            Args:
+                metric: metric name or full identity in the draft.
+                dimensions: dimensions to group by.
+                filters: row filters.
+            """
+            from ariadne import preview as preview_module
+
+            return preview_module.preview(authoring_api.project, metric, dimensions, filters)
 
         @app.tool()
         @_tool_errors

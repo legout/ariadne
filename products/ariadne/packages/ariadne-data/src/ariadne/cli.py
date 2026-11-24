@@ -135,6 +135,10 @@ def build_parser() -> _Parser:
     sub.add_parser("validate", parents=[common], help="validate the active draft")
     p = sub.add_parser("diff", parents=[common], help="the draft against the served state")
     p.add_argument("--full", action="store_true", help="include the complete escaped content diff")
+    p = sub.add_parser("preview", parents=[common], help="run a metric from the active draft")
+    p.add_argument("metric")
+    p.add_argument("--by", action="append", default=[], metavar="DIM")
+    p.add_argument("--filter", action="append", default=[], metavar="F")
     p = sub.add_parser("approve", parents=[common], help="approve the draft (interactive)")
     p.add_argument("--confirm-mapping", action="append", default=[], metavar="SEL")
     sub.add_parser("status", parents=[common], help="served revision, approval, draft state")
@@ -372,6 +376,10 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         return _emit({k: result[k] for k in ("ok", "status", "errors", "revision", "draft")}, args)
     if command == "diff":
         return _emit(_diff(project, full=args.full), args)
+    if command == "preview":
+        from ariadne import preview
+
+        return _emit(preview.preview(project, args.metric, args.by, args.filter), args)
     if command == "approve":
         from ariadne import approve
 
