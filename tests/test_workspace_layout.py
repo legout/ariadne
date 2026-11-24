@@ -101,6 +101,8 @@ def test_workspace_ci_runs_the_full_suite():
     # per-file enumeration.
     assert "uv run --locked ruff check ." in workflow
     assert "uv run --locked pytest -q -n 4" in workflow
+    # #141: products/lumio/pytest.ini deselects slow by default, so CI must opt in.
+    assert 'uv run --locked pytest -q -n 4 -m "slow or not slow"' in workflow
     # The isolated wheel job builds only the two members this repo ships.
     assert "uv build --package lumio --wheel" not in workflow
     assert "uv build --package lumio-wiki --wheel" in workflow

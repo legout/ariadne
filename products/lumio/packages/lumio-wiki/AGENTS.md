@@ -11,10 +11,13 @@ amendment). Root instructions and
   this repository; the imported historical agent guidance is preserved as a
   record in `products/lumio/project/AGENTS.imported.md`, not as active instructions.
 - Validation: run the Lumio native suite from the product root
-  (`cd products/lumio`): full suite `uv run pytest -q -n 4`, focused tests
-  serial `uv run pytest -q <test paths>`. Never use `-n auto` — a fixed
-  worker count keeps local and CI resource use predictable. The repository
-  root default covers only the shared coordination tests.
+  (`cd products/lumio`): full suite `uv run pytest -q -n 4`, the same plus
+  the `slow` wheel tests (CI's selection)
+  `uv run pytest -q -n 4 -m "slow or not slow"`, focused tests serial
+  `uv run pytest -q <test paths>` (`-m slow` for a `slow` file). Never use
+  `-n auto` — a fixed worker count keeps local and CI resource use
+  predictable. The repository root default covers only the shared
+  coordination tests.
 - The base wheel stays model-free and cloud-free: model, S3 and MCP
   capabilities live in the optional extras (`documents`, `llm`, `s3`, `mcp`),
   imported lazily. Do not add a base dependency or a downward one.

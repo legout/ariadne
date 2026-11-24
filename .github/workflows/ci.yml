@@ -32,7 +32,7 @@ jobs:
         run: uv run --locked ruff check .
         working-directory: products/lumio
       - name: Lumio native full suite (-n 4, never auto)
-        run: uv run --locked pytest -q -n 4
+        run: uv run --locked pytest -q -n 4 -m "slow or not slow"
         working-directory: products/lumio
       - uses: oven-sh/setup-bun@v2
       - name: Install isolated Pi disclosure-test runtime

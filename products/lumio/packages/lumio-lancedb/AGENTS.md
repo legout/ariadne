@@ -9,8 +9,10 @@ and ownership.
 
 - Validation runs the Lumio native suite from the product root
   (`cd products/lumio`): focused tests serial, full suite
-  `uv run pytest -q -n 4`, never `-n auto`. The repository root default is
-  shared coverage only, not this adapter's native qualification.
+  `uv run pytest -q -n 4` (the `slow` wheel tests are deselected by
+  default; `uv run pytest -q -n 4 -m "slow or not slow"` adds them, as CI
+  runs it), never `-n auto`. The repository root default is shared coverage
+  only, not this adapter's native qualification.
 - The SDK is its only sibling dependency, bounded by the lockstep range; on
   top of it the adapter's actual runtime dependencies are `lancedb`,
   `pyarrow` and `msgspec[yaml]`, with the optional `embeddings` (Torch stays
