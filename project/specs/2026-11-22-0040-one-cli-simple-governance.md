@@ -345,6 +345,10 @@ B1 **cuts these callers over in the same candidate**:
 - the browser-reviewed source request records the source grant (§3.4.2), using the
   existing reviewer capability and one-use action;
 - the per-caller data grant stays separate and is checked as before.
+- Amendment 2026-11-24 (owner): the workspace holds the one active draft per §3.3; a
+  browser reject discards it in the same one-use action; a second request while one is
+  pending refuses as stale until the first is decided.
+- AC11a: a rejected request discards its draft; a concurrent request refuses as stale.
 
 B2 removes the two query dispatches from the adapter in the same candidate that removes
 the operations, and reports them as unsupported. B adds **no** workspace `sql`. The

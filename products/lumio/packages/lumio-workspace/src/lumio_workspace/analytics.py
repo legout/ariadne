@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import msgspec
-from ariadne import admission, authoring_sources, proposals
+from ariadne import admission, authoring_sources, draft, proposals
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from ariadne.contribution_review import check_contribution_commit, review_contribution
@@ -911,8 +911,32 @@ class AnalyticsService:
             return self._source_context(actor, operation)
         return self._contribution_context(actor, operation)
 
+    def _release_source_draft(self, response: dict) -> None:
+        """The granted source request's draft frees the one active slot for the
+        contribution; the grant itself is project-level and outlives the draft."""
+        active = draft.status(self.project)
+        if active is None:
+            return
+        expected = (active["generation"], active["candidate_revision"])
+        if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
+            draft.discard(self.project, expected)
+
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
+        if (
+            not requested
+            and operation.action == "prepare_data_source"
+            and operation.response.get("stage") == "source_approval"
+        ):
+            # the workspace holds the one active draft; a reject frees the slot
+            draft.discard(
+                self.project,
+                draft.active_expected(
+                    self.project,
+                    operation.response["native_proposal"],
+                    operation.response["native_candidate"],
+                ),
+            )
         response = {
             **operation.response,
             "status": "pending_review" if requested else "rejected",
@@ -1144,6 +1168,7 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
+                self._release_source_draft(grant.response)
                 started = self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]
