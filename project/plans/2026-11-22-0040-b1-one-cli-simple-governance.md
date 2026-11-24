@@ -258,6 +258,16 @@ On the final tree:
   the reduced test (a real interrupt in the window leaves a consistent state, and a
   later `draft status` reports the outcome); this stricter proof is settled here
   (owner decision 2026-11-24).
+- the remaining witness limits of that stdio regression test (owner decision
+  2026-11-24: R1 is closed on the verified product code after twenty fix-first rounds,
+  the last eight test-only, with the test as it stands at the R1 result; no further R1
+  round): (a) the second `KeyboardInterrupt` is accepted when its traceback holds the
+  call frame and the Runner handler frame in any order, so a handler called by hand
+  from an audit hook counts, and a record's signal attempt is not checked against its
+  index; (b) the evidence stamps precede the writes and the deciding snapshot is taken
+  once the expected count is present, so a record stamped on time but written late
+  counts and a later event of the same attempt is not seen. One negative control can
+  fail spuriously under scheduling jitter. Settle these here with the strict oracle.
 
 Run the AC1 owner path end to end against the installed wheel in a temporary
 directory, with the TTY simulated through a pty.
