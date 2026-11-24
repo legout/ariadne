@@ -540,7 +540,7 @@ class AnalyticsService:
                             "the admitted declaration needs current native Source Approval"
                         )
                 else:
-                    started = self.api.start_proposal()
+                    started = self._joined_draft() or self.api.start_proposal()
                     if self._declarations_present(started["candidate_revision"], entries, storages):
                         _resolved, source_digest = authoring_sources.candidate_sources(
                             self.project, started["candidate_revision"]
@@ -911,6 +911,35 @@ class AnalyticsService:
             return self._source_context(actor, operation)
         return self._contribution_context(actor, operation)
 
+    def _joined_draft(self) -> dict | None:
+        """Draft rule v2: with no active draft return None (the caller starts one). An
+        active draft owned by a data-granted request is ongoing work: join it. Any other
+        active draft (a pending request's, or nobody's) refuses as stale."""
+        active = draft.status(self.project)
+        if active is None:
+            return None
+        proposal = draft.proposal_of(
+            self.project, (active["generation"], active["candidate_revision"])
+        )
+        with self.state._connect() as connection:  # shortcut: no state.py lookup by proposal
+            rows = connection.execute(
+                "SELECT status, json_extract(response_json, '$.native_base') "
+                "FROM operations WHERE workspace_id = ? "
+                "AND action = 'prepare_data_source' "
+                "AND json_extract(response_json, '$.native_proposal') = ?",
+                (self.workspace_id, proposal),
+            ).fetchall()
+        for status, base in rows:
+            if status == "data_granted":
+                return {
+                    "proposal": proposal,
+                    "base_revision": base,
+                    "candidate_revision": active["candidate_revision"],
+                }
+        raise AnalyticsError(
+            "stale: another draft is active and its request is not yet data-granted"
+        )
+
     def _release_source_draft(self, response: dict) -> None:
         """Browser-review only: free the one active slot by discarding THIS request's
         exact draft (the proposal and candidate the reviewer saw). Another task's draft,
@@ -980,7 +1009,6 @@ class AnalyticsService:
                 "approval_digest": approval["approval_digest"],
                 "review_generation": generation,
             }
-            self._release_source_draft(updated)  # decided: it no longer holds the slot
             self.state.finish_review_task(
                 self.workspace_id, operation.operation_id, "data_granted", updated
             )
@@ -1158,7 +1186,7 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
-                started = self.api.start_proposal()
+                started = self._joined_draft() or self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]
                 if entries and not self._declarations_present(revision, entries, storages):
