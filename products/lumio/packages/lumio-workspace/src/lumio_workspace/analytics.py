@@ -912,10 +912,11 @@ class AnalyticsService:
         return self._contribution_context(actor, operation)
 
     def _release_source_draft(self, response: dict) -> None:
-        """The granted source request's draft frees the one active slot for the
-        contribution; the grant itself is project-level and outlives the draft."""
+        """Browser-review only: free the one active slot by discarding THIS request's
+        exact draft (the proposal and candidate the reviewer saw). Another task's draft,
+        or this proposal after it moved, is left alone."""
         active = draft.status(self.project)
-        if active is None:
+        if active is None or active["candidate_revision"] != response.get("native_candidate"):
             return
         expected = (active["generation"], active["candidate_revision"])
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
@@ -923,20 +924,8 @@ class AnalyticsService:
 
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
-        if (
-            not requested
-            and operation.action == "prepare_data_source"
-            and operation.response.get("stage") == "source_approval"
-        ):
-            # the workspace holds the one active draft; a reject frees the slot
-            draft.discard(
-                self.project,
-                draft.active_expected(
-                    self.project,
-                    operation.response["native_proposal"],
-                    operation.response["native_candidate"],
-                ),
-            )
+        if not requested and operation.action == "prepare_data_source":
+            self._release_source_draft(operation.response)
         response = {
             **operation.response,
             "status": "pending_review" if requested else "rejected",
@@ -994,6 +983,7 @@ class AnalyticsService:
             self.state.finish_review_task(
                 self.workspace_id, operation.operation_id, "data_granted", updated
             )
+            self._release_source_draft(updated)  # decided: it no longer holds the slot
             return updated
 
         if response["stage"] == "submission":
@@ -1168,7 +1158,6 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
-                self._release_source_draft(grant.response)
                 started = self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]

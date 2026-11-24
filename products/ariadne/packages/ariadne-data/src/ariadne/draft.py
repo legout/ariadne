@@ -897,6 +897,14 @@ def retire_stale(project: str | Path) -> dict:
     is a no-op. Returns the slot's state."""
     project = Path(project).resolve()
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        # an interrupted source approval resolves first (as recover does, minus the slot
+        # read), or its rollback would later write the old active slot back
+        if source_txn_pending(project):
+            with grants_lock(project):
+                if (project / TXN_REL).exists():
+                    rollback_source_txn(project)
+                elif (project / TXN_COMMITTED_REL).exists():
+                    _confirm_committed(project)
         path = project / DRAFT_REL
         if proposals._lstat(path) is None:
             return {"state": "none"}

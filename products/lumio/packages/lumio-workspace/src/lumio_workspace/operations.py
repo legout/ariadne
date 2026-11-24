@@ -32,7 +32,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import msgspec
-from ariadne import draft
 from lumio_wiki.artifact_store import (
     ArtifactStoreError,
     ArtifactUnavailable,
@@ -594,10 +593,17 @@ def restore(backup_root: Path, target_root: Path, config: WorkspaceConfig) -> Wo
             )
     # The restored proposal records name the old project path, so an active draft can
     # no longer be read; retire it (its outstanding request is invalidated just below).
-    if shared:
-        draft.retire_stale(target_root / _AUTHORING_REPO)
-    elif config.analytics_project_path is not None:
-        draft.retire_stale(target_root / _ANALYTICS_PROJECT)
+    analytics_root = (
+        target_root / _AUTHORING_REPO
+        if shared
+        else target_root / _ANALYTICS_PROJECT
+        if config.analytics_project_path is not None
+        else None
+    )
+    if analytics_root is not None:
+        from ariadne import draft  # analytics extra; the base package stays independent
+
+        draft.retire_stale(analytics_root)
     _rebase_profile(target_root, schema)
     _invalidate_restored_actions(target_root / _STATE)
     _write_restored_root_record(backup_root, target_root, manifest)
