@@ -27,6 +27,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -886,19 +887,35 @@ def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(t
 _SIGINT_LAUNCHER = """
 import json, os, signal, sys, time
 marker = os.environ["ARIADNE_TEST_MARKER"]
+own = os.getpid()
 with open(marker + ".pid", "w") as fh:  # the server child's own pid, written before anything else
-    fh.write(str(os.getpid()))
+    fh.write(str(own))
 from ariadne import draft
 want = int(os.environ["ARIADNE_TEST_SIGINTS"])
-target = int(os.environ.get("ARIADNE_TEST_TARGET_PID") or os.getpid())
+target = int(os.environ.get("ARIADNE_TEST_TARGET_PID") or own)
 fault = os.environ.get("ARIADNE_TEST_FAULT", "")
 state = {"fired": False}
+events = []  # every os.kill the interpreter actually performed: (pid, signal)
 
-def record(index, status, exc, frame):
-    # one line per send: written only AFTER os.kill returned (status "returned") or raised
-    # (status "raised"); a skipped call writes nothing
+def audit(name, args):
+    # the audit event fires inside the real os.kill, BEFORE the syscall: it is the observation
+    # that the call was invoked, with its actual pid and signal; tracer control flow is not
+    if name == "os.kill":
+        events.append((int(args[0]), int(args[1])))
+        with open(marker + ".audit", "a") as fh:
+            fh.write(json.dumps({"pid": int(args[0]), "sig": int(args[1])}) + chr(10))
+
+sys.addaudithook(audit)
+
+def record(index, outcome, since, frame):
+    # a send marker is written ONLY when an os.kill audit event with the server's own pid and
+    # SIGINT was observed for this send; it carries the OBSERVED pid/signal and the call's outcome
+    matched = [e for e in events[since:] if e == (own, int(signal.SIGINT))]
+    if not matched:
+        return
+    pid, sig = matched[0]
     with open(marker, "a") as fh:
-        fh.write(json.dumps({"i": index, "status": status, "exc": exc, "pid": target,
+        fh.write(json.dumps({"i": index, "outcome": outcome, "pid": pid, "sig": sig,
                              "fn": frame.f_code.co_name, "line": frame.f_lineno}) + chr(10))
 
 def tracer(frame, event, arg):
@@ -918,15 +935,25 @@ def tracer(frame, event, arg):
             journal = os.path.join(sys.argv[1], str(draft.TXN_REL))
             os.replace(journal, os.path.join(sys.argv[1], str(draft.TXN_COMMITTED_REL)))
         for index in range(1, want + 1):
-            if fault == "skip" or (fault == "skip_second" and index == 2):
-                continue  # a skipped call writes nothing
-            signum = 10**9 if fault == "raise" else signal.SIGINT
+            since = len(events)
+            outcome = "returned"
             try:
-                os.kill(target, signum)
+                if fault == "pass" or (fault == "skip_second" and index == 2):
+                    pass  # the call replaced by nothing: no os.kill event
+                elif fault == "sig0":
+                    os.kill(target, 0)  # a real os.kill, but not SIGINT
+                elif fault == "kbd_before" and index == 2:
+                    raise KeyboardInterrupt  # raised BEFORE the syscall: no os.kill event
+                elif fault == "oserror":
+                    os.kill(target, signal.SIGINT)  # a real, audited send ...
+                    raise OSError(5, "the call failed")  # ... that then reports an OSError
+                else:
+                    os.kill(target, signal.SIGINT)
             except BaseException as exc:
-                record(index, "raised", type(exc).__name__, frame)
+                outcome = "raised " + type(exc).__name__
+                record(index, outcome, since, frame)
                 raise
-            record(index, "returned", None, frame)
+            record(index, outcome, since, frame)
         return local
     return local
 
@@ -937,6 +964,20 @@ raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"])
 """
 
 _FAILING_LAUNCHER = "raise SystemExit(50)"  # a launcher that fails: no server at all
+
+# an unconditional `finally` writer with NO call: it forges the old-style marker (pid/signal/outcome
+# written by control flow, not observed) next to the real launcher; no os.kill ever happens
+_FINALLY_LAUNCHER = _SIGINT_LAUNCHER.replace(
+    "                    os.kill(target, signal.SIGINT)\n            except BaseException as exc:",
+    "                    pass\n            except BaseException as exc:",
+).replace(
+    "            record(index, outcome, since, frame)\n        return local",
+    "            with open(marker, 'a') as fh:\n"
+    "                fh.write(json.dumps({'i': index, 'outcome': 'returned', 'pid': own,\n"
+    "                                     'sig': int(signal.SIGINT), 'fn': frame.f_code.co_name,\n"
+    "                                     'line': frame.f_lineno}) + chr(10))\n"
+    "        return local",
+)
 
 
 def _restore_sync_line() -> int:
@@ -1005,6 +1046,7 @@ def _run_stdio_sigint_case(
     call_wait: float = 15,
     evidence_wait: float = 15,
     stall: float = 0,
+    linger: float = 0,
 ) -> dict:
     """What this proves, and no more: in the REAL ``ariadne serve`` stdio process, a real SIGINT
     that the server process SENDS TO ITSELF at the cleanup line (one, or two), WITNESSED PER SIGNAL,
@@ -1048,7 +1090,7 @@ def _run_stdio_sigint_case(
     assert all(changed[name] != before[name] for name in before), "the seed must differ"
     marker = tmp_path / "sigint-witness"
     func, line = where or ("_finish_rollback", _restore_sync_line())
-    seen: dict = {"initialized": False, "served_before": False}
+    seen: dict = {"initialized": False, "served_before": False, "at_deadline": None}
     decoy_proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) if decoy else None
 
     def markers() -> list[dict]:
@@ -1089,6 +1131,11 @@ def _run_stdio_sigint_case(
                     deadline = time.monotonic() + evidence_wait  # the COMPLETE send evidence first
                     while time.monotonic() < deadline and len(markers()) < sigints:
                         await asyncio.sleep(0.05)
+                    # the count AT the deadline decides, and is preserved through the teardown: a
+                    # marker that arrives later cannot redeem an expired wait
+                    seen["at_deadline"] = len(markers())
+                    if linger:  # test hook: a send delivered DURING the teardown
+                        await asyncio.sleep(linger)
         except BaseException:  # the server going away may surface as a closed stream
             pass
 
@@ -1100,23 +1147,37 @@ def _run_stdio_sigint_case(
             decoy_proc.wait()
     assert seen["initialized"], "the MCP session must initialize"
     assert seen["served_before"], "a request before the window must have been served"
-    sent = markers()
-    assert len(sent) == sigints, (
-        f"send evidence missing: {len(sent)}/{sigints} markers after {evidence_wait:g}s"
+    at_deadline = seen["at_deadline"]
+    sent = markers()  # read AFTER the teardown: it may be longer, but it never redeems the wait
+    assert at_deadline == sigints, (
+        f"send evidence missing: {at_deadline or 0}/{sigints} markers after {evidence_wait:g}s"
     )
+    assert len(sent) == sigints, f"send evidence changed after the deadline: {len(sent)}/{sigints}"
     server_pid = int(Path(f"{marker}.pid").read_text())
+    audit_file = Path(f"{marker}.audit")  # absent when no os.kill ever happened
+    audit = (
+        [json.loads(e) for e in audit_file.read_text().split("\n")[:-1]]
+        if audit_file.exists()
+        else []
+    )
     for number, mark in enumerate(sent, start=1):
+        # tied to an OBSERVED os.kill invocation: the marker's pid and signal are the audit
+        # event's, and that event is in the child's audit log with the server's pid and SIGINT
         assert mark["pid"] == server_pid, (
             f"send {number} targeted pid {mark['pid']}, not the server child's pid {server_pid}"
+        )
+        assert mark["sig"] == int(signal.SIGINT), (
+            f"send {number} used signal {mark['sig']}, not SIGINT ({int(signal.SIGINT)})"
+        )
+        assert {"pid": mark["pid"], "sig": mark["sig"]} in audit, (
+            f"send {number} has no os.kill audit event"
         )
         assert (mark["fn"], mark["line"]) == ("_finish_rollback", _restore_sync_line()), (
             f"send {number} came from another function or line: {mark['fn']}:{mark['line']}"
         )
-        delivered_by_raise = (
-            number == 2 and mark["status"] == "raised" and mark["exc"] == "KeyboardInterrupt"
-        )
-        assert mark["status"] == "returned" or delivered_by_raise, (
-            f"send {number} failed: os.kill {mark['status']} {mark['exc']}"
+        delivered_by_raise = number == 2 and mark["outcome"] == "raised KeyboardInterrupt"
+        assert mark["outcome"] == "returned" or delivered_by_raise, (
+            f"send {number} failed: os.kill {mark['outcome']}"
         )
     pre = _disposition(project)  # BEFORE any fresh `draft status` could recover anything
     assert pre in ("none", "journal"), f"a commit marker in the rollback case (disposition {pre!r})"
@@ -1186,11 +1247,14 @@ def _assert_fresh_status(project: Path, done, pre: str) -> None:
     - an uncommitted journal retained ("journal" before and after): a non-zero exit and a
       structured pending result — the typed error ``JournalRemnant``/``RemovalUnconfirmed``/
       ``RestoreUnconfirmed`` (``RemovalUnconfirmed`` could not tell and is truthful either way;
-      ``RollbackCleanup`` claims removal, so only with the journal gone), or the pending JSON
-      with ``source_approval_pending: true``; never the commit-confirmation shape (a marker);
-    - a committed marker ("marker" before and after): the commit-confirmation pending JSON.
-    Every retry command must be the bare `ariadne draft status` or `--project <this project>`.
-    An unrelated error is not accepted in any state."""
+      ``RollbackCleanup`` claims removal, so only with the journal gone), or the shared pending
+      JSON (``source_approval_pending: true``) — owner decision 2026-11-24: the SAME pending shape
+      is accepted for a retained journal and for a retained marker (both are truthfully pending),
+      so the flag, the retry command and the artifacts on disk (post equals pre) are asserted,
+      with no keyword heuristics on the message;
+    - a committed marker ("marker" before and after): the same pending JSON, artifacts agreeing.
+    Every retry command must be the bare `ariadne draft status` or `--project <absolute path of
+    this project>`. An unrelated error is not accepted in any state."""
     post = _disposition(project)
     if done.returncode == 0:
         assert json.loads(done.stdout) == {"draft": None}, done.stdout
@@ -1249,15 +1313,33 @@ def _another_line() -> tuple[str, int]:
             "MCP session must initialize",
         ),
         (
-            "a skipped send (no call, no marker)",
+            "the call replaced by `pass` (no os.kill event, so no marker)",
             1,
-            {"fault": "skip", "evidence_wait": 1},
+            {"fault": "pass", "evidence_wait": 1},
             "send evidence missing: 0/1",
         ),
         (
-            "the second signal skipped (only one of two sent)",
+            "the second call replaced by `pass` (one of two sent)",
             2,
             {"fault": "skip_second", "evidence_wait": 1},
+            "send evidence missing: 1/2",
+        ),
+        (
+            "an unconditional `finally` writer with no call",
+            1,
+            {"launcher": _FINALLY_LAUNCHER, "evidence_wait": 1},
+            "send 1 has no os.kill audit event",  # the forged marker exists, the call never did
+        ),
+        (
+            "os.kill(pid, 0): a real call, but signal 0 and not SIGINT",
+            1,
+            {"fault": "sig0", "evidence_wait": 1},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "send 2 replaced by a KeyboardInterrupt raised BEFORE the syscall",
+            2,
+            {"fault": "kbd_before", "evidence_wait": 1},
             "send evidence missing: 1/2",
         ),
         (
@@ -1267,12 +1349,23 @@ def _another_line() -> tuple[str, int]:
             "send evidence missing: 0/1 markers after 1s",
         ),
         (
-            "a call that raises something other than the second-signal KeyboardInterrupt",
+            "the send stalled past the evidence wait, then delivered DURING the teardown",
             1,
-            {"fault": "raise"},
-            "send 1 failed: os.kill raised",
+            {"fault": "stall", "stall": 3, "call_wait": 1, "evidence_wait": 1, "linger": 5},
+            "send evidence missing: 0/1 markers after 1s",
         ),
-        ("a send to a decoy pid", 1, {"decoy": True}, "targeted pid .*, not the server child's"),
+        (
+            "a call that reports an OSError after a real, audited send",
+            1,
+            {"fault": "oserror"},
+            "send 1 failed: os.kill raised OSError",
+        ),
+        (
+            "a send to a decoy pid (the audit event is not the server's own pid: no marker)",
+            1,
+            {"decoy": True, "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
         (
             "a send from another line of the cleanup function",
             1,
