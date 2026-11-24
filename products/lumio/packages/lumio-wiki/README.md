@@ -235,14 +235,18 @@ Requirements: **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
 uv sync                                       # install the workspace members (from the repository root)
 uv lock --check                               # verify the lockfile is current
 cd products/lumio                             # Lumio's native development profile
-uv run pytest -q -n 4                         # Lumio native full suite (four workers; never -n auto)
+uv run pytest -q -n 4                         # Lumio native full suite (four workers; never -n auto; slow deselected)
+uv run pytest -q -n 4 -m "slow or not slow"   # the same suite including the slow wheel tests, as CI runs it
 uv run pytest -q packages/lumio-wiki/tests    # focused tests stay serial
 uv run ruff check .                           # lint (Lumio product rules)
 uv run lumio-wiki validate tests/fixtures/valid   # sanity check the sample KB
 ```
 
 The repository-root default is shared coordination coverage only — the
-Lumio-native commands above are this package's full qualification.
+Lumio-native commands above are this package's full qualification. The
+`slow` marker covers `test_wheel_isolation*.py`, which build wheels and
+isolated environments; `products/lumio/pytest.ini` deselects them by default,
+and a focused run of such a file passes `-m slow`.
 
 ### Codebase layout
 

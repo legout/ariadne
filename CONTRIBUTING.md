@@ -34,12 +34,16 @@ namespace.
 
 ```bash
 cd products/lumio
-uv run pytest -q -n 4                                        # full suite: tests, package tests, eval
+uv run pytest -q -n 4                                        # full suite: tests, package tests, eval (slow deselected)
+uv run pytest -q -n 4 -m "slow or not slow"                  # the same suite including the slow wheel tests, as CI runs it
 uv run pytest -q packages/lumio-wiki/tests/test_capture.py   # focused tests stay serial
 uv run ruff check .                                          # Lumio rules (E,F,I,UP,B)
 ```
 
-Fixed four workers — never `-n auto`.
+Fixed four workers — never `-n auto`. The `slow`-marked `test_wheel_isolation*.py`
+files build wheels and isolated environments and are deselected by default
+(`products/lumio/pytest.ini`); CI opts back in with `-m "slow or not slow"`,
+and a focused run of such a file needs `-m slow`.
 
 ### Ariadne Core (from its member directory)
 
