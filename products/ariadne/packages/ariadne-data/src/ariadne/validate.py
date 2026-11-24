@@ -49,11 +49,9 @@ CLI::
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -877,31 +875,3 @@ def validate(
         ),
     )
     return ValidationResult(not errors, errors, report=report)
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="ariadne-validate",
-        description=(
-            "Compile-check an explicit artifact directory without opening sources. "
-            "Success is partial structural evidence, never Git Admission."
-        ),
-    )
-    parser.add_argument("artifact_dir", help="explicit artifact directory to validate")
-    args = parser.parse_args(argv)
-    result = validate(args.artifact_dir)
-    if result.ok:
-        print(f"ok: artifact directory {args.artifact_dir} compiles")
-        if result.report:
-            print(f"scope: {result.report.scope}")
-            print(f"digest: {result.report.digest} (validator {result.report.validator_version})")
-        return 0
-    for error in result.errors:
-        print(f"error: {error}", file=sys.stderr)
-    if result.report:
-        print(f"scope: {result.report.scope}", file=sys.stderr)
-    return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

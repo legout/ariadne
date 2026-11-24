@@ -38,7 +38,7 @@ import secrets
 import stat
 import subprocess
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -950,7 +950,9 @@ def refuse_unsupported_project(project: str | Path) -> None:
         )
 
 
-def start_proposal(project: str | Path, *, base_revision: str | None = None) -> dict:
+def start_proposal(
+    project: str | Path, *, base_revision: str | None = None, _lock_held: bool = False
+) -> dict:
     """Start ONE isolated authoring proposal in the fixed data project: a
     system-generated ID, its branch ``ariadne/proposal/<id>`` and its dedicated
     worktree under the ignored ``.ariadne/worktrees/<id>/`` — every location
@@ -967,7 +969,8 @@ def start_proposal(project: str | Path, *, base_revision: str | None = None) -> 
     refuse_unsupported_project(project)  # before any state exists
     _refuse_symlinked_component(project, ARIADNE_STATE_DIR)
     _require_git_identity(project)
-    with _file_lock(project / LOCKS_REL / "project.lock"):
+    # ``_lock_held``: the draft slot (ariadne.draft) already holds the project lock.
+    with nullcontext() if _lock_held else _file_lock(project / LOCKS_REL / "project.lock"):
         _ensure_state_ignored(project)  # inside the lock: concurrent starts
         # never interleave their exclude-file append
         baseline = _admitted_baseline(project)
@@ -1387,7 +1390,7 @@ def _edit_page_batch_locked(
         if not (worktree_root / rel).exists():
             _refuse_untracked_new_artifact(project, worktree_root, rel, current)
         try:
-            meta, _body, _line = parse_frontmatter(content, PurePosixPath(rel).name)
+            meta, _body, _line = parse_frontmatter(content, Path(PurePosixPath(rel).name))
         except FrontmatterError as exc:
             raise GitAuthoringError(f"{rel}: {exc}") from exc
         title = meta.get("title") if isinstance(meta, dict) else None

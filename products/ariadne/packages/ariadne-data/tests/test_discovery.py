@@ -99,9 +99,10 @@ def test_admitted_context_only_discovery_pins_snapshot_and_never_reads_sources(
 
     assert admit(project, review) == 0
     capsys.readouterr()
+    later = api.start_proposal()  # approval consumed the generation: the next draft
     api.edit_proposal(
-        review["proposal"],
-        review["revision"],
+        later["proposal"],
+        later["candidate_revision"],
         {
             "kind": "contract",
             "name": "orders.yaml",
@@ -175,7 +176,7 @@ def test_mcp_discovery_starts_source_free_for_every_registration(tmp_path, monke
                 if "discover" in tools:
                     result = await self.app.call_tool("discover", {"query": "event"})
                     blocks = list(getattr(result, "content", result))
-                    observed.append(json.loads(blocks[0].text))
+                    observed.append(json.loads(blocks[0].text))  # pyright: ignore[reportAttributeAccessIssue]
 
             asyncio.run(probe())
 
@@ -229,6 +230,7 @@ def test_ai_context_is_returned_as_read_only_guidance_and_never_changes_the_sql(
 
     plain_entry, plain_sql = listing(plain)
     guided_entry, guided_sql = listing(guided)
+    assert isinstance(plain_entry, dict) and isinstance(guided_entry, dict)
     assert "ai_context" not in plain_entry
     assert guided_entry["ai_context"] == {"metric": {"synonyms": ["sum of values", "grand total"]}}
     assert guided_sql == plain_sql

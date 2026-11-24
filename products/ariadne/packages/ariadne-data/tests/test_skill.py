@@ -13,7 +13,12 @@ import re
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
 
-from ariadne.skill import ASSETS, main
+from ariadne.cli import main as _cli_main
+from ariadne.skill import ASSETS
+
+
+def main(argv):
+    return _cli_main(["skill", *argv])
 
 
 @pytest.fixture
@@ -36,28 +41,34 @@ def test_packaged_assets_exist():
     assert "search_context" in skill and "define_metric" in skill  # the agent rules
 
 
-def test_skill_teaches_local_cli_as_default_mcp_optional():
-    """Spec 2026-09-23-0001 §8: the packaged skill defaults to the five local
-    `ariadne` commands (project selection, caveats, labels, file/stdin ad-hoc
-    definitions); MCP appears only in the optional integration section with
-    accurate ariadne-data[mcp] install guidance — never as a requirement."""
+def test_skill_teaches_the_one_cli_and_mcp_stays_optional():
+    """Spec 0040 §3.1: the packaged skill teaches the one `ariadne` command table; MCP
+    appears only in the optional integration section with accurate ariadne-data[mcp]
+    install guidance — never as a requirement."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
-    for cmd in ("list-metrics", "search-context", "get-metric", "list-datasets", "define-metric"):
+    for cmd in ("metrics", "search", "query", "datasets", "draft edit", "validate", "diff"):
         assert f"ariadne {cmd}" in skill, cmd
-    assert "ariadne define-metric --file" in skill  # file definitions (stdin named too)
-    assert "ariadne list-metrics --project ." in skill
+    assert "ariadne metrics --project ." in skill
     assert "governed: true" in skill and "governed: false" in skill  # labels taught
-    # MCP only after the optional integration heading, with the real extra named
     optional_at = skill.index("Optional: MCP integration")
     mcp_mentions = [m.start() for m in re.finditer("MCP", skill)]
-    assert mcp_mentions and all(pos > optional_at for pos in mcp_mentions)
+    assert mcp_mentions and min(mcp_mentions) > skill.index("## Querying")
     assert "ariadne-data[mcp]" in skill
     normalized = " ".join(skill.split())
     assert "Ariadne package checkout" in normalized
-    assert "not from the data project root" in normalized
-    assert "ariadne-init --with-mcp ." in skill
-    assert skill.index("pyproject.toml") < skill.index("ariadne-init --with-mcp .")
-    assert "ariadne-serve --project ." in skill
+    assert "ariadne serve --project ." in skill
+    assert skill.index("pyproject.toml") < skill.index("ariadne serve --project .", optional_at)
+    for removed in (
+        "ariadne-init",
+        "ariadne-serve",
+        "ariadne-authoring",
+        "ariadne-admit",
+        "ariadne-skill",
+        "ariadne list-metrics",
+        "ariadne get-metric",
+        "ariadne define-metric",
+    ):
+        assert removed not in skill, removed
 
 
 def test_skill_teaches_answer_example_guidance():
@@ -67,7 +78,7 @@ def test_skill_teaches_answer_example_guidance():
     hypotheses — and saving is user-confirmed before the call, with the
     operator review command explicitly forbidden to the agent."""
     normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
-    assert "ariadne search-examples" in normalized  # the lookup command
+    assert "`search_examples`" in normalized  # the lookup tool
     assert "A hit is never required, and never an answer" in normalized
     assert "Similar words are not equivalence" in normalized  # scope compared
     for scope in ("dates", "grain", "served Policies"):
@@ -78,7 +89,7 @@ def test_skill_teaches_answer_example_guidance():
     assert "independent numeric attestation" in normalized  # no compile-only claim
     assert "Drafts are hypotheses" in normalized  # uncheckable drafts not support
     assert "confirm BEFORE calling save" in normalized  # user gate before the call
-    assert "ariadne save-example" in normalized
+    assert "`save_example`" in normalized
     assert "Never save silently or harvest the transcript" in normalized
     assert "there is no separate Example-review command" in normalized
 
@@ -109,7 +120,7 @@ def test_skill_routes_record_questions_to_the_separate_operation():
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     querying = skill[: skill.index("## Answer examples")]  # the default workflow
     normalized = " ".join(querying.split())  # line-wrapped prose compares normalized
-    assert "ariadne query-records" in normalized  # the separate operation is taught
+    assert "`query_records`" in normalized  # the separate operation is taught
     # record selection is distinguished from metric aggregation, both ways
     assert "never a metric" in normalized
     assert "do not invent an aggregation to retrieve records" in normalized
@@ -236,48 +247,44 @@ def test_rubric_states_the_real_grain_audit_order():
 
 
 def test_skill_teaches_the_admitted_multifact_query_commands():
-    """Issue #30: the packaged skill teaches the two multi-fact commands — that
-    they answer only over a graph admitted through Git Review Admission, and
-    that their responses are governed through that project-bound route
-    (never a claim that a validated-but-unadmitted graph is governed)."""
+    """Issue #30 (spec 0040): the packaged skill teaches the multi-fact answers — that
+    they answer only over a graph admitted through approval, and that their responses
+    are governed through the project-bound route (never a claim that a
+    validated-but-unadmitted graph is governed)."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
-    for cmd in ("query-metrics", "query-detail"):
-        assert f"ariadne {cmd} --file" in skill, cmd
+    assert "ariadne detail --file" in skill
+    assert "ariadne query orders_total --by region" in skill
     assert "admitted" in skill and "unadmitted" in skill
     assert "Git Review Admission" in skill
-    # the submission boundary names the graph path (the one extra semantic file)
     assert "semantic_layer/graph.yml" in skill
 
 
-def test_skill_teaches_git_proposal_workflow_and_stops_at_human_gates():
-    """G4 (spec 0027 §§2/6): the packaged skill teaches the Git proposal
-    workflow — start/read/edit/validate/review with revisions — leaves the
-    human gates to the operator, and never teaches arbitrary
-    Git branch/shell/file mutation."""
+def test_skill_teaches_the_draft_workflow_and_never_runs_approve():
+    """Spec 0040 §3.5.3: the packaged skill lists the new commands and instructs agents
+    never to run `approve` (nor discard or rebase); the human gates stay the operator's,
+    and no direct Git mutation is taught."""
     skill = (ASSETS / "SKILL.md").read_text(encoding="utf-8")
     for cmd in (
-        "ariadne-authoring start",
-        "ariadne-authoring read",
-        "ariadne-authoring edit",
-        "ariadne-authoring validate",
-        "ariadne-authoring review --proposal",
-        "ariadne-authoring propose-sources --proposal",
-        "ariadne-authoring inputs --proposal",
+        "ariadne add",
+        "ariadne draft edit",
+        "ariadne draft status",
+        "ariadne validate",
+        "ariadne diff",
+        "ariadne preview",
+        "ariadne approve",
+        "ariadne draft rebase",
     ):
         assert cmd in skill, cmd
-    assert "--expected-revision" in skill  # revision-checked edits
-    # admission is human-only; no legacy importer or staged submit route remains
-    assert "ariadne-admit" in skill and "--confirm" in skill
     normalized = " ".join(skill.split())
+    assert "Never run `ariadne approve`" in normalized
+    assert "`ariadne draft discard`" in normalized and "human decisions" in normalized
+    assert "the human alone runs `ariadne approve`" in normalized
+    assert "never a sandbox" not in normalized  # the prompt is a convention, stated as one
+    assert "operator-consent convention, not authentication" in normalized
     assert "Core does not import legacy staged artifacts" in normalized
-    assert "Never run" in skill and "human-only" in skill.lower()
-    # Git operations appear ONLY as named prohibitions, never as instructions
     rules_at = skill.index("## Agent rules")
     assert "never run" in skill[rules_at:].lower() and "git" in skill[rules_at:]
-    # retired public operations are not taught as runnable commands
-    assert "ariadne-authoring submit --file submission.json" not in skill
     assert "ariadne-promote" not in skill
-    assert "ariadne-authoring enrich-legacy" not in skill
     assert "--toolset" in skill  # split vs combined registrations taught
 
 
@@ -293,9 +300,9 @@ def test_skill_teaches_automatic_mapping_hypothesis_capture():
     local-number-only joins — and restart durability lives in the Git proposal
     and the evidence area, never in chat memory."""
     normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
-    assert "ariadne-authoring resolve-term" in normalized  # read existing first
-    assert "ariadne-authoring inspect-mapping" in normalized  # bounded measurement
-    assert "read what the proposal already holds" in normalized
+    assert "`authoring_resolve_term`" in normalized  # read existing first
+    assert "`authoring_inspect_mapping`" in normalized  # bounded measurement
+    assert "read what the draft already holds" in normalized
     assert "SAVE the labeled hypothesis" in normalized  # automatic capture
     assert "no per-save prompt" in normalized
     assert "reuse the SAME stable representation/mapping IDs" in normalized
@@ -317,17 +324,17 @@ def test_skill_teaches_context_knowledge_and_typed_page_edits():
     OSI/live audits, and points at the how-to."""
     normalized = " ".join((ASSETS / "SKILL.md").read_text(encoding="utf-8").split())
     # the query-side resolution command and its limits
-    assert "ariadne resolve-term" in normalized
+    assert "`resolve_term`" in normalized
     assert "NEVER authorizes a" in normalized and "unconfirmed leads" in normalized
     # the explicit schema refresh inside the authoring loop, context-only allowed
-    assert "ariadne-authoring refresh-schema" in normalized
+    assert "`authoring_refresh_schema`" in normalized
     assert "context-only" in normalized
     assert "candidate key" in normalized and "NEVER a declared business key" in normalized
     # confirmation is the human admission selection only
     assert "--confirm-mapping" in normalized
     assert "never mark anything confirmed" in normalized
     # durable context changes use typed edits; the retired enrichment operation is absent
-    assert "ariadne-authoring edit --proposal ID" in normalized
+    assert "`authoring_edit_proposal`" in normalized
     assert "knowledge/references/context-routing.md" in normalized
     assert "ariadne-authoring enrich-legacy" not in normalized
     assert "ambiguous" in normalized and "ambiguity between alternatives" in normalized

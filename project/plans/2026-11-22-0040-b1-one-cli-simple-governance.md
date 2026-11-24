@@ -3,20 +3,9 @@
 Status: **owner-approved with spec 0040 r3**, 2026-11-22 ("freigabe"). Source:
 [spec 0040 r3](../specs/2026-11-22-0040-one-cli-simple-governance.md) §§1, 3, 5, 6 (B1:
 AC1–AC11a), 7, 8. This plan covers B1 only. B2 gets its own plan after B1 lands.
-Target integration and publication still need the owner. The 2026-11-24 scoped
-preview decision updates T7 and its validation below; this is not a new dispatch
-or integration grant.
+Target integration and publication still need the owner.
 
 ## Execution model
-
-**Since 2026-11-24 (owner decision): Foreman.** The repository moved to the Foreman
-factory (`AGENTS.md`). The remaining B1 work runs as GitHub issues under Epic #127,
-one PR per issue, squash-merged into `main` after its lane gate and green CI:
-T1–T6 (R1 closed at `1047e14`) land first as one PR, then T7, T8 and T9 as one PR
-each, then V as a verify-only issue on the integrated `main`. This replaces the
-supervised candidate, the pause before integration and the host and model bullets
-below; `main` carries the partial cutover between those merges. The resource
-hygiene and review bullets still apply.
 
 - **Mode:** supervised, light. One sequential writer works in an isolated worktree
   under `~/.local/state/worktrees/`.
@@ -208,19 +197,17 @@ independent reviewer. One fix pass and one delta recheck.
 
 Source: spec §3.6; AC9.
 
-Compile from the active draft generation. Build the locked connection from the
-exact draft bindings, only for granted identities, including completed grants not
-in the served release. An ungranted, mismatched or pending identity refuses before
-reading it; never substitute an older same-named binding. Apply the pre-bind
-authorization of the compiled SQL (spec 0039). The result carries `governed:false`,
-`draft_generation`, `draft_revision` and `served_revision`. A stale or invalid draft
-is refused.
+Compile from the active draft generation. Build the connection only from granted
+identities, locked with `lock_down`. Every consumed dataset source must resolve to a
+granted identity; a source that is new or changed in the draft is refused. Apply the
+pre-bind authorization of the compiled SQL (as in spec 0039). The result carries
+`governed:false`, `draft_generation`, `draft_revision` and `served_revision`. A stale or
+invalid draft is refused.
 
 Tests:
 
 - preview of an edited metric while `query` still serves the old definition;
-- a new-source dataset refuses before a grant and previews after the exact grant,
-  before calculation approval (AC1 and AC9);
+- a new-source dataset is refused;
 - a stale draft is refused.
 
 ### T8 — Workspace cutover (`existing-check`)
@@ -261,9 +248,8 @@ On the final tree:
 - wheel build, install and the new walkthrough;
 - `ruff check`;
 - the AC4 live A/B journey: a served release reads A; the source endpoint changes to B
-  and is granted through the real `ariadne approve`; `ariadne query` refuses by name,
-  while a validated draft preview reads B as `governed:false`. Governed query reads B
-  only after a calculation approval. It runs against a live Postgres source
+  and is granted through the real `ariadne approve`; `ariadne query` refuses by name;
+  B answers only after a calculation approval. It runs against a live Postgres source
   in CI, not only offline (owner decision 2026-11-23: R1 accepts the offline proof of
   the named refusal; this live leg must pass before V is accepted).
 - the strict interruption oracle for the stdio regression test (spec 0040 §3.4.2.5): a
@@ -272,24 +258,12 @@ On the final tree:
   the reduced test (a real interrupt in the window leaves a consistent state, and a
   later `draft status` reports the outcome); this stricter proof is settled here
   (owner decision 2026-11-24).
-- the remaining witness limits of that stdio regression test (owner decision
-  2026-11-24: R1 is closed on the verified product code after twenty fix-first rounds,
-  the last eight test-only, with the test as it stands at the R1 result; no further R1
-  round): (a) the second `KeyboardInterrupt` is accepted when its traceback holds the
-  call frame and the Runner handler frame in any order, so a handler called by hand
-  from an audit hook counts, and a record's signal attempt is not checked against its
-  index; (b) the evidence stamps precede the writes and the deciding snapshot is taken
-  once the expected count is present, so a record stamped on time but written late
-  counts and a later event of the same attempt is not seen. One negative control can
-  fail spuriously under scheduling jitter. Settle these here with the strict oracle.
 
 Run the AC1 owner path end to end against the installed wheel in a temporary
 directory, with the TTY simulated through a pty.
 
 Then the independent candidate review (gpt-6.2-sol), with one fix pass and one delta
 recheck. Push the candidate branch and wait for full CI. Pause before integration.
-(Superseded 2026-11-24 by the Foreman execution model above: V runs on the integrated
-`main`, and an in-scope gap becomes a new issue.)
 
 ## Order
 

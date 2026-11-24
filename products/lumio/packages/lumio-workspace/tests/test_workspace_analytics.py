@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 import duckdb
 import pytest
-from ariadne import admission, authoring_sources, execution
+from ariadne import admission, authoring_sources, draft, execution, proposals
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
@@ -351,7 +351,13 @@ def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
     started = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(started["proposal"], started["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        started["proposal"],
+        started["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     return project, api, started, started["candidate_revision"]
 
 
@@ -611,21 +617,6 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     monkeypatch.setattr(execution, "build_connection", spy)
     monkeypatch.setattr(native_sources, "build_connection", spy)
 
-    prepared = analytics.prepare_data_source(
-        contributor,
-        retry_key="request-sqlite",
-        project="retail",
-        source="orders_sqlite",
-        table="entries",
-        business_questions=["What is completed revenue in EUR?"],
-    )
-    source_task = prepared["task_id"]
-    assert prepared["status"] == "pending_source_approval"
-    assert str(project) not in json.dumps(prepared)
-    with pytest.raises(AnalyticsError, match="Source Approval"):
-        analytics.profile_data_source(contributor, source_task)
-    assert opened == []
-
     rejected = analytics.prepare_data_source(
         contributor,
         retry_key="request-rejected-sqlite",
@@ -634,6 +625,15 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         table="entries",
         business_questions=["This declaration must not be approved by a rejected task."],
     )
+    with pytest.raises(AnalyticsError, match="stale"):  # one active draft until decided
+        analytics.prepare_data_source(
+            contributor,
+            retry_key="request-concurrent-sqlite",
+            project="retail",
+            source="orders_sqlite",
+            table="entries",
+            business_questions=["A concurrent request is refused while one is pending."],
+        )
     rejected_context = review.get(reviewer, rejected["task_id"])
     rejected_result = review.decide(
         reviewer, rejected["task_id"], rejected_context.action_digest, "reject"
@@ -647,6 +647,21 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert not authoring_sources.approval_state(project, rejected_sources, rejected_digest).get(
         "approved"
     )
+    assert opened == []
+
+    prepared = analytics.prepare_data_source(
+        contributor,
+        retry_key="request-sqlite",
+        project="retail",
+        source="orders_sqlite",
+        table="entries",
+        business_questions=["What is completed revenue in EUR?"],
+    )
+    source_task = prepared["task_id"]
+    assert prepared["status"] == "pending_source_approval"
+    assert str(project) not in json.dumps(prepared)
+    with pytest.raises(AnalyticsError, match="Source Approval"):
+        analytics.profile_data_source(contributor, source_task)
     assert opened == []
 
     approved = _decide(review, reviewer, source_task)
@@ -685,6 +700,18 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert sqlite_profile["tables"]["entries"]["row_count"] == 2
     assert sqlite_profile["tables"]["entries"]["sample_limit"] == 100
     assert opened
+
+    # Draft rule v3: the granted draft is idle, but a request adding a declaration
+    # that is not in it refuses as stale instead of joining.
+    with pytest.raises(AnalyticsError, match="stale"):
+        analytics.prepare_data_source(
+            contributor,
+            retry_key="request-adds-private",
+            project="retail",
+            source="private",
+            table="entries",
+            business_questions=["A new declaration cannot join granted work."],
+        )
 
     original = b"# Cancelled Orders\n\nOnly completed orders enter EUR revenue.\n"
     uploaded = intake.save(
@@ -916,15 +943,24 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     )
     mismatch_task = mismatch["task_id"]
     assert _decide(review, reviewer, mismatch_task)["status"] == "data_granted"
+    # A reused admitted declaration holds no draft, so the only way its recorded
+    # candidate moves is a changed proposal record: move it to a real new revision.
+    opened_draft = api.start_proposal()
     moved = api.edit_proposal(
-        mismatch["native_proposal"],
-        mismatch["native_candidate"],
+        opened_draft["proposal"],
+        opened_draft["candidate_revision"],
         {"kind": "seed_notes", "content": "# Moved proposal\n"},
     )
     assert moved["revision"] != mismatch["native_candidate"]
+    draft.discard(
+        project, draft.active_expected(project, opened_draft["proposal"], moved["revision"])
+    )
+    record = proposals._load_record(project.resolve(), mismatch["native_proposal"])
+    proposals._store_record(project.resolve(), {**record, "candidate_revision": moved["revision"]})
     opened.clear()
     with pytest.raises(AnalyticsError, match="stale revision"):
         analytics.profile_data_source(contributor, mismatch_task)
+    proposals._store_record(project.resolve(), record)
     assert opened == []
 
     _current, stale_snapshot = admission.resolve_admission(project)
@@ -959,6 +995,7 @@ def test_xlsx_conversion_requires_approved_source_and_caller_grant(tmp_path, mon
     normalization, never from implementation output."""
 
     project, _api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    draft.discard(project, draft.active_expected(project, _started["proposal"], _revision))
     analytics, review, contributor, reviewer, _state, config, intake = _xlsx_service(
         tmp_path, project
     )
@@ -1094,6 +1131,7 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
     conversion or private-store setup (spec0034 §12.4)."""
 
     project, api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    draft.discard(project, draft.active_expected(project, _started["proposal"], _revision))
     # The fixture's own admitted baseline gains a 'procedures' routing entry
     # so the runbook routes honestly; the shared CONTROL stays untouched.
     control = project / "knowledge" / "lumio.yaml"
@@ -1117,7 +1155,13 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
     proposal = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        proposal["proposal"],
+        proposal["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     native_review = api.review_proposal(proposal["proposal"])
@@ -1461,6 +1505,7 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
     from lumio_wiki.authoring_journey import AuthoringJourneyError, load_candidate_request
 
     project, api, _started, _revision = _native_baseline(tmp_path / "baseline")
+    draft.discard(project, draft.active_expected(project, _started["proposal"], _revision))
     control = project / "knowledge" / "lumio.yaml"
     control.write_text(
         CONTROL.replace(
@@ -1480,7 +1525,13 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
     proposal = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        proposal["proposal"],
+        proposal["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     native_review = api.review_proposal(proposal["proposal"])

@@ -59,10 +59,8 @@ import json
 import os
 import shutil
 import stat
-import sys
 import tempfile
 from datetime import UTC, datetime
-from getpass import getuser
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
@@ -72,6 +70,7 @@ from ariadne import (  # pyright: ignore[reportMissingImports] — analysis env 
     authoring_sources,
     context,
     contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — new module, stale analysis index; resolves in the qualified env
+    draft,
     proposals,
 )
 from ariadne.sources import Registry
@@ -425,13 +424,15 @@ def _verified_evidence(project: Path, proposal: str, revision: str, review: dict
     evidence["source_identity"] = resolved or []
     evidence["storage_bindings"] = bindings
     evidence["approval_digest"] = effective
-    if effective not in authoring_sources._load_approvals(project):
+    if (
+        resolved
+        and not authoring_sources.approval_state(project, resolved, source_digest)["approved"]
+    ):
         raise ValueError(
-            f"the source identity of {revision[:12]} ({effective}) carries NO "
-            "operator approval for its effective storage binding — source "
-            "approval is a separate human decision (spec §5, spec 0025 §4): "
-            f"re-approve the exact identity with ariadne-authoring approve-sources; "
-            "nothing was activated"
+            f"the source identity of {revision[:12]} ({effective}) carries NO source "
+            "grant for its effective storage binding — a source approval is a separate "
+            "decision made first (spec 0040 §3.4): run 'ariadne approve' on a "
+            "sources-only draft; nothing was activated"
         )
     # the contracted-model admission gate —
     # every binding of the exact validated revision needs a COMPLETE,
@@ -885,6 +886,7 @@ def admit_revision(
     overall_preview: dict | None = None,
     confirmed_overall_digest: str | None = None,
     private_profile=None,
+    draft_pin: dict | None = None,
 ) -> dict:
     """HUMAN-ONLY activation (the ``--confirm`` half of ``ariadne-admit``):
     record the operator's explicit confirmation for the exact reviewed revision
@@ -928,6 +930,23 @@ def admit_revision(
         with proposals._file_lock(project / proposals.LOCKS_REL / f"{proposal}.lock"):
             record, revision = _check_reviewed_revision(project, proposal, revision)
             proposals._check_coherent(project, record)
+            if draft_pin is not None:  # spec 0040 §3.3.5: no dangling approval
+                slot = draft._load_slot(project)
+                served = load_current(project)
+                if not (
+                    slot is not None
+                    and slot["state"] == "active"
+                    and slot["proposal"] == proposal
+                    and slot["generation"] == draft_pin["generation"]
+                    and slot["candidate_revision"] == revision
+                    and slot["base_served_revision"] == draft_pin["base_served_revision"]
+                    and (served["commit"] if served else None) == draft_pin["base_served_revision"]
+                ):
+                    raise ValueError(
+                        "the draft (generation, revision or served base) changed between "
+                        "display and confirmation — nothing was activated; review the "
+                        "current draft and approve again"
+                    )
             # The exact review digest under the lock: the review binds revision,
             # change inventory, artifact bytes and citations.
             review = authoring._review_candidate(project, proposal, record=record)
@@ -1157,6 +1176,13 @@ def admit_revision(
                 proposals._store_record(project, record)
             except OSError:
                 pass
+            # post-activation cleanup (spec 0040): the release is already serving, so a failure
+            # here must not read as a failed activation; draft.recover() retires the
+            # consumed generation on the next draft operation.
+            try:
+                draft.consume(project, proposal)
+            except Exception:
+                pass
     return {
         "route": ADMISSION_ROUTE,
         "project": str(project),
@@ -1377,12 +1403,6 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             "re-admission of a reviewed/validated revision, never a fallback"
         )
     refuse_unsupported_admission_snapshot(project, record)
-    if not approval_present(project, record["source_digest"]):
-        raise ValueError(
-            "the admitted source identity no longer carries the operator's approval — "
-            "re-approve the exact resolved identity (ariadne-authoring approve-sources) "
-            "before serving; the runtime never opens an unapproved identity"
-        )
     # The pinned effective storage binding must be COMPLETE, internally
     # consistent AND still be the binding the CURRENT environment resolves
     # (spec 0025 §§4/AC6): every profile the admitted sources reference must
@@ -1425,16 +1445,36 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
             )
         current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
         if current != bindings:
+            changed = sorted(
+                {
+                    entry["name"]
+                    for entry in record.get("sources") or []
+                    if authoring_sources.storage_bindings_from_identity([entry])
+                    != {k: v for k, v in bindings.items() if k in _entry_keys(entry)}
+                }
+            )
             raise ValueError(
-                "the environment resolves a different effective storage binding "
-                "than the admitted one (spec 0025 §4) — the pinned admission binds "
-                "its exact endpoint; approve and admit the current binding before "
-                "serving, never a silent endpoint switch"
+                f"source(s) {', '.join(changed) or 'unknown'}: the environment resolves a "
+                "different effective storage binding than the admitted one (spec 0025 §4) — "
+                "the served release stays pinned to its exact endpoint and is not read "
+                "from the new one. If you granted the changed source with 'ariadne approve', "
+                "a calculation approval is still pending: run 'ariadne approve' again on a "
+                "new draft to serve the current binding; or restore the previous "
+                "environment value to keep reading the served one"
             )
     from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
     lumio_context.verify_release(record, snapshot)
     return record, snapshot
+
+
+def _entry_keys(entry: dict) -> set[str]:
+    storage = entry.get("storage")
+    if isinstance(storage, dict) and isinstance(storage.get("name"), str):
+        return {storage["name"]}
+    if entry.get("type") == "postgres" and isinstance(entry.get("connection_env"), str):
+        return {f"postgres:{entry['name']}"}
+    return set()
 
 
 def resolve_admission(project: str | Path) -> tuple[dict, Path]:
@@ -1449,12 +1489,6 @@ def resolve_admission(project: str | Path) -> tuple[dict, Path]:
             "ariadne-admit (display the review, then --confirm)"
         )
     return validate_admission_record(project, record)
-
-
-def approval_present(project: str | Path, source_digest: str) -> bool:
-    """True when the operator's approval of one resolved source identity is
-    still on record (the session's bound source identity recheck)."""
-    return source_digest in authoring_sources._load_approvals(Path(project))
 
 
 def approved_registry(record: dict) -> Registry:
@@ -1474,119 +1508,3 @@ def approved_registry(record: dict) -> Registry:
 
 
 # ------------------------------------------------------------ the ariadne-admit CLI
-
-
-def main(argv: list[str] | None = None) -> int:
-    """``ariadne-admit`` — HUMAN-ONLY Git Review Admission (issue #37/G5; the
-    one-JSON-value/one-JSON-error-object contract of the other CLIs). Without
-    ``--confirm`` it displays the matching review/report and exits; ONLY
-    ``--confirm`` records the operator's explicit confirmation and activates.
-    repeated ``--confirm-mapping <reference-slug>:<mapping-id>``
-    selections name the ASSERTED mappings of the exact reviewed revision whose
-    human confirmation the operator records with ``--confirm`` — the display
-    shows each selection's exact assertion content first. No MCP/native Agent
-    surface exposes this command or its callables."""
-    parser = _Parser(
-        prog="ariadne-admit",
-        description="Human-only Git Review Admission of a reviewed, validated candidate "
-        "revision: displays the matching review, then --confirm activates the pinned "
-        "snapshot.",
-    )
-    parser.add_argument("--project", default=".", help="the managed Git data project (default: .)")
-    parser.add_argument("--proposal", required=True, help="the proposal ID")
-    parser.add_argument("--revision", required=True, help="the reviewed candidate commit")
-    parser.add_argument(
-        "--reviewed-digest",
-        required=True,
-        help="the review digest ariadne-authoring review --proposal returned",
-    )
-    parser.add_argument(
-        "--confirm-mapping",
-        action="append",
-        default=[],
-        dest="confirm_mappings",
-        metavar="REFERENCE:MAPPING",
-        help="select one ASSERTED mapping of the reviewed revision for explicit "
-        "human confirmation (repeatable): <reference-slug>:<mapping-id>; the "
-        "display shows the exact assertion content, and the confirmation is "
-        "recorded only together with --confirm",
-    )
-    parser.add_argument(
-        "--confirm",
-        action="store_true",
-        help="record the operator's explicit confirmation of the displayed review and "
-        "activate this exact revision (without it, the command only displays)",
-    )
-    parser.add_argument(
-        "--by", default=None, help="operator identity recorded with the confirmation"
-    )
-    parser.add_argument("--context-destination", help="local immutable Lumio publication target")
-    parser.add_argument(
-        "--context-storage-profile",
-        default=None,
-        help="declared Knowledge storage profile required for an s3:// context destination",
-    )
-    parser.add_argument(
-        "--context-private-profile",
-        default=None,
-        help="explicit Lumio private source profile for managed overall admission",
-    )
-    parser.add_argument("--context-expected-current", default="none")
-    parser.add_argument("--visibility", action="append", default=None)
-    parser.add_argument("--overall-digest", help="exact displayed composite confirmation digest")
-    try:
-        args = parser.parse_args(argv)
-        if args.context_private_profile and not args.context_destination:
-            raise UsageError("--context-private-profile requires --context-destination")
-        composite = (
-            overall_review(
-                args.project,
-                args.proposal,
-                args.revision,
-                args.reviewed_digest,
-                destination=args.context_destination,
-                expected_current=args.context_expected_current,
-                scope=args.visibility or ["public"],
-                confirm_mappings=args.confirm_mappings,
-                storage_profile=args.context_storage_profile,
-                private_profile=args.context_private_profile,
-            )
-            if args.context_destination
-            else None
-        )
-        if args.confirm:
-            result = admit_revision(
-                args.project,
-                args.proposal,
-                args.revision,
-                args.reviewed_digest,
-                confirmed_by=args.by or f"human:{getuser()}",
-                confirm_mappings=args.confirm_mappings,
-                overall_preview=composite,
-                confirmed_overall_digest=args.overall_digest,
-                private_profile=args.context_private_profile,
-            )
-        else:
-            result = (
-                composite
-                if composite is not None
-                else admission_review(
-                    args.project,
-                    args.proposal,
-                    args.revision,
-                    args.reviewed_digest,
-                    confirm_mappings=args.confirm_mappings,
-                )
-            )
-    except Exception as exc:  # one JSON error object, message verbatim
-        print(
-            json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),
-            file=sys.stderr,
-        )
-        return 1
-    print(json.dumps(result))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

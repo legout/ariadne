@@ -37,6 +37,7 @@ from ariadne import (
     authoring_sources,
     context,
     contract_inspection,  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue] — same
+    draft,
     execution,
     profiler,
     proposals,
@@ -317,6 +318,10 @@ def _native_graph_policy_errors(tree: Path, namespace: str) -> list[str]:
     return errors
 
 
+def _expect(view: dict) -> tuple[int, str]:
+    return (view["generation"], view["candidate_revision"])
+
+
 class AuthoringProject:
     """One host-configured data project and its Git-backed authoring proposals
     (spec 2026-10-02-0009 §3–4, plan §2). Callers address system-generated
@@ -329,7 +334,7 @@ class AuthoringProject:
     This slice (G2) owns proposal lifecycle and complete artifact edits;
     ``validate_proposal``/``review_proposal`` are G4. Source proposals,
     operator approval and measured inputs are G3, routed through
-    :mod:`ariadne.authoring_sources` (``propose_sources``/``approve_sources``/
+    :mod:`ariadne.authoring_sources` (``propose_sources``/source grants/
     ``inputs``) and :mod:`ariadne.authoring_inputs` (``document_evidence``).
     """
 
@@ -342,7 +347,50 @@ class AuthoringProject:
         revision or the current one; a repository with no commits yet gets its
         human-created initial artifact revision first. Returns
         ``{proposal, base_revision, candidate_revision}``."""
-        return proposals.start_proposal(self.project, base_revision=base_revision)
+        # spec 0040 §3.3: ONE active draft. Opening is compare-and-set on "no slot";
+        # a second start refuses stale instead of creating a parallel proposal.
+        view = draft.open_draft(self.project, base_revision=base_revision)
+        record = proposals._load_record(
+            self.project.resolve(), draft.proposal_of(self.project, _expect(view))
+        )
+        return {
+            "proposal": record["id"],
+            "base_revision": record["base_revision"],
+            "candidate_revision": record["candidate_revision"],
+        }
+
+    def apply_edit(self, edit: dict) -> dict:
+        """Apply ONE typed edit to the ACTIVE draft (spec 0040 §3.1.3): no proposal or
+        base IDs cross this call. The generation and candidate revision are read from
+        the slot, so a competing writer between read and write makes the loser refuse
+        as stale; with no draft the call is the first write that creates it. Kinds: the
+        typed artifact kinds, ``{kind: "sources", entries: [...], storages?}`` (a typed
+        source edit; inert, never a grant) and ``{kind: "pages", pages: [...]}``."""
+        if not isinstance(edit, dict):
+            raise ValueError("an edit is a typed JSON object")
+        active = draft.status(self.project)
+        expected = None if active is None else (active["generation"], active["candidate_revision"])
+        kind = edit.get("kind")
+        if kind == "sources":
+            proposals.check_edit_keys(edit, frozenset({"kind", "entries", "storages"}))
+            result = authoring_sources.add_sources(
+                self.project, expected, edit["entries"], edit.get("storages")
+            )
+        elif kind == "pages":
+            proposals.check_edit_keys(edit, frozenset({"kind", "pages"}))
+            result = draft.edit_pages(self.project, expected, edit["pages"])
+        elif kind in EDIT_KINDS:
+            proposal = None if active is None else draft.proposal_of(self.project, expected)
+            rel, content = authoring_edits.resolve_edit(
+                edit, project=self.project, proposal=proposal
+            )
+            result = draft.edit_artifact(self.project, expected, rel, content)
+        else:
+            raise ValueError(
+                f"an edit is a typed object with kind one of {[*EDIT_KINDS, 'sources', 'pages']}, "
+                f"got kind {kind!r}"
+            )
+        return result
 
     def read_artifact(self, proposal: str, identity: dict, *, part: int = 1) -> dict:
         """Read one artifact of the proposal's current candidate revision —
@@ -375,7 +423,10 @@ class AuthoringProject:
                 f"propose_sources operation), got kind {got!r}"
             )
         rel, content = authoring_edits.resolve_edit(edit, project=self.project, proposal=proposal)
-        return proposals.edit_proposal(self.project, proposal, expected_revision, rel, content)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.edit_artifact(self.project, expected, rel, content)
+        result.pop("draft")
+        return result
 
     def edit_pages_batch(self, proposal: str, expected_revision: str, pages: list) -> dict:
         """Apply ONE complete native knowledge-page batch:
@@ -387,7 +438,10 @@ class AuthoringProject:
         set, and an identical batch is a no-op. OSI/model drafts keep their
         separate single-edit handling. Returns
         ``{proposal, revision, changed, paths, count}``."""
-        return proposals.edit_page_batch(self.project, proposal, expected_revision, pages)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.edit_pages(self.project, expected, pages)
+        result.pop("draft")
+        return result
 
     # ------------------- G3: sources, approval, measured inputs
 
@@ -408,14 +462,6 @@ class AuthoringProject:
         return authoring_sources.propose_sources(
             self.project, proposal, expected_revision, sources, storages
         )
-
-    def approve_sources(self, proposal: str, revision: str, source_digest: str) -> dict:
-        """HUMAN-ONLY (the CLI command; never an MCP/Agent tool): record the
-        operator's permission for the EXACT resolved source identity of the
-        proposal's current candidate revision, outside Git artifacts under
-        ``.ariadne/source-approvals.json`` — without editing the
-        already-committed candidate."""
-        return authoring_sources.approve_sources(self.project, proposal, revision, source_digest)
 
     def inputs(
         self,
@@ -454,7 +500,10 @@ class AuthoringProject:
         materialized final commit (never the earlier input commit). Returns
         that revision with the report/errors; the evidence is stored separately
         under ``.ariadne/validation/``. Validation is not admission (G5)."""
-        return validate_proposal(self.project, proposal, expected_revision)
+        expected = draft.active_expected(self.project, proposal, expected_revision)
+        result = draft.validate(self.project, expected)
+        result.pop("draft")
+        return result
 
     def review_proposal(self, proposal: str, *, part: int = 1) -> dict:
         """Read the proposal's candidate (read-only; reading is never
@@ -521,6 +570,63 @@ class AuthoringProject:
             }
         )
         return result
+
+    def _active(self) -> tuple[str, str]:
+        """The active draft's (proposal, candidate revision) — read once per call; the
+        engine's own revision check (and the project lock) arbitrates a racing writer."""
+        view = draft.status(self.project)
+        if view is None:
+            raise ValueError(
+                "there is no active draft — make an edit (or add a source) to open one"
+            )
+        proposal = draft.proposal_of(self.project, (view["generation"], view["candidate_revision"]))
+        return proposal, view["candidate_revision"]
+
+    def draft_read(self, identity: dict, *, part: int = 1) -> dict:
+        """:meth:`read_artifact` of the active draft; with no draft yet, the served
+        (or HEAD) state is read through a read-only view of the base."""
+        proposal, _revision = self._active()
+        return self.read_artifact(proposal, identity, part=part)
+
+    def draft_inputs(self, **kwargs) -> dict:
+        proposal, _revision = self._active()
+        return self.inputs(proposal, **kwargs)
+
+    def _pin(self) -> tuple[int, str]:
+        view = draft.status(self.project)
+        if view is None:
+            raise ValueError("there is no active draft — make an edit to open one")
+        return (view["generation"], view["candidate_revision"])
+
+    def draft_refresh_schema(self, assets: list[dict]) -> dict:
+        pin = self._pin()
+        proposal = draft.proposal_of(self.project, pin)
+        return refresh_schema(self.project, proposal, pin[1], assets, pin=pin)
+
+    def draft_inspect_mapping(self, candidate: object, limits: object = None) -> dict:
+        pin = self._pin()
+        proposal = draft.proposal_of(self.project, pin)
+        return inspect_mapping(self.project, proposal, pin[1], candidate, limits=limits, pin=pin)
+
+    def draft_review(self, *, part: int = 1) -> dict:
+        proposal, _revision = self._active()
+        return self.review_proposal(proposal, part=part)
+
+    def draft_validate(self) -> dict:
+        """Validate the active draft at its current generation (refuses when stale)."""
+        proposal, revision = self._active()
+        return self.validate_proposal(proposal, revision)
+
+    def resolve_term_in_draft(self, request: str | dict, *, part: int = 1) -> dict:
+        """:meth:`resolve_term` against the ACTIVE draft — no proposal ID (spec 0040
+        §3.1.3, the same shape as the other authoring tools)."""
+        active = draft.status(self.project)
+        if active is None:
+            raise ValueError("there is no active draft to resolve terms against")
+        proposal = draft.proposal_of(
+            self.project, (active["generation"], active["candidate_revision"])
+        )
+        return self.resolve_term(proposal, request, part=part)
 
     # --------------- K3: bounded mapping inspection + receipts
 
@@ -881,7 +987,7 @@ def _stale_schema_binding_errors(tree: Path, approval_digest: str | None) -> lis
         for page in sorted(knowledge.rglob("*.md")):
             rel = f"knowledge/{page.relative_to(knowledge)}"
             try:
-                full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), rel)
+                full, _body, _start = parse_frontmatter(page.read_text(encoding="utf-8"), Path(rel))
             except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
                 continue
             profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1445,7 +1551,7 @@ def _kb_technical_resources(text: str, path: str) -> list[str]:
     from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return []
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1499,7 +1605,7 @@ def _kb_relative_provenance(text: str, path: str) -> list[str]:
     from lumio_wiki import parse_frontmatter
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return []
     profile = full.get("ariadne_profile") if isinstance(full, dict) else None
@@ -1543,7 +1649,7 @@ def _kb_reference_from_text(text: str, path: str) -> tuple[dict, dict] | None:
     from lumio_wiki import parse_frontmatter  # pyright: ignore[reportMissingImports] — optional SDK
 
     try:
-        full, _body, _start = parse_frontmatter(text, path)
+        full, _body, _start = parse_frontmatter(text, Path(path))
     except Exception:  # noqa: BLE001 — the producer/page gate owns malformed errors
         return None
     view = _kb_reference_view(full)
@@ -1968,6 +2074,7 @@ def _schema_columns(catalog_table: dict, declared: dict) -> list[dict]:
 
 
 def _refresh_native_profiles(
+    pin: draft.Expected,
     project: Path,
     proposal: str,
     current: str,
@@ -2120,13 +2227,29 @@ def _refresh_native_profiles(
     # spec0035 §2/§6): the public writer validates the whole candidate
     # before any byte, stages only the written identities and commits once —
     # no sequential per-page commits, no partially refreshed candidate.
-    batch = proposals.edit_page_batch(
-        project,
-        proposal,
-        current,
-        [{"path": spec["path"], "content": spec["text"]} for spec in specs],
-        core_generated=True,
-    )
+    commit = {
+        "project": project,
+        "proposal": proposal,
+        "expected_revision": current,
+        "pages": [{"path": spec["path"], "content": spec["text"]} for spec in specs],
+    }
+    if pin is not None:  # MCP/draft route: the commit holds the original draft pin
+        with draft.pinned(project, pin):
+            batch = proposals.edit_page_batch(
+                commit["project"],
+                commit["proposal"],
+                commit["expected_revision"],
+                commit["pages"],
+                core_generated=True,
+            )
+    else:
+        batch = proposals.edit_page_batch(
+            commit["project"],
+            commit["proposal"],
+            commit["expected_revision"],
+            commit["pages"],
+            core_generated=True,
+        )
     written = set(batch["paths"])
     pages = [
         {
@@ -2153,6 +2276,8 @@ def refresh_schema(
     proposal: str,
     expected_revision: str,
     assets: list[dict] | tuple[dict, ...],
+    *,
+    pin: draft.Expected = None,
 ) -> dict:
     """The explicit physical schema refresh (plan §2 ``refresh_schema``, spec
     0010 §4; issue #41/K1): regenerate the core-owned schema facts and Dataset
@@ -2299,6 +2424,7 @@ def refresh_schema(
     # knowledge/ subtree (C6: the classic context_layer page-build route is
     # retired; old-capability candidates refused above, before any access).
     return _refresh_native_profiles(
+        pin,
         project,
         proposal,
         current,
@@ -2351,6 +2477,14 @@ def load_receipt(project: Path, proposal: str, receipt_id: str) -> dict:
     (an allowlisted id or count proves nothing)."""
     path = _receipt_path(project, proposal, receipt_id)
     entry = proposals._lstat(path)
+    if entry is None:
+        # Draft generations (spec 0040 §3.3) each have their own proposal, but a receipt's
+        # validity is dependency-matched, never proposal-matched: resolve the random
+        # receipt id from an earlier generation's evidence directory. The integrity
+        # digest and every dependency check below still apply.
+        for other in sorted((project / EVIDENCE_REL).glob(f"*/{receipt_id}.json")):
+            path, entry = other, proposals._lstat(other)
+            break
     if entry is None:
         raise ValueError(
             f"receipt {receipt_id!r} does not resolve in the project's evidence "
@@ -3125,6 +3259,8 @@ def inspect_mapping(
     expected_revision: str,
     candidate: object,
     limits: object = None,
+    *,
+    pin: draft.Expected = None,
 ) -> dict:
     """The ONE typed mapping-inspection operation (plan §2 ``inspect_mapping``,
     spec 0010 §7; issue #43/K3): measure a structured candidate from exactly
@@ -3304,7 +3440,11 @@ def inspect_mapping(
             f"{effective['response_bytes']}-byte ceiling — lower the raw-example "
             "count or narrow the candidate; no receipt was retained"
         )
-    store_receipt(project, proposal, receipt)
+    if pin is not None:  # the receipt is retained only while the draft is still the pinned one
+        with draft.pinned(project, pin):
+            store_receipt(project, proposal, receipt)
+    else:
+        store_receipt(project, proposal, receipt)
     return envelope
 
 

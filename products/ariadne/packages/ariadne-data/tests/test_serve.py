@@ -468,16 +468,13 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "save_example",
         "search_examples",
         "resolve_term",
-        "authoring_start_proposal",
         "authoring_read_artifact",
         "authoring_edit_proposal",
-        "authoring_propose_sources",
         "authoring_inputs",
-        "authoring_validate_proposal",
         "authoring_refresh_schema",
         "authoring_resolve_term",
         "authoring_inspect_mapping",
-        "authoring_review_proposal",
+        "draft_status",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
 

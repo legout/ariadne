@@ -10,6 +10,7 @@ from ariadne.authoring import AuthoringProject
 from ariadne.cli import main as cli_main
 from ariadne.query import QueryRuntime
 from ariadne.query_results import QueryResultError
+from tests.mcp_inproc import run as mcp_run
 from tests.test_git_admission import _policy_edit, _validated_ready, admit
 from tests.test_git_authoring import (
     MODEL_YML,
@@ -140,23 +141,9 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     # Metadata-only candidate discovery works before any admission exists.
     fresh_project = complete_bundle_project(tmp_path / "fresh")
     select_revision4_fixture(fresh_project)
-    fresh = AuthoringProject(fresh_project).start_proposal()
     assert admission.load_current(fresh_project) is None
-    assert (
-        cli_main(
-            [
-                "search-examples",
-                "event count",
-                "--project",
-                str(fresh_project),
-                "--proposal",
-                fresh["proposal"],
-                "--revision",
-                fresh["candidate_revision"],
-            ]
-        )
-        == 0
-    )
+    # (the explicit-candidate preview is retired; discovery with no admission is source-free)
+    assert mcp_run(fresh_project, "search_examples", {"query": "event count"}) == 0
     assert json.loads(capsys.readouterr().out) == []
 
     project = complete_bundle_project(tmp_path / "admitted")
@@ -215,28 +202,10 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     assert saved["base_revision"] == review["revision"]
     assert saved["candidate_revision"] != saved["base_revision"]
     assert saved["status"] == "draft" and saved["path"].startswith("knowledge/answer-examples/")
-    from ariadne.serve import build_app
-    from tests.test_authoring_mcp import _payload
-
-    app = build_app(runtime, project=project)
-    mcp_result = asyncio.run(
-        app.call_tool(
-            "search_examples",
-            {
-                "query": "event count",
-                "proposal": saved["proposal"],
-                "revision": saved["candidate_revision"],
-            },
-        )
-    )
-    structured = getattr(mcp_result, "structured_content", None)
-    mcp_hits = (
-        structured["result"]
-        if isinstance(structured, dict) and set(structured) == {"result"}
-        else _payload(mcp_result)
-    )
-    if isinstance(mcp_hits, dict):
-        mcp_hits = [mcp_hits]
+    # the REAL MCP tool reads served + the active draft's own example (labeled draft)
+    assert mcp_run(project, "search_examples", {"query": "event count"}) == 0
+    mcp_hits = json.loads(capsys.readouterr().out)
+    assert [hit["status"] for hit in mcp_hits] == ["draft"]
     assert mcp_hits[0]["proposal"] == saved["proposal"]
     assert mcp_hits[0]["revision"] == saved["candidate_revision"]
     assert not (project / "staging").exists()
@@ -250,39 +219,22 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     )
     with pytest.raises(UnadmittedInputError, match="no visible context page"):
         asyncio.run(runtime.read_context_page("policies/unadmitted-g2-boundary.md"))
-    assert asyncio.run(runtime.search_examples("event count")) == []
+    assert [hit["status"] for hit in asyncio.run(runtime.search_examples("event count"))] == [
+        "draft"
+    ]  # only the active draft's own example; the staged page is never searched
 
-    # An explicit write to an existing candidate must use its current revision.
-    expect_value_error(
-        "stale revision",
-        lambda: asyncio.run(
-            runtime.save_example(
-                submission("What is the total number of event rows?"),
-                proposal=saved["proposal"],
-                expected_revision=saved["base_revision"],
-            )
-        ),
-    )
+    # A second save joins the SAME active draft (one draft per project, spec 0040).
     second = asyncio.run(
-        runtime.save_example(
-            submission("What is the total number of event rows?"),
-            proposal=saved["proposal"],
-            expected_revision=saved["candidate_revision"],
-        )
+        runtime.save_example(submission("What is the total number of event rows?"))
     )
+    assert second["proposal"] == saved["proposal"]
     assert second["candidate_revision"] != saved["candidate_revision"]
 
     # Search resolves committed blobs, not mutable proposal worktree bytes.
     first_path = worktree_of(project, saved["proposal"]) / saved["path"]
     saved_bytes = first_path.read_bytes()
     first_path.write_text("worktree-only corruption", encoding="utf-8")
-    preview = asyncio.run(
-        runtime.search_examples(
-            "event count",
-            proposal=second["proposal"],
-            revision=second["candidate_revision"],
-        )
-    )
+    preview = asyncio.run(runtime.search_examples("event count"))
     assert {hit["question"] for hit in preview} == {
         example["question"],
         "What is the total number of event rows?",
@@ -293,16 +245,6 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     )
     assert all("rows" not in hit and "sql" not in hit.get("provenance", {}) for hit in preview)
     first_path.write_bytes(saved_bytes)
-    expect_value_error(
-        "candidate",
-        lambda: asyncio.run(
-            runtime.search_examples(
-                "event count",
-                proposal=second["proposal"],
-                revision=saved["candidate_revision"],
-            )
-        ),
-    )
 
     validation = authoring.validate_proposal(second["proposal"], second["candidate_revision"])
     assert validation["ok"] is True
@@ -352,23 +294,11 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
         changed["candidate_revision"],
         _policy_edit("The G2 changed rule."),
     )
-    historical = asyncio.run(
-        current.search_examples(
-            "event count",
-            proposal=changed["proposal"],
-            revision=edited["revision"],
-            include_history=True,
-        )
-    )
-    assert len(historical) == 2
-    assert all(hit["status"] == "draft" and hit["stale"] is True for hit in historical)
-    assert (
-        asyncio.run(
-            current.search_examples(
-                "event count", proposal=changed["proposal"], revision=edited["revision"]
-            )
-        )
-        == []
+    # a draft that changes the Policy does not make the SERVED examples stale until it is
+    # admitted; the served read stays the served release
+    assert all(
+        hit["status"] == "stable" and hit["stale"] is False
+        for hit in asyncio.run(current.search_examples("event count"))
     )
     validation = authoring.validate_proposal(changed["proposal"], edited["revision"])
     assert validation["ok"] is True
@@ -382,11 +312,7 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     expect_value_error(
         "citation",
         lambda: asyncio.run(
-            current.save_example(
-                submission("An answer from the previous Policy."),
-                proposal=latest_proposal["proposal"],
-                expected_revision=latest_proposal["candidate_revision"],
-            )
+            current.save_example(submission("An answer from the previous Policy."))
         ),
     )
     assert branch_of(project, latest_proposal["proposal"]) == latest_proposal["candidate_revision"]
@@ -395,7 +321,8 @@ def test_examples_share_git_admission_and_preserve_stale_history(tmp_path, capsy
     latest = QueryRuntime.open_project(project)
     assert asyncio.run(latest.search_examples("event count")) == []
     history = asyncio.run(latest.search_examples("event count", include_history=True))
-    assert len(history) == 2
+    # served history only: the new draft is empty, so no draft-labeled record appears
+    assert len(history) == 2, [(h["id"], h["status"]) for h in history]
     assert all(hit["status"] == "stable" and hit["stale"] is True for hit in history)
     _, latest_snapshot = admission.resolve_admission(project)
     assert (latest_snapshot / saved["path"]).read_bytes() == saved_bytes
@@ -450,13 +377,7 @@ def test_example_commit_failure_reports_unadmitted_worktree_state(tmp_path, caps
         "sources": [],
     }
     try:
-        asyncio.run(
-            runtime.save_example(
-                submission,
-                proposal=started["proposal"],
-                expected_revision=started["candidate_revision"],
-            )
-        )
+        asyncio.run(runtime.save_example(submission))
     except RuntimeError as exc:
         message = str(exc)
     else:
@@ -473,9 +394,7 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
     import io
     import os
 
-    from ariadne import proposals
     from ariadne.authoring import AuthoringProject
-    from ariadne.cli import main as cli_main
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
@@ -496,9 +415,9 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
             raise AssertionError("a project without valid admission must refuse")
 
     refuse_unadmitted_project()
-    assert cli_main(["list-metrics", "--project", str(project)]) == 1
+    assert cli_main(["metrics", "--json", "--project", str(project)]) == 1
     missing_error = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "admission" in missing_error.lower()
+    assert "admitted snapshot" in missing_error
 
     assert admit(project, review) == 0
     capsys.readouterr()
@@ -512,9 +431,9 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
 
     admission_path.write_text("{", encoding="utf-8")
     refuse_unadmitted_project()
-    assert cli_main(["list-metrics", "--project", str(project)]) == 1
+    assert cli_main(["metrics", "--json", "--project", str(project)]) == 1
     corrupt_error = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "admission" in corrupt_error.lower()
+    assert "current-admission record" in corrupt_error
     admission_path.write_bytes(admitted_record)
 
     # A later candidate remains invisible to both existing and new sessions.
@@ -537,38 +456,20 @@ def test_public_routes_refuse_legacy_and_pin_admitted_git(tmp_path, capsys, monk
 
     # Retired selectors and commands fail during argument parsing, before writes.
     for argv in (
-        ["list-metrics", "--project", str(project), "--served", str(project)],
-        ["save-example", "--project", str(project), "--staging", str(tmp_path / "staging")],
+        ["metrics", "--project", str(project), "--served", str(project)],
+        ["query", "event_count", "--project", str(project), "--staging", str(tmp_path / "staging")],
         ["promote", "--project", str(project)],
-        ["setup", "--project", str(project), "--legacy", "--no-input"],
     ):
         assert cli_main(argv, stdin=io.StringIO("")) == 1
         assert "error" in json.loads(capsys.readouterr().err)
     assert not (tmp_path / "staging").exists()
 
-    # Setup reports operator commands but never initializes/configures Git,
-    # records source permission, admits state or starts an implicit proposal.
-    fresh = tmp_path / "setup-only"
-    git = proposals._git
-    commands = []
-
-    def observe_git(argv, *args, **kwargs):
-        commands.append(argv)
-        assert argv[:1] != ["init"]
-        assert argv[:1] != ["config"] or argv[1:2] == ["--get"]
-        return git(argv, *args, **kwargs)
-
-    monkeypatch.setattr(proposals, "_git", observe_git)
-    assert cli_main(["setup", "--project", str(fresh), "--no-input"]) == 0
-    output = capsys.readouterr().out
-    assert "--namespace" in output and "--private-profile" in output
-    assert "source approval" in output and "Git Review Admission" in output
-    assert commands == []
+    # `init` is the only project-creating command and an unrelated, uninitialized directory
+    # is never touched by a read-only command (spec 0040 §3.2).
+    fresh = tmp_path / "never-initialized"
+    assert cli_main(["status", "--project", str(fresh), "--json"]) == 1
+    capsys.readouterr()
     assert not fresh.exists()
-    assert not (fresh / ".git").exists()
-    assert not (fresh / ".ariadne" / "source-approvals.json").exists()
-    assert not (fresh / ".ariadne" / "current.json").exists()
-    assert not list((fresh / ".ariadne" / "proposals").glob("*.json"))
 
 
 def test_deferred_server_resolves_first_admission(tmp_path, capsys, monkeypatch):

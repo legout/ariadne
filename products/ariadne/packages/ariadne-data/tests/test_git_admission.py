@@ -24,12 +24,10 @@ from the fixture rows, never derived from runtime output.
 """
 
 import asyncio
-import io
 import json
 import os
 import sys
 from collections.abc import Sequence
-from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -38,12 +36,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+
 from ariadne import admission as admission_module  # noqa: E402
 from ariadne import proposals  # noqa: E402
-from ariadne.admission import main as admit_cli  # noqa: E402
 from ariadne.admission import reconcile  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.validate import candidate_scope_digest  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
@@ -51,6 +48,7 @@ from tests.test_git_authoring import (  # noqa: E402
     NATIVE_POLICY_PAGE,
     NATIVE_POLICY_REL,
     UNSAFE_GRAIN_MODEL_YML,
+    admit_library,
     approved,
     branch_of,
     commit_native_document,
@@ -97,50 +95,30 @@ def admitted_ready(api: AuthoringProject, project: Path, pages: list[dict]) -> t
     return review, {"started": started, "validated": validated}
 
 
-def admit(  # type-honest default (S1 #56 turn check): Sequence accepts the tuple default
-    project: Path, review: dict, *, confirm: bool = True, extra: Sequence[str] = ()
+def admit(
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    extra: Sequence[str] = (),
+    destination: Path | None = None,
 ) -> int:
-    # Spec0035 composite admission through the real CLI: the display call shows
-    # the composite preview; only re-running with --confirm and that preview's
-    # exact digest activates. The synthetic fixture operator publishes with
-    # public visibility to a stable destination OUTSIDE the project; the
-    # expected-current baseline is the currently admitted publication ('none'
-    # for the first) — a real compare-and-swap, never a fabricated pointer.
-    current = project / CURRENT
-    expected = (
-        json.loads(current.read_text(encoding="utf-8"))["bound_release"]["knowledge"][
-            "published_version"
-        ]
-        if current.exists()
-        else "none"
-    )
-    argv = [
-        "--project",
-        str(project),
-        "--proposal",
-        review["proposal"],
-        "--revision",
-        review["revision"],
-        "--reviewed-digest",
-        review["review_digest"],
-        "--context-destination",
-        str(project.parent / "published"),
-        "--context-expected-current",
-        expected,
-        "--visibility",
-        "public",
-        *extra,
-    ]
-    if not confirm:
-        return admit_cli(argv)  # display-only: the composite preview, no activation
-    preview = io.StringIO()
-    with redirect_stdout(preview):
-        code = admit_cli(argv)
-    if code != 0:
-        return code  # the real CLI refusal (its stderr) reaches the caller unchanged
-    return admit_cli(
-        [*argv, "--confirm", "--overall-digest", json.loads(preview.getvalue())["digest"]]
-    )
+    """Admission through the supported library calls (see ``admit_library``). ``extra`` keeps
+    the few option-shaped cases: ``--reviewed-digest X``, ``--context-private-profile P``,
+    ``--context-expected-current V``."""
+    options: dict = {}
+    items = list(extra)
+    while items:
+        flag = items.pop(0)
+        value = items.pop(0)
+        options[
+            {
+                "--reviewed-digest": "reviewed_digest",
+                "--context-private-profile": "private_profile",
+                "--context-expected-current": "expected_current",
+            }[flag]
+        ] = value
+    return admit_library(project, review, confirm=confirm, destination=destination, **options)
 
 
 def test_initial_proposal_refuses_unselected_knowledge_symlink_without_mutation(tmp_path):
@@ -258,13 +236,14 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
 
     # a later authoring HEAD never changes the admitted answers (AC4): the
     # pinned revision serves until a separately admitted revision replaces it
+    # approval consumed the generation: the next edit opens a NEW draft (spec 0040 §3.4.2.6)
+    later = api.start_proposal()
+    assert later["proposal"] != proposal
     moved = api.edit_pages_batch(
-        proposal,
-        branch_of(project, proposal),
-        _policy_edit("A later authoring edit."),
+        later["proposal"], later["candidate_revision"], _policy_edit("A later authoring edit.")
     )
-    assert api.validate_proposal(proposal, moved["revision"])["ok"] is True
-    assert branch_of(project, proposal) != revision
+    assert api.validate_proposal(later["proposal"], moved["revision"])["ok"] is True
+    assert branch_of(project, later["proposal"]) != revision
     assert read_current(project)["commit"] == revision  # still pinned
     fresh = QueryRuntime.open_project(project)
     pinned = asyncio.run(fresh.get_metric("event_count"))
@@ -315,14 +294,8 @@ def test_only_reviewed_validated_revision_activates_without_changing_candidate_b
     assert saved["candidate_revision"] != revision
     assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
     assert not (project / "staging" / "answer_examples").exists()
-    assert asyncio.run(fresh.search_examples("events")) == []
-    hits = asyncio.run(
-        fresh.search_examples(
-            "events",
-            proposal=saved["proposal"],
-            revision=saved["candidate_revision"],
-        )
-    )
+    # the served-or-active-draft read contract (spec 0040): the draft's own Example is found
+    hits = asyncio.run(fresh.search_examples("events"))
     assert hits and hits[0]["id"] == f"entity:{saved['id']}" and hits[0]["status"] == "draft"
     fresh.con.close()
 
@@ -487,7 +460,7 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
     revision = review["revision"]
     evidence_path = project / STATE / "validation" / proposal / f"{revision}.json"
     original = evidence_path.read_text(encoding="utf-8")
-    approvals_path = project / STATE / "source-approvals.json"
+    approvals_path = project / STATE / "source_grants.json"
     approvals_original = approvals_path.read_text(encoding="utf-8")
     native_profile = ["--context-private-profile", str(profile)]
 
@@ -526,8 +499,8 @@ def test_admission_refuses_partial_mismatched_or_unapproved_evidence(tmp_path, c
     evidence_path.write_text(original, encoding="utf-8")
 
     # a withdrawn operator approval (the identity is no longer approved)
-    approvals_path.write_text("{}", encoding="utf-8")
-    refuse("NO operator approval")
+    approvals_path.write_text('{"version": 1, "grants": []}', encoding="utf-8")
+    refuse("NO source grant")
     approvals_path.write_text(approvals_original, encoding="utf-8")
 
     # A real retained-source update changes the native manifest and candidate.
@@ -570,14 +543,13 @@ def test_failed_snapshot_or_record_activation_preserves_the_previous_admission(
     assert admit(project, first_review) == 0
     first = read_current(project)
 
+    nxt = api.start_proposal()  # approval consumed the generation: a new draft
     second_edit = api.edit_pages_batch(
-        first_review["proposal"],
-        first["commit"],
-        _policy_edit("Second candidate body."),
+        nxt["proposal"], nxt["candidate_revision"], _policy_edit("Second candidate body.")
     )
-    second_validated = api.validate_proposal(first_review["proposal"], second_edit["revision"])
+    second_validated = api.validate_proposal(nxt["proposal"], second_edit["revision"])
     assert second_validated["ok"] is True
-    second_review = api.review_proposal(first_review["proposal"])
+    second_review = api.review_proposal(nxt["proposal"])
     assert second_review["revision"] == second_validated["revision"]
 
     # a failed SNAPSHOT activation refuses before anything is referenced
@@ -645,7 +617,7 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     snapshot = project / record["snapshot"]
     page = snapshot / NATIVE_METRIC_REL
     original_page = page.read_text(encoding="utf-8")
-    approvals = project / STATE / "source-approvals.json"
+    approvals = project / STATE / "source_grants.json"
     original_approvals = approvals.read_text(encoding="utf-8")
 
     # bytes staleness at open: a hand-edited snapshot file never serves
@@ -664,27 +636,18 @@ def test_open_project_requires_admission_and_has_no_plain_root_constructor(tmp_p
     assert stale.value.code == "admission_stale"
     page.write_text(original_page, encoding="utf-8")
 
-    # source-identity staleness: a withdrawn approval refuses at open and in session
-    approvals.write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="operator's approval"):
-        QueryRuntime.open_project(project)
+    # the served release covers its own bound identities (spec 0040 §3.4.4): withdrawing
+    # the grant record never changes what the pinned release serves
+    approvals.write_text('{"version": 1, "grants": []}', encoding="utf-8")
     definition = {
         "name": "event_total",
         "description": "Count all events",
         "source": "events.events",
         "expression": "COUNT(*)",
     }
-    for operation in (
-        lambda: runtime.get_metric("event_count"),
-        lambda: runtime.define_metric(definition),
-        runtime.list_datasets,
-    ):
-        with pytest.raises(PlannerError) as source_stale:
-            asyncio.run(operation())
-        assert source_stale.value.code == "admission_stale"
-    approvals.write_text(original_approvals, encoding="utf-8")
     assert asyncio.run(runtime.define_metric(definition))["rows"] == [{"event_total": 3}]
     assert asyncio.run(runtime.list_datasets())
+    approvals.write_text(original_approvals, encoding="utf-8")
 
     # the multi-fact gate keeps its own admission meaning on the Git route: no
     # graph in the snapshot -> query_metrics refuses while single metrics serve
@@ -732,102 +695,36 @@ def test_managed_sources_resolve_through_operator_identity_not_snapshot_paths(
 # --------------------- [5] advanced admitted baseline and explicit reconcile
 
 
-def test_an_advanced_admitted_baseline_requires_explicit_reconciliation(tmp_path, capsys):
-    """Issue #37 [5]/AC3: a proposal started before another admission cannot
-    replace served state (the admitted baseline is not in its ancestry); the
-    human-only reconcile records a local merge that DOES carry it, invalidates
-    the old validation/review, preserves proposal/repair identity, and then
-    revalidation and admission succeed — reconcile itself refuses a revision
-    lacking the baseline, never merges automatically, and never clears an
-    inconsistent transition."""
+def test_a_draft_after_an_admission_starts_on_the_served_revision_and_admits_on_top(
+    tmp_path, capsys
+):
+    """Issue #37 [5]/AC3, migrated to the one-draft model (spec 0040 §3.3): approval
+    consumes the generation; the next draft starts on the served revision, so a second
+    admission carries BOTH changes (the rebase of a stale draft is in test_draft.py)."""
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
-
-    # proposal A is reviewed/validated first; proposal B starts from the
-    # same base BEFORE the admission advanced — the served baseline B's
-    # record binds as its expected baseline
-    a_started = api.start_proposal()
-    approved(api, project, a_started)
-    a_review = _validated_ready(api, project, _policy_edit("A's admitted body."))
-    b_started = api.start_proposal()
-    approved(api, project, b_started)
-
-    # A activates first (its policy edit becomes the served baseline)
-    assert admit(project, a_review) == 0
-    admitted_commit = read_current(project)["commit"]
-    b_validated = api.validate_proposal(b_started["proposal"], b_started["candidate_revision"])
-    assert b_validated["ok"] is True
-    b_review = api.review_proposal(b_started["proposal"])
-
-    # B cannot replace served state: explicit reconciliation is required
-    assert admit(project, b_review) == 1
-    error = json.loads(capsys.readouterr().err)["error"]
-    assert "not a descendant" in error["message"] and "reconcile" in error["message"]
-    assert read_current(project)["commit"] == admitted_commit  # prior state preserved
-
-    worktree = worktree_of(project, b_started["proposal"])
-
-    # reconcile refuses a revision lacking the current admitted baseline
-    run_git(worktree, "commit", "-q", "--allow-empty", "-m", "human: unrelated rebase")
-    unrelated = branch_of(project, b_started["proposal"])
-    assert (
-        authoring_cli(
-            [
-                "reconcile",
-                "--proposal",
-                b_started["proposal"],
-                "--expected-revision",
-                b_validated["revision"],
-                "--revision",
-                unrelated,
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
-    assert "ancestry" in json.loads(capsys.readouterr().err)["error"]["message"]
-    assert (
-        record_of(project, b_started["proposal"])["candidate_revision"] == b_validated["revision"]
-    )
-
-    # the human merges the admitted baseline in by hand (no automatic merge)
-    run_git(worktree, "merge", "-q", "--no-edit", admitted_commit)
-    merged = branch_of(project, b_started["proposal"])
-
-    # a dirty worktree during reconcile refuses and preserves every record
-    (worktree / "data" / "seed_notes.md").write_text("# dirty\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="uncommitted changes"):
-        reconcile(project, b_started["proposal"], b_validated["revision"], merged)
-    run_git(worktree, "checkout", "--", "data/seed_notes.md")
-
-    # recording the reconciled HEAD: preserves repair identity, invalidates the
-    # old revision's validation/review
-    reconciled = reconcile(project, b_started["proposal"], b_validated["revision"], merged)
-    assert reconciled["revision"] == merged
-    assert reconciled["admitted_baseline"] == admitted_commit
-    record = record_of(project, b_started["proposal"])
-    assert record["candidate_revision"] == merged
-    # repair identity preserved across the reconcile: B's one validation round
-    # is still counted, never reset by the human rebase
-    assert record["repair"] == {"attempts": 1, "status": "open"}
-    stale_review = api.review_proposal(b_started["proposal"])
-    assert stale_review["revision"] == merged and stale_review["report"] is None
-
-    # validation runs again on the reconciled revision and admission succeeds
-    revalidated = api.validate_proposal(b_started["proposal"], merged)
-    assert revalidated["ok"] is True
-    b_review2 = api.review_proposal(b_started["proposal"])
-    assert admit(project, b_review2) == 0
+    a_review, _journey = admitted_ready(api, project, _policy_edit("A's admitted body."))
+    assert admit(project, a_review) == 0  # A activates; the generation is consumed
     capsys.readouterr()
-    assert read_current(project)["commit"] == revalidated["revision"]
+    admitted_commit = read_current(project)["commit"]
 
-    # the new served revision carries BOTH proposals' changes: A's admitted
-    # policy body survived the reconciliation, not erased by B's admission
+    # a new draft starts on the served revision; B's edit is validated and reviewed there
+    b_started = api.start_proposal()
+    assert b_started["base_revision"] == admitted_commit
+    b_edit = api.edit_pages_batch(
+        b_started["proposal"], b_started["candidate_revision"], _policy_edit("B's body.")
+    )
+    assert api.validate_proposal(b_started["proposal"], b_edit["revision"])["ok"] is True
+    b_review = api.review_proposal(b_started["proposal"])
+    assert admit(project, b_review) == 0
+    capsys.readouterr()
     runtime = QueryRuntime.open_project(project)
     answer = asyncio.run(runtime.get_metric("event_count"))
-    assert answer["rows"] == [{"event_count": 3}]
-    assert "A's admitted body." in "".join(answer["context"]["policies"])
+    assert "B's body." in "".join(answer["context"]["policies"])
+    assert read_current(project)["commit"] == b_review["revision"]
+    assert (
+        run_git(project, "merge-base", "--is-ancestor", admitted_commit, b_review["revision"]) == ""
+    )
 
 
 def test_reconcile_never_clears_exhausted_repair_state_or_inconsistent_transitions(tmp_path):
@@ -902,11 +799,12 @@ def test_sessions_pin_one_admission_across_later_admissions(tmp_path):
     # a second admission on the same proposal: the FIRST session keeps serving
     # its pinned revision (session-level coherent pinning)
     session1 = QueryRuntime.open_project(project)
+    nxt = api.start_proposal()  # approval consumed the generation: a new draft
     second_edit = api.edit_pages_batch(
-        first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
+        nxt["proposal"], nxt["candidate_revision"], _policy_edit("Second admitted body.")
     )
-    assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
-    second_review = api.review_proposal(first_review["proposal"])
+    assert api.validate_proposal(nxt["proposal"], second_edit["revision"])["ok"] is True
+    second_review = api.review_proposal(nxt["proposal"])
     assert admit(project, second_review) == 0
     second = read_current(project)
     assert second["commit"] != first["commit"]
@@ -931,11 +829,12 @@ def test_open_project_uses_exact_supplied_admission_record(tmp_path, monkeypatch
     first_review = _validated_ready(api, project, _policy_edit("First admitted body."))
     assert admit(project, first_review) == 0
     first = read_current(project)
+    nxt = api.start_proposal()  # approval consumed the generation: a new draft
     second_edit = api.edit_pages_batch(
-        first_review["proposal"], first["commit"], _policy_edit("Second admitted body.")
+        nxt["proposal"], nxt["candidate_revision"], _policy_edit("Second admitted body.")
     )
-    assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"] is True
-    second_review = api.review_proposal(first_review["proposal"])
+    assert api.validate_proposal(nxt["proposal"], second_edit["revision"])["ok"] is True
+    second_review = api.review_proposal(nxt["proposal"])
     assert admit(project, second_review) == 0
     assert read_current(project)["commit"] != first["commit"]
 
@@ -952,7 +851,7 @@ def test_open_project_uses_exact_supplied_admission_record(tmp_path, monkeypatch
         runtime.con.close()
 
 
-def test_supplied_admission_record_revalidates_approval_before_open(tmp_path, monkeypatch):
+def test_supplied_admission_record_stays_covered_by_its_own_bound_identities(tmp_path, monkeypatch):
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     review = _validated_ready(api, project, _policy_edit("Approval must remain current."))
@@ -966,10 +865,12 @@ def test_supplied_admission_record_revalidates_approval_before_open(tmp_path, mo
         return real_registry(selected)
 
     monkeypatch.setattr(admission_module, "approved_registry", registry_spy)
-    (project / STATE / "source-approvals.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="operator's approval"):
-        QueryRuntime.open_project(project, admission_record=record)
-    assert registry_calls == []
+    (project / STATE / "source_grants.json").write_text(
+        '{"version": 1, "grants": []}', encoding="utf-8"
+    )
+    # the release's own bound identities stay covered without any grant (spec 0040 §3.4.4)
+    QueryRuntime.open_project(project, admission_record=record)
+    assert registry_calls != []
 
 
 def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission(tmp_path, capsys):
@@ -983,9 +884,9 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
 
     from ariadne.cli import main as cli
 
-    assert cli(["list-metrics", "--project", str(project)]) == 1
+    assert cli(["metrics", "--json", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)["error"]
-    assert "no valid admission" in error["message"]
+    assert "no admitted snapshot" in error["message"]
 
     validated = api.validate_proposal(started["proposal"], started["candidate_revision"])
     assert validated["ok"] is True
@@ -993,19 +894,19 @@ def test_cli_project_flag_serves_the_managed_route_and_refuses_without_admission
     assert admit(project, review) == 0
     capsys.readouterr()  # the admit envelope is not part of the CLI output below
 
-    assert cli(["list-metrics", "--project", str(project)]) == 0
+    assert cli(["metrics", "--json", "--project", str(project)]) == 0
     listed = json.loads(capsys.readouterr().out)
     names = [entry["name"] for entry in listed if isinstance(entry, dict)]
     assert "events::events.event_count" in names
 
-    assert cli(["get-metric", "event_count", "--project", str(project)]) == 0
+    assert cli(["query", "event_count", "--json", "--project", str(project)]) == 0
     answer = json.loads(capsys.readouterr().out)
     assert answer["rows"] == [{"event_count": 3}]
     assert answer["admission"]["route"] == "git-review-admission"
 
     # --served is a retired selector (spec 0027 §6): the parser refuses the
     # old spelling before any mutation — no compatibility route behind it
-    assert cli(["list-metrics", "--project", str(project), "--served", str(project)]) == 1
+    assert cli(["metrics", "--project", str(project), "--served", str(project)]) == 1
     assert "unrecognized arguments" in json.loads(capsys.readouterr().err)["error"]["message"]
 
 
@@ -1013,14 +914,14 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     tmp_path, monkeypatch, capsys
 ):
     """Example writes stay project-scoped; ad-hoc metric results are ephemeral."""
-    from ariadne.cli import main as cli
+    from tests.mcp_inproc import run as mcp
 
     project = complete_bundle_project(tmp_path)
     select_revision4_fixture(project)
     api = AuthoringProject(project)
     review, _journey = admitted_ready(api, project, _policy_edit("Revised admitted body."))
     assert admit(project, review) == 0
-    capsys.readouterr()  # the admit envelope is not part of the CLI output below
+    capsys.readouterr()  # the admit envelope is not part of the output below
 
     operator_desk = tmp_path / "operator-desk"
     operator_desk.mkdir()
@@ -1041,13 +942,7 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
         "attestation": "self-declared",
         "sources": ["metrics/event-count.md"],
     }
-    assert (
-        cli(
-            ["save-example", "--project", str(project)],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 0
-    )
+    assert mcp(project, "save_example", {"submission": submission}) == 0
     saved = json.loads(capsys.readouterr().out)
     assert saved["status"] == "draft"
     assert saved["base_revision"] == review["revision"]
@@ -1055,42 +950,18 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert (worktree_of(project, saved["proposal"]) / saved["path"]).is_file()
     assert not (project / "staging").exists()
     assert not (operator_desk / "staging").exists()  # nothing escaped to the CWD
-    assert cli(["search-examples", "events total", "--project", str(project)]) == 0
-    assert json.loads(capsys.readouterr().out) == []  # unadmitted draft stays hidden
-    assert (
-        cli(
-            [
-                "search-examples",
-                "events total",
-                "--project",
-                str(project),
-                "--proposal",
-                saved["proposal"],
-                "--revision",
-                saved["candidate_revision"],
-            ]
-        )
-        == 0
-    )
+    # the active draft's own example is labeled draft in the served-plus-draft read
+    assert mcp(project, "search_examples", {"query": "events total"}) == 0
     preview = json.loads(capsys.readouterr().out)
     assert preview[0]["id"] == f"entity:{saved['id']}" and preview[0]["status"] == "draft"
 
-    assert (
-        cli(
-            ["define-metric", "--project", str(project)],
-            stdin=io.StringIO(
-                json.dumps(
-                    {
-                        "name": "event_ids_cli",
-                        "description": "Ad-hoc count of event ids",
-                        "source": "events.events",
-                        "expression": "COUNT(id)",
-                    }
-                )
-            ),
-        )
-        == 0
-    )
+    adhoc_request = {
+        "name": "event_ids_cli",
+        "description": "Ad-hoc count of event ids",
+        "source": "events.events",
+        "expression": "COUNT(id)",
+    }
+    assert mcp(project, "define_metric", {"definition": adhoc_request}) == 0
     adhoc = json.loads(capsys.readouterr().out)
     assert adhoc["persistence"] == {"status": "not_saved"}
     assert "staged_as" not in adhoc and "staged_context_as" not in adhoc
@@ -1098,110 +969,15 @@ def test_cli_managed_route_keeps_examples_scoped_and_metrics_ephemeral(
     assert not list((project / "staging" / "context_layer" / "metrics").glob("*.md"))
     assert not (operator_desk / "staging").exists()  # still nothing in the CWD
 
-    # An explicit save into the existing candidate is revision-checked.
-    assert (
-        cli(
-            [
-                "save-example",
-                "--project",
-                str(project),
-                "--proposal",
-                saved["proposal"],
-                "--expected-revision",
-                saved["candidate_revision"],
-            ],
-            stdin=io.StringIO(
-                json.dumps({**submission, "question": "How many event ids exist in total"})
-            ),
-        )
-        == 0
-    )
+    # A second save joins the SAME active draft (one draft per project, spec 0040).
+    second_submission = {**submission, "question": "How many event ids exist in total"}
+    assert mcp(project, "save_example", {"submission": second_submission}) == 0
     second = json.loads(capsys.readouterr().out)
     assert second["proposal"] == saved["proposal"]
     assert second["candidate_revision"] != saved["candidate_revision"]
 
-    # The removed selector is rejected by argument parsing before any writes.
-    explicit = tmp_path / "explicit-staging"
-    refs_before = run_git(
-        project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
-    ).splitlines()
-    branch_before = branch_of(project, saved["proposal"])
-    status_before = run_git(project, "status", "--porcelain", "--untracked-files=all")
-    assert (
-        cli(
-            ["save-example", "--project", str(project), "--staging", str(explicit)],
-            stdin=io.StringIO(json.dumps(submission)),
-        )
-        == 1
-    )
-    refusal = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "unrecognized arguments" in refusal and "--staging" in refusal
-    assert not explicit.exists() and not (operator_desk / "staging").exists()
-    assert (
-        run_git(
-            project, "for-each-ref", "--format=%(refname)=%(objectname)", "refs/heads"
-        ).splitlines()
-        == refs_before
-    )
-    assert branch_of(project, saved["proposal"]) == branch_before
-    assert run_git(project, "status", "--porcelain", "--untracked-files=all") == status_before
-
 
 # ------------- [7] review fix pass: bound baselines and pinned serving
-
-
-def test_a_stale_review_of_an_advanced_baseline_never_activates(tmp_path, capsys):
-    """Fix pass finding 1 (plan §2): the confirmation binds the CURRENTLY
-    expected served baseline. A candidate that already descends from another
-    subsequently admitted proposal cannot activate with its OLD review — the
-    baseline advance requires reconcile + revalidation + re-review first."""
-    project = complete_bundle_project(tmp_path)
-    api = AuthoringProject(project)
-
-    # proposal A: candidate C1, reviewed/validated while NO admission exists
-    a_review, _journey = admitted_ready(api, project, _policy_edit("A's admitted body."))
-
-    # proposal B based on C1 itself BEFORE C1 was admitted: B's candidate
-    # descends from C1 and its review binds the no-admission baseline
-    b_started = api.start_proposal(base_revision=a_review["revision"])
-    approved(api, project, b_started)
-    b_edit = api.edit_pages_batch(
-        b_started["proposal"], b_started["candidate_revision"], _policy_edit("B's body.")
-    )
-    b_validated = api.validate_proposal(b_started["proposal"], b_edit["revision"])
-    assert b_validated["ok"] is True
-    b_review = api.review_proposal(b_started["proposal"])
-
-    # A activates (its own review bound the no-admission baseline)
-    assert admit(project, a_review) == 0
-    capsys.readouterr()
-    admitted_commit = read_current(project)["commit"]
-
-    # B's stale review must refuse although B's candidate descends from the
-    # new baseline: the review bound the OLD expected served baseline
-    assert admit(project, b_review) == 1
-    error = json.loads(capsys.readouterr().err)["error"]["message"]
-    assert "baseline" in error and "reconcile" in error
-    assert read_current(project)["commit"] == admitted_commit  # prior state preserved
-
-    # resolution: the human reconciles the advanced baseline (B already
-    # carries it in its ancestry), revalidates and re-reviews; the NEW review
-    # binds the current baseline and activates
-    worktree = worktree_of(project, b_started["proposal"])
-    run_git(worktree, "commit", "-q", "--allow-empty", "-m", "human: reconcile baseline")
-    reconciled_head = branch_of(project, b_started["proposal"])
-    reconciled = reconcile(project, b_started["proposal"], b_review["revision"], reconciled_head)
-    assert reconciled["admitted_baseline"] == admitted_commit
-    assert record_of(project, b_started["proposal"])["expected_baseline"] == admitted_commit
-    assert api.validate_proposal(b_started["proposal"], reconciled_head)["ok"] is True
-    fresh_review = api.review_proposal(b_started["proposal"])
-    assert fresh_review["review_digest"] != b_review["review_digest"]  # new binding
-    assert admit(project, fresh_review) == 0
-    capsys.readouterr()
-    assert read_current(project)["commit"] == reconciled_head
-    runtime = QueryRuntime.open_project(project)
-    answer = asyncio.run(runtime.get_metric("event_count"))
-    assert "B's body." in "".join(answer["context"]["policies"])
 
 
 def test_new_proposals_default_base_to_the_admitted_revision(tmp_path):
@@ -1225,10 +1001,6 @@ def test_new_proposals_default_base_to_the_admitted_revision(tmp_path):
     record = record_of(project, started["proposal"])
     assert record["base_revision"] == admitted_commit
     assert record["expected_baseline"] == admitted_commit
-
-    # an explicit known base revision is still honoured alongside an admission
-    explicit = api.start_proposal(base_revision=head)
-    assert explicit["base_revision"] == head
 
 
 def test_managed_search_examples_ignores_unadmitted_project_root_examples(tmp_path):
@@ -1432,11 +1204,12 @@ def test_post_rename_publication_failure_preserves_the_serving_admission(
     capsys.readouterr()
     first = read_current(project)
 
+    nxt = api.start_proposal()  # approval consumed the generation: a new draft
     second_edit = api.edit_pages_batch(
-        first_review["proposal"], first["commit"], _policy_edit("Second body.")
+        nxt["proposal"], nxt["candidate_revision"], _policy_edit("Second body.")
     )
-    assert api.validate_proposal(first_review["proposal"], second_edit["revision"])["ok"]
-    second_review = api.review_proposal(first_review["proposal"])
+    assert api.validate_proposal(nxt["proposal"], second_edit["revision"])["ok"]
+    second_review = api.review_proposal(nxt["proposal"])
 
     real_fsync = proposals._fsync_path
 

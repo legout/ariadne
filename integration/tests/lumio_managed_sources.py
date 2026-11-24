@@ -12,7 +12,6 @@ import os
 
 import pytest
 from ariadne import admission, lumio_context
-from ariadne.admission import main as admission_main
 from ariadne.discovery import DiscoveryRuntime
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
 from lumio_wiki.location import PublishedFilesystemLocation
@@ -214,23 +213,9 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     _profile(profile, registry_root, store_root)
     destination = tmp_path / "published"
 
-    # Exercise the actual CLI preview and confirmation for the managed base.
-    cli_args = [
-        "--project",
-        str(project),
-        "--proposal",
-        proposal,
-        "--revision",
-        base_revision,
-        "--reviewed-digest",
-        base_review["review_digest"],
-        "--context-destination",
-        str(destination),
-        "--context-private-profile",
-        str(profile),
-    ]
-    assert admission_main(cli_args) == 0
-    base_preview = json.loads(capsys.readouterr().out)
+    # Preview and confirm the managed base through the supported library calls (the ones
+    # `ariadne approve` makes).
+    base_preview = _python_preview(project, base_review, str(destination), str(profile), "none")
     assert base_preview["source_configuration"]["binding"] == {
         "schema_version": 1,
         "namespace": NAMESPACE,
@@ -244,29 +229,9 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     )
 
     # The same existing valid profile must not become cwd-dependent when selected
-    # through the CLI or either shared Python admission entry point.
+    # through either shared Python admission entry point.
     monkeypatch.chdir(private)
     relative_profile = profile.name
-    relative_cli_args = [relative_profile if arg == str(profile) else arg for arg in cli_args]
-    for confirm_args in (
-        [],
-        [
-            "--confirm",
-            "--by",
-            "human:synthetic-operator",
-            "--overall-digest",
-            base_preview["digest"],
-        ],
-    ):
-        assert admission_main([*relative_cli_args, *confirm_args]) == 1
-        cli_error = capsys.readouterr()
-        assert cli_error.out == ""
-        assert json.loads(cli_error.err) == {
-            "error": {
-                "type": "ValueError",
-                "message": "private profile path must be absolute",
-            }
-        }
     with pytest.raises(ValueError, match="private profile path must be absolute"):
         _python_preview(project, base_review, destination, relative_profile, "none")
     with pytest.raises(ValueError, match="private profile path must be absolute"):
@@ -274,23 +239,18 @@ def test_managed_admission_binds_profile_and_retention(tmp_path, capsys, monkeyp
     assert not (project / ".ariadne/current.json").exists()
     assert PublishedFilesystemLocation(destination).read_pointer() is None
 
-    assert (
-        admission_main(
-            [
-                *cli_args,
-                "--confirm",
-                "--by",
-                "human:synthetic-operator",
-                "--overall-digest",
-                base_preview["digest"],
-            ]
-        )
-        == 0
-    )
+    _python_admit(project, base_review, base_preview, str(profile))
     capsys.readouterr()
     prior_descriptor = current_bytes(project)
     prior_pointer = PublishedFilesystemLocation(destination).read_pointer()
     assert prior_pointer == base_revision
+
+    # Approval consumed the first draft (spec 0040 §3.4.2.6): the next change is the NEXT
+    # draft, started on the served revision.
+    started = api.start_proposal()
+    proposal = started["proposal"]
+    base_revision = started["candidate_revision"]
+    tree = worktree_of(project, proposal)
 
     # Add one hand-authored document while the known baseline original is absent.
     (tree / "knowledge" / NEW_PAGE_PATH).write_text(NEW_PAGE)

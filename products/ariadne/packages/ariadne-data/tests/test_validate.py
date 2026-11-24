@@ -13,7 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne.validate import main as validate_main  # noqa: E402
 from ariadne.validate import validate  # noqa: E402
 from tests.test_evals import CUSTOMERS_MODEL  # noqa: E402
 from tests.test_serve import GOLDEN_OSI, seed_demo_db  # noqa: E402
@@ -158,25 +157,6 @@ def test_context_only_tree_and_graph_without_models(tmp_path):
     broken = validate(graph_root.parent)
     assert not broken.ok
     assert any("no semantic models" in error for error in broken.errors)
-
-
-def test_cli_is_source_free_and_rejects_retired_selectors(tmp_path, capsys, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "ariadne.yaml").write_text(
-        "sources:\n  - name: demo\n    type: sqlite\n    path: missing.db\n",
-        encoding="utf-8",
-    )
-    artifacts = make_staging(tmp_path, ORDERS_YML)
-    assert validate_main([str(artifacts)]) == 0
-    assert "ok:" in capsys.readouterr().out
-
-    for option in (("--db", "missing.db"), ("--sources", "ariadne.yaml")):
-        try:
-            validate_main([str(artifacts), *option])
-        except SystemExit as exc:
-            assert exc.code == 2
-        else:
-            raise AssertionError(f"retired source selector was accepted: {option[0]}")
 
 
 # --- Grain audit (spec rev 6 §8.14, ADR-0006 §5) -----------------------------

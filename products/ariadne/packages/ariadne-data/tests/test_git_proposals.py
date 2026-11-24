@@ -28,7 +28,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
 
 from ariadne import proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from ariadne.cli import main as ariadne_cli  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 MODEL_YML = """\
@@ -98,16 +98,15 @@ def git_project(tmp_path: Path, *, commit: bool = True) -> Path:
     return project
 
 
-def test_two_proposals_isolate_edits_and_reject_stale_revision(tmp_path):
-    """Issue #34 red seam: two proposals from one base — editing A leaves B
-    untouched at the base candidate, and an edit to A carrying A's now-stale
-    expected revision is refused without overwriting the candidate."""
+def test_one_active_draft_rejects_a_second_start_and_a_stale_revision(tmp_path):
+    """Issue #34 red seam, migrated to the one-draft model (spec 0040 §3.3): a
+    second start refuses stale instead of opening a parallel proposal, and an
+    edit carrying a superseded candidate revision is refused without overwriting."""
     project = git_project(tmp_path)
     api = AuthoringProject(project)
     a = api.start_proposal()
-    b = api.start_proposal()
-    assert a["proposal"] != b["proposal"]
-    assert a["base_revision"] == b["base_revision"]  # both from the same base
+    with pytest.raises(ValueError, match="stale"):
+        api.start_proposal()
     assert a["candidate_revision"] == a["base_revision"]  # no edits yet
 
     edited = api.edit_proposal(
@@ -118,14 +117,8 @@ def test_two_proposals_isolate_edits_and_reject_stale_revision(tmp_path):
     assert edited["changed"] is True
     assert edited["revision"] != a["candidate_revision"]
 
-    # B is isolated: its candidate still carries the inherited base bytes and
-    # its branch never moved.
-    inherited = api.read_artifact(b["proposal"], {"kind": "seed_notes"})
-    assert inherited["revision"] == b["candidate_revision"] == b["base_revision"]
-    assert inherited["content"] == SEED_NOTES
-
-    # A's candidate moved: the stale expected revision is refused BEFORE any
-    # write — the candidate keeps exactly the Version 2 bytes.
+    # the stale expected revision is refused BEFORE any write — the candidate
+    # keeps exactly the Version 2 bytes.
     with pytest.raises(ValueError, match="stale"):
         api.edit_proposal(
             a["proposal"],
@@ -152,11 +145,11 @@ def dirty(project: Path, proposal: str) -> str:
 # ------------------------------------------ onboarding + the CLI start/read/edit seam
 
 
-def test_cli_start_read_edit_on_a_fresh_initial_artifact_repository(tmp_path, capsys):
-    """Issue #34 [6], the public CLI journey on a repo with NO commits yet:
-    ``start`` establishes the human-created initial artifact revision (allowed
-    scope only — the unrelated TODO.txt never rides along), ``edit`` applies a
-    complete revision-checked edit, ``read`` returns the candidate's artifact."""
+def test_cli_draft_edit_on_a_fresh_initial_artifact_repository(tmp_path, capsys):
+    """Issue #34 [6], the public CLI journey on a repo with NO commits yet (spec 0040):
+    the first `draft edit` creates the draft, which establishes the human-created
+    initial artifact revision (allowed scope only — the unrelated TODO.txt never rides
+    along), commits exactly the one artifact, and `draft status` reports the draft."""
     project = tmp_path / "fresh"
     scaffold_artifacts(project)
     (project / "TODO.txt").write_text("operator notes, never an artifact\n", encoding="utf-8")
@@ -164,96 +157,45 @@ def test_cli_start_read_edit_on_a_fresh_initial_artifact_repository(tmp_path, ca
     run_git(project, "config", "user.name", "Ariadne Tests")
     run_git(project, "config", "user.email", "tests@ariadne.local")
 
-    assert authoring_cli(["start", "--project", str(project)]) == 0
-    started = json.loads(capsys.readouterr().out)
-    assert set(started) == {"proposal", "base_revision", "candidate_revision"}
-    assert started["candidate_revision"] == started["base_revision"]
+    edit_file = tmp_path / "edit.json"
+    edit_file.write_text(json.dumps({"kind": "seed_notes", "content": "# v2\n"}), encoding="utf-8")
+    assert ariadne_cli(["draft", "edit", str(edit_file), "--project", str(project), "--json"]) == 0
+    edited = json.loads(capsys.readouterr().out)
+    assert edited["changed"] is True and edited["draft"]["generation"] == 1
 
     # the initial artifact revision committed EXACTLY the allowed scope
     root_commit = run_git(project, "rev-list", "--max-parents=0", "HEAD").strip().splitlines()[-1]
     committed = set(run_git(project, "show", "--name-only", "--format=", root_commit).split())
     assert committed == {"ariadne.yaml", "data/seed_notes.md", "semantic_layer/models/events.yml"}
     assert "TODO.txt" not in run_git(project, "ls-files")
-
-    edit_file = tmp_path / "edit.json"
-    edit_file.write_text(json.dumps({"kind": "seed_notes", "content": "# v2\n"}), encoding="utf-8")
-    assert (
-        authoring_cli(
-            [
-                "edit",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(edit_file),
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    edited = json.loads(capsys.readouterr().out)
-    assert edited["changed"] is True and edited["revision"] != started["candidate_revision"]
-
-    assert (
-        authoring_cli(
-            [
-                "read",
-                "--proposal",
-                started["proposal"],
-                "--kind",
-                "seed_notes",
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    read = json.loads(capsys.readouterr().out)
-    assert read["content"] == "# v2\n" and read["revision"] == edited["revision"]
-
     # the edit commit names ONLY the artifact — never the unrelated TODO.txt
     assert set(
         run_git(project, "show", "--name-only", "--format=", edited["revision"]).split()
     ) == {"data/seed_notes.md"}
 
+    assert ariadne_cli(["draft", "status", "--project", str(project), "--json"]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["candidate_revision"] == edited["revision"] and status["stale"] is False
 
-def test_cli_edit_reads_stdin_and_keeps_the_one_json_error_contract(tmp_path, capsys, monkeypatch):
-    """``--file -`` reads the edit from stdin; a stale revision writes exactly
-    one JSON error object to stderr, exit 1, and no success value on stdout."""
+
+def test_cli_draft_edit_reads_stdin_and_keeps_the_one_json_error_contract(
+    tmp_path, capsys, monkeypatch
+):
+    """``draft edit -`` reads the edit from stdin; a malformed edit writes exactly one
+    JSON error object to stderr, exit 1, and no success value on stdout."""
     project = git_project(tmp_path)
-    api = AuthoringProject(project)
-    started = api.start_proposal()
-    api.edit_proposal(
-        started["proposal"],
-        started["candidate_revision"],
-        {"kind": "seed_notes", "content": "# moved on\n"},
-    )
     monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO(json.dumps({"kind": "seed_notes", "content": "# stale writer\n"})),
+        "sys.stdin", io.StringIO(json.dumps({"kind": "seed_notes", "content": "# stdin\n"}))
     )
-    assert (
-        authoring_cli(
-            [
-                "edit",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                "-",
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
+    assert ariadne_cli(["draft", "edit", "-", "--project", str(project), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["changed"] is True
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"kind": "nonsense"})))
+    assert ariadne_cli(["draft", "edit", "-", "--project", str(project), "--json"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
     error = json.loads(captured.err)["error"]
-    assert error["type"] == "ValueError" and "stale" in error["message"]
+    assert error["type"] == "ValueError" and "typed object" in error["message"]
 
 
 def test_read_is_bounded_in_parts_and_reports_completeness(tmp_path):
@@ -729,7 +671,8 @@ def test_wrong_proposal_or_project_identity_is_refused(tmp_path):
     api = AuthoringProject(project)
     other_api = AuthoringProject(other)
     foreign = other_api.start_proposal()
-    with pytest.raises(ValueError, match="no proposal"):
+    api.start_proposal()  # a draft of this project exists; the foreign ID is still no draft of it
+    with pytest.raises(ValueError, match="not the active draft"):
         api.edit_proposal(
             "p-00000000000000-000000",  # well-formed but unknown here
             foreign["candidate_revision"],
@@ -740,7 +683,7 @@ def test_wrong_proposal_or_project_identity_is_refused(tmp_path):
             api.read_artifact(bad, {"kind": "seed_notes"})
     with pytest.raises(ValueError, match="no proposal"):
         api.read_artifact(foreign["proposal"], {"kind": "seed_notes"})
-    with pytest.raises(ValueError, match="no proposal"):
+    with pytest.raises(ValueError, match="not the active draft"):
         api.edit_proposal(
             foreign["proposal"],
             foreign["candidate_revision"],

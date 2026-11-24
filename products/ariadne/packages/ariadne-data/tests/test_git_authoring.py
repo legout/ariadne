@@ -31,6 +31,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import duckdb  # pyright: ignore[reportMissingImports] — analysis env may lack site-packages
@@ -44,10 +45,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import proposals  # noqa: E402
+from ariadne import authoring_sources, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
 from ariadne.authoring_sources import candidate_sources  # noqa: E402
+from ariadne.cli import main as ariadne_cli  # noqa: E402
 
 SEED_NOTES = "# Seed notes\n\nAll events count.\n"
 
@@ -587,12 +588,20 @@ def record_of(project: Path, proposal: str) -> dict:
     )
 
 
+def grant_sources(api: AuthoringProject, proposal: str, revision: str, digest: str) -> dict:
+    """The operator's source grant for the candidate's exact resolved identity (the
+    human step of spec 0040 §3.4; the library call the approval command makes)."""
+    return authoring_sources.grant_candidate(
+        api.project, proposal, revision, digest, by="human:test-operator"
+    )
+
+
 def approved(api: AuthoringProject, project: Path, started: dict) -> None:
     """The operator's approval of the candidate's exact resolved source identity
     (the G3 human step): the profile/audit connection opens only after this."""
     resolved, digest = candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(started["proposal"], started["candidate_revision"], digest)
+    grant_sources(api, started["proposal"], started["candidate_revision"], digest)
 
 
 def commit_paths(project: Path, revision: str) -> set[str]:
@@ -795,9 +804,9 @@ def test_validation_runs_only_through_the_approved_source_identity(tmp_path):
     project = complete_bundle_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
-    with pytest.raises(ValueError, match="NO operator approval") as excinfo:
+    with pytest.raises(ValueError, match="NO grant") as excinfo:
         api.validate_proposal(started["proposal"], started["candidate_revision"])
-    assert "approve-sources" in str(excinfo.value)
+    assert "ariadne approve" in str(excinfo.value)
     # no validation evidence exists and no finalize commit was created
     assert not (project / ".ariadne" / "validation").exists()
     assert branch_of(project, started["proposal"]) == started["candidate_revision"]
@@ -1178,87 +1187,30 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
 # --------------------------------------------------------------- the CLI seam
 
 
-def test_cli_validate_and_review_the_git_proposal(tmp_path, capsys):
-    """The public CLI journey: ``validate`` returns the finalized revision with
-    its report, ``review --proposal`` returns the review envelope, and a stale
-    expected revision writes exactly one JSON error object."""
+def test_cli_validate_and_diff_the_active_draft(tmp_path, capsys):
+    """The public CLI journey (spec 0040 §3.1.2): `validate` returns the finalized
+    revision with its report, `diff` summarizes the draft against the served state, and
+    a draft edit carrying nothing stale writes one JSON object."""
     project = complete_bundle_project(tmp_path)
-    assert authoring_cli(["start", "--project", str(project)]) == 0
-    started = json.loads(capsys.readouterr().out)
+    api = AuthoringProject(project)
+    started = api.start_proposal()
     resolved, digest = candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    assert (
-        authoring_cli(
-            [
-                "approve-sources",
-                "--proposal",
-                started["proposal"],
-                "--revision",
-                started["candidate_revision"],
-                "--source-digest",
-                digest,
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
+    grant_sources(api, started["proposal"], started["candidate_revision"], digest)
     capsys.readouterr()
 
-    assert (
-        authoring_cli(
-            [
-                "validate",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
+    assert ariadne_cli(["validate", "--project", str(project), "--json"]) == 0
     validated = json.loads(capsys.readouterr().out)
     assert validated["ok"] is True
     assert validated["revision"] != started["candidate_revision"]
     assert validated["revision"] == branch_of(project, started["proposal"])
+    assert validated["draft"]["candidate_revision"] == validated["revision"]
 
-    assert (
-        authoring_cli(
-            [
-                "review",
-                "--proposal",
-                started["proposal"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    review = json.loads(capsys.readouterr().out)
-    assert review["revision"] == validated["revision"]
-    assert review["report"]["ok"] is True
-
-    # a stale expected revision: one JSON error object, exit 1
-    assert (
-        authoring_cli(
-            [
-                "validate",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    error = json.loads(captured.err)["error"]
-    assert error["type"] == "ValueError" and "stale" in error["message"]
+    assert ariadne_cli(["diff", "--project", str(project), "--json"]) == 0
+    diff = json.loads(capsys.readouterr().out)
+    assert diff["validation"] == "validated"
+    assert diff["approval_kind"] == "calculation"
+    assert diff["draft"]["generation"] == 1
 
 
 @pytest.mark.parametrize(
@@ -2426,7 +2378,7 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
     started2 = api.start_proposal(base_revision=legacy_commit)
     resolved2, source_digest2 = candidate_sources(project, started2["candidate_revision"])
     assert resolved2 is not None and source_digest2 is not None
-    api.approve_sources(started2["proposal"], started2["candidate_revision"], source_digest2)
+    grant_sources(api, started2["proposal"], started2["candidate_revision"], source_digest2)
     edited2 = api.edit_proposal(
         started2["proposal"],
         started2["candidate_revision"],
@@ -2465,6 +2417,11 @@ def test_supplied_historical_standalone_admission_refuses_without_mutation(tmp_p
 
     # AC7 positive control: the refusal never blocks the project itself — the
     # native KB stays authorable (no blanket refusal from unrelated state)
+    from ariadne import draft
+
+    active = draft.status(project)
+    if active is not None:  # one active draft (spec 0040): retire the earlier one first
+        draft.discard(project, (active["generation"], active["candidate_revision"]))
     assert api.start_proposal()["proposal"].startswith("p-")
 
 
@@ -3106,44 +3063,17 @@ def test_type_change_rebinding_and_deselection_keep_history(tmp_path):
     assert deselected["changed"] is True
 
 
-def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
-    """C6 fix R6/C4 (native recovery of the deleted CLI roundtrip, issue #41
-    [6]): the local ``ariadne-authoring refresh-schema`` surface returns the
-    same JSON envelope as the core operation — generated page identities and
-    schema-change flags — and the second identical call reports the no-op."""
+def test_refresh_schema_returns_pages_and_the_identical_retry_is_a_noop(tmp_path):
+    """spec 0010 §4 ([6]): refresh returns the generated page identities and
+    schema-change flags, and the second identical call reports the no-op (the CLI
+    surface of this operation is the MCP tool, spec 0040 §3.1.3)."""
     project = _evolution_project(tmp_path)
     api = AuthoringProject(project)
     started = api.start_proposal()
     approved(api, project, started)
-    request = tmp_path / "assets.json"
-    request.write_text(json.dumps([SALES_ASSET]), encoding="utf-8")
 
-    from ariadne.authoring_cli import main as authoring_cli
-
-    capsys.readouterr()
-    code = authoring_cli(
-        [
-            "refresh-schema",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            started["candidate_revision"],
-            "--file",
-            str(request),
-        ]
-    )
-    assert code == 0
-    first = json.loads(capsys.readouterr().out)
-    # the first CLI refresh COMMITTED the generated pages: the core call and
-    # every later refresh address the RETURNED candidate revision, never the
-    # started one (a stale revision refuses — authoring.py's coherence gate)
-    core = api.refresh_schema(started["proposal"], first["revision"], [SALES_ASSET])
-    assert first["revision"] == core["revision"]
-    assert {(p["resource"], p["kind"]) for p in first["pages"]} == {
-        (p["resource"], p["kind"]) for p in core["pages"]
-    }
+    first = api.refresh_schema(started["proposal"], started["candidate_revision"], [SALES_ASSET])
+    assert first["revision"] != started["candidate_revision"]
     sales_entry = next(p for p in first["pages"] if p["kind"] == "table")
     assert sales_entry["changes"] == {
         "added": ["amount", "order_id"],  # sorted column identity (plan §2)
@@ -3151,22 +3081,7 @@ def test_cli_refresh_schema_roundtrip_matches_core_and_noops(tmp_path, capsys):
         "type_changed": [],
     }
 
-    capsys.readouterr()
-    code = authoring_cli(
-        [
-            "refresh-schema",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            first["revision"],
-            "--file",
-            str(request),
-        ]
-    )
-    assert code == 0
-    second = json.loads(capsys.readouterr().out)
+    second = api.refresh_schema(started["proposal"], first["revision"], [SALES_ASSET])
     assert second["changed"] is False  # the identical retry is the no-op
     assert second["revision"] == first["revision"]
 
@@ -3652,3 +3567,99 @@ def test_observation_facts_carry_the_effective_source_binding():
         source_binding="a" * 64,
     )
     assert observations(same)["observed_at"] == bound_observations["observed_at"]
+
+
+def admit_library(
+    project: Path,
+    review: dict,
+    *,
+    confirm: bool = True,
+    confirm_mappings: Sequence[str] = (),
+    destination: Path | str | None = None,
+    expected_current: str | None = None,
+    private_profile: str | None = None,
+    storage_profile: str | None = None,
+    reviewed_digest: str | None = None,
+    visibility: Sequence[str] = ("public",),
+    plain_review: bool = False,
+) -> int:
+    """Fixture/engine admission through the SUPPORTED library calls (the same ones
+    ``ariadne approve`` makes): ``overall_review`` for the composite, then ``admit_revision``
+    pinned to the draft slot's generation and served base exactly as the approval adapter pins
+    them. Prints the JSON result to stdout, or one JSON error object to stderr, and returns
+    0/1 so the existing admission cases keep their shape. The real prompt/consent path is
+    proven separately through ``ariadne approve`` (tests/test_approve_pty.py)."""
+    from getpass import getuser
+
+    from ariadne import admission, draft
+
+    digest = reviewed_digest or review["review_digest"]
+    if expected_current is None:
+        current = admission.load_current(project)
+        expected_current = (
+            current["bound_release"]["knowledge"]["published_version"]
+            if current is not None and current.get("bound_release")
+            else "none"
+        )
+    display_only = plain_review and not confirm
+    destination = destination if destination is not None else project.parent / "published"
+    try:
+        if display_only:  # the plain review display: confirmed mapping selections resolved
+            print(
+                json.dumps(
+                    admission.admission_review(
+                        project,
+                        review["proposal"],
+                        review["revision"],
+                        digest,
+                        confirm_mappings=list(confirm_mappings),
+                    )
+                )
+            )
+            return 0
+        composite = admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            digest,
+            destination=str(destination),
+            expected_current=expected_current,
+            scope=list(visibility),
+            confirm_mappings=list(confirm_mappings),
+            storage_profile=storage_profile,
+            private_profile=private_profile,
+        )
+        if not confirm:
+            print(json.dumps(composite))
+            return 0
+        slot = draft._load_slot(project)
+        pin = None
+        if (
+            slot is not None
+            and slot["state"] == "active"
+            and slot["proposal"] == review["proposal"]
+        ):
+            pin = {
+                "generation": slot["generation"],
+                "base_served_revision": slot["base_served_revision"],
+            }
+        result = admission.admit_revision(
+            project,
+            review["proposal"],
+            review["revision"],
+            digest,
+            confirmed_by=f"human:{getuser()}",
+            confirm_mappings=list(confirm_mappings),
+            overall_preview=composite,
+            confirmed_overall_digest=composite["digest"],
+            private_profile=private_profile,
+            draft_pin=pin,
+        )
+    except Exception as exc:
+        print(
+            json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)}}),
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(result))
+    return 0

@@ -90,9 +90,7 @@ CLI::
 
 from __future__ import annotations
 
-import argparse
 import json
-import sys
 from collections import Counter
 from contextlib import nullcontext
 from decimal import Decimal
@@ -105,7 +103,6 @@ from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
-    default_registry_path,
     implicit_registry,
     load_registry,
 )
@@ -735,31 +732,31 @@ def profile(
     return result
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        prog="python -m ariadne.profiler",
-        description="Profile a database for the authoring agent (writes profile.json).",
+def profile_served(project: str | Path) -> dict:
+    """``ariadne profile``: profile the APPROVED served sources of a managed project —
+    the identities bound by the served release, plus source grants (spec 0040 §3.1.2).
+    Refuses when nothing is granted. Locked connection, host profiling ceilings."""
+    from ariadne import authoring_inputs, authoring_sources, execution, proposals
+
+    project = Path(project).resolve()
+    proposals.refuse_unsupported_project(project)
+    from ariadne import admission
+
+    served = admission.load_current(project)
+    entries: list[dict] = list((served or {}).get("sources") or [])
+    for grant in authoring_sources._load_grants(project):
+        if grant["source"] not in entries:
+            entries.append(grant["source"])
+    if not entries:
+        raise ValueError("no source is approved yet — run 'ariadne add' and 'ariadne approve'")
+    resolved_digest = authoring_sources.resolved_digest(entries)
+    state = authoring_sources.approval_state(project, entries, resolved_digest)
+    if not state["approved"]:
+        raise ValueError("an approved source identity is no longer current (changed binding)")
+    limits = authoring_inputs.project_profiling_limits(project)
+    return profile(
+        registry=authoring_sources.identity_registry(entries, state["storage_bindings"]),
+        budget=execution.DeadlineBudget(limits["execution_seconds"]),
+        payload_bytes=limits["response_bytes"],
+        locked=True,
     )
-    parser.add_argument("--db", default=None, help="path to the SQLite database")
-    parser.add_argument(
-        "--sources",
-        default=None,
-        help="source registry YAML (ADR-0010; default: ./ariadne.yaml only when "
-        "neither --sources nor --db is given)",
-    )
-    parser.add_argument("--out", default="profile.json", help="output path (default: profile.json)")
-    parser.add_argument("--no-out", action="store_true", help="print to stdout only, write no file")
-    args = parser.parse_args(argv)
-
-    sources_path = default_registry_path(args.sources, args.db)
-    if args.db is None and sources_path is None:
-        parser.error("one of --db or --sources is required")
-    text = json.dumps(profile(args.db, sources_path=sources_path), indent=2)
-    print(text)
-    if not args.no_out:
-        Path(args.out).write_text(text + "\n", encoding="utf-8")
-        print(f"wrote {args.out}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()

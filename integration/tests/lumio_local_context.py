@@ -124,6 +124,16 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 
+def library_cli(operation, project, argument):
+    """The navigation operation through the REAL MCP tool (in-process harness: actual tool
+    registration, argument schema and error mapping): one JSON value on stdout (0) or the
+    tool's error on stderr (1)."""
+    from tests.mcp_inproc import run
+
+    key = {"search_context": "query", "resolve_term": "request"}[operation]
+    return run(project, operation, {key: argument})
+
+
 def multi_metric_release(root: Path):
     """One admitted integrated release whose graph serves two predefined
     metrics over the same orders fact: revenue and completed_orders."""
@@ -559,7 +569,7 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     assert report["groups"]["examples"]["status"] == "unavailable"
 
     # the same navigation over the actual CLI, still under the source guards.
-    assert cli(["search-context", "meridian", "--project", str(project)]) == 0
+    assert library_cli("search_context", project, "meridian") == 0
     cli_hits = json.loads(capsys.readouterr().out)
     assert cli_hits == hits
     assert cli(["search", "meridian", "--json", "--project", str(project)]) == 0
@@ -589,14 +599,23 @@ def test_context_navigation_uses_sdk_without_legacy_or_sources(tmp_path, monkeyp
     document = yaml.safe_load(original)
     document["query"] = {"response_bytes": tightened}
     config.write_text(yaml.safe_dump(document, sort_keys=False))
-    code = cli(["search-context", "meridian", "--project", str(project)])
+    code = library_cli("search_context", project, "meridian")
     failure = capsys.readouterr()
     assert code == 1 and not failure.out
     refused = json.loads(failure.err)
-    assert refused["error"]["code"] == "result_byte_limit"
-    assert refused["error"]["exhausted_bound"]["response_bytes"] == tightened
+    # the MCP tool's bounded refusal (its error mapping carries the message, not the code)
+    assert "exceeds its byte ceiling" in refused["error"]["message"]
+    assert "required content is never dropped" in refused["error"]["message"]
+    # the typed refusal and the exact configured bound, on the supported LIBRARY seam
+    from ariadne.discovery import DiscoveryRuntime
+
+    with pytest.raises(query_results.QueryResultError) as typed:
+        asyncio.run(DiscoveryRuntime.open_project(project).search_context("meridian"))
+    body = typed.value.refusal()
+    assert body["error"]["code"] == "result_byte_limit"
+    assert body["error"]["exhausted_bound"]["response_bytes"] == tightened
     config.write_text(original)
-    assert cli(["search-context", "meridian", "--project", str(project)]) == 0
+    assert library_cli("search_context", project, "meridian") == 0
     capsys.readouterr()
 
     # A2 budget correction (plan0029r20): both accepted defects are observed
@@ -767,12 +786,13 @@ def test_sync_does_not_activate_context(tmp_path, monkeypatch, capsys):
     # B activates only through the ordinary native chain: the proposal
     # worktree fast-forwards to the operator's commit, reconcile records
     # that human-created HEAD, then validation, review, preview, confirm
-    tree = worktree_of(project, review["proposal"])
+    b_proposal = api.start_proposal()["proposal"]  # the next draft (spec 0040 §3.4.2.6)
+    tree = worktree_of(project, b_proposal)
     run_git(tree, "merge", "-q", "--ff-only", b_rev)
-    admission.reconcile(project, review["proposal"], a_rev, b_rev)
-    validated = api.validate_proposal(review["proposal"], b_rev)
+    admission.reconcile(project, b_proposal, a_rev, b_rev)
+    validated = api.validate_proposal(b_proposal, b_rev)
     assert validated["ok"] is True, validated["errors"]
-    later = api.review_proposal(review["proposal"])
+    later = api.review_proposal(b_proposal)
     assert later["revision"] == b_rev
     activate(project, later, preview(project, later, destination, a_rev))
 
@@ -1012,7 +1032,6 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     import json
 
     from ariadne import admission, serve
-    from ariadne.cli import main as cli
     from ariadne.discovery import DiscoveryRuntime
     from tests.test_discovery import _source_free_guards
 
@@ -1151,7 +1170,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         assert missed["total_matches"] == 0
         assert asyncio.run(session.resolve_term("order"))["total_matches"] == 0
         # one real CLI resolution on the same admitted Reference (JSON default)
-        assert cli(["resolve-term", "order number", "--project", str(project)]) == 0
+        assert library_cli("resolve_term", project, "order number") == 0
         cli_result = json.loads(capsys.readouterr().out)
         assert [match["representation"] for match in cli_result["matches"]] == [
             "global-order-number",
@@ -1165,7 +1184,19 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         assert cli_local["mappings"][0]["confirmation"] == "unconfirmed"
 
     # [2] the ordinary human selection through native preview + confirmation:
-    # the composite digest binds the exact selection on BOTH calls
+    # the composite digest binds the exact selection on BOTH calls. The first approval
+    # consumed its draft (spec 0040 §3.4.2.6): the selection travels in the NEXT draft,
+    # which carries one reviewed wording change on the served release.
+    served_a = review["revision"]
+    started_next = api.start_proposal()
+    proposal, revision = started_next["proposal"], started_next["candidate_revision"]
+    page_path = worktree_of(project, proposal) / "knowledge" / T2_REFERENCE_PAGE
+    meta_next, body_next = page_parts(page_path)
+    write_page(page_path, meta_next, body_next + "\nReviewed wording change.\n")
+    revision = reconcile_knowledge(project, proposal, revision)
+    validated_next = api.validate_proposal(proposal, revision)
+    assert validated_next["ok"] is True, validated_next["errors"]
+    revision = validated_next["revision"]
     review = api.review_proposal(proposal)
     composite = admission.overall_review(
         project,
@@ -1173,7 +1204,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         review["revision"],
         review["review_digest"],
         destination=destination,
-        expected_current=review["revision"],
+        expected_current=served_a,
         confirm_mappings=[T2_SELECTION],
     )
     assert composite["mapping_selections"] == [T2_SELECTION]
@@ -1226,6 +1257,9 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     # (a new authentic receipt id and integrity digest — the native
     # remeasure-breaks-inheritance rule), then the explicit final candidate
     # edit re-attaches it and the new admission carries NO new selection
+    served_b = review["revision"]  # the revision the second approval served
+    started_third = api.start_proposal()  # the second approval consumed its draft
+    proposal, revision = started_third["proposal"], started_third["candidate_revision"]
     remeasured = api.inspect_mapping(proposal, revision, candidate)
     receipt_b = remeasured["receipt"]
     assert receipt_b["receipt_id"] != receipt["receipt_id"]
@@ -1238,7 +1272,7 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     revision_b = validated_b["revision"]
     review_b = api.review_proposal(proposal)
     assert review_b["revision"] == revision_b
-    activate(project, review_b, preview(project, review_b, destination, review["revision"]))
+    activate(project, review_b, preview(project, review_b, destination, served_b))
 
     with monkeypatch.context() as guarded:
         _source_free_guards(guarded)
@@ -1276,13 +1310,17 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
         document = yaml.safe_load(original)
         document["query"] = {"response_bytes": under}
         config.write_text(yaml.safe_dump(document, sort_keys=False))
-        code = cli(["resolve-term", "order number", "--project", str(project)])
+        code = library_cli("resolve_term", project, "order number")
         failure = capsys.readouterr()
         assert code == 1 and not failure.out
         refused = json.loads(failure.err)
-        assert refused["error"]["code"] == "result_byte_limit"
+        assert "exceeds its byte ceiling" in refused["error"]["message"]
+        with pytest.raises(query_results.QueryResultError) as typed:
+            asyncio.run(DiscoveryRuntime.open_project(project).resolve_term("order number"))
+        assert typed.value.refusal()["error"]["code"] == "result_byte_limit"
+        assert typed.value.refusal()["error"]["exhausted_bound"]["response_bytes"] == under
         config.write_text(original)
-        assert cli(["resolve-term", "order number", "--project", str(project)]) == 0
+        assert library_cli("resolve_term", project, "order number") == 0
         capsys.readouterr()
 
     # F2 (fix pass): support is GLOBAL across the whole captured KB — a
@@ -1294,6 +1332,8 @@ def test_reference_term_resolution_requires_real_evidence_and_confirmation(
     from ariadne.sources import table_resource
 
     descriptor_before = current_bytes(project)
+    started_fourth = api.start_proposal()  # the third approval consumed its draft
+    proposal, revision_b = started_fourth["proposal"], started_fourth["candidate_revision"]
     tree = worktree_of(project, proposal)
     unapproved = table_resource("unapproved-source", None, "main", "orders")
     # The operator-owned document is outside the captured candidate. A relative
@@ -4014,12 +4054,15 @@ def test_integrated_records_keep_calculation_policies_scoped(tmp_path):
         # ---- the shared A/B pinned-session/new-session leg (§6, §8.7):
         # release B changes only the orders Table page's curated body
         api = AuthoringProject(project)
+        next_proposal = api.start_proposal()["proposal"]  # approval consumed the first draft
+        tree = worktree_of(project, next_proposal)
+        orders_page = _p1_generated_table_page(tree, orders_resource)
         meta, body = page_parts(orders_page)
         write_page(orders_page, meta, body + f"\n{Q1_RELEASE_B_MARKER}\n")
-        revised = reconcile_knowledge(project, review["proposal"], review["revision"])
-        checked = api.validate_proposal(review["proposal"], revised)
+        revised = reconcile_knowledge(project, next_proposal, review["revision"])
+        checked = api.validate_proposal(next_proposal, revised)
         assert checked["ok"] is True, checked["errors"]
-        later = api.review_proposal(review["proposal"])
+        later = api.review_proposal(next_proposal)
         activate(
             project, later, preview(project, later, tmp_path / "published", review["revision"])
         )

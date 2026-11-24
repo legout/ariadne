@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import msgspec
-from ariadne import admission, authoring_sources, proposals
+from ariadne import admission, authoring_sources, draft, proposals
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from ariadne.contribution_review import check_contribution_commit, review_contribution
@@ -540,7 +540,7 @@ class AnalyticsService:
                             "the admitted declaration needs current native Source Approval"
                         )
                 else:
-                    started = self.api.start_proposal()
+                    started = self._joined_draft(entries, storages) or self.api.start_proposal()
                     if self._declarations_present(started["candidate_revision"], entries, storages):
                         _resolved, source_digest = authoring_sources.candidate_sources(
                             self.project, started["candidate_revision"]
@@ -568,6 +568,7 @@ class AnalyticsService:
                     "native_candidate": proposed["revision"],
                     "source_digest": proposed["source_digest"],
                     "reused_source_declaration": reused,
+                    "joined_draft": bool(started.get("joined")),
                     "conversion": conversion,
                     "review_url": f"{self.external_url}/review/{current.operation_id}",
                     "review_generation": 0,
@@ -911,8 +912,62 @@ class AnalyticsService:
             return self._source_context(actor, operation)
         return self._contribution_context(actor, operation)
 
+    def _joined_draft(
+        self, entries: list[dict] | None = None, storages: dict | None = None
+    ) -> dict | None:
+        """Draft rule v3: no active draft -> None (the caller starts one). Otherwise any
+        pending workspace operation on the active proposal makes it busy (stale). Idle with
+        granted work: a source request (entries given) joins only if its declaration is
+        already in the draft; a contribution (entries None) continues it. Else stale."""
+        active = draft.status(self.project)
+        if active is None:
+            return None
+        proposal = draft.proposal_of(
+            self.project, (active["generation"], active["candidate_revision"])
+        )
+        with self.state._connect() as connection:  # shortcut: no state.py lookup by proposal
+            rows = connection.execute(
+                "SELECT status, json_extract(response_json, '$.native_base') "
+                "FROM operations WHERE workspace_id = ? "
+                "AND action IN ('prepare_data_source', 'prepare_contribution') "
+                "AND json_extract(response_json, '$.native_proposal') = ?",
+                (self.workspace_id, proposal),
+            ).fetchall()
+        if not any(status.startswith("pending") for status, _ in rows):
+            for status, base in rows:
+                if status == "data_granted" and (
+                    entries is None
+                    or self._declarations_present(active["candidate_revision"], entries, storages)
+                ):
+                    return {
+                        "proposal": proposal,
+                        "base_revision": base,
+                        "candidate_revision": active["candidate_revision"],
+                        "joined": True,
+                    }
+        raise AnalyticsError(
+            "stale: another draft is active and is pending, or the request adds to granted work"
+        )
+
+    def _release_source_draft(self, response: dict) -> None:
+        """Browser-review only: free the one active slot by discarding THIS request's
+        exact draft (the proposal and candidate the reviewer saw). Another task's draft,
+        or this proposal after it moved, is left alone."""
+        active = draft.status(self.project)
+        if active is None or active["candidate_revision"] != response.get("native_candidate"):
+            return
+        expected = (active["generation"], active["candidate_revision"])
+        if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
+            draft.discard(self.project, expected)
+
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
+        if (
+            not requested
+            and operation.action == "prepare_data_source"
+            and not operation.response.get("joined_draft")
+        ):
+            self._release_source_draft(operation.response)
         response = {
             **operation.response,
             "status": "pending_review" if requested else "rejected",
@@ -936,10 +991,12 @@ class AnalyticsService:
         generation = response.get("review_generation", 0) + 1
         if operation.action == "prepare_data_source":
             if response["stage"] == "source_approval":
-                approved = self.api.approve_sources(
+                approved = authoring_sources.grant_candidate(
+                    self.project,
                     response["native_proposal"],
                     response["native_candidate"],
                     response["source_digest"],
+                    by=f"human:{actor.tenant_id}/{actor.object_id}",
                 )
                 updated = {
                     **response,
@@ -1142,7 +1199,7 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             try:
-                started = self.api.start_proposal()
+                started = self._joined_draft() or self.api.start_proposal()
                 proposal = started["proposal"]
                 revision = started["candidate_revision"]
                 if entries and not self._declarations_present(revision, entries, storages):

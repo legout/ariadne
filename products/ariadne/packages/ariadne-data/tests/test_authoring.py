@@ -5,7 +5,6 @@ outside authored artifacts; no real source, network or LLM is accessed.
 """
 
 import hashlib
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +24,7 @@ from ariadne import (  # noqa: E402 — inputs: the moved evidence seam (#35)
     authoring_inputs,
 )
 from ariadne.authoring import AuthoringProject  # noqa: E402
-from ariadne.authoring_cli import main as authoring_cli  # noqa: E402
+from tests.test_git_authoring import grant_sources  # noqa: E402
 
 # ---------------------------------------------------------------- fixtures
 
@@ -123,7 +122,7 @@ def test_operator_document_reference_converts_to_stable_identity_evidence(tmp_pa
         started["candidate_revision"],
         [{"name": "events", "type": "parquet", "path": str(parquet)}],
     )
-    api.approve_sources(proposed["proposal"], proposed["revision"], proposed["source_digest"])
+    grant_sources(api, proposed["proposal"], proposed["revision"], proposed["source_digest"])
     inputs = api.inputs(started["proposal"], documents=["pricing.md"])
     (source,) = inputs["profile"]["sources"]
     assert source["name"] == "events"  # the measured, approved source
@@ -361,33 +360,19 @@ def test_long_document_evidence_is_bounded_and_never_claimed_complete(tmp_path):
         authoring.document_evidence("long.md", project=project, part=first["parts"] + 1)
 
 
-# ------------------------------------------------------------------- CLI (inputs)
+# ----------------------------------------------------------- the inputs operation
 
 
-def test_cli_inputs_returns_documents_and_optional_pieces(tmp_path, capsys):
-    """The spec-named ``inputs`` command: one JSON value — document evidence,
-    profile only once sources are approved, and Seed Notes only when present."""
+def test_inputs_returns_documents_and_optional_pieces(tmp_path):
+    """The ``inputs`` operation (spec 0040: the MCP tool ``authoring_inputs``): document
+    evidence, a profile only once sources are granted, Seed Notes only when present."""
     project = scaffold_project(tmp_path)
     docs = project / "data" / "docs"
     docs.mkdir(parents=True)
     (docs / "policy.md").write_text("# Policy\n", encoding="utf-8")
 
     proposal = AuthoringProject(project).start_proposal()
-    assert (
-        authoring_cli(
-            [
-                "inputs",
-                "--proposal",
-                proposal["proposal"],
-                "--document",
-                "policy.md",
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    out = json.loads(capsys.readouterr().out)
-    assert out["profile"] is None  # nothing approved yet: no profile, no opening
+    out = AuthoringProject(project).inputs(proposal["proposal"], documents=["policy.md"])
+    assert out["profile"] is None  # nothing granted yet: no profile, no opening
     assert out["documents"][0]["complete"] and "Policy" in out["documents"][0]["text"]
     assert out["seed_notes"] is None  # absent Seed Notes stay absent

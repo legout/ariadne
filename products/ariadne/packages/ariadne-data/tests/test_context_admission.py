@@ -22,7 +22,6 @@ from the fixture rows, never derived from runtime output.
 """
 
 import asyncio
-import io
 import json
 import os
 import sys
@@ -37,12 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
+from ariadne import context as context_module  # noqa: E402
 from ariadne import (  # noqa: E402
-    admission,
     proposals,
 )
-from ariadne import context as context_module  # noqa: E402
-from ariadne.admission import main as admit_cli  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from ariadne.context import (  # noqa: E402
@@ -52,9 +49,11 @@ from ariadne.context import (  # noqa: E402
 from ariadne.planner import PlannerError  # noqa: E402
 from ariadne.query import QueryRuntime  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
+from tests.mcp_inproc import run as mcp_run  # noqa: E402
 from tests.test_git_authoring import (  # noqa: E402
     NATIVE_METRIC_PAGE,
     UNSAFE_GRAIN_MODEL_YML,
+    admit_library,
     approved,
     branch_of,
     complete_bundle_project,
@@ -409,6 +408,13 @@ def _policy_page_edit(text: str) -> list[dict]:
     ]
 
 
+def next_draft(api, project):
+    """Approval consumed the previous generation (spec 0040 §3.4.2.6): open the NEXT
+    draft on the served revision. Returns its proposal id and candidate revision."""
+    started = api.start_proposal()
+    return started["proposal"], started["candidate_revision"]
+
+
 def admit(
     project: Path,
     review: dict,
@@ -418,42 +424,17 @@ def admit(
     destination: Path | None = None,
     expected: str = "none",
 ) -> int:
-    """The human admission journey. An INTEGRATED candidate activates through
-    the composite preview the operator confirms (spec0032 §10): pass
-    ``destination`` to run that preview→confirm flow; without it the call is
-    the plain display/admission path."""
-    argv = [
-        "--project",
-        str(project),
-        "--proposal",
-        review["proposal"],
-        "--revision",
-        review["revision"],
-        "--reviewed-digest",
-        review["review_digest"],
-        *(f"--confirm-mapping={selection}" for selection in confirm_mapping),
-    ]
-    if destination is not None:
-        composite = admission.overall_review(
-            project,
-            review["proposal"],
-            review["revision"],
-            review["review_digest"],
-            destination=str(destination),
-            expected_current=expected,
-            scope=["public"],
-            confirm_mappings=list(confirm_mapping),
-        )
-        argv += [
-            "--context-destination",
-            str(destination),
-            "--context-expected-current",
-            expected,
-            f"--overall-digest={composite['digest']}",
-        ]
-    if confirm:
-        argv.append("--confirm")
-    return admit_cli(argv)
+    """The admission journey through the supported library calls (``admit_library``): the
+    composite preview the operator confirms (spec0032 §10), then the pinned activation."""
+    return admit_library(
+        project,
+        review,
+        confirm=confirm,
+        confirm_mappings=confirm_mapping,
+        destination=destination,
+        expected_current=expected,
+        plain_review=destination is None,
+    )
 
 
 def mapping_view(result: dict, representation: str, mapping_id: str) -> dict:
@@ -708,18 +689,19 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
 
     # a new revision of the same proposal: select the assertion and confirm
     api = AuthoringProject(project)
+    npr, nrev = next_draft(api, project)
     moved = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; revised."
             )
         ),
     )
-    validated = api.validate_proposal(review["proposal"], moved["revision"])
+    validated = api.validate_proposal(npr, moved["revision"])
     assert validated["ok"] is True
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     pre_blobs = blobs_of(project, second["revision"])
     assert (
         admit(
@@ -751,7 +733,7 @@ def test_confirmation_flow_selects_displays_and_confirms_exactly_one_assertion(t
     assert entry["by"] and entry["at"]  # the operational human evidence
 
     # admission changed no candidate byte
-    assert branch_of(project, review["proposal"]) == second["revision"]
+    assert branch_of(project, npr) == second["revision"]
     assert blobs_of(project, second["revision"]) == pre_blobs
 
     # resolution now reports EXACTLY that assertion confirmed; the hypothesis
@@ -773,8 +755,6 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
     anything."""
     from lumio_wiki.git_authoring import GitAuthoringError
 
-    from tests.test_git_admission import admit as composite_admit
-
     project, _api, review = admitted_candidate(tmp_path / "proj")
 
     for bad in (
@@ -783,18 +763,13 @@ def test_selections_of_hypotheses_unknown_targets_and_page_flags_never_confirm(t
         "order-number:nope",
         "not-a-selection",
     ):
-        assert composite_admit(project, review, extra=("--confirm-mapping", bad)) == 1, bad
+        assert admit(project, review, confirm_mapping=(bad,)) == 1, bad
         error = json.loads(capsys.readouterr().err)
         assert "error" in error, bad
         assert not (project / CURRENT).exists()
 
     # the hypothesis refusal names the classification rule
-    assert (
-        composite_admit(
-            project, review, extra=("--confirm-mapping", "order-number:local-to-global-prefix")
-        )
-        == 1
-    )
+    assert admit(project, review, confirm_mapping=("order-number:local-to-global-prefix",)) == 1
     message = json.loads(capsys.readouterr().err)["error"]["message"]
     assert "hypothesis" in message and "asserted" in message
 
@@ -1080,7 +1055,6 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     the confirmation); a CHANGED assertion cannot inherit confirmation — it
     lapses until a fresh human selection confirms the new declaration."""
     project, _api, review = admitted_candidate(tmp_path / "proj")
-    proposal = review["proposal"]
     selection = "order-number:global-order-concatenation"
 
     # admit with the selection: the assertion is confirmed (composite
@@ -1098,18 +1072,19 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     # an unrelated page-only change: the assertion is byte-identical, so the
     # prior human evidence RETAINS without a new selection
     api = AuthoringProject(project)
+    npr, nrev = next_draft(api, project)
     unrelated = api.edit_pages_batch(
-        proposal,
-        branch_of(project, proposal),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; unrelated edit."
             )
         ),
     )
-    validated = api.validate_proposal(proposal, unrelated["revision"])
+    validated = api.validate_proposal(npr, unrelated["revision"])
     assert validated["ok"] is True
-    second = api.review_proposal(proposal)
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection
@@ -1138,14 +1113,15 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
         "orders-catalog"
     ]
     front = yaml.safe_dump(changed_page, default_flow_style=False, sort_keys=False).strip()
+    npr, nrev = next_draft(api, project)
     changed = api.edit_pages_batch(
-        proposal,
-        branch_of(project, proposal),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---\n\n# Order number\n"),
     )
-    validated = api.validate_proposal(proposal, changed["revision"])
+    validated = api.validate_proposal(npr, changed["revision"])
     assert validated["ok"] is True
-    third = api.review_proposal(proposal)
+    third = api.review_proposal(npr)
     assert (
         admit(project, third, destination=published, expected=second["revision"]) == 0
     )  # still no selection
@@ -1162,7 +1138,7 @@ def test_unchanged_assertion_retains_prior_human_evidence_until_it_changes(tmp_p
     )
 
     # a fresh selection of the CHANGED assertion confirms the new declaration
-    fourth = api.review_proposal(proposal)
+    fourth = api.review_proposal(npr)
     assert (
         admit(
             project,
@@ -1213,14 +1189,15 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     ]
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = read_reference(api, candidate["proposal"])["content"].split("---", 2)[2]
+    npr, nrev = next_draft(api, project)
     edited = api.edit_pages_batch(
-        candidate["proposal"],
-        branch_of(project, candidate["proposal"]),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---{body}"),
     )
-    validated = api.validate_proposal(candidate["proposal"], edited["revision"])
-    assert validated["ok"] is True
-    second = api.review_proposal(candidate["proposal"])
+    validated = api.validate_proposal(npr, edited["revision"])
+    assert validated["ok"] is True, validated["errors"]
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=first["revision"]) == 0
     )  # no selection: the dependency changed
@@ -1233,7 +1210,7 @@ def test_remeasured_evidence_breaks_inheritance_until_reconfirmed(tmp_path, caps
     assert view["confirmation"] == "unconfirmed"  # stale confirmation cannot inherit
 
     # the fresh selection re-binds the re-measured evidence
-    third = api.review_proposal(candidate["proposal"])
+    third = api.review_proposal(npr)
     assert (
         admit(
             project,
@@ -1265,7 +1242,7 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     assert admit(project, review, destination=published) == 0
     capsys.readouterr()  # the journey prints; clear before the CLI calls
 
-    code = cli(["resolve-term", "order number", "--project", str(project)])
+    code = mcp_run(project, "resolve_term", {"request": "order number"})
     assert code == 0
     served = json.loads(capsys.readouterr().out)
     assert [match["representation"] for match in served["matches"]] == [
@@ -1274,24 +1251,29 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
     ]
     assert served["admission"]["revision"] == review["revision"]
 
-    code = cli(["search-context", "order number", "--project", str(project), "--limit", "5"])
+    code = mcp_run(project, "search_context", {"query": "order number"})
     assert code == 0
     hits = json.loads(capsys.readouterr().out)
     assert hits and all(not hit["draft"] for hit in hits)
 
     for argv in (
-        ["list-metrics", "--project", str(project)],
-        ["get-metric", "order_number_count", "--project", str(project)],
+        ["metrics", "--json", "--project", str(project)],
+        ["query", "order_number_count", "--json", "--project", str(project)],
     ):
         assert cli(argv) == 1, argv
         error = json.loads(capsys.readouterr().err)
         assert MISSING_CATALOG_MARK in error["error"]["message"], argv
 
-    code = cli(["query-metrics", "--project", str(project)], stdin=io.StringIO("{}"))
-    assert code == 1
+    # the multi-fact path (a filtered `query`) carries the stable planner code
+    assert cli(["query", "order_number_count", "--filter", "x=1", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)
     assert MISSING_CATALOG_MARK in error["error"]["message"]
     assert error["error"]["code"] == "missing_catalog"
+
+    code = mcp_run(project, "query_metrics", {"request": {}})
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert MISSING_CATALOG_MARK in error["error"]["message"]
 
 
 # ------------------ K4 fix pass: the three review findings (issue #44)
@@ -1374,14 +1356,15 @@ def test_retargeted_representation_meaning_lapses_prior_confirmation(tmp_path, c
     )
     front = yaml.safe_dump(page, default_flow_style=False, sort_keys=False).strip()
     body = content.split("---", 2)[2]
+    npr, nrev = next_draft(api, project)
     retargeted = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         reference_edit(f"---\n{front}\n---{body}"),
     )
-    validated = api.validate_proposal(review["proposal"], retargeted["revision"])
+    validated = api.validate_proposal(npr, retargeted["revision"])
     assert validated["ok"] is True  # no receipts cited: nothing re-verifies
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     [assertion] = [
         entry
         for entry in second["mapping_assertions"]
@@ -1518,20 +1501,21 @@ def test_expired_prior_evidence_cannot_retain_confirmation_at_admission(
     # a later candidate of the same proposal, validated while fresh: the
     # stored evidence returns idempotently, so the expiry can only be caught
     # at the retention decision of the new admission
+    npr, nrev = next_draft(api, project)
     moved = api.edit_pages_batch(
-        review["proposal"],
-        branch_of(project, review["proposal"]),
+        npr,
+        nrev,
         table_edit(
             table_page().replace(
                 "One row per store-scoped order.", "One row per store order; later."
             )
         ),
     )
-    validated = api.validate_proposal(review["proposal"], moved["revision"])
-    assert validated["ok"] is True
+    validated = api.validate_proposal(npr, moved["revision"])
+    assert validated["ok"] is True, validated["errors"]
 
     aged_context_clock(monkeypatch, 26)  # past the budget BEFORE admitting
-    second = api.review_proposal(review["proposal"])
+    second = api.review_proposal(npr)
     assert (
         admit(project, second, destination=published, expected=review["revision"]) == 0
     )  # NO selection: nothing may retain

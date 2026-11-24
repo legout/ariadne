@@ -24,13 +24,11 @@ from pathlib import Path
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
 import yaml
 from ariadne import admission, lumio_context  # pyright: ignore[reportAttributeAccessIssue]
-from ariadne.admission import main as admission_main
 from ariadne.authoring import AuthoringProject
-from ariadne.cli import main as cli
 from ariadne.query import QueryRuntime
 from ariadne.sources import canonical_endpoint
 from lumio_wiki.ariadne_context import UnadmittedInputError
-from lumio_wiki.git_authoring import GitAuthoringError
+from lumio_wiki.git_authoring import PublicationConflict
 from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
 from tests.test_discovery import _source_free_guards
 from tests.test_git_authoring import approved, run_git, worktree_of
@@ -392,27 +390,16 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     _no_secret_material(json.dumps(composite_a))
     assert not (project / ".ariadne" / "current.json").exists()
 
-    # --- The existing human CLI surface carries the explicit selection.
-    assert (
-        admission_main(
-            [
-                "--project",
-                str(project),
-                "--proposal",
-                review["proposal"],
-                "--revision",
-                a_rev,
-                "--reviewed-digest",
-                review["review_digest"],
-                "--context-destination",
-                _destination(),
-                "--context-storage-profile",
-                PROFILE_NAME,
-            ]
-        )
-        == 0
+    # --- The same review through the supported library call is deterministic.
+    again = admission.overall_review(
+        project,
+        review["proposal"],
+        a_rev,
+        review["review_digest"],
+        destination=_destination(),
+        storage_profile=PROFILE_NAME,
     )
-    assert json.loads(capsys.readouterr().out)["digest"] == composite_a["digest"]
+    assert again["digest"] == composite_a["digest"]
 
     # --- Real native S3 publication, private receipt verification, then the
     # Core descriptor LAST.
@@ -509,17 +496,17 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
             "list_context_pages",
             "read_context_page",
         } <= set(report["support"]["operations"])
-        assert cli(["search-context", "kestrel", "--project", str(project)]) == 0
-        assert json.loads(capsys.readouterr().out) == hits
 
     # --- B: publication plus complete Core admission; A stays pinned.
-    tree = worktree_of(project, review["proposal"])
+    # approval consumed draft A (spec 0040 §3.4.2.6): B is the NEXT draft, a live generation
+    proposal_b = api.start_proposal()["proposal"]
+    tree = worktree_of(project, proposal_b)
     (tree / "knowledge" / JOURNEY_PATH).write_text(JOURNEY_MD + JOURNEY_B_APPENDIX)
-    candidate_b = reconcile_knowledge(project, review["proposal"], a_rev)
-    checked_b = api.validate_proposal(review["proposal"], candidate_b)  # native round 2 of 3
+    candidate_b = reconcile_knowledge(project, proposal_b, a_rev)
+    checked_b = api.validate_proposal(proposal_b, candidate_b)  # native round 2 of 3
     assert checked_b["ok"] is True, checked_b["errors"]
     b_rev = checked_b["revision"]  # native finalization owns the final commit
-    review_b = api.review_proposal(review["proposal"])
+    review_b = api.review_proposal(proposal_b)
     assert review_b["revision"] == b_rev
     composite_b = _s3_preview(project, review_b, a_rev)
     manifest_b = composite_b["manifest"]
@@ -567,13 +554,25 @@ def test_s3_bound_release_preserves_admission_and_session_pin(tmp_path, monkeypa
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
     # Activation changes baseline-dependent review facts for the same revision.
     # Refresh before both the wrong-current check and the later fault preview.
-    review_b = api.review_proposal(review["proposal"])
-    assert review_b["revision"] == b_rev
+    # B's draft was consumed by its approval: re-review on a fresh live generation, which
+    # holds exactly the served B revision
+    started_c = api.start_proposal()
+    proposal_c = started_c["proposal"]
+    # the review needs the candidate's OWN validation evidence (B's belongs to B's proposal)
+    checked_c = api.validate_proposal(proposal_c, started_c["candidate_revision"])
+    assert checked_c["ok"] is True, checked_c["errors"]
+    review_b = api.review_proposal(proposal_c)
+    assert review_b["revision"] == checked_c["revision"] == b_rev
     # Blocked expected state: the finite documented family is Core's
     # preview ValueError or the direct native GitAuthoringError guard; the
     # refused operation and the byte-identical descriptor are the oracle.
-    with pytest.raises((ValueError, GitAuthoringError)):
+    with pytest.raises(PublicationConflict) as wrong_current:
         _s3_preview(project, review_b, "none")
+    # the `none` + present branch of lumio_wiki.git_authoring._check_pointer_expectation: the
+    # preview is rejected because B is ALREADY active on this prefix, for that reason only
+    message = str(wrong_current.value)
+    assert "expected no current published version" in message, message
+    assert f"{b_rev!r} is active" in message, message
     assert (project / ".ariadne" / "current.json").read_bytes() == descriptor_b
 
     # --- One controlled required-write/persistence failure at the Core
@@ -648,32 +647,19 @@ def test_s3_destination_refusal_never_echoes_inline_credentials(tmp_path, capsys
     inline_user = "synthetic-inline-access"
     inline_secret = "synthetic-inline-secret-never-print"
     rejected = _destination().replace("s3://", f"s3://{inline_user}:{inline_secret}@", 1)
-    capsys.readouterr()
-    assert (
-        admission_main(
-            [
-                "--project",
-                str(project),
-                "--proposal",
-                review["proposal"],
-                "--revision",
-                review["revision"],
-                "--reviewed-digest",
-                review["review_digest"],
-                "--context-destination",
-                rejected,
-                "--context-storage-profile",
-                PROFILE_NAME,
-            ]
+    with pytest.raises(ValueError) as raised:
+        admission.overall_review(
+            project,
+            review["proposal"],
+            review["revision"],
+            review["review_digest"],
+            destination=rejected,
+            storage_profile=PROFILE_NAME,
         )
-        == 1
-    )
-    diagnostic = capsys.readouterr()
-    assert diagnostic.out == ""
-    assert json.loads(diagnostic.err)["error"]["type"] == "ValueError"
-    assert inline_secret not in diagnostic.err
-    assert inline_user not in diagnostic.err
-    assert rejected not in diagnostic.err
+    diagnostic = str(raised.value)
+    assert inline_secret not in diagnostic
+    assert inline_user not in diagnostic
+    assert rejected not in diagnostic
     assert not (project / ".ariadne" / "current.json").exists()
 
 

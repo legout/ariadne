@@ -299,15 +299,6 @@ class _DiscoverySession:
                 f"{record['artifact_digest'][:12]}…) — the runtime never serves "
                 "hand-edited snapshot bytes; re-admit a reviewed/validated revision",
             )
-        if self._project is not None and not admission.approval_present(
-            self._project, record["source_digest"]
-        ):
-            raise PlannerError(
-                "admission_stale",
-                "the admitted source identity no longer carries the operator's "
-                "approval — re-approve the exact resolved identity before serving",
-            )
-
         if self._context_snapshot is not None:
             from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
 
@@ -564,16 +555,10 @@ class _DiscoverySession:
             )
         return [*entries, hint]
 
-    def save_example(
-        self,
-        submission: dict,
-        *,
-        proposal: str | None = None,
-        expected_revision: str | None = None,
-    ) -> dict:
-        """Save one explicit Example as an unadmitted native candidate —
-        source-free: the managed save rides this discovery session and the
-        source builder is never constructed for authoring."""
+    def save_example(self, submission: dict) -> dict:
+        """Save one explicit Example into the ACTIVE DRAFT (the first write opens it) —
+        source-free: the managed save rides this discovery session and the source builder
+        is never constructed for authoring."""
         self._refuse_unsupported("save_example")
         if self._managed is None or self._project is None:
             raise ValueError("Git Example authoring requires a managed --project")
@@ -581,11 +566,7 @@ class _DiscoverySession:
         from ariadne import answer_examples
 
         return answer_examples.save_candidate_example(
-            submission,
-            self._project,
-            self._managed["commit"],
-            proposal=proposal,
-            expected_revision=expected_revision,
+            submission, self._project, self._managed["commit"]
         )
 
     async def search_examples(
@@ -594,46 +575,47 @@ class _DiscoverySession:
         limit: int = 10,
         include_history: bool = False,
         include_sql: bool = False,
-        *,
-        proposal: str | None = None,
-        revision: str | None = None,
     ) -> list[dict]:
-        """Search admitted Examples by default, or one explicitly selected candidate."""
-        if proposal is None:
-            self._refuse_unsupported("search_examples")
-        if (proposal is None) != (revision is None):
-            raise ValueError("--proposal and --revision are required together")
-        if proposal is not None:
-            assert revision is not None
-            if self._project is None:
-                raise ValueError("candidate Example search requires a managed --project")
-            return answer_examples.search_candidate(
-                self._project,
-                query,
-                proposal=proposal,
-                revision=revision,
-                limit=limit,
-                include_history=include_history,
-                include_sql=include_sql,
-            )
+        """Search the SERVED release's Examples and, when a draft is active, the active
+        draft's own Examples (labeled ``status: draft``) — the served-or-active-draft read
+        contract (spec 0040). No proposal or revision selects a candidate."""
+        self._refuse_unsupported("search_examples")
         if self._managed is not None:
             self._recheck_pinned()
+        served: list[dict] = []
         if self._context_snapshot is not None:
             from ariadne import lumio_context
 
             assert self._managed is not None
-            result = lumio_context.search_examples(
+            served = lumio_context.search_examples(
                 self._managed["bound_release"],
                 query,
                 limit=limit,
                 include_history=include_history,
                 include_sql=include_sql,
             )
-            self._refuse_oversized_response(result)
-            return result
-        if self._source_free:
-            return []
-        raise ValueError("Examples are available only from a Git admission or explicit candidate")
+        elif not self._source_free:
+            raise ValueError("Examples are available only from a Git admission or the active draft")
+        drafted: list[dict] = []
+        if self._project is not None:
+            from ariadne import draft
+
+            active = draft.status(self._project)
+            if active is not None:
+                drafted = answer_examples.search_candidate(
+                    self._project,
+                    query,
+                    proposal=draft.proposal_of(
+                        self._project, (active["generation"], active["candidate_revision"])
+                    ),
+                    revision=active["candidate_revision"],
+                    limit=limit,
+                    include_history=include_history,
+                    include_sql=include_sql,
+                )
+        result = [*served, *drafted][:limit] if drafted else served
+        self._refuse_oversized_response(result)
+        return result
 
     def _refuse_oversized_response(self, result) -> None:
         """The host response budget for integrated navigation (A2, spec0029

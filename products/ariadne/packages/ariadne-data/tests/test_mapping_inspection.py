@@ -39,7 +39,7 @@ if str(REPO_ROOT) not in sys.path:  # keep tests runnable from the source tree
     sys.path.insert(0, str(REPO_ROOT))
 
 from ariadne import execution, proposals  # noqa: E402
-from ariadne.authoring import AuthoringProject  # noqa: E402
+from ariadne.authoring import AuthoringProject, inspect_mapping  # noqa: E402
 from ariadne.sources import table_resource  # noqa: E402
 from tests.test_git_authoring import approved  # noqa: E402 — the operator's G3 step
 
@@ -530,7 +530,7 @@ def test_stale_revision_and_unapproved_or_unknown_participation_refuse(tmp_path)
     project2 = mapping_project(tmp_path / "unapproved")
     api2 = AuthoringProject(project2)
     started2 = api2.start_proposal()
-    with pytest.raises(ValueError, match="NO operator approval"):
+    with pytest.raises(ValueError, match="NO grant"):
         api2.inspect_mapping(started2["proposal"], started2["candidate_revision"], candidate)
     # a participating source outside the approved registry identity
     decoy = table_resource("decoy", None, "decoy", "orders")
@@ -1052,93 +1052,29 @@ def test_allowlisted_ids_and_authored_counts_are_never_proof(tmp_path):
         )
 
 
-# ------------------------------------------------ [7]: the local CLI adapter
+# ------------------------------------------- [7]: the operation's refusal contract
 
 
-def test_cli_inspect_mapping_roundtrip_matches_the_core(tmp_path, capsys):
-    """Issue #43 [7]: the shared operation is wired to the local CLI with the
-    same one-JSON-value contract — the request file carries the candidate (or
-    the {candidate, limits} object form), and the printed envelope is the
-    core's receipt with its retained evidence path."""
-    from ariadne.authoring_cli import main as authoring_cli
-
+def test_inspect_mapping_refuses_a_request_that_raises_an_operator_ceiling(tmp_path):
+    """Issue #43 [7] (spec 0040: the MCP tool ``authoring_inspect_mapping``): the
+    operation returns the core receipt with its retained evidence path, and a request
+    may only LOWER the operator's ceilings — raising one refuses."""
     project, api, started = approved_project(tmp_path)
-    request = tmp_path / "candidate.json"
-    request.write_text(
-        json.dumps({"candidate": prefix_candidate(), "limits": {"sample_rows": 3}}),
-        encoding="utf-8",
-    )
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(request),
-                "--project",
-                str(project),
-            ]
-        )
-        == 0
-    )
-    out = json.loads(capsys.readouterr().out)
-    receipt = out["receipt"]
-    twin = api.inspect_mapping(
+    out = api.inspect_mapping(
         started["proposal"],
         started["candidate_revision"],
         prefix_candidate(),
         limits={"sample_rows": 3},
     )
-    assert out["receipt_id"] == receipt["receipt_id"]
-    assert receipt["counts"] == twin["receipt"]["counts"]
-    assert receipt["coverage"] == twin["receipt"]["coverage"]
-    assert receipt["sample_rows"] == 3
+    assert out["receipt"]["sample_rows"] == 3
     assert Path(out["evidence"]).is_file()
-    # refusals keep the one-JSON-error-object contract
-    capsys.readouterr()
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(request),
-                "--project",
-                str(project),
-            ]
+    with pytest.raises(ValueError, match="RAISE the operator ceiling"):
+        api.inspect_mapping(
+            started["proposal"],
+            started["candidate_revision"],
+            prefix_candidate(),
+            limits={"sample_rows": 1001},
         )
-        == 0
-    )
-    capsys.readouterr()
-    raising = tmp_path / "raised.json"
-    raising.write_text(
-        json.dumps({"candidate": prefix_candidate(), "limits": {"sample_rows": 1001}}),
-        encoding="utf-8",
-    )
-    assert (
-        authoring_cli(
-            [
-                "inspect-mapping",
-                "--proposal",
-                started["proposal"],
-                "--expected-revision",
-                started["candidate_revision"],
-                "--file",
-                str(raising),
-                "--project",
-                str(project),
-            ]
-        )
-        == 1
-    )
-    error = json.loads(capsys.readouterr().err)
-    assert "RAISE the operator ceiling" in error["error"]["message"]
 
 
 def test_deadline_guard_interrupts_and_refuses_uncancellable_execution():
@@ -1682,3 +1618,22 @@ def test_source_setup_failure_closes_the_owned_connection(tmp_path, monkeypatch)
     with pytest.raises(Exception, match="Connection Error|already closed|Cannot call"):
         created[1].execute("SELECT 1")  # closed: no partial ready session survives
     assert not (tmp_path / "data" / "missing.duckdb").exists()  # nothing was created
+
+
+def test_a_receipt_is_not_retained_after_the_draft_was_discarded(tmp_path):
+    """Finding 4: inspection commits its receipt under the ORIGINAL draft pin. A concurrent
+    `draft discard` between the bounded read and the commit makes the commit refuse instead
+    of retaining evidence for a retired draft."""
+    from ariadne import draft
+
+    project, api, started = approved_project(tmp_path)
+    view = draft.status(project)
+    assert view is not None
+    pin = (view["generation"], view["candidate_revision"])
+    draft.discard(project, pin)  # the race: the draft is retired while inspection is running
+    evidence_dir = project / ".ariadne" / "evidence"
+    with pytest.raises(ValueError, match="stale"):
+        inspect_mapping(
+            project, started["proposal"], started["candidate_revision"], prefix_candidate(), pin=pin
+        )
+    assert not list(evidence_dir.rglob("*.json")) if evidence_dir.exists() else True

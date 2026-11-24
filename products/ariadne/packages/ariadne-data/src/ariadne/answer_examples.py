@@ -203,7 +203,7 @@ def _verify_citation(project: Path, revision: str, ref: str) -> dict:
         raise ValueError(f"cited path does not exist in the selected revision: {ref!r}")
     from lumio_wiki import parse_frontmatter
 
-    meta, _body, _line = parse_frontmatter(blob.decode("utf-8"), pure.name)
+    meta, _body, _line = parse_frontmatter(blob.decode("utf-8"), Path(pure.name))
     kind = ((meta or {}).get("ariadne_profile") or {}).get("kind")
     if kind not in ("metric", "policy"):
         raise ValueError(
@@ -259,36 +259,25 @@ def _page_markdown(record: dict, example_id: str) -> bytes:
     ).encode()
 
 
-def save_candidate_example(
-    submission: Any,
-    project: str | Path,
-    base_revision: str,
-    *,
-    proposal: str | None = None,
-    expected_revision: str | None = None,
-) -> dict:
-    """Save one explicit Example as a native knowledge page in a candidate —
-    the same proposal lock/revision discipline and human Git admission as
-    every authored artifact; never an admitted page, never an executed query."""
-    from . import proposals
+def save_candidate_example(submission: Any, project: str | Path, base_revision: str) -> dict:
+    """Save one explicit Example as a native knowledge page in the ACTIVE DRAFT (the first
+    write creates it) — the draft's compare-and-set discipline and human approval like every
+    authored artifact; never an admitted page, never an executed query. The active draft is
+    pinned FIRST: citation and collision checks read that exact candidate and the write is
+    compare-and-set on it (spec 0040 §3.3)."""
+    from . import draft, proposals
 
-    if (proposal is None) != (expected_revision is None):
-        raise ValueError("--proposal and --expected-revision are required together")
     project = Path(project).resolve()
     pinned_revision = base_revision
     record = _normalize_submission(submission)
-    if proposal is not None:
-        proposal_record = proposals._load_record(project, proposal)
-        selected_revision = proposal_record["candidate_revision"]
-        if expected_revision != selected_revision:
-            raise ValueError(
-                f"stale revision: proposal {proposal} is at candidate {selected_revision}, "
-                f"the save-example expected {expected_revision} — re-read and retry; "
-                "nothing was written"
-            )
-        base_revision = proposal_record["base_revision"]
-    else:
-        selected_revision = proposals._validate_revision(project, base_revision)
+    active = draft.status(project)
+    expected = None if active is None else (active["generation"], active["candidate_revision"])
+    first_base = None if active is not None else draft.first_write_base(project)
+    selected_revision = (
+        active["candidate_revision"]
+        if active is not None
+        else proposals._validate_revision(project, first_base or base_revision)
+    )
     # Preserve captured provenance; a candidate cannot relabel the reader's pin.
     record["citations"] = []
     for ref in record.pop("sources"):
@@ -337,28 +326,21 @@ def save_candidate_example(
             f"encoded example record is {len(page)} bytes, over the "
             f"{MAX_RECORD_BYTES}-byte bound — submit a smaller record"
         )
-    created_proposal = proposal is None
-    if created_proposal:
-        started = proposals.start_proposal(project, base_revision=selected_revision)
-        proposal = started["proposal"]
-        expected_revision = started["candidate_revision"]
-        base_revision = started["base_revision"]
-    assert proposal is not None and expected_revision is not None
+    pages = [
+        {
+            "path": f"knowledge/{EXAMPLES_DIR}/{example_id}.md",
+            "content": page.decode("utf-8"),
+        }
+    ]
+    # one compare-and-set write: a stale pin refuses, a refused first write leaves no draft
     try:
-        result_record = proposals.edit_page_batch(
-            project,
-            proposal,
-            expected_revision,
-            [
-                {
-                    "path": f"knowledge/{EXAMPLES_DIR}/{example_id}.md",
-                    "content": page.decode("utf-8"),
-                }
-            ],
-        )
+        written = draft.edit_pages(project, expected, pages, expect_base=first_base)
     except Exception as exc:
-        if not created_proposal and isinstance(exc, ValueError):
+        if active is None or isinstance(exc, ValueError):
+            # a refused FIRST write leaves no draft behind, and a refusal wrote nothing:
+            # there is no unadmitted worktree state to report
             raise
+        proposal = draft.proposal_of(project, expected)
         worktree = project / proposals.WORKTREES_REL / proposal
         try:
             head_result = proposals._git(["rev-parse", "HEAD"], worktree, check=False)
@@ -369,23 +351,22 @@ def save_candidate_example(
             status_result = proposals._git(
                 ["status", "--short", "--untracked-files=all"], worktree, check=False
             )
-            worktree_status = status_result.stdout.strip()
-            if not worktree_status:
-                worktree_status = (
-                    "clean" if status_result.returncode == 0 else status_result.stderr.strip()
-                ) or "unavailable"
+            worktree_status = status_result.stdout.strip() or (
+                "clean" if status_result.returncode == 0 else status_result.stderr.strip()
+            )
         except Exception:
             worktree_status = "unavailable"
-        try:
-            recorded = proposals._load_record(project, proposal)["candidate_revision"]
-        except Exception:
-            recorded = "unavailable"
         raise RuntimeError(
-            f"save-example failed; proposal {proposal} remains unadmitted. "
-            f"Recorded candidate {recorded}; branch HEAD {head}; "
-            f"worktree status: {worktree_status}. "
+            f"save_example failed; proposal {proposal} remains unadmitted. "
+            f"Recorded candidate {active['candidate_revision']}; branch HEAD {head}; "
+            f"worktree status: {worktree_status or 'unavailable'}. "
             f"Preserve the proposal evidence for human resolution: {exc}"
         ) from exc
+    proposal = draft.proposal_of(
+        project, (written["draft"]["generation"], written["draft"]["candidate_revision"])
+    )
+    result_record = written
+    base_revision = proposals._load_record(project, proposal)["base_revision"]
     return {
         "id": example_id,
         "proposal": proposal,
@@ -599,17 +580,26 @@ def search_candidate(
             f"{record['candidate_revision']} — re-read the candidate before searching"
         )
     captured = capture_revision(project / "knowledge", revision)
+    # the draft's OWN examples: pages the base release already serves are read from the
+    # served side, never twice
+    inherited = set(
+        proposals._git(
+            ["ls-tree", "-r", "--name-only", record["base_revision"], "--", "knowledge"], project
+        ).stdout.splitlines()
+    )
     selected = [
         page
         for page in captured.kb.pages
-        if page.ariadne_profile is not None and page.ariadne_profile.kind == "answer_example"
+        if page.ariadne_profile is not None
+        and page.ariadne_profile.kind == "answer_example"
+        and f"knowledge/{page.path}" not in inherited
     ]
     if not selected:
         return []
     ranked = []
     for result in captured.kb.search_pages(query, limit=len(selected), pages=selected):
         page = result.page
-        meta = page.ariadne_profile.native or {}
+        meta = (page.ariadne_profile.native if page.ariadne_profile else None) or {}
         stale = _candidate_is_stale(meta, project, revision, proposals)
         if stale and not include_history:
             continue  # stale history never occupies a result slot by default

@@ -16,7 +16,6 @@ from ariadne import (
     query,
     sources,
 )
-from ariadne.authoring_cli import main as authoring_cli
 from ariadne.contribution_review import (
     check_contribution_commit,
     review_contribution,
@@ -234,7 +233,8 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
         page for page in loaded.pages if page.path == "policies/cancelled-orders.md"
     )
     expected_verified = [{"by": "human:synthetic-owner", True: date(2020, 1, 1)}]
-    assert cancellation.ariadne_profile.native["verified"] == expected_verified
+    assert cancellation.ariadne_profile is not None
+    assert (cancellation.ariadne_profile.native or {})["verified"] == expected_verified
     cancellation_review = next(
         change
         for change in pages["policies/cancelled-orders.md"]["semantic_changes"]
@@ -264,24 +264,6 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
     assert review["validation"]["live"]["status"] == "pending"
     assert review["validation"]["admission_ready"] is False
 
-    if case == "matching_commit":
-        # Exercise the external review against the same captured HEAD/tree.
-        assert (
-            authoring_cli(
-                [
-                    "contribution-review",
-                    "--project",
-                    str(project),
-                    "--proposal",
-                    proposal,
-                    "--base",
-                    base,
-                ]
-            )
-            == 0
-        )
-        assert json.loads(capsys.readouterr().out) == review
-
     if case == "existing_candidate_staged_addition":
         revision = run_git(tree, "rev-parse", "HEAD").strip()
         before_staging = check_contribution_commit(project, proposal, review, revision)
@@ -302,27 +284,6 @@ def test_contribution_review_covers_document_and_metric(case, tmp_path, monkeypa
     assert checked["matches_reviewed_candidate"] is (case == "matching_commit")
     if case == "matching_commit":
         assert checked["mismatches"] == []
-
-        # The private review round-trips through the external commit check.
-        review_path = tmp_path / "private-contribution-review.json"
-        review_path.write_text(json.dumps(review))
-        assert (
-            authoring_cli(
-                [
-                    "contribution-check",
-                    "--project",
-                    str(project),
-                    "--proposal",
-                    proposal,
-                    "--review",
-                    str(review_path),
-                    "--revision",
-                    revision,
-                ]
-            )
-            == 0
-        )
-        assert json.loads(capsys.readouterr().out) == checked
     else:
         assert any(
             "tree" in mismatch or "changed" in mismatch for mismatch in checked["mismatches"]

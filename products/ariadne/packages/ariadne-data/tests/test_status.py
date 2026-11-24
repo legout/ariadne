@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -39,6 +40,7 @@ from tests.test_git_admission import (  # noqa: E402
 )
 from tests.test_git_authoring import (  # noqa: E402
     complete_bundle_project,
+    write_parquet,
 )
 
 STATE = Path(".ariadne")
@@ -115,7 +117,7 @@ def test_empty_cwd_is_not_ready_with_git_first_setup_steps_exit_zero(tmp_path, c
     assert report["project"]["kind"] == "git_managed"
     assert report["ready"] is False and report["ready_reason"]
     assert any("git init" in step for step in report["next_steps"])
-    assert any("ariadne-authoring start" in step for step in report["next_steps"])
+    assert any("ariadne add" in step for step in report["next_steps"])
     # human output carries the same states
     capsys.readouterr()
     assert run_status() == 0
@@ -170,10 +172,20 @@ def test_valid_admission_reports_checked_pinned_revision_and_digest(tmp_path, ca
     assert report["sources"]["selection"] == "admitted"
     assert report["sources"]["identity_digest"] == current["source_digest"]
     assert report["sources"]["approval"] is True
-    # the admitted proposal keeps its own identity/state in the backlog (AC2)
-    (proposal,) = report["work_pending"]["proposals"]
-    assert proposal["id"] == current["proposal"]
-    assert proposal["validation"]["state"] == "validated"
+    # the approval record: who/when/which review (attribution label, 0040 §3.5.1)
+    approval = admission["approval"]
+    assert approval["by"] == current["confirmed"]["by"] and approval["by"].startswith("human:")
+    assert approval["at"] == current["confirmed"]["at"]
+    assert approval["review_digest"] == current["confirmed"]["review_digest"]
+    capsys.readouterr()
+    assert run_status("--project", str(project)) == 0
+    human = capsys.readouterr().out
+    assert "approved by:" in human and approval["by"] in human
+    assert approval["review_digest"] in human  # the exact digest, not a shortened one
+    assert approval["commit"] in human  # and the approved commit
+    # approval consumed the draft: an approved proposal is history, never pending (spec 0040)
+    assert report["work_pending"]["proposals"] == []
+    assert current["proposal"]
 
 
 def test_absent_admission_and_corrupt_or_changed_state_block_never_fall_back(
@@ -254,6 +266,32 @@ def test_status_never_opens_compiles_or_connects_and_changes_no_files(
     assert report["ready"] is True  # reported from metadata alone
     assert tree_hash(project) == before  # no project file changed
 
+    # an empty / uninitialized directory: diagnosis never bootstraps state (no .ariadne, no locks)
+    empty = tmp_path / "empty-cwd"
+    empty.mkdir()
+    subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    empty_before = tree_hash(empty)
+    status_json(capsys, "--project", str(empty))
+    assert not (empty / ".ariadne").exists()
+    assert tree_hash(empty) == empty_before  # and nothing else appeared
+
+    # a directory holding only `.ariadne/`: the read-only view takes no lock, so no lock file
+    only_state = tmp_path / "only-state"
+    (only_state / ".ariadne").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(only_state)], check=True)
+    listing = sorted(
+        p.relative_to(only_state).as_posix()
+        for p in only_state.rglob("*")
+        if ".git/" not in p.as_posix() + "/"
+    )
+    status_json(capsys, "--project", str(only_state))
+    after = sorted(
+        p.relative_to(only_state).as_posix()
+        for p in only_state.rglob("*")
+        if ".git/" not in p.as_posix() + "/"
+    )
+    assert after == listing and not (only_state / ".ariadne" / "locks").exists()
+
 
 # ------------------------------------------------------------------- [AC5]
 
@@ -318,7 +356,7 @@ def test_managed_pending_proposals_keep_identity_and_validation_state(tmp_path, 
     (pending_source,) = report["sources"]["pending"]
     assert pending_source["source_digest"] == digest
     assert pending_source["approved"] is False
-    assert any("approve-sources" in step for step in report["next_steps"])
+    assert any("ariadne approve" in step for step in report["next_steps"])
 
 
 # ------------------------------------------------------------------- [AC7]
@@ -360,20 +398,20 @@ def test_skill_targets_absent_optional_and_drifted_installed(tmp_path, capsys, m
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert set(states.values()) == {"absent"}  # every optional target honestly absent
-    assert not any("ariadne-skill" in s for s in report["next_steps"])  # absent ≠ failed install
+    assert not any("ariadne skill" in s for s in report["next_steps"])  # absent ≠ failed install
 
     target = Path.home() / ".agents" / "skills" / "ariadne"
     shutil.copytree(packaged, target)  # an exact installed copy…
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert states[("user", None)] == "ok"  # …is not drift
-    assert not any("ariadne-skill" in s for s in report["next_steps"])
+    assert not any("ariadne skill" in s for s in report["next_steps"])
 
     (target / "SKILL.md").write_text("# local edit\n", encoding="utf-8")  # now drifted
     report = status_json(capsys)
     states = {(t["scope"], t["agent"]): t["state"] for t in report["skill"]["targets"]}
     assert states[("user", None)] == "drift"
-    assert any(s.startswith("ariadne-skill install --scope user") for s in report["next_steps"])
+    assert any(s.startswith("ariadne skill install --scope user") for s in report["next_steps"])
 
 
 # ------------------------------------------- fix pass (review findings F1-F5)
@@ -473,8 +511,6 @@ def test_status_labels_effective_storage_approval_without_credential_reads(tmp_p
     # a CURRENT grant under the resolved binding flips the label
     from ariadne.authoring_sources import (  # noqa: E402 — local for the grant
         _resolved_entries,
-        approval_digest,
-        resolved_digest,
     )
     from ariadne.sources import load_registry  # noqa: E402
 
@@ -488,12 +524,24 @@ def test_status_labels_effective_storage_approval_without_credential_reads(tmp_p
             "scopes": ["s3://retail/"],
         }
     }
-    declaration = resolved_digest(resolved)
-    grant = approval_digest(declaration, bindings)
-    approvals = project / ".ariadne" / "source-approvals.json"
+    approvals = project / ".ariadne" / "source_grants.json"
     approvals.parent.mkdir(parents=True, exist_ok=True)
     approvals.write_text(
-        json.dumps({grant: {"sources": resolved, "source_digest": declaration}}),
+        json.dumps(
+            {
+                "version": 1,
+                "grants": [
+                    {
+                        "source": entry,
+                        "binding": bindings["local"],
+                        "postgres_binding": None,
+                        "by": "human:test",
+                        "at": "2026-11-22T00:00:00+00:00",
+                    }
+                    for entry in resolved
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"STATUS_S3_ENDPOINT": "http://127.0.0.1:9000"}, clear=True):
@@ -516,8 +564,6 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     admitted example reports total 1 / admitted 1 (hand-derived oracle: one
     visible answer_example page exists in the pinned release; the retired
     dict-shape probe always reported zero)."""
-    import io
-    import json
 
     from tests.test_answer_examples import _SMALL_RESULT, _example_release, _submission
     from tests.test_git_authoring import approved
@@ -529,23 +575,13 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     # one explicit Example saved into a fresh candidate, validated, admitted
     started = api.start_proposal()
     approved(api, project, started)
-    from ariadne.cli import main as ariadne_cli
+    from ariadne.discovery import DiscoveryRuntime
 
-    capsys.readouterr()
-    code = ariadne_cli(
-        [
-            "save-example",
-            "--project",
-            str(project),
-            "--proposal",
-            started["proposal"],
-            "--expected-revision",
-            started["candidate_revision"],
-        ],
-        stdin=io.StringIO(json.dumps(_submission(_SMALL_RESULT, sources=[]))),
+    # an explicit Example is saved into the active draft (an MCP tool in spec 0040)
+    saved = DiscoveryRuntime.open_project(project).save_example(
+        _submission(_SMALL_RESULT, sources=[])
     )
-    assert code == 0
-    saved = json.loads(capsys.readouterr().out)
+    assert saved["proposal"] == started["proposal"]  # one active draft holds it
     validated = api.validate_proposal(saved["proposal"], saved["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     example_review = api.review_proposal(saved["proposal"])
@@ -558,3 +594,151 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
         "total": 1,
         "by_status": {"admitted": 1},
     }
+
+
+# ------------------------------------------------ finding 6: one draft, current commands
+
+
+def test_status_shows_the_one_active_draft_and_only_current_commands(tmp_path, capsys):
+    """Finding 6 (spec 0040 §3.1.2/§3.3): `status` renders the ONE active draft
+    (generation, base, staleness, validation) and recovery commands that exist; consumed
+    and discarded proposals are history, never pending."""
+    from ariadne import draft
+    from ariadne.authoring import AuthoringProject
+
+    project = complete_bundle_project(tmp_path)
+    api = AuthoringProject(project)
+    first = api.start_proposal()
+    view = draft.status(project)
+    assert view is not None and view["validation"] == "unvalidated"
+    draft.discard(project, (view["generation"], view["candidate_revision"]))
+    second = api.start_proposal()  # generation 2
+
+    report = status_json(capsys, "--project", str(project))
+    (pending,) = report["work_pending"]["proposals"]  # exactly one: the discarded one is gone
+    assert pending["id"] == second["proposal"] and pending["id"] != first["proposal"]
+    assert pending["generation"] == 2 and pending["stale"] is False
+    assert pending["validation"] == {"state": "unvalidated"}
+    steps = " ".join(report["next_steps"])
+    assert "ariadne validate" in steps or "ariadne approve" in steps
+    for dead in ("ariadne-authoring", "ariadne-admit", "approve-sources", "ariadne-skill"):
+        assert dead not in steps, dead
+    capsys.readouterr()
+    assert run_status("--project", str(project)) == 0
+    human = capsys.readouterr().out
+    assert "draft:" in human and "generation 2" in human
+
+
+def test_an_active_draft_shows_its_recovery_command_while_a_release_is_serving(tmp_path, capsys):
+    """Finding 6 (second pass): a ready, served project with a pending source draft or a
+    stale draft must not say "no blockers" — the draft's recovery command appears."""
+    from ariadne import authoring_sources
+
+    project = admitted_project(tmp_path)
+    (project / "data").mkdir(exist_ok=True)
+    write_parquet(project / "data" / "later.parquet", [(1,)], ["n"])
+    authoring_sources.add_sources(
+        project, None, [authoring_sources.source_entry("data/later.parquet", name="later")]
+    )
+    report = status_json(capsys, "--project", str(project))
+    assert report["ready"] is True  # the served release still serves
+    steps = " ".join(report["next_steps"])
+    assert "ariadne approve" in steps and "new sources first" in steps
+
+
+def test_status_reports_a_pending_source_approval_without_recovering_or_writing(
+    tmp_path, capsys, monkeypatch
+):
+    """Blockers 2 (second pass, spec 0016 AC4): with a journal or a committed marker present,
+    `status` reports a source approval pending recovery with `ariadne draft status` and creates
+    or changes NO file and executes NO recovery: the marker/journal still exist afterwards even
+    though a recovery would now succeed."""
+    from ariadne import draft
+
+    for kind in ("journal", "marker"):
+        project = admitted_project(tmp_path / kind)
+        draft.begin_source_txn(project)
+        if kind == "marker":
+            draft.commit_source_txn(project)  # rename + a working sync: recovery WOULD succeed
+        target = draft.TXN_REL if kind == "journal" else draft.TXN_COMMITTED_REL
+        assert (project / target).exists()
+        before = tree_hash(project)
+        report = status_json(capsys, "--project", str(project))
+        (entry,) = report["work_pending"]["proposals"]
+        assert entry["state"] == "source_approval_pending"
+        assert "ariadne draft status" in entry["command"]
+        steps = " ".join(report["next_steps"])
+        assert "source approval is pending recovery" in steps and "ariadne draft status" in steps
+        assert tree_hash(project) == before  # no file created or changed
+        assert (project / target).exists()  # and no recovery ran
+        # the human text names the SAME pending work: exactly one draft row, with the recovery
+        # command, and no competing "none" row
+        capsys.readouterr()
+        assert run_status("--project", str(project)) == 0
+        draft_rows = [
+            ln for ln in capsys.readouterr().out.splitlines() if ln.strip().startswith("draft:")
+        ]
+        assert len(draft_rows) == 1, draft_rows
+        assert "pending" in draft_rows[0] and "ariadne draft status" in draft_rows[0]
+        assert not draft_rows[0].rstrip().endswith("none")
+
+
+def test_status_never_reports_an_uncommitted_grant_as_current_when_the_first_lock_appears(
+    tmp_path, capsys, monkeypatch
+):
+    """Finding 3: ONE CLI interleaving through `ariadne status`: the uncommitted grant appears in
+    the scaffold display's SECOND grants read (after the initial approvals and draft samples) —
+    the first grants.lock is created, the journal written and the grants replaced inside that
+    unlocked read. The actual CLI report must not say approved/current (it reports
+    `in-progress`). A status of an empty project creates no lock file."""
+    from ariadne import authoring_sources, draft
+
+    project = complete_bundle_project(tmp_path / "proj")
+    (project / ".ariadne").mkdir(exist_ok=True)
+    # one declared source: the scaffold display's second grants read is then the deciding one
+    (project / "ariadne.yaml").write_text(
+        "sources:\n  - name: events\n    type: parquet\n    path: data/events.parquet\n",
+        encoding="utf-8",
+    )
+    registry = authoring_sources.sources.load_registry(project / "ariadne.yaml")
+    resolved = authoring_sources._resolved_entries(registry.sources, registry.storages)
+    grants = [
+        {
+            "source": entry,
+            "source_digest": authoring_sources.resolved_digest([entry]),
+            "binding": None,
+            "postgres_binding": None,
+            "by": "human:w",
+            "at": "2026-01-01T00:00:00+00:00",
+            "generation": 1,
+            "seq": n,
+        }
+        for n, entry in enumerate(resolved, 1)
+    ]
+    real_read = authoring_sources._read_grants_file
+    reads = {"n": 0}
+
+    def uncommitted_grant_in_the_second_read(proj):
+        reads["n"] += 1
+        if reads["n"] == 2:  # the scaffold display's read (the initial approvals read was #1)
+            (proj / draft.GRANTS_LOCK_REL).parent.mkdir(parents=True, exist_ok=True)
+            (proj / draft.GRANTS_LOCK_REL).touch()  # the first creation of the lock ...
+            draft.begin_source_txn(proj)  # ... the journal ...
+            authoring_sources._store_grants(proj, grants)  # ... and the uncommitted replacement
+            return grants
+        return real_read(proj)
+
+    monkeypatch.setattr(
+        authoring_sources, "_read_grants_file", uncommitted_grant_in_the_second_read
+    )
+    report = status_json(capsys, "--project", str(project))
+    assert reads["n"] >= 2
+    scaffold = report["sources"]["scaffold"]
+    assert scaffold["approval"] is False and scaffold["effective_approval"] == "in-progress"
+
+    monkeypatch.undo()
+    empty = tmp_path / "empty-project"
+    empty.mkdir()
+    subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    status_json(capsys, "--project", str(empty))
+    assert not (empty / ".ariadne").exists()

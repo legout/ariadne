@@ -1278,18 +1278,10 @@ class _QueryRuntimeSession(_DiscoverySession):
             "disclosure": "unversioned, as-of source data; no Git snapshot identity is established",
         }
 
-    async def save_example(
-        self,
-        submission: dict,
-        *,
-        proposal: str | None = None,
-        expected_revision: str | None = None,
-    ) -> dict:
+    async def save_example(self, submission: dict) -> dict:
         """Source-free delegation: Example authoring rides the
         discovery session — the source builder is never constructed for it."""
-        return super().save_example(
-            submission, proposal=proposal, expected_revision=expected_revision
-        )
+        return super().save_example(submission)
 
     async def search_examples(
         self,
@@ -1297,18 +1289,10 @@ class _QueryRuntimeSession(_DiscoverySession):
         limit: int = 10,
         include_history: bool = False,
         include_sql: bool = False,
-        *,
-        proposal: str | None = None,
-        revision: str | None = None,
     ) -> list[dict]:
         self._discard_request_budget()
         return await super().search_examples(
-            query,
-            limit=limit,
-            include_history=include_history,
-            include_sql=include_sql,
-            proposal=proposal,
-            revision=revision,
+            query, limit=limit, include_history=include_history, include_sql=include_sql
         )
 
     async def define_metric(self, definition: dict) -> dict:

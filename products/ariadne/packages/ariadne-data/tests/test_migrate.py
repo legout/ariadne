@@ -6,6 +6,7 @@ report. The legacy envelope below is the pre-0.3 fixture shape, written out as t
 migration input."""
 
 import asyncio
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -185,27 +186,27 @@ def _legacy_project(root: Path, model_text: str, *, context: bool = False) -> Pa
 
 
 def test_migrate_converts_the_joint_example_and_the_admitted_result_answers(tmp_path, monkeypatch):
-    from integration.tests.lumio_metric_mvp import (
-        ORDERS_BINDINGS,
-        ORDERS_CONTRACT,
-        activate,
-        preview,
-    )
+    from integration.tests.lumio_metric_mvp import activate, preview
 
-    from tests.test_contracts import contracted
+    from tests.test_contracts import ORDERS_BINDINGS, ORDERS_CONTRACT, contracted
     from tests.test_git_authoring import approved
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES, context=True)
 
     result = migrate.migrate_project(project)
-    assert result["status"] == "proposal"
+    assert result["status"] == "draft"
     assert "semantic_layer/models/retail_sales.yml" in result["files"]
     assert "knowledge/metrics/retail-revenue.md" in result["files"]
     assert "context_integration.yaml" in result["files"]
 
     api = AuthoringProject(project)
-    started = {"proposal": result["proposal"], "candidate_revision": result["revision"]}
+    started = {
+        "proposal": json.loads((project / ".ariadne" / "draft.json").read_text(encoding="utf-8"))[
+            "proposal"
+        ],
+        "candidate_revision": result["revision"],
+    }
     approved(api, project, started)
     contract = ORDERS_CONTRACT.replace("region", "status").replace("mustBe: 60", "mustBe: 175")
     bindings = ORDERS_BINDINGS.replace("region", "status").replace(
@@ -550,3 +551,132 @@ def test_a_legacy_model_with_an_inline_credential_is_refused_and_creates_no_prop
     assert not (project / ".ariadne").exists() or not any(
         (project / ".ariadne").rglob("proposals/*")
     )
+
+
+def test_migrate_converts_the_active_drafts_candidate_and_never_overwrites_its_edit(tmp_path):
+    """Finding 4: `draft edit` then `migrate` must not replace the edit with the old served
+    bytes. migrate pins the active draft first and converts its CANDIDATE: the edited
+    description survives in the converted model."""
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    edited = LEGACY_RETAIL_SALES.replace(
+        "Synthetic local retail orders", "Edited in the draft before migrating"
+    )
+    draft.edit_artifact(project, None, "semantic_layer/models/retail_sales.yml", edited)
+    before = draft.status(project)
+    assert before is not None
+
+    result = migrate.migrate_project(project)
+
+    assert result["status"] == "draft" and result["generation"] == before["generation"]
+    converted = _git(
+        project, "show", f"{result['revision']}:semantic_layer/models/retail_sales.yml"
+    )
+    assert "Edited in the draft before migrating" in converted  # the edit survived
+    assert "version: 0.3.0.dev0" in converted
+
+
+def test_migrate_refuses_when_the_draft_moved_after_the_pin(tmp_path, monkeypatch):
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    draft.edit_artifact(
+        project, None, "semantic_layer/models/retail_sales.yml", LEGACY_RETAIL_SALES + "\n"
+    )
+    real = migrate.convert_documents
+
+    def convert_then_edit(files):
+        view = draft.status(project)
+        assert view is not None
+        draft.edit_artifact(
+            project,
+            (view["generation"], view["candidate_revision"]),
+            "data/seed_notes.md",
+            "moved\n",
+        )
+        return real(files)
+
+    monkeypatch.setattr(migrate, "convert_documents", convert_then_edit)
+    with pytest.raises(ValueError, match="stale"):
+        migrate.migrate_project(project)
+
+
+def test_migrate_with_no_draft_builds_on_the_approved_source_baseline(tmp_path):
+    """Finding 4 (second pass): with no slot the first write builds on the REAL first-write
+    base — the approved source baseline included — so the converted candidate keeps an
+    approved registry change instead of forcing the served/HEAD revision over it. The baseline
+    is a commit that DIFFERS from HEAD (a child of it on a side branch), as in a real source
+    approval, so selecting HEAD would lose the marker."""
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    head = _git(project, "rev-parse", "HEAD").strip()
+    _git(project, "checkout", "-q", "-b", "approved-sources")
+    registry = (project / "ariadne.yaml").read_text(encoding="utf-8")
+    (project / "ariadne.yaml").write_text(registry + "\n# approved source baseline marker\n")
+    _git(project, "add", "ariadne.yaml")
+    _git(project, "commit", "-q", "-m", "baseline with an approved registry change")
+    baseline = _git(project, "rev-parse", "HEAD").strip()
+    _git(project, "checkout", "-q", "-")  # HEAD returns to the pre-baseline commit
+    assert _git(project, "rev-parse", "HEAD").strip() == head != baseline
+    draft.set_source_baseline(project, baseline)
+    assert draft.first_write_base(project) == baseline
+
+    result = migrate.migrate_project(project)
+
+    kept = _git(project, "show", f"{result['revision']}:ariadne.yaml")
+    assert "approved source baseline marker" in kept
+
+
+def test_migrate_opens_the_draft_on_the_verified_commit_when_head_moves_before_start(
+    tmp_path, monkeypatch
+):
+    """Finding 4 (third pass): a native Git commit (no Ariadne lock) landing between the
+    verified base read and the proposal start must not become the draft's base: the draft
+    opens on exactly the commit that was verified."""
+    from ariadne import draft, proposals
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    verified = _git(project, "rev-parse", "HEAD").strip()
+    real = proposals.start_proposal
+
+    def head_moves_then_start(*args, **kwargs):
+        (project / "ariadne.yaml").write_text(
+            (project / "ariadne.yaml").read_text(encoding="utf-8") + "\n# native commit\n"
+        )
+        _git(project, "add", "ariadne.yaml")
+        _git(project, "commit", "-q", "-m", "a native commit lands")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(proposals, "start_proposal", head_moves_then_start)
+    migrate.migrate_project(project)
+    monkeypatch.undo()
+    view = draft.status(project)
+    assert view is not None
+    record = proposals._load_record(
+        project, draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
+    )
+    assert record["base_revision"] == verified
+    assert _git(project, "rev-parse", "HEAD").strip() != verified  # HEAD really moved
+
+
+def test_migrate_refuses_when_the_first_write_base_moves_while_converting(tmp_path, monkeypatch):
+    from ariadne import draft
+
+    project = _legacy_project(tmp_path, LEGACY_RETAIL_SALES)
+    real = migrate.convert_documents
+
+    def convert_then_a_baseline_lands(files):
+        (project / "ariadne.yaml").write_text(
+            (project / "ariadne.yaml").read_text(encoding="utf-8") + "\n# landed meanwhile\n"
+        )
+        _git(project, "add", "ariadne.yaml")
+        _git(project, "commit", "-q", "-m", "a source approval landed")
+        draft.set_source_baseline(project, _git(project, "rev-parse", "HEAD").strip())
+        return real(files)
+
+    monkeypatch.setattr(migrate, "convert_documents", convert_then_a_baseline_lands)
+    with pytest.raises(ValueError, match="no longer the base"):
+        migrate.migrate_project(project)
+    assert draft.status(project) is None  # nothing was written

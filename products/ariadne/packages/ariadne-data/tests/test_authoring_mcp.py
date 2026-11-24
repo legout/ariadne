@@ -27,6 +27,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -60,15 +61,13 @@ from tests.test_git_authoring import (  # noqa: E402 — the shared Git fixtures
 # The G6 Authoring registration (spec §6): the plan §2 contract, prefixed —
 # plus the K1 explicit schema refresh (issue #41).
 AUTHORING_TOOLS = {
-    "authoring_start_proposal",
     "authoring_read_artifact",
     "authoring_edit_proposal",
-    "authoring_propose_sources",
     "authoring_inputs",
-    "authoring_validate_proposal",
     "authoring_refresh_schema",
-    "authoring_inspect_mapping",  # K3 (issue #43): bounded inspection + receipts
-    "authoring_review_proposal",
+    "authoring_inspect_mapping",
+    "authoring_resolve_term",
+    "draft_status",
 }
 QUERY_TOOLS = {
     "list_metrics",
@@ -166,7 +165,10 @@ def test_stdio_tool_boundary_authoring_without_approval_or_admission(tmp_path):
 
 
 def test_stdio_git_journey_matches_core_contracts(tmp_path):
-    """Real stdio authoring reads operator-placed documents by reference."""
+    """Real stdio authoring on the ACTIVE DRAFT (spec 0040 §3.1.3): the first edit opens
+    the draft (no start, no proposal ID), a typed source declaration goes through the
+    same edit tool, the operator's source grant is the human seam, and operator-placed
+    documents are read by reference."""
     project = complete_bundle_project(tmp_path / "proj")
     api = AuthoringProject(project)
     policy = "# Revision notes\n\nDrafted over stdio.\n"
@@ -178,54 +180,43 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
-                proposal = out["started"]["proposal"]
-                revision = out["started"]["candidate_revision"]
-                # the OPERATOR approves the candidate's resolved source identity
-                # (the human seam; no MCP tool can) — before the first edit, so
-                # the approval binds the revision it names
-                approved(api, project, out["started"])
+                out["no_draft"] = _payload(await session.call_tool("draft_status", {}))
                 out["edited"] = _payload(
                     await session.call_tool(
                         "authoring_edit_proposal",
                         {
-                            "proposal": proposal,
-                            "expected_revision": revision,
                             "edit": {
                                 "kind": "seed_notes",
                                 "content": SEED_NOTES.replace(
                                     "All events count.", "All events count, over stdio."
                                 ),
-                            },
+                            }
                         },
                     )
+                )
+                out["status"] = _payload(await session.call_tool("draft_status", {}))
+                # the OPERATOR grants the candidate's resolved source identity (the
+                # human seam; no MCP tool can)
+                approved(
+                    api,
+                    project,
+                    {
+                        "proposal": out["edited"]["proposal"],
+                        "candidate_revision": out["edited"]["revision"],
+                    },
                 )
                 out["inputs"] = _payload(
                     await session.call_tool(
                         "authoring_inputs",
-                        {
-                            "proposal": proposal,
-                            "documents": ["revision-notes.md"],
-                            "sample_rows": 1,
-                        },
+                        {"documents": ["revision-notes.md"], "sample_rows": 1},
                     )
                 )
-                # the CLI twin AT THE SAME candidate state (before validation
-                # advances the revision): full-contract parity
+                # the library twin AT THE SAME candidate state: full-contract parity
                 out["inputs_twin"] = api.inputs(
-                    proposal,
+                    out["edited"]["proposal"],
                     documents=["revision-notes.md"],
                     part=1,
                     sample_rows=1,
-                )
-                out["validated"] = _payload(
-                    await session.call_tool(
-                        "authoring_validate_proposal",
-                        {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
-                    )
-                )
-                out["review"] = _payload(
-                    await session.call_tool("authoring_review_proposal", {"proposal": proposal})
                 )
         # a session launched AFTER the project became Git-managed pins the
         # managed route: no admission yet, so queries refuse while authoring
@@ -237,13 +228,13 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
         return out
 
     out = asyncio.run(run())
-    started = out["started"]
-    assert set(started) == {"proposal", "base_revision", "candidate_revision"}
+    assert out["no_draft"] == {"draft": None}
     assert out["edited"]["changed"] is True
-    assert out["edited"]["revision"] != started["candidate_revision"]
+    assert out["edited"]["draft"]["generation"] == 1
+    assert out["status"]["candidate_revision"] == out["edited"]["revision"]
+    assert out["status"]["stale"] is False and out["status"]["validation"] == "unvalidated"
 
-    # same contracts as the CLI: external document evidence, sampled profile,
-    # and the full review envelope
+    # same contracts as the library: external document evidence and sampled profile
     assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
     assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
     assert document.read_text(encoding="utf-8") == policy
@@ -255,17 +246,12 @@ def test_stdio_git_journey_matches_core_contracts(tmp_path):
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
     assert out["inputs"]["documents"] == twin["documents"]
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
-    assert out["inputs"]["profile"] is not None  # the approved source profile
+    assert out["inputs"]["profile"] is not None  # the granted source profile
     table = out["inputs"]["profile"]["sources"][0]["tables"]["events"]
     assert table["sampled"] is True and table["sample_limit"] == 1
-    validated = out["validated"]
-    assert validated["ok"] is True and validated["errors"] == []
-    assert out["review"] == api.review_proposal(started["proposal"])  # full-dict equality
-    assert out["review"]["revision"] == validated["revision"]
-    assert out["review"]["report"]["ok"] is True
 
-    # nothing admitted by authoring or review: the managed route still refuses
-    # queries, and no admission descriptor exists
+    # nothing admitted by authoring: the managed route still refuses queries, and no
+    # admission descriptor exists
     assert out["queries"].is_error and "no valid admission" in _text(out["queries"])
     assert not (project / ".ariadne" / "current.json").exists()
 
@@ -291,28 +277,13 @@ def test_stdio_refresh_schema_matches_core_and_noops_on_identical_retry(tmp_path
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = _payload(await session.call_tool("authoring_start_proposal", {}))
-                proposal = started["proposal"]
+                started = api.start_proposal()  # the draft the operator opened
                 approved(api, project, started)
                 out["first"] = _payload(
-                    await session.call_tool(
-                        "authoring_refresh_schema",
-                        {
-                            "proposal": proposal,
-                            "expected_revision": started["candidate_revision"],
-                            "assets": [asset],
-                        },
-                    )
+                    await session.call_tool("authoring_refresh_schema", {"assets": [asset]})
                 )
                 out["second"] = _payload(
-                    await session.call_tool(
-                        "authoring_refresh_schema",
-                        {
-                            "proposal": proposal,
-                            "expected_revision": out["first"]["revision"],
-                            "assets": [asset],
-                        },
-                    )
+                    await session.call_tool("authoring_refresh_schema", {"assets": [asset]})
                 )
         return out
 
@@ -352,12 +323,7 @@ def test_stdio_inspect_mapping_returns_the_core_receipt_envelope(tmp_path):
                 return _payload(
                     await session.call_tool(
                         "authoring_inspect_mapping",
-                        {
-                            "proposal": started["proposal"],
-                            "expected_revision": started["candidate_revision"],
-                            "candidate": prefix_candidate(),
-                            "limits": limits,
-                        },
+                        {"candidate": prefix_candidate(), "limits": limits},
                     )
                 )
 
@@ -569,7 +535,7 @@ def test_container_http_authenticated_health_and_readiness(tmp_path, toolset, re
     ) as url:
         tools = asyncio.run(discover(url))
         assert ("get_metric" in tools) == (toolset != "authoring")
-        assert ("authoring_start_proposal" in tools) == (toolset != "analyst")
+        assert ("authoring_edit_proposal" in tools) == (toolset != "analyst")
         root = url.removesuffix("/mcp")
         with httpx.Client() as client:
             for headers, rejection in (
@@ -704,44 +670,36 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
         async with _http_exit(url, HTTP_TOKEN) as session:
             await session.initialize()
             out["tools"] = {tool.name for tool in (await session.list_tools()).tools}
-            out["started"] = _payload(await session.call_tool("authoring_start_proposal", {}))
-            proposal = out["started"]["proposal"]
-            revision = out["started"]["candidate_revision"]
-            # the OPERATOR approves the resolved source identity (the human
-            # seam; no MCP tool can) — before the first edit, exactly as stdio
-            approved(api, project, out["started"])
             out["edited"] = _payload(
                 await session.call_tool(
                     "authoring_edit_proposal",
                     {
-                        "proposal": proposal,
-                        "expected_revision": revision,
                         "edit": {
                             "kind": "seed_notes",
                             "content": SEED_NOTES.replace(
                                 "All events count.", "All events count, over HTTP."
                             ),
-                        },
+                        }
                     },
                 )
+            )
+            # the OPERATOR grants the resolved source identity (the human seam)
+            approved(
+                api,
+                project,
+                {
+                    "proposal": out["edited"]["proposal"],
+                    "candidate_revision": out["edited"]["revision"],
+                },
             )
             out["inputs"] = _payload(
                 await session.call_tool(
                     "authoring_inputs",
-                    {"proposal": proposal, "documents": ["revision-notes.md"], "sample_rows": 1},
+                    {"documents": ["revision-notes.md"], "sample_rows": 1},
                 )
             )
             out["inputs_twin"] = api.inputs(
-                proposal, documents=["revision-notes.md"], part=1, sample_rows=1
-            )
-            out["validated"] = _payload(
-                await session.call_tool(
-                    "authoring_validate_proposal",
-                    {"proposal": proposal, "expected_revision": out["edited"]["revision"]},
-                )
-            )
-            out["review"] = _payload(
-                await session.call_tool("authoring_review_proposal", {"proposal": proposal})
+                out["edited"]["proposal"], documents=["revision-notes.md"], part=1, sample_rows=1
             )
         return out
 
@@ -765,9 +723,8 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert not [
         name for name in out["tools"] if any(marker in name for marker in HUMAN_OPERATION_MARKERS)
     ]
-    assert set(out["started"]) == {"proposal", "base_revision", "candidate_revision"}
     assert out["edited"]["changed"] is True
-    # identical contracts to the local CLI over the same core
+    # identical contracts to the library over the same core
     assert out["inputs"]["documents"][0]["resource"] == str(document.resolve())
     assert out["inputs"]["documents"][0]["digest"] == hashlib.sha256(policy.encode()).hexdigest()
     assert document.read_text(encoding="utf-8") == policy
@@ -777,8 +734,6 @@ def test_http_authenticated_journey_matches_stdio_contracts(tmp_path):
     assert out["inputs"]["seed_notes"] == twin["seed_notes"]
     assert out["inputs"]["documents"] == twin["documents"]
     assert _stable_profile(out["inputs"]["profile"]) == _stable_profile(twin["profile"])
-    assert out["validated"]["ok"] is True and out["validated"]["errors"] == []
-    assert out["review"] == api.review_proposal(out["started"]["proposal"])
     assert sorted(p.name for p in (project / "data" / "docs").iterdir()) == [
         "notes.md",
         "revision-notes.md",
@@ -811,7 +766,7 @@ def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
                 return [tool.name for tool in (await session.list_tools()).tools]
 
     tools = asyncio.run(run())
-    assert "authoring_start_proposal" in tools
+    assert "authoring_edit_proposal" in tools
     with socket.socket() as sock:
         assert sock.connect_ex(("127.0.0.1", port)) != 0  # no listener materialized
 
@@ -819,11 +774,11 @@ def test_stdio_needs_no_token_even_when_http_env_is_set(tmp_path):
 # --------------------------- spec 0025 (S1): storages forwarding over stdio
 
 
-def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
-    """Spec 0025 §5 adapter parity: the MCP tool accepts the optional
-    ``storages`` definitions beside the source entries and returns EXACTLY
-    what the shared AuthoringProject returns; the candidate registry carries
-    both top-level blocks and the resolved identity embeds the profile."""
+def test_stdio_typed_source_edit_forwards_storage_profiles(tmp_path):
+    """Spec 0025 §5 / spec 0040 §3.1.3: a typed source declaration goes through
+    ``authoring_edit_proposal`` (``authoring_propose_sources`` is removed); the optional
+    ``storages`` definitions ride beside the entries and the result equals what the
+    shared library returns. Inert data: nothing is granted."""
     project = complete_bundle_project(tmp_path / "proj")
     profiles = {
         "local": {
@@ -847,32 +802,881 @@ def test_stdio_propose_sources_forwards_storage_profiles(tmp_path):
         async with _launch(project) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                started = _payload(await session.call_tool("authoring_start_proposal", {}))
                 return _payload(
                     await session.call_tool(
-                        "authoring_propose_sources",
-                        {
-                            "proposal": started["proposal"],
-                            "expected_revision": started["candidate_revision"],
-                            "sources": entries,
-                            "storages": profiles,
-                        },
+                        "authoring_edit_proposal",
+                        {"edit": {"kind": "sources", "entries": entries, "storages": profiles}},
                     )
                 )
 
     over_stdio = asyncio.run(run())
-    # the CLI twin in a SECOND proposal of the SAME project: the identical
-    # candidate registry base resolves to the identical identity (cross-project
-    # comparison would differ by the host-root-resolved existing paths)
-    twin_api = AuthoringProject(project)
-    twin_started = twin_api.start_proposal()
-    twin = twin_api.propose_sources(
-        twin_started["proposal"], twin_started["candidate_revision"], entries, profiles
-    )
-    assert over_stdio["source_digest"] == twin["source_digest"]
-    assert over_stdio["sources"] == twin["sources"]
+    # the library twin: a second project with the identical base resolves identically
+    twin_project = complete_bundle_project(tmp_path / "twin")
+    from ariadne import authoring_sources
+
+    twin = authoring_sources.add_sources(twin_project, None, entries, profiles)
+    assert over_stdio["source_digest"] and over_stdio["draft"]["generation"] == 1
+    assert [e["name"] for e in over_stdio["sources"]] == [e["name"] for e in twin["sources"]]
     doc = yaml.safe_load(
         (project / ".ariadne" / "worktrees" / over_stdio["proposal"] / "ariadne.yaml").read_text()
     )
     assert doc["storages"]["local"]["access_key_id_env"] == "MCP_S3_KEY_ID"
     assert doc["sources"][-1]["storage"] == "local"
+    assert not (project / ".ariadne" / "source_grants.json").exists()  # nothing granted
+
+
+def test_the_tool_list_of_every_toolset_has_no_forbidden_tool(tmp_path):
+    """AC5 (spec 0040 §3.1.3): no approve, discard, grant, mapping-confirmation,
+    propose-sources, validate, review or start tool exists on ANY toolset; B1 added
+    `draft_status`."""
+    from ariadne.serve import build_app
+
+    forbidden_markers = ("approve", "discard", "grant", "confirm", "admit", "reconcil", "promot")
+    removed = {
+        "authoring_propose_sources",
+        "authoring_start_proposal",
+        "authoring_validate_proposal",
+        "authoring_review_proposal",
+    }
+    for toolset in ("combined", "analyst", "authoring"):
+        app = build_app(lambda: pytest.fail("registration constructed a runtime"), toolset=toolset)
+        tools = {tool.name for tool in asyncio.run(app.list_tools())}
+        assert not [t for t in tools if any(m in t for m in forbidden_markers)], toolset
+        assert not tools & removed, toolset
+        assert ("draft_status" in tools) == (toolset != "analyst")
+
+
+def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(tmp_path):
+    """The real stdio MCP `draft_status` forwards the SAME shared message as the CLI. A journal is
+    left by an interrupted approval whose three files were never changed (so the restore is a
+    no-op); the project's .ariadne directory is read-only, so the journal removal fails and the
+    journal remains: the tool error must say what is already safe, what stays refused and why, and
+    how to retry."""
+    from ariadne import draft, proposals
+
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions")
+    project = complete_bundle_project(tmp_path / "proj")
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        pass  # the lock files exist beforehand, so a read-only directory can still open them
+    with draft.grants_lock(project):
+        pass
+    draft.begin_source_txn(project)
+    state_dir = project / ".ariadne"
+
+    async def run() -> str:
+        os.chmod(state_dir, 0o500)  # search + read, no write: the unlink fails, the stat works
+        try:
+            async with _launch(project) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool("draft_status", {})
+        finally:
+            os.chmod(state_dir, 0o755)
+        assert result.is_error, result
+        return "".join(getattr(block, "text", "") for block in result.content)
+
+    message = asyncio.run(run())
+    assert "durably restored" in message and "no new grant is effective" in message
+    assert "grant-backed reads" in message and "journal remains" in message
+    assert "ariadne draft status" in message
+    assert draft.source_txn_pending(project)  # the remnant is still there; a retry removes it
+    assert draft.status(project) is None and not draft.source_txn_pending(project)
+
+
+_SIGINT_LAUNCHER = """
+import json, os, signal, sys, threading, time
+marker = os.environ["ARIADNE_TEST_MARKER"]
+own = os.getpid()
+with open(marker + ".pid", "w") as fh:  # the server child's own pid, written before anything else
+    fh.write(str(own))
+from ariadne import draft
+want = int(os.environ["ARIADNE_TEST_SIGINTS"])
+target = int(os.environ.get("ARIADNE_TEST_TARGET_PID") or own)
+fault = os.environ.get("ARIADNE_TEST_FAULT", "")
+state = {"fired": False, "attempt": 0, "seq": 0}
+events = []
+# time base: every marker and audit record carries time.monotonic(). On Linux that is
+# CLOCK_MONOTONIC, one system-wide clock: the test process and this launcher share the time base.
+
+def audit(name, args):
+    # fires inside the real os.kill, before the syscall: the pid and signal are the call's own
+    if name != "os.kill":
+        return
+    frame = sys._getframe(1)  # the Python frame that invoked os.kill (the call site)
+    state["seq"] += 1
+    event = {"seq": state["seq"], "pid": int(args[0]), "sig": int(args[1]),
+             "tid": threading.get_ident(), "fn": frame.f_code.co_name, "line": frame.f_lineno,
+             "attempt": state["attempt"], "t": time.monotonic()}
+    events.append(event)
+    with open(marker + ".audit", "a") as fh:
+        fh.write(json.dumps(event) + chr(10))
+
+sys.addaudithook(audit)
+
+if fault == "audit_kbd":  # a SECOND audit hook aborts the second os.kill with a KeyboardInterrupt
+    def second(name, args):
+        if name == "os.kill" and state["seq"] == 2:
+            raise KeyboardInterrupt
+    sys.addaudithook(second)
+
+def do_kill(pid, sig):
+    os.kill(pid, sig)  # THE KILL
+
+def other_kill(pid, sig):
+    os.kill(pid, sig)
+
+KILL_LINE = do_kill.__code__.co_firstlineno + 1
+used = set()
+
+def frames(exc):
+    out, tb = [], exc.__traceback__
+    while tb is not None:
+        out.append([tb.tb_frame.f_code.co_name, os.path.basename(tb.tb_frame.f_code.co_filename)])
+        tb = tb.tb_next
+    return out
+
+def write_marker(row):
+    row["t"] = time.monotonic()
+    with open(marker, "a") as fh:
+        fh.write(json.dumps(row) + chr(10))
+
+def record(index, outcome, since, frame, tid, tb):
+    # a marker is written ONLY for an event that is new, from this thread, from the launcher's own
+    # os.kill line, with the server's pid and SIGINT; it references that event's sequence number
+    for event in events[since:]:
+        if (event["pid"] == own and event["sig"] == int(signal.SIGINT) and event["tid"] == tid
+                and event["fn"] == "do_kill" and event["line"] == KILL_LINE
+                and event["seq"] not in used):
+            used.add(event["seq"])
+            write_marker({"i": index, "seq": event["seq"], "outcome": outcome, "tid": tid,
+                          "tb": tb, "fn": frame.f_code.co_name, "line": frame.f_lineno})
+            return
+
+def forge(index, seq, frame, tid):
+    write_marker({"i": index, "seq": seq, "outcome": "returned", "tid": tid, "tb": [],
+                  "fn": frame.f_code.co_name, "line": frame.f_lineno})
+
+def tracer(frame, event, arg):
+    if frame.f_code.co_filename != draft.__file__:
+        return None
+    def local(frame, event, arg):
+        if event != "line" or state["fired"]:
+            return local
+        if frame.f_code.co_name != os.environ["ARIADNE_TEST_FUNC"]:
+            return local
+        if frame.f_lineno != int(os.environ["ARIADNE_TEST_LINE"]):
+            return local
+        state["fired"] = True
+        tid = threading.get_ident()
+        if fault == "stall":
+            time.sleep(float(os.environ["ARIADNE_TEST_STALL"]))
+        if fault == "commit":  # a rollback that turned into a commit (a marker, no journal)
+            journal = os.path.join(sys.argv[1], str(draft.TXN_REL))
+            os.replace(journal, os.path.join(sys.argv[1], str(draft.TXN_COMMITTED_REL)))
+        for index in range(1, want + 1):
+            state["attempt"] = index
+            since, outcome, tb = len(events), "returned", []
+            try:
+                if fault == "pass" or (fault == "skip_second" and index == 2):
+                    pass  # the call replaced by nothing: no os.kill event
+                elif fault == "forge":  # an unconditional writer, no call at all
+                    forge(index, 999, frame, tid)
+                    continue
+                elif fault == "forge_double":  # a real first call, a second row on the same event
+                    if index == 1:
+                        do_kill(target, signal.SIGINT)
+                    else:
+                        forge(index, state["seq"], frame, tid)
+                        continue
+                elif fault == "held":  # a marker now, the real audit event only after the hold
+                    forge(index, 1, frame, tid)
+                    time.sleep(float(os.environ["ARIADNE_TEST_HOLD"]))
+                    do_kill(target, signal.SIGINT)
+                    continue
+                elif fault == "sig0":
+                    do_kill(target, 0)  # a real os.kill, but signal 0: not SIGINT
+                elif fault == "double":  # two audit events in one iteration
+                    do_kill(target, 0)
+                    do_kill(target, signal.SIGINT)
+                elif fault == "otherline":
+                    other_kill(target, signal.SIGINT)  # an event from another call site
+                elif fault == "thread":  # the kill moved into a worker thread and joined
+                    worker = threading.Thread(target=do_kill, args=(target, signal.SIGINT))
+                    worker.start()
+                    worker.join()
+                elif fault == "kbd_before" and index == 2:
+                    raise KeyboardInterrupt  # raised BEFORE the syscall: no os.kill event
+                elif fault == "oserror":
+                    do_kill(target, signal.SIGINT)  # a real, audited send ...
+                    raise OSError(5, "the call failed")  # ... that then reports an OSError
+                else:
+                    do_kill(target, signal.SIGINT)
+            except BaseException as exc:
+                record(index, "raised " + type(exc).__name__, since, frame, tid, frames(exc))
+                raise
+            record(index, outcome, since, frame, tid, tb)
+        return local
+    return local
+
+sys.settrace(tracer)
+threading.settrace(tracer)
+from ariadne import serve
+raise SystemExit(serve.main(["--project", sys.argv[1], "--toolset", "combined"]))
+"""
+
+_FAILING_LAUNCHER = "raise SystemExit(50)"  # a launcher that fails: no server at all
+
+
+def _restore_sync_line() -> int:
+    import ast
+    import inspect
+    import textwrap
+
+    from ariadne import draft
+
+    src, start = inspect.getsourcelines(draft._finish_rollback)
+    tree = ast.parse(textwrap.dedent("".join(src)))
+    call = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "_fsync_path"
+    )
+    return call.lineno + start - 1
+
+
+def _journaled_state(project: Path) -> dict:
+    from ariadne import draft
+
+    return {
+        rel.name: (project / rel).read_bytes() if (project / rel).exists() else None
+        for rel in (draft.GRANTS_REL, draft.BASELINE_REL, draft.DRAFT_REL)
+    }
+
+
+def _disposition(project: Path) -> str:
+    """The transaction artifacts on disk: ``"marker"`` (a committed marker), ``"journal"`` (an
+    uncommitted journal) or ``"none"``."""
+    from ariadne import draft
+
+    if os.path.lexists(project / draft.TXN_COMMITTED_REL):
+        return "marker"
+    return "journal" if os.path.lexists(project / draft.TXN_REL) else "none"
+
+
+def _function_line(name: str) -> tuple[str, int]:
+    """(function name, line of its first executable statement) in ``draft``, found through the
+    AST: a trace point in a DIFFERENT place than the restore sync, for the negative cases."""
+    import ast
+    import inspect
+    import textwrap
+
+    from ariadne import draft
+
+    fn = getattr(draft, name)
+    src, start = inspect.getsourcelines(fn)
+    tree = ast.parse(textwrap.dedent("".join(src)))
+    body = next(n for n in tree.body if isinstance(n, ast.FunctionDef)).body
+    first = next(  # skip the docstring: it produces no line event
+        n for n in body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
+    )
+    return name, first.lineno + start - 1
+
+
+def _run_stdio_sigint_case(
+    tmp_path: Path,
+    sigints: int,
+    launcher: str = _SIGINT_LAUNCHER,
+    fault: str = "",
+    change_seed: bool = True,
+    where: tuple[str, int] | None = None,
+    decoy: bool = False,
+    call_wait: float = 15,
+    evidence_wait: float = 15,
+    stall: float = 0,
+    linger: float = 0,
+    hold: float = 0,
+    wake_delay: float = 0,
+) -> dict:
+    """What this proves, and no more: in the REAL ``ariadne serve`` stdio process, a real SIGINT
+    that the server process SENDS TO ITSELF at the cleanup line (one, or two), WITNESSED PER SIGNAL,
+    leaves a consistent project state, and a later ``ariadne draft status`` reports the outcome
+    truthfully.
+
+    It does NOT prove (and no assertion here claims): that the server's own handler received the
+    signal through an independent witness — the self-send to the server's own pid implies it, and
+    "the server stopped serving" is not used as proof of receipt; nor the strict timing
+    classification (late, missing, crossing the close), which is settled at the final candidate
+    review (plan 0040-B1 V). The launcher does not touch the installed SIGINT handler.
+
+    Preconditions that cannot pass silently: the MCP session initialized and served a request
+    BEFORE the window; the seed really changed the three journaled files after the journal was
+    written.
+
+    Send evidence. A launcher audit hook records every ``os.kill`` EVENT with a sequence number,
+    the pid and signal number, the thread id, the call site (function and line of the frame that
+    invoked it) and the attempt, all taken from the event itself. A marker is written only for an
+    event that is NEW (matched at most once), from the tracer's own thread, from the launcher's own
+    ``os.kill`` line, with the server's pid and SIGINT, and references that event's sequence
+    number. Per requested signal there must be EXACTLY ONE ``os.kill`` event during its attempt;
+    the first signal must have returned; the SECOND signal may instead raise the Runner's
+    synchronous ``KeyboardInterrupt`` only if its traceback shows the Runner's ``_on_sigint`` and
+    the invoking call (inspected, the handler is neither replaced nor wrapped).
+
+    The deadline. Every marker and audit row carries ``time.monotonic()`` (on Linux the same
+    system-wide clock in this process and in the launcher); evidence written after the deadline
+    never counts, however late the poll wakes. The deciding snapshot — markers AND the audit log,
+    matched — is taken AT the deadline and its records are preserved before any teardown; the
+    post-teardown check compares those records and never changes the decision. The byte states
+    and the journal's disposition are read BEFORE any fresh ``draft status``; the disposition must
+    be ``none`` or ``journal`` (a commit marker in the rollback case fails). Nothing is asserted
+    about the interrupted tool's reply or the server's exit status (owner decisions). Protection
+    against deliberate edits to BOTH evidence files is out of scope."""
+    import subprocess as sp
+
+    from ariadne import authoring_sources, draft
+
+    project = complete_bundle_project(tmp_path / "proj")
+    before = _journaled_state(project)
+    draft.begin_source_txn(project)  # an interrupted approval's journal (the previous bytes)
+    if change_seed:  # ... which then CHANGED all three journaled files (something to restore)
+        authoring_sources._store_grants(
+            project, [{"source": {"name": "x"}, "by": "human:t", "seq": 1}]
+        )
+        draft.set_source_baseline(project, "0" * 40)
+        (project / draft.DRAFT_REL).write_text(
+            json.dumps({"state": "retired", "generation": 99}), encoding="utf-8"
+        )
+    changed = _journaled_state(project)
+    assert all(changed[name] != before[name] for name in before), "the seed must differ"
+    marker = tmp_path / "sigint-witness"
+    func, line = where or ("_finish_rollback", _restore_sync_line())
+    seen: dict = {"initialized": False, "served_before": False}
+    decoy_proc = sp.Popen([sys.executable, "-c", "import time; time.sleep(120)"]) if decoy else None
+
+    def rows(suffix: str = "") -> list[dict]:
+        path = Path(f"{marker}{suffix}")
+        if not path.exists():
+            return []
+        return [json.loads(entry) for entry in path.read_text().split("\n")[:-1]]  # whole lines
+
+    def snapshot(deadline: float) -> dict:
+        """The evidence AS OF the deadline: only rows stamped at or before it, markers AND audit."""
+        return {
+            "markers": [r for r in rows() if r["t"] <= deadline],
+            "audit": [r for r in rows(".audit") if r["t"] <= deadline],
+        }
+
+    def matched(snap: dict) -> list[dict]:
+        """The markers whose referenced audit event is in the snapshot (complete records)."""
+        events = {e["seq"]: e for e in snap["audit"]}
+        return [
+            {"marker": m, "event": events[m["seq"]]} for m in snap["markers"] if m["seq"] in events
+        ]
+
+    async def run() -> None:
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(REPO_ROOT / "src"),
+            "ARIADNE_TEST_SIGINTS": str(sigints),
+            "ARIADNE_TEST_FUNC": func,
+            "ARIADNE_TEST_LINE": str(line),
+            "ARIADNE_TEST_MARKER": str(marker),
+            "ARIADNE_TEST_FAULT": fault,
+            "ARIADNE_TEST_STALL": str(stall),
+            "ARIADNE_TEST_HOLD": str(hold),
+        }
+        if decoy_proc is not None:
+            env["ARIADNE_TEST_TARGET_PID"] = str(decoy_proc.pid)
+        params = StdioServerParameters(
+            command=sys.executable, args=["-c", launcher, str(project)], env=env
+        )
+        try:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=60)
+                    seen["initialized"] = True
+                    await asyncio.wait_for(session.list_tools(), timeout=20)
+                    seen["served_before"] = True  # a request BEFORE the window was served
+                    try:  # this lookup triggers the recovery whose cleanup line gets the signal
+                        await asyncio.wait_for(
+                            session.call_tool("draft_status", {}), timeout=call_wait
+                        )
+                    except BaseException:  # the reply MAY be lost
+                        pass
+                    deadline = time.monotonic() + evidence_wait  # the COMPLETE send evidence first
+                    seen["deadline"] = deadline
+                    while (
+                        time.monotonic() < deadline and len(matched(snapshot(deadline))) < sigints
+                    ):
+                        await asyncio.sleep(0.05)
+                    if wake_delay:  # test hook: a poll that wakes LATE, after the deadline
+                        await asyncio.sleep(wake_delay)
+                    # the deciding snapshot is taken AT the deadline (markers AND audit, matched by
+                    # their own timestamps) and the complete records are preserved BEFORE teardown
+                    seen["decision"] = snapshot(deadline)
+                    seen["matched"] = matched(seen["decision"])
+                    if linger:  # test hook: a send delivered DURING the teardown
+                        await asyncio.sleep(linger)
+        except BaseException:  # the server going away may surface as a closed stream
+            pass
+
+    try:
+        asyncio.run(run())
+    finally:
+        if decoy_proc is not None:
+            decoy_proc.kill()
+            decoy_proc.wait()
+    assert seen["initialized"], "the MCP session must initialize"
+    assert seen["served_before"], "a request before the window must have been served"
+    decision, done = seen["decision"], seen["matched"]
+    assert len(done) == sigints, (
+        f"send evidence missing: {len(done)}/{sigints} markers after {evidence_wait:g}s"
+        + (" (a marker has no os.kill audit event)" if len(decision["markers"]) > len(done) else "")
+    )
+    # the later (post-teardown) read can only EXTEND the evidence: the preserved records must be
+    # present and unchanged (records, not lengths); it never changes the decision
+    later_markers, later_audit = rows(), rows(".audit")
+    assert all(m in later_markers for m in decision["markers"]), "marker records changed"
+    assert all(e in later_audit for e in decision["audit"]), "audit records changed"
+    server_pid = int(Path(f"{marker}.pid").read_text())
+    used: dict = {}
+    for number, pair in enumerate(done, start=1):
+        mark, event = pair["marker"], pair["event"]
+        assert mark["seq"] not in used, (
+            f"markers {used[mark['seq']]} and {number} are backed by ONE os.kill event"
+        )
+        used[mark["seq"]] = number
+        attempt = [e for e in decision["audit"] if e["attempt"] == mark["i"]]
+        assert len(attempt) == 1, (
+            f"send {mark['i']}: {len(attempt)} os.kill events during the attempt, not exactly one"
+        )
+        assert event["pid"] == server_pid, (
+            f"send {number} targeted pid {event['pid']}, not the server child's pid {server_pid}"
+        )
+        assert event["sig"] == int(signal.SIGINT), f"send {number} used signal {event['sig']}"
+        assert event["tid"] == mark["tid"], f"send {number}: the kill ran in another thread"
+        assert (mark["fn"], mark["line"]) == ("_finish_rollback", _restore_sync_line()), (
+            f"send {number} came from another function or line: {mark['fn']}:{mark['line']}"
+        )
+        if number == 2 and mark["outcome"] == "raised KeyboardInterrupt":
+            names = [frame[0] for frame in mark["tb"]]
+            assert "_on_sigint" in names and "do_kill" in names, (
+                f"send 2: the KeyboardInterrupt did not propagate from the call through the "
+                f"Runner's handler (traceback: {names})"
+            )
+        else:
+            assert mark["outcome"] == "returned", f"send {number} failed: os.kill {mark['outcome']}"
+    pre = _disposition(project)  # BEFORE any fresh `draft status` could recover anything
+    assert pre in ("none", "journal"), f"a commit marker in the rollback case (disposition {pre!r})"
+    after = _journaled_state(project)
+    assert after == before, "the three files must hold their previous (journaled) bytes"
+    return {"project": project, "pre": pre}
+
+
+def _fresh_status(project: Path):
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ariadne.cli",
+            "draft",
+            "status",
+            "--json",
+            "--project",
+            str(project),
+        ],
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        cwd=project,  # the bare retry's context IS the project
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _valid_retry(command: str, project: Path) -> bool:
+    """A retry command validated AS A COMMAND: the shipped bare ``ariadne draft status`` (its
+    context is the project: the fresh CLI runs in the project directory), or ``--project``
+    followed by an ABSOLUTE path equal to THIS fixture's project path. A relative operand is
+    rejected (it resolves against the caller's cwd and can report on another project), as is any
+    other path: a retry that inspects another project is no retry."""
+    import shlex
+
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if parts == ["ariadne", "draft", "status"]:
+        return True
+    return (
+        len(parts) == 5
+        and parts[:3] == ["ariadne", "draft", "status"]
+        and parts[3] == "--project"
+        and Path(parts[4]).is_absolute()
+        and os.path.realpath(parts[4]) == os.path.realpath(project)
+    )
+
+
+def _retry_commands(message: str) -> list[str]:
+    import re
+
+    return re.findall(r"'(ariadne [^']*)'", message)
+
+
+_RETAINED_TYPES = ("JournalRemnant", "RemovalUnconfirmed", "RestoreUnconfirmed")
+
+
+def _assert_fresh_status(project: Path, done, pre: str) -> None:
+    """The fresh `ariadne draft status` reports the REAL outcome for the state, decided on
+    STRUCTURE (the envelope's ``type``, the ``source_approval_pending`` flag, the artifacts on
+    disk), never on words in a message:
+    - the journal is gone ("none" afterwards): exit 0 and the fixture's clean payload
+      ``{"draft": null}`` (no journal, no marker afterwards);
+    - an uncommitted journal retained ("journal" before and after): a non-zero exit and a
+      structured pending result — the typed error ``JournalRemnant``/``RemovalUnconfirmed``/
+      ``RestoreUnconfirmed`` (``RemovalUnconfirmed`` could not tell and is truthful either way;
+      ``RollbackCleanup`` claims removal, so only with the journal gone), or the shared pending
+      JSON (``source_approval_pending: true``) — owner decision 2026-11-24: the SAME pending shape
+      is accepted for a retained journal and for a retained marker (both are truthfully pending),
+      so the flag, the retry command and the artifacts on disk (post equals pre) are asserted,
+      with no keyword heuristics on the message;
+    - a committed marker ("marker" before and after): the same pending JSON, artifacts agreeing.
+    Every retry command must be the bare `ariadne draft status` or `--project <absolute path of
+    this project>`. An unrelated error is not accepted in any state."""
+    post = _disposition(project)
+    if done.returncode == 0:
+        assert json.loads(done.stdout) == {"draft": None}, done.stdout
+        assert post == "none", f"a clean result while the artifacts are {post!r}"
+        return
+    assert pre in ("journal", "marker"), f"an error with nothing pending ({pre!r}): {done.stderr}"
+    if done.stdout.strip():
+        # Owner decision 2026-11-24: `draft status --json` reports the SAME pending shape for an
+        # interrupted rollback (a retained journal) and for a commit that could not be confirmed
+        # (a retained marker); both are truthfully pending. So the flag, the retry command and the
+        # artifacts on disk are asserted — no keyword heuristics on the message.
+        payload = json.loads(done.stdout)
+        assert payload.get("source_approval_pending") is True, done.stdout
+        command = payload.get("command", "")
+        assert _valid_retry(command, project), f"not a valid retry command: {command!r}"
+        assert post == pre, f"pending result for {pre!r} but the artifacts are {post!r}"
+        return
+    error = json.loads(done.stderr).get("error", {})
+    kind, message = error.get("type"), error.get("message", "")
+    assert pre == "journal" and post != "marker", f"a rollback result for {pre!r}/{post!r}"
+    commands = _retry_commands(message)
+    assert commands and all(_valid_retry(c, project) for c in commands), f"retry: {commands}"
+    if kind == "RollbackCleanup":  # claims the journal was removed: only truthful if it is gone
+        assert post == "none", "RollbackCleanup claims removal while the journal is on disk"
+    elif kind == "RemovalUnconfirmed":  # could not determine which: truthful both ways
+        assert post in ("none", "journal"), f"RemovalUnconfirmed with {post!r}"
+    else:
+        assert kind in _RETAINED_TYPES, f"not a recovery result: {kind!r}"
+        assert post == "journal", f"{kind} reports the journal kept, but it is {post!r}"
+
+
+@pytest.mark.parametrize("sigints", [1, 2])
+def test_stdio_server_self_sent_sigint_at_the_cleanup_line_leaves_a_consistent_state(
+    tmp_path, sigints
+):
+    """In the real `ariadne serve` stdio process a real SIGINT — or two — that the server sends to
+    itself at the cleanup line, witnessed per signal, leaves a consistent project state, and a
+    later `ariadne draft status` in a FRESH process reports the outcome truthfully. (It does not
+    prove receipt by an independent witness or the strict timing: see `_run_stdio_sigint_case`.)"""
+    case = _run_stdio_sigint_case(tmp_path, sigints)
+    _assert_fresh_status(case["project"], _fresh_status(case["project"]), case["pre"])
+
+
+def _another_line() -> tuple[str, int]:
+    """The first statement of ``_finish_rollback``: it runs before the restore sync."""
+    return _function_line("_finish_rollback")
+
+
+@pytest.mark.parametrize(
+    ("what", "sigints", "kwargs", "failure"),
+    [
+        (
+            "a launcher that fails",
+            1,
+            {"launcher": _FAILING_LAUNCHER},
+            "MCP session must initialize",
+        ),
+        (
+            "the call replaced by `pass` (no os.kill event, so no marker)",
+            1,
+            {"fault": "pass", "evidence_wait": 1},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "the second call replaced by `pass` (one of two sent)",
+            2,
+            {"fault": "skip_second", "evidence_wait": 1},
+            "send evidence missing: 1/2",
+        ),
+        (
+            "an unconditional `finally` writer with no call",
+            1,
+            {"fault": "forge", "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s .a marker has no os.kill audit event.",
+        ),
+        (
+            "os.kill(pid, 0): a real call, but signal 0 and not SIGINT",
+            1,
+            {"fault": "sig0", "evidence_wait": 1},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "send 2 replaced by a KeyboardInterrupt raised BEFORE the syscall",
+            2,
+            {"fault": "kbd_before", "evidence_wait": 1},
+            "send evidence missing: 1/2",
+        ),
+        (
+            "a second audit hook raising KeyboardInterrupt on the second os.kill event",
+            2,
+            {"fault": "audit_kbd", "evidence_wait": 2},
+            "did not propagate from the call through the Runner's handler|send evidence missing",
+        ),
+        (
+            "the kill moved into a worker thread and joined",
+            1,
+            {"fault": "thread", "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "two marker rows backed by one genuine audit row",
+            2,
+            {"fault": "forge_double", "evidence_wait": 2},
+            "ONE os.kill event|send evidence missing: 1/2",
+        ),
+        (
+            "two audit events in one iteration (signal 0, then SIGINT)",
+            1,
+            {"fault": "double", "evidence_wait": 2},
+            "2 os.kill events during the attempt, not exactly one",
+        ),
+        (
+            "a matching event from another line (another call site)",
+            1,
+            {"fault": "otherline", "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "the poll wakes after the deadline and the record completes after it",
+            1,
+            {"fault": "stall", "stall": 2, "call_wait": 1, "evidence_wait": 1, "wake_delay": 3},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "a no-call marker whose real audit event is held until after the snapshot",
+            1,
+            {"fault": "held", "hold": 4, "call_wait": 1, "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s .a marker has no os.kill audit event.",
+        ),
+        (
+            "a marker wait that expires (the send stalls past the wait)",
+            1,
+            {"fault": "stall", "stall": 5, "call_wait": 1, "evidence_wait": 1},
+            "send evidence missing: 0/1 markers after 1s",
+        ),
+        (
+            "the send stalled past the evidence wait, then delivered DURING the teardown",
+            1,
+            {"fault": "stall", "stall": 3, "call_wait": 1, "evidence_wait": 1, "linger": 5},
+            "send evidence missing: 0/1 markers after 1s",
+        ),
+        (
+            "a call that reports an OSError after a real, audited send",
+            1,
+            {"fault": "oserror"},
+            "send 1 failed: os.kill raised OSError",
+        ),
+        (
+            "a send to a decoy pid (the audit event is not the server's own pid: no marker)",
+            1,
+            {"decoy": True, "evidence_wait": 2},
+            "send evidence missing: 0/1",
+        ),
+        (
+            "a send from another line of the cleanup function",
+            1,
+            {"where": _another_line()},
+            "came from another function or line",
+        ),
+        (
+            "a send from another function",
+            1,
+            {"where": _function_line("_remove_journal")},
+            "came from another function or line",
+        ),
+        (
+            "a rollback that turned into a commit marker before the repair",
+            1,
+            {"fault": "commit"},
+            "a commit marker in the rollback case",
+        ),
+        ("an unchanged seed", 1, {"change_seed": False}, "the seed must differ"),
+    ],
+)
+def test_the_stdio_test_rejects_each_false_positive_for_its_own_reason(
+    tmp_path, what, sigints, kwargs, failure
+):
+    """Each protection fails for its OWN named reason."""
+    with pytest.raises(AssertionError, match=failure):
+        _run_stdio_sigint_case(tmp_path, sigints, **kwargs)
+
+
+def _completed(returncode: int, stdout: str = "", stderr: str = ""):
+    return subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
+
+
+def _error(kind: str, message: str) -> str:
+    return json.dumps({"error": {"type": kind, "message": message}})
+
+
+def test_the_fresh_status_check_decides_on_structure(tmp_path, monkeypatch, capsys):
+    """The assertion decides on the envelope type, the pending flag and the artifacts on disk: it
+    rejects an unrelated error in every state, a clean payload while a journal remains, a rollback
+    result for a committed marker, and a retry command that names another project; it accepts the
+    real shapes."""
+    from ariadne import draft, proposals
+    from ariadne.cli import main as cli
+
+    def project_with(kind: str, name: str) -> Path:
+        project = complete_bundle_project(tmp_path / name)
+        if kind in ("journal", "marker"):
+            draft.begin_source_txn(project)
+        if kind == "marker":
+            draft.commit_source_txn(project)
+        return project
+
+    journal = project_with("journal", "journal")
+    marker = project_with("marker", "marker")
+    none = project_with("none", "none")
+    retry = "run 'ariadne draft status' in that project"
+    pending = {
+        "source_approval_pending": True,
+        "message": "a source approval is pending",
+        "command": "ariadne draft status",
+    }
+
+    # an unrelated error is rejected in every state
+    unrelated = _completed(1, stderr=_error("ValueError", "unrelated"))
+    for project, pre in ((journal, "journal"), (marker, "marker"), (none, "none")):
+        with pytest.raises(AssertionError):
+            _assert_fresh_status(project, unrelated, pre)
+    # a clean payload while a journal remains; exit 0 without the clean payload
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(journal, _completed(0, '{"draft": null}'), "journal")
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(none, _completed(0, "{}"), "none")
+    # RollbackCleanup claims removal while the journal is on disk
+    removed = _completed(1, stderr=_error("RollbackCleanup", f"removed; {retry}"))
+    with pytest.raises(AssertionError, match="claims removal"):
+        _assert_fresh_status(journal, removed, "journal")
+    # a rollback result for a committed marker (a commit marker in a rollback result)
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(
+            marker, _completed(1, stderr=_error("JournalRemnant", f"kept; {retry}")), "journal"
+        )
+    # the pending JSON must agree with the artifacts (journal vs marker)
+    with pytest.raises(AssertionError):
+        _assert_fresh_status(marker, _completed(1, json.dumps(pending)), "journal")
+    # retry commands: a malformed option, and ANOTHER project's path, are not retries
+    for command in (
+        "ariadne draft status --project --json",
+        "ariadne draft status --project",
+        "ariadne draft status --json",
+        "ariadne draft status --project /somewhere/else",
+        f"ariadne draft status --project {os.path.relpath(marker)}",  # a RELATIVE operand
+        "ariadne draft status --project ../marker",
+    ):
+        with pytest.raises(AssertionError, match="valid retry command"):
+            _assert_fresh_status(
+                marker, _completed(1, json.dumps(dict(pending, command=command))), "marker"
+            )
+    with pytest.raises(AssertionError):  # the same through a typed error's own retry guidance
+        _assert_fresh_status(
+            journal,
+            _completed(
+                1,
+                stderr=_error(
+                    "JournalRemnant", "kept; run 'ariadne draft status --project /somewhere/else'"
+                ),
+            ),
+            "journal",
+        )
+
+    # the right results are accepted
+    _assert_fresh_status(none, _completed(0, '{"draft": null}'), "none")
+    _assert_fresh_status(marker, _completed(1, json.dumps(pending)), "marker")
+    _assert_fresh_status(journal, _completed(1, json.dumps(pending)), "journal")
+    own = dict(pending, command=f"ariadne draft status --project {marker}")
+    _assert_fresh_status(marker, _completed(1, json.dumps(own)), "marker")  # THIS project's path
+
+    # a REAL RestoreUnconfirmed envelope (restore sync EIO) with the journal retained is accepted
+    real_sync = proposals._fsync_path
+
+    def failing(path):
+        if os.path.lexists(journal / draft.TXN_REL):
+            raise OSError(5, "restore sync failed")
+        return real_sync(path)
+
+    monkeypatch.setattr(proposals, "_fsync_path", failing)
+    capsys.readouterr()
+    code = cli(["draft", "status", "--json", "--project", str(journal)])
+    monkeypatch.undo()
+    envelope = capsys.readouterr().err
+    assert code == 1 and json.loads(envelope)["error"]["type"] == "RestoreUnconfirmed"
+    assert _disposition(journal) == "journal"
+    _assert_fresh_status(journal, _completed(1, stderr=envelope), "journal")
+
+
+def test_a_real_removal_unconfirmed_envelope_is_accepted_with_the_journal_absent_and_retained(
+    tmp_path, monkeypatch, capsys
+):
+    """`RemovalUnconfirmed` could not determine whether the journal is still there: it is truthful
+    when the journal is absent afterwards (a successful unlink, a failed removal sync, a failed
+    inspection) and when it is retained (a failed unlink and a failed inspection)."""
+    from ariadne import draft, proposals
+    from ariadne.cli import main as cli
+
+    real_unlink, real_sync, real_lstat = Path.unlink, proposals._fsync_path, os.lstat
+
+    def envelope_for(name: str, unlink_works: bool):
+        project = complete_bundle_project(tmp_path / name)
+        draft.begin_source_txn(project)
+        state = {"unlinked": False}
+
+        def unlink(self, *a, **k):
+            if self.name == "source_txn.json" and not unlink_works:
+                raise OSError("unlink refused")
+            out = real_unlink(self, *a, **k)
+            state["unlinked"] = state["unlinked"] or self.name == "source_txn.json"
+            return out
+
+        def sync(path):
+            if state["unlinked"]:
+                raise OSError(5, "removal sync failed")
+            return real_sync(path)
+
+        def lstat(path, *a, **k):
+            if str(path).endswith("source_txn.json"):
+                raise PermissionError(13, "inspection refused")
+            return real_lstat(path, *a, **k)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        monkeypatch.setattr(proposals, "_fsync_path", sync)
+        monkeypatch.setattr(os, "lstat", lstat)
+        capsys.readouterr()
+        code = cli(["draft", "status", "--json", "--project", str(project)])
+        monkeypatch.undo()
+        err = capsys.readouterr().err
+        assert code == 1 and json.loads(err)["error"]["type"] == "RemovalUnconfirmed"
+        return project, err
+
+    absent, err = envelope_for("absent", unlink_works=True)
+    assert _disposition(absent) == "none"
+    _assert_fresh_status(absent, _completed(1, stderr=err), "journal")
+    retained, err = envelope_for("retained", unlink_works=False)
+    assert _disposition(retained) == "journal"
+    _assert_fresh_status(retained, _completed(1, stderr=err), "journal")
