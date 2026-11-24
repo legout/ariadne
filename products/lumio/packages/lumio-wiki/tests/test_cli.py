@@ -1298,30 +1298,13 @@ def test_subprocess_invalid_env_path_is_actionable(tmp_path: Path):
     assert "Traceback" not in result.stderr
 
 
-def test_subprocess_setup_then_validate_reads_env(tmp_path: Path):
-    """AC1: a fresh `lumio-wiki validate` reads LUMIO_KB_PATH from project .env.
-
-    This is the authoritative fresh-subprocess reproduction of the bug report:
-    setup writes .env, then a SEPARATE process validates with no positional
-    path and no exported environment variable.
-    """
-    project = tmp_path / "project"
-    project.mkdir()
-    kb = project / "kb"
-    shutil.copytree(FIXTURES / "valid", kb)
-
-    setup = _run_cli_in_subprocess(["setup", str(kb)], cwd=project)
-    assert setup.returncode == 0, setup.stderr
-
-    validate = _run_cli_in_subprocess(["validate"], cwd=project)
-    assert validate.returncode == 0, validate.stderr
-
-
 def test_subprocess_journey_reads_env_for_path_commands(tmp_path: Path):
-    """AC2: each path-bearing command resolves LUMIO_KB_PATH from .env.
+    """AC1/AC2: each path-bearing command resolves LUMIO_KB_PATH from .env.
 
     After setup, validate, search, page, lint, and health all
-    run with no positional <kb> and no exported variable in a fresh process.
+    run with no positional <kb> and no exported variable in a fresh process
+    (``validate`` is the AC1 fresh-process reproduction: setup writes .env,
+    a SEPARATE process validates with no positional path and no exported var).
     """
     project = tmp_path / "project"
     project.mkdir()
