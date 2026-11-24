@@ -936,10 +936,12 @@ class AnalyticsService:
         generation = response.get("review_generation", 0) + 1
         if operation.action == "prepare_data_source":
             if response["stage"] == "source_approval":
-                approved = self.api.approve_sources(
+                approved = authoring_sources.grant_candidate(
+                    self.project,
                     response["native_proposal"],
                     response["native_candidate"],
                     response["source_digest"],
+                    by=f"human:{actor.tenant_id}/{actor.object_id}",
                 )
                 updated = {
                     **response,

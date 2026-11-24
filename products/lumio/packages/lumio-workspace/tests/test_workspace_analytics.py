@@ -351,7 +351,13 @@ def _native_baseline(root: Path) -> tuple[Path, AuthoringProject, dict, str]:
     started = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, started["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(started["proposal"], started["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        started["proposal"],
+        started["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     return project, api, started, started["candidate_revision"]
 
 
@@ -1117,7 +1123,13 @@ def test_knowledge_only_contribution_needs_no_data_grant(tmp_path, monkeypatch):
     proposal = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        proposal["proposal"],
+        proposal["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     native_review = api.review_proposal(proposal["proposal"])
@@ -1480,7 +1492,13 @@ def test_verbatim_contribution_preserves_exact_converted_body(tmp_path, monkeypa
     proposal = api.start_proposal()
     resolved, digest = authoring_sources.candidate_sources(project, proposal["candidate_revision"])
     assert resolved is not None and digest is not None
-    api.approve_sources(proposal["proposal"], proposal["candidate_revision"], digest)
+    authoring_sources.grant_candidate(
+        project,
+        proposal["proposal"],
+        proposal["candidate_revision"],
+        digest,
+        by="human:test-operator",
+    )
     validated = api.validate_proposal(proposal["proposal"], proposal["candidate_revision"])
     assert validated["ok"] is True, validated["errors"]
     native_review = api.review_proposal(proposal["proposal"])
