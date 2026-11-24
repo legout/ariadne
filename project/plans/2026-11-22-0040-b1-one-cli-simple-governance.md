@@ -252,6 +252,12 @@ On the final tree:
   B answers only after a calculation approval. It runs against a live Postgres source
   in CI, not only offline (owner decision 2026-11-23: R1 accepts the offline proof of
   the named refusal; this live leg must pass before V is accepted).
+- the strict interruption oracle for the stdio regression test (spec 0040 §3.4.2.5): a
+  signal told apart as late, missing, or crossing the close of the cleanup window, and
+  the test launcher's own handler observation restored on every unwind. R1 closes with
+  the reduced test (a real interrupt in the window leaves a consistent state, and a
+  later `draft status` reports the outcome); this stricter proof is settled here
+  (owner decision 2026-11-24).
 
 Run the AC1 owner path end to end against the installed wheel in a temporary
 directory, with the TTY simulated through a pty.
