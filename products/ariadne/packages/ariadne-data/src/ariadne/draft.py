@@ -889,6 +889,33 @@ def consume(project: Path, proposal: str) -> None:
         )
 
 
+def retire_stale(project: str | Path) -> dict:
+    """Retire an active draft WITHOUT loading its proposal record (a restored project's
+    record names the old project path, so every slot read refuses). Same retired shape
+    as ``consume``: the generation is kept, so the next draft is generation+1 and a
+    retired draft is never resurrected. Idempotent: no slot or an already retired slot
+    is a no-op. Returns the slot's state."""
+    project = Path(project).resolve()
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        path = project / DRAFT_REL
+        if proposals._lstat(path) is None:
+            return {"state": "none"}
+        try:
+            slot = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            raise ValueError(f"{path}: unreadable draft slot — this needs human resolution")
+        if not isinstance(slot, dict) or not isinstance(slot.get("generation"), int):
+            raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
+        if slot.get("state") == "active":
+            slot = {
+                "state": "retired",
+                "generation": slot["generation"],
+                "consumed_candidate": slot.get("candidate_revision"),
+            }
+            _store_slot(project, slot)
+        return {"state": slot.get("state"), "generation": slot["generation"]}
+
+
 def rebase(project: str | Path, expected: Expected) -> dict:
     """Rebase the clean draft onto the served revision (spec 0040 §3.3.4). On success
     the new candidate and base are recorded, the generation increments and every

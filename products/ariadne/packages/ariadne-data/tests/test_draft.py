@@ -119,6 +119,25 @@ def test_discard_keeps_branch_and_is_never_resurrected(tmp_path):
     assert run_git(project, "rev-parse", "ariadne/discarded/1").strip() == kept
 
 
+def test_retire_stale_retires_a_draft_whose_record_points_elsewhere(tmp_path):
+    """A restored project's slot names a proposal record stamped with the old path:
+    every slot read refuses, retire_stale still retires it without loading the record."""
+    project = complete_bundle_project(tmp_path)
+    first = _first_edit(project)["draft"]
+    record_path = project / proposals.PROPOSALS_REL / f"{_read(project)['proposal']}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record_path.write_text(json.dumps({**record, "project": "/elsewhere"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="belongs to"):
+        draft.status(project)
+
+    assert draft.retire_stale(project)["state"] == "retired"
+    assert draft.retire_stale(project)["state"] == "retired"  # idempotent
+    assert draft.status(project) is None
+    with pytest.raises(ValueError, match="never resurrects"):
+        draft.edit_artifact(project, (1, first["candidate_revision"]), SEED_REL, "late\n")
+    assert _first_edit(project, "fresh\n")["draft"]["generation"] == 2
+
+
 def test_stale_draft_refuses_validate_until_rebase(tmp_path, monkeypatch):
     project = complete_bundle_project(tmp_path)
     head = run_git(project, "rev-parse", "HEAD").strip()

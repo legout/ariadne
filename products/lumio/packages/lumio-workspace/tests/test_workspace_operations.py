@@ -11,8 +11,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pytest
-from ariadne import admission, authoring_sources, execution
+from ariadne import admission, authoring_sources, draft, execution
 from ariadne import sources as native_sources
+from ariadne.authoring import AuthoringProject
 from lumio_wiki.ariadne_context import SnapshotUnavailableError
 from lumio_wiki.artifact_store import (
     ArtifactUnavailable,
@@ -1071,6 +1072,19 @@ def test_integrated_restore_preserves_shared_repo_and_resumes_after_admission(
             relinked_analytics += 1
     assert relinked_private >= 1  # authoring task-worktree role preserved
     assert relinked_analytics >= 1  # analytics proposal-worktree role preserved
+
+    # the pending request's draft is retired by the restore; a new one can open
+    assert draft.status(second_root / "authoring-repo") is None
+    restored_draft = AuthoringProject(second_root / "authoring-repo").start_proposal()
+    assert restored_draft["proposal"]
+    draft.discard(
+        second_root / "authoring-repo",
+        draft.active_expected(
+            second_root / "authoring-repo",
+            restored_draft["proposal"],
+            restored_draft["candidate_revision"],
+        ),
+    )
 
     restored_state = WorkspaceState(restored.state_path)
     assert restored_state.load_browser_session("c5-restore-session") is None
