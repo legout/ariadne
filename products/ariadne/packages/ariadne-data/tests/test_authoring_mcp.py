@@ -843,3 +843,41 @@ def test_the_tool_list_of_every_toolset_has_no_forbidden_tool(tmp_path):
         assert not [t for t in tools if any(m in t for m in forbidden_markers)], toolset
         assert not tools & removed, toolset
         assert ("draft_status" in tools) == (toolset != "analyst")
+
+
+def test_stdio_draft_status_forwards_the_cleanup_guidance_of_a_journal_remnant(tmp_path):
+    """The real stdio MCP `draft_status` forwards the SAME shared message as the CLI. A journal is
+    left by an interrupted approval whose three files were never changed (so the restore is a
+    no-op); the project's .ariadne directory is read-only, so the journal removal fails and the
+    journal remains: the tool error must say what is already safe, what stays refused and why, and
+    how to retry."""
+    from ariadne import draft, proposals
+
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses directory permissions")
+    project = complete_bundle_project(tmp_path / "proj")
+    with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
+        pass  # the lock files exist beforehand, so a read-only directory can still open them
+    with draft.grants_lock(project):
+        pass
+    draft.begin_source_txn(project)
+    state_dir = project / ".ariadne"
+
+    async def run() -> str:
+        os.chmod(state_dir, 0o500)  # search + read, no write: the unlink fails, the stat works
+        try:
+            async with _launch(project) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool("draft_status", {})
+        finally:
+            os.chmod(state_dir, 0o755)
+        assert result.is_error, result
+        return "".join(block.text for block in result.content if hasattr(block, "text"))
+
+    message = asyncio.run(run())
+    assert "durably restored" in message and "no new grant is effective" in message
+    assert "grant-backed reads" in message and "journal remains" in message
+    assert "ariadne draft status" in message
+    assert draft.source_txn_pending(project)  # the remnant is still there; a retry removes it
+    assert draft.status(project) is None and not draft.source_txn_pending(project)

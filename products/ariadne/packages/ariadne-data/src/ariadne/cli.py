@@ -183,6 +183,35 @@ def _expected(project: Path) -> tuple[int, str] | None:
     return None if view is None else (view["generation"], view["candidate_revision"])
 
 
+def _draft_commands_interruptible(args: argparse.Namespace, stdin: Any, project: Path) -> int:
+    """Draft commands run recovery, so an interrupt from its cleanup path stays inside the error
+    envelope (reported with the outcome the path reached). Scoped to the draft surface: every other
+    command — notably `approve` at its consent prompt — keeps its own Ctrl-C behavior."""
+    from ariadne import draft
+
+    try:
+        return _draft_commands(args, stdin)
+    except KeyboardInterrupt:
+        state = (
+            "a source approval is still pending recovery"
+            if draft.source_txn_pending(project)
+            else "no source approval is pending"
+        )
+        print(
+            json.dumps(
+                {
+                    "error": {
+                        "type": "KeyboardInterrupt",
+                        "message": f"interrupted; {state}. Run 'ariadne draft status' in this "
+                        "project to finish any pending recovery.",
+                    }
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 130
+
+
 def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
     from ariadne import draft
     from ariadne.authoring import AuthoringProject
@@ -316,7 +345,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
         result = authoring_sources.add_sources(project, active, [entry])
         return _emit({k: v for k, v in result.items() if k != "sources"}, args)
     if command == "draft":
-        return _draft_commands(args, stdin)
+        return _draft_commands_interruptible(args, stdin, project)
     if command == "validate":
         from ariadne import draft
 
@@ -408,22 +437,6 @@ def main(argv: list[str] | None = None, stdin: Any = None) -> int:
     except QueryResultError as exc:
         print(json.dumps(exc.refusal(), default=_json_default), file=sys.stderr)
         return 1
-    except KeyboardInterrupt:
-        # an interruption of a draft command (e.g. in the cleanup region of a recovery) stays in
-        # the error envelope: one JSON error object, non-zero exit
-        print(
-            json.dumps(
-                {
-                    "error": {
-                        "type": "KeyboardInterrupt",
-                        "message": "interrupted — rerun the command; "
-                        "'ariadne draft status' finishes any pending recovery",
-                    }
-                }
-            ),
-            file=sys.stderr,
-        )
-        return 130
     except Exception as exc:  # one JSON error object, message verbatim
         error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
         if isinstance(exc, PlannerError):

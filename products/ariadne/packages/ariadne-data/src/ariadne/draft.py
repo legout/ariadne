@@ -29,8 +29,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import signal
 import stat
 import tempfile
+import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -548,6 +550,25 @@ class UnconfirmedSourceApproval(ValueError):
     command = "ariadne draft status"
 
 
+def _guidance(headline: str, *, journal_gone: bool) -> str:
+    """The shared guidance of the three cleanup outcomes (rendered by every consumer: the CLI error
+    envelope, MCP ``ToolError`` and the approval's own report): what is already safe, what stays
+    refused and why, and how to retry."""
+    refused = (
+        "nothing stays refused: the journal is gone (grant-backed reads are refused only while a "
+        "journal remains)"
+        if journal_gone
+        else "grant-backed reads stay refused while the journal remains, because it is the only "
+        "record that the approval did not commit"
+    )
+    return (
+        f"{headline} Already safe: all three files (grants, source baseline, draft slot) were "
+        f"durably restored and no new grant is effective. Still refused: {refused}. To retry: fix "
+        "the cause (for example the permissions of the project's .ariadne directory), then run "
+        "'ariadne draft status' in that project."
+    )
+
+
 class RollbackCleanup(OSError):
     """All three files were restored and the journal is gone; only the cleanup sync after the
     removal failed or was interrupted: a failed approval with a cleanup note."""
@@ -662,9 +683,72 @@ def rollback_source_txn(project: Path) -> None:
     _restore(project / GRANTS_REL, previous["grants"])
     _restore(project / BASELINE_REL, previous["baseline"])
     _restore(project / DRAFT_REL, previous["slot"])
-    proposals._fsync_path(journal.parent)  # the three restored states are durable here
-    # ONE protected cleanup region for the unlink AND its directory sync: after the durable
-    # restore everything below is cleanup, classified by three outcomes
+    # From the restore sync's return to the end of the journal removal NO statement is an
+    # interruptible gap: a SIGINT arriving in this window is HELD (main thread; elsewhere nothing
+    # is delivered anyway), the path runs to one of its three outcomes, and only then is the held
+    # interrupt reported. A failure of the restore sync itself is NOT cleanup: it propagates.
+    outcome: OSError | None = None
+    done = False
+    try:
+        with _deferred_interrupt() as held:
+            proposals._fsync_path(journal.parent)  # the three restored states are durable here
+            try:
+                _remove_journal(journal)
+            except OSError as typed:  # RollbackCleanup | JournalRemnant | RemovalUnconfirmed
+                outcome = typed
+            done = True
+        if outcome is not None:
+            raise outcome
+        if held.interrupted:
+            raise RollbackCleanup(_interrupted_message())
+    except KeyboardInterrupt as exc:
+        # only reachable around the deferred region: before it (the restore sync is not confirmed:
+        # propagate) or after the cleanup finished (report the outcome the path reached)
+        if not done:
+            raise
+        raise (outcome or RollbackCleanup(_interrupted_message())) from exc
+
+
+def _interrupted_message() -> str:
+    return _guidance(
+        "The journal removal finished, but an interrupt (Ctrl-C) arrived during the cleanup and "
+        "was held until it ended: cleanup only, the approval did not commit.",
+        journal_gone=True,
+    )
+
+
+@contextmanager
+def _deferred_interrupt():
+    """Hold SIGINT for the region: a recording handler replaces the default one and is restored
+    afterwards. ``signal.signal`` works in the main thread only (and only the main thread receives
+    ``KeyboardInterrupt``): elsewhere, or when the process already runs a custom SIGINT
+    disposition, the region is a plain pass-through that cannot fail."""
+
+    class Held:
+        interrupted = False
+
+    held = Held()
+    if (
+        threading.current_thread() is not threading.main_thread()
+        or signal.getsignal(signal.SIGINT) is not signal.default_int_handler
+    ):
+        yield held
+        return
+
+    def record(_signum, _frame):
+        held.interrupted = True
+
+    previous = signal.signal(signal.SIGINT, record)
+    try:
+        yield held
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _remove_journal(journal: Path) -> None:
+    """The journal's unlink and its directory sync as ONE region; any failure is classified by
+    the three outcomes: definite absence (the removal took effect), a remnant, or an inspection
+    failure (including an interrupted inspection)."""
     try:
         journal.unlink()
         proposals._fsync_path(journal.parent)
@@ -672,16 +756,24 @@ def rollback_source_txn(project: Path) -> None:
         try:
             os.lstat(journal)
         except FileNotFoundError:
-            # definite absence: the removal took effect (only its sync/interruption failed)
             raise RollbackCleanup(
-                f"the journal removal took effect; the cleanup did not complete: {exc!r}"
+                _guidance(
+                    f"The journal removal took effect; the cleanup did not complete ({exc!r}): "
+                    "cleanup only.",
+                    journal_gone=True,
+                )
             ) from exc
-        except OSError as inspection:
+        except BaseException as inspection:  # an interrupted inspection is unconfirmed too
             raise RemovalUnconfirmed(
-                f"could not confirm whether the journal was removed ({inspection!r}); first "
-                f"failure: {exc!r}"
+                _guidance(
+                    f"Could not confirm whether the journal was removed ({inspection!r}; first "
+                    f"failure {exc!r}).",
+                    journal_gone=False,
+                )
             ) from exc
-        raise JournalRemnant(f"the journal could not be removed: {exc!r}") from exc
+        raise JournalRemnant(
+            _guidance(f"The journal remnant could not be removed ({exc!r}).", journal_gone=False)
+        ) from exc
 
 
 def recover(project: Path) -> None:
