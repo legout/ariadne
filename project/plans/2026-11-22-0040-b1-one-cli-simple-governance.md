@@ -9,6 +9,15 @@ or integration grant.
 
 ## Execution model
 
+**Since 2026-11-24 (owner decision): Foreman.** The repository moved to the Foreman
+factory (`AGENTS.md`). The remaining B1 work runs as GitHub issues under Epic #127,
+one PR per issue, squash-merged into `main` after its lane gate and green CI:
+T1–T6 (R1 closed at `1047e14`) land first as one PR, then T7, T8 and T9 as one PR
+each, then V as a verify-only issue on the integrated `main`. This replaces the
+supervised candidate, the pause before integration and the host and model bullets
+below; `main` carries the partial cutover between those merges. The resource
+hygiene and review bullets still apply.
+
 - **Mode:** supervised, light. One sequential writer works in an isolated worktree
   under `~/.local/state/worktrees/`.
 - **Base:** origin/main at dispatch, including the spec 0040 commits.
@@ -279,6 +288,8 @@ directory, with the TTY simulated through a pty.
 
 Then the independent candidate review (gpt-6.2-sol), with one fix pass and one delta
 recheck. Push the candidate branch and wait for full CI. Pause before integration.
+(Superseded 2026-11-24 by the Foreman execution model above: V runs on the integrated
+`main`, and an in-scope gap becomes a new issue.)
 
 ## Order
 
