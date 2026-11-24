@@ -1010,7 +1010,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             return authoring_api.resolve_term_in_draft(request, part=part)
 
-        @app.tool()
+        @app.tool(structured_output=False)
         @_tool_errors
         async def preview(
             metric: str, dimensions: list[str] | None = None, filters: list[dict] | None = None

@@ -189,5 +189,52 @@ def test_an_identity_under_a_pending_source_approval_is_refused_before_it_is_rea
     monkeypatch.setattr("ariadne.preview.DuckDBExecution", lambda *a, **k: opened.append(a) or None)
     code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
     assert code == 1 and out == ""
-    assert "in progress or was interrupted" in json.loads(err)["error"]["message"]
+    message = json.loads(err)["error"]["message"]
+    assert "in progress or was interrupted" in message and "'peek'" in message
     assert opened == []  # nothing was opened
+
+
+def _mcp_preview(project, **arguments):
+    from tests.mcp_inproc import call
+
+    return call(project, "preview", {"metric": "event_count", **arguments})
+
+
+def test_an_mcp_predicate_filter_changes_the_aggregate(served):
+    _edit(served, EDITED)
+    _validate(served)
+    label_a = [{"field": "label", "op": "=", "value": "a"}]  # only id 1
+    is_error, out = _mcp_preview(served, filters=label_a)
+    assert not is_error, out
+    assert out["rows"] == [{"events::events.event_count": 1}]  # unfiltered SUM(id) is 6
+
+
+def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
+    registry = served / "ariadne.yaml"
+    doc = yaml.safe_load(registry.read_text(encoding="utf-8"))
+    doc["query"] = {"mcp_response_bytes": 700}
+    registry.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    _edit(served, EDITED)
+    _validate(served)
+    is_error, out = _mcp_preview(served, dimensions=["label"])
+    assert is_error and out["error"]["exhausted_bound"] == {"mcp_response_bytes": 700}, out
+
+
+def test_a_budget_spent_after_the_fetch_refuses(served, capsys, monkeypatch):
+    from ariadne import preview, query_results
+
+    now = [0.0]
+    real = preview.DeadlineBudget
+    monkeypatch.setattr(preview, "DeadlineBudget", lambda s: real(s, clock=lambda: now[0]))
+    finalize = query_results.finalize_response
+
+    def slow_finalize(*a, **k):
+        finalize(*a, **k)
+        now[0] += 10_000  # cleanup/serialization overran the deadline
+
+    monkeypatch.setattr(query_results, "finalize_response", slow_finalize)
+    _edit(served, EDITED)
+    _validate(served)
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
+    assert code == 1 and out == ""
+    assert json.loads(err)["error"]["code"] == "execution_deadline"
