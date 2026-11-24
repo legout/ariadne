@@ -407,7 +407,8 @@ def test_init_then_health_succeeds_without_optionals(isolated_wheel_env: dict, t
 
 
 def test_doctor_runs_from_isolated_install(isolated_wheel_env: dict):
-    """``doctor`` reports the install shape from the isolated wheel."""
+    """``doctor`` reports the install shape from the isolated wheel (AC4/AC6:
+    the base wheel stays model-free, so the llm extra reads as not installed)."""
     python = isolated_wheel_env["python"]
     bin_dir = python.parent
     script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
@@ -420,23 +421,9 @@ def test_doctor_runs_from_isolated_install(isolated_wheel_env: dict):
     assert "lumio-wiki" in result.stdout
     assert "extra[documents]:" in result.stdout
     assert "extra[llm]:" in result.stdout
-    # In the isolated install, documents/llm/lancedb must be absent.
-    assert "not installed" in result.stdout
-
-
-# Issue #101, AC4 + AC6: the base wheel stays model-free. These two proofs use
-# this module's base venv instead of a second identical one (epic #139 #140).
-def test_base_wheel_doctor_reports_llm_not_installed(isolated_wheel_env: dict):
-    """AC4/AC6: ``doctor`` reports the llm extra as not installed from the base wheel."""
-    python = isolated_wheel_env["python"]
-    bin_dir = python.parent
-    script = bin_dir / ("lumio-wiki.exe" if os.name == "nt" else "lumio-wiki")
-    result = subprocess.run(
-        [str(script), "doctor"],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0
+    # In the isolated install, documents/llm/lancedb must be absent. Name the
+    # llm line explicitly: a bare "not installed" holds while any extra is
+    # missing, so it cannot tell a wrongly-reported llm apart.
     assert "extra[llm]: not installed" in result.stdout
     assert "lumio-wiki[llm]" in result.stdout
 
