@@ -8,8 +8,10 @@ import os
 import sqlite3
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from pathlib import Path, PurePosixPath
+from threading import Barrier, BrokenBarrierError
 
 import duckdb
 import pytest
@@ -488,7 +490,14 @@ def _xlsx_service(tmp_path: Path, project: Path):
     return analytics, review, contributor, reviewer, state, config, intake
 
 
-def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "lifecycle_case",
+    [
+        "journey", "joiner_reject", "busy_reuse", "creator_submission", "creator_publication",
+        "concurrent_claim",
+    ],
+)
+def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch, lifecycle_case):
     # A real integrated admitted baseline is fixture setup. The journey below
     # adds a new SQLite source through the service, never through fixture SQL.
     project, api, started, revision = _native_baseline(tmp_path / "baseline")
@@ -701,6 +710,58 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     assert sqlite_profile["tables"]["entries"]["sample_limit"] == 100
     assert opened
 
+    if lifecycle_case == "concurrent_claim":
+        before = draft.status(project)
+        barrier = Barrier(2)
+        joined = AnalyticsService._joined_draft
+
+        def overlap(self, *args, **kwargs):
+            result = joined(self, *args, **kwargs)
+            try:
+                barrier.wait(timeout=3)
+            except BrokenBarrierError:
+                pass  # A serialized claimant can finish before the other enters.
+            return result
+
+        monkeypatch.setattr(AnalyticsService, "_joined_draft", overlap)
+        token = state.issue_local_credential("contributor", "api", expires_at=1_800_000_000)[1]
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+        }
+
+        def call(key):
+            with TestClient(create_app(config), base_url="https://workspace.test") as client:
+                response = client.post(
+                    "/mcp", headers=headers,
+                    json={
+                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "prepare_data_source", "arguments": {
+                            "retry_key": key, "project": "retail", "source": "orders_sqlite",
+                            "table": "entries", "business_questions": ["Same draft?"],
+                        }},
+                    },
+                )
+                assert response.status_code == 200, response.text
+                return response.json()["result"]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(call, ["events-B", "events-C"]))
+        successes = [result for result in results if not result["isError"]]
+        failures = [result for result in results if result["isError"]]
+        assert len(successes) == len(failures) == 1, results
+        assert successes[0]["structuredContent"]["status"] == "pending_source_approval"
+        review.get(reviewer, successes[0]["structuredContent"]["task_id"])
+        assert "stale" in json.dumps(failures[0]).lower()
+        assert draft.status(project) == before
+        winner = "events-B" if results[0] is successes[0] else "events-C"
+        replay = call(winner)
+        assert replay["structuredContent"]["task_id"] == (
+            successes[0]["structuredContent"]["task_id"]
+        )
+        return
+
     # Draft rule v3: the granted draft is idle, but a request adding a declaration
     # that is not in it refuses as stale instead of joining.
     with pytest.raises(AnalyticsError, match="stale"):
@@ -745,6 +806,13 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     )
     contribution_task = candidate["task_id"]
     assert candidate["status"] == "pending_submission"
+    if lifecycle_case == "joiner_reject":
+        before = draft.status(project)
+        context = review.get(reviewer, contribution_task)
+        rejected = review.decide(reviewer, contribution_task, context.action_digest, "reject")
+        assert rejected["status"] == "rejected"
+        assert draft.status(project) == before
+        return
     submitted = _decide(review, reviewer, contribution_task)
     assert submitted["status"] == "pending_publication"
     assert submitted["validation"]["ok"] is True
@@ -840,6 +908,41 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
     )
     reused_contribution_task = reused_candidate["task_id"]
+    if lifecycle_case == "busy_reuse":
+        with pytest.raises(AnalyticsError, match="stale"):
+            analytics.prepare_data_source(
+                contributor,
+                retry_key="reuse-while-contribution-pending",
+                project="retail",
+                source="orders_sqlite",
+                table="entries",
+                business_questions=["Still busy?"],
+            )
+        return
+    if lifecycle_case in {"creator_submission", "creator_publication"}:
+        admitted_before = admission.load_current(project)
+        assert draft.status(project) is not None
+        if lifecycle_case == "creator_publication":
+            submitted = _decide(review, reviewer, reused_contribution_task)
+            assert submitted["status"] == "pending_publication"
+        context = review.get(reviewer, reused_contribution_task)
+        rejected = review.decide(
+            reviewer, reused_contribution_task, context.action_digest, "reject"
+        )
+        assert rejected["status"] == "rejected"
+        assert draft.status(project) is None
+        assert admission.load_current(project) == admitted_before
+        fresh = analytics.prepare_data_source(
+            contributor,
+            retry_key="reuse-after-reject",
+            project="retail",
+            source="orders_sqlite",
+            table="entries",
+            business_questions=["Reuse after rejection?"],
+        )
+        assert fresh["status"] == "pending_data_grant"
+        assert draft.status(project) is None
+        return
     reused_submitted = _decide(review, reviewer, reused_contribution_task)
     assert reused_submitted["status"] == "pending_publication"
     reused_context = review.get(reviewer, reused_contribution_task)
