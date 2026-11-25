@@ -493,7 +493,11 @@ def _xlsx_service(tmp_path: Path, project: Path):
 @pytest.mark.parametrize(
     "lifecycle_case",
     [
-        "journey", "joiner_reject", "busy_reuse", "creator_submission", "creator_publication",
+        "journey",
+        "joiner_reject",
+        "busy_reuse",
+        "creator_submission",
+        "creator_publication",
         "concurrent_claim",
     ],
 )
@@ -734,13 +738,22 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         def call(key):
             with TestClient(create_app(config), base_url="https://workspace.test") as client:
                 response = client.post(
-                    "/mcp", headers=headers,
+                    "/mcp",
+                    headers=headers,
                     json={
-                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {"name": "prepare_data_source", "arguments": {
-                            "retry_key": key, "project": "retail", "source": "orders_sqlite",
-                            "table": "entries", "business_questions": ["Same draft?"],
-                        }},
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "prepare_data_source",
+                            "arguments": {
+                                "retry_key": key,
+                                "project": "retail",
+                                "source": "orders_sqlite",
+                                "table": "entries",
+                                "business_questions": ["Same draft?"],
+                            },
+                        },
                     },
                 )
                 assert response.status_code == 200, response.text
@@ -757,8 +770,8 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         assert draft.status(project) == before
         winner = "events-B" if results[0] is successes[0] else "events-C"
         replay = call(winner)
-        assert replay["structuredContent"]["task_id"] == (
-            successes[0]["structuredContent"]["task_id"]
+        assert (
+            replay["structuredContent"]["task_id"] == (successes[0]["structuredContent"]["task_id"])
         )
         return
 
