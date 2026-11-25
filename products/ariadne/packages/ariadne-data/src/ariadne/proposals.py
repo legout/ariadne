@@ -323,7 +323,9 @@ def _load_record(project: Path, proposal: str) -> dict:
         raise ValueError(
             f"{path}: malformed proposal record — this needs human resolution, not an agent reset"
         )
-    if record["id"] != proposal or record["project"] != str(project):
+    # "." is the current format; the absolute path is the pre-#137 fallback (a record
+    # written before the move still loads at its original location).
+    if record["id"] != proposal or record["project"] not in (".", str(project)):
         raise ValueError(
             f"no proposal {proposal!r} in this project ({project}) — the record "
             f"belongs to {record.get('project')!r}; nothing was read or written"
@@ -846,6 +848,9 @@ def _check_coherent(project: Path, record: dict) -> None:
     and preserve every copy."""
     proposal = record["id"]
     worktree = project / WORKTREES_REL / proposal
+    if worktree.is_dir():
+        # a moved/copied project leaves absolute gitdir paths dangling; repair is idempotent
+        _git(["worktree", "repair", str(worktree)], project, check=False)
     if not worktree.is_dir():
         raise ValueError(
             f"the worktree of proposal {proposal} is missing ({worktree})" + _HUMAN_RESOLUTION
@@ -1003,7 +1008,7 @@ def start_proposal(
         _git(["worktree", "add", "-q", "-b", branch, str(worktree), base], project)
         record = {
             "id": proposal,
-            "project": str(project),
+            "project": ".",  # repo-relative: the record lives in THIS project's state dir
             "base_revision": base,
             "candidate_revision": base,
             "expected_baseline": baseline,

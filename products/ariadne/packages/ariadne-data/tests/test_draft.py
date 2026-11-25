@@ -210,3 +210,35 @@ def test_conflicting_rebase_leaves_draft_exactly_as_before(tmp_path, monkeypatch
     assert not (worktree / ".git").is_dir()  # a worktree file, never a rebase-in-progress
     assert run_git(project, "rev-parse", "--git-dir").strip()
     assert (worktree / SEED_REL).read_text(encoding="utf-8") == "draft side\n"
+
+
+def test_draft_survives_a_moved_project_and_legacy_absolute_records_still_load(tmp_path):
+    """The record binds to the project by living in its state dir, not by absolute path (#137)."""
+    import shutil
+
+    project = complete_bundle_project(tmp_path)
+    first = _first_edit(project)["draft"]
+    proposal = _read(project)["proposal"]
+    record_path = project / proposals.PROPOSALS_REL / f"{proposal}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["project"] == "."  # repo-relative, never the absolute path
+
+    # a pre-#137 record with the absolute path still loads where it was written
+    record_path.write_text(json.dumps({**record, "project": str(project)}), encoding="utf-8")
+    legacy = draft.status(project)
+    assert legacy and legacy["candidate_revision"] == first["candidate_revision"]
+
+    moved = tmp_path / "elsewhere" / "moved-project"
+    moved.parent.mkdir()
+    shutil.move(str(project), str(moved))
+    record_path = moved / proposals.PROPOSALS_REL / f"{proposal}.json"
+    record_path.write_text(json.dumps({**record, "project": "."}), encoding="utf-8")
+
+    view = draft.status(moved)
+    assert view and view["candidate_revision"] == first["candidate_revision"]
+    second = draft.edit_artifact(
+        moved, (1, first["candidate_revision"]), SEED_REL, "after move\n"
+    )["draft"]
+    out = draft.discard(moved, (1, second["candidate_revision"]))
+    assert out["branch"] == "ariadne/discarded/1"
+    assert draft.status(moved) is None
