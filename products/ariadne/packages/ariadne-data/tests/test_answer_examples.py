@@ -103,10 +103,6 @@ def _build_example_release(root):
     category/entity type — the shared native Example baseline (extracted
     owned-fixture helper; expectations stay independently authored constants)."""
     import yaml
-    from ariadne import admission
-    from ariadne.authoring import AuthoringProject
-    from tests.test_git_authoring import approved, run_git, worktree_of
-
     from integration.tests.lumio_metric_mvp import (
         CONTROL,
         NAMESPACE,
@@ -116,6 +112,10 @@ def _build_example_release(root):
         preview,
         write_page,
     )
+
+    from ariadne import admission
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_authoring import approved, run_git, worktree_of
 
     project = content_project(root)
     # The revision-4 integrated selector validates the WHOLE candidate under
@@ -213,9 +213,9 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(
     import json
 
     import yaml
-    from tests.test_git_authoring import worktree_of
-
     from integration.tests.lumio_metric_mvp import activate, preview
+
+    from tests.test_git_authoring import worktree_of
 
     project, api, review = _build_example_release(tmp_path / "project")
 
@@ -541,9 +541,9 @@ def test_native_example_repeated_question_creates_distinct_drafts(
     import json
 
     import yaml
-    from tests.test_git_authoring import worktree_of
-
     from integration.tests.lumio_metric_mvp import activate, preview
+
+    from tests.test_git_authoring import worktree_of
 
     project, api, review = _build_example_release(tmp_path / "project")
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
@@ -693,8 +693,9 @@ def test_native_example_edits_keep_core_validation(example_release, tmp_path):
 
     import pytest
     import yaml
-    from ariadne import proposals
     from lumio_wiki.git_authoring import GitAuthoringError
+
+    from ariadne import proposals
     from tests.test_git_authoring import approved
 
     project, api, review = example_release(tmp_path / "project")
@@ -819,9 +820,9 @@ def test_native_example_history_deletion_refuses(tmp_path, capsys):
     never a filename guess, never a floating HEAD)."""
     import json
 
-    from tests.test_git_authoring import approved, worktree_of
-
     from integration.tests.lumio_metric_mvp import activate, preview, reconcile_knowledge
+
+    from tests.test_git_authoring import approved, worktree_of
 
     project, api, review = _build_example_release(tmp_path / "project")
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
