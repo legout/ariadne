@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
+import math
 import os
 import re
 import sys
@@ -303,11 +305,22 @@ _FILTER_OP = re.compile(r"\s(<=|>=|!=|=|<|>|in)\s")
 
 
 def _literal(text: str) -> Any:
+    """JSON number/true/false/null -> typed; a quoted string -> its content; else the text."""
     text = text.strip()
     try:
-        return json.loads(text)
+        value = json.loads(text, parse_constant=_not_json)
     except ValueError:
         return text
+    ok = (
+        value is None
+        or isinstance(value, (bool, str))
+        or (isinstance(value, (int, float)) and math.isfinite(value))
+    )
+    return value if ok else text
+
+
+def _not_json(name: str) -> Any:
+    raise ValueError(name)  # NaN/Infinity stay literal text
 
 
 def _filters(specs: list[str]) -> list[dict]:
@@ -323,13 +336,16 @@ def _filters(specs: list[str]) -> list[dict]:
             {
                 "field": field,
                 "op": op,
-                "value": [_literal(v) for v in value.split(",")] if op == "in" else _literal(value),
+                "value": [_literal(v) for v in next(csv.reader([value], skipinitialspace=True))]
+                if op == "in"
+                else _literal(value),
             }
         )
     return out
 
 
 def _query(args: argparse.Namespace) -> dict:
+    filters = _filters(args.filter)  # refuse a malformed filter before any read
     limits = query_results.load_host_query_limits(args.project)
     discovery = DiscoveryRuntime.open_project(args.project)
     discovery._refuse_unsupported("get_metric")
@@ -338,8 +354,7 @@ def _query(args: argparse.Namespace) -> dict:
         deadline_budget=DeadlineBudget(limits["execution_seconds"]),
         discovery=discovery if discovery._managed is not None else None,
     )
-    if args.filter:
-        filters = _filters(args.filter)
+    if filters:
         request = {"metrics": [args.metric], "dimensions": args.by, "filters": filters}
         return asyncio.run(runtime.query_metrics(request))
     return asyncio.run(runtime.get_metric(args.metric, args.by or None))

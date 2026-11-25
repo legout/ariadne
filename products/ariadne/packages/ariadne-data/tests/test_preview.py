@@ -233,6 +233,36 @@ def test_a_cli_filter_changes_the_query_aggregate(tmp_path, capsys):
     assert list(json.loads(out)["rows"][0].values()) == [300.0]
 
 
+def test_a_malformed_cli_query_filter_is_refused_before_the_project_opens(tmp_path, capsys):
+    argv = ["query", "m", "--filter", "label ~ a", "--json", "--project", str(tmp_path / "nope")]
+    code, out, err = _run(argv, capsys)
+    assert code != 0
+    assert "filter_invalid" in out + err
+
+
+@pytest.mark.parametrize(
+    ("spec", "op", "value"),
+    [
+        ("n = 3", "=", 3),
+        ("n = 2.5", "=", 2.5),
+        ("b = true", "=", True),
+        ("z = null", "=", None),
+        ('label = "a b"', "=", "a b"),
+        ("y = [2024]", "=", "[2024]"),
+        ("y = NaN", "=", "NaN"),
+        ("y = Infinity", "=", "Infinity"),
+        ('y = {"a": 1}', "=", '{"a": 1}'),
+        ("label in a, 2", "in", ["a", 2]),
+        ('label in "Paris, TX",London', "in", ["Paris, TX", "London"]),
+    ],
+)
+def test_cli_filter_values_are_typed_per_the_spec(spec, op, value):
+    from ariadne.cli import _filters
+
+    (predicate,) = _filters([spec])
+    assert (predicate["op"], predicate["value"]) == (op, value)
+
+
 @pytest.mark.parametrize("bad", ["label ~ a", "label=a", "= a", "label ="])
 def test_a_malformed_cli_filter_is_refused_as_filter_invalid(served, capsys, bad):
     argv = ["preview", "event_count", "--filter", bad, "--json", "--project", str(served)]
