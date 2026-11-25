@@ -29,6 +29,8 @@ The cross-repository parts of #74 remain gated by #76 (§8). Completing this Cor
 
 ## 2. One Git candidate, one admission route
 
+> **CLI parts superseded by [spec 0040](../../../../project/specs/2026-11-22-0040-one-cli-simple-governance.md) (B1):** the `ariadne-admit` step is now `ariadne approve` on the active draft ([ADR-0029](../adr/0029-single-approval-source-first-gate.md)).
+
 Reuse the existing project-bound Git Authoring Proposal and Candidate Revision. A candidate is a native branch/worktree and exact Git revision, not a newly named staged object. Existing revision checks, path/type/credential validation, full applicable validation, repair bounds, mapping confirmation and human `ariadne-admit` remain in force.
 
 The complete candidate/snapshot scope additionally includes `answer_examples/` and its necessary generated OKF navigation. Ingest-derived pages and their provenance are ordinary native Context Layer artifacts. Generated artifact bytes are finalized before validation/review; no post-review decoration changes the admitted bytes.
@@ -76,6 +78,8 @@ Document reads/conversion capture the digest and derived text from the same boun
 Retire `store_upload`/`AuthoringProject.upload_document` and the persistent `authoring_upload_document` MCP operation, plus app-owned retained-original object copies. Their replacement is operator placement in an already allowed private input location and reference-based evidence/ingest; no new Ariadne upload/archive/history service is introduced. Required converter scratch files are temporary and cleaned up, not restart-readable draft/source stores. No existing user source copies are deleted by implementing this retirement.
 
 ## 6. Git-first setup, diagnostics and explicit retirement
+
+> **CLI parts superseded by [spec 0040](../../../../project/specs/2026-11-22-0040-one-cli-simple-governance.md) (B1):** `ariadne init` and the other `ariadne-*` executables are replaced by the single `ariadne` CLI.
 
 New `ariadne-init`/`ariadne setup` scaffolds for Git Authoring only, without creating `staging/`. Preserve collision/path/no-overwrite checks, filename-only inert source suggestions, optional explicit skill wiring and read-only status. Setup still does not run `git init`, set Git identity, open sources, approve access, admit content or initialize the owner's real project. Missing Git/repository-local identity yields the existing human prerequisite handoff.
 
