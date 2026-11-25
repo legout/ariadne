@@ -579,6 +579,7 @@ class AnalyticsService:
                         "source_digest": proposed["source_digest"],
                         "reused_source_declaration": reused,
                         "joined_draft": bool(started.get("joined")),
+                        "native_generation": self._draft_generation(),
                         "conversion": conversion,
                         "review_url": f"{self.external_url}/review/{current.operation_id}",
                         "review_generation": 0,
@@ -972,26 +973,46 @@ class AnalyticsService:
             "stale: another draft is active and is pending, or the request adds to granted work"
         )
 
+    def _draft_generation(self) -> int | None:
+        """The active draft's generation, pinned with a draft-backed task (§3.7 rule 4)."""
+        return (draft.status(self.project) or {}).get("generation")
+
     def _release_source_draft(self, response: dict) -> None:
         """Browser-review only: free the one active slot by discarding THIS request's
-        exact draft (the proposal and candidate the reviewer saw). Another task's draft,
-        or this proposal after it moved, is left alone."""
+        exact draft (the generation, proposal and candidate the reviewer saw). Another
+        task's draft, a rebased generation or this proposal after it moved is left alone."""
         active = draft.status(self.project)
-        if active is None or active["candidate_revision"] != response.get("native_candidate"):
+        expected = (response.get("native_generation"), response.get("native_candidate"))
+        if active is None or (active["generation"], active["candidate_revision"]) != expected:
             return
-        expected = (active["generation"], active["candidate_revision"])
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
+
+    def _pinned_discarded(self, response: dict) -> bool:
+        """Evidence that this task's pinned generation was discarded (spec 0034 §10):
+        it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists."""
+        generation = response.get("native_generation")
+        if generation is None or (draft.status(self.project) or {}).get("generation") == generation:
+            return False
+        branch = f"refs/heads/{draft.DISCARDED_BRANCH_PREFIX}{generation}"
+        found = subprocess.run(
+            ["git", "-C", str(self.project), "rev-parse", "--verify", "--quiet", branch],
+            check=False,
+            capture_output=True,
+        )
+        return found.returncode == 0
+
+    @staticmethod
+    def _creator(response: dict) -> bool:
+        return response.get("joined_draft") is False and not response.get(
+            "reused_source_declaration"
+        )
 
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
         # §3.7 rule 4: a terminal reject releases only the creator's exact draft; a
         # joiner, an admission reuse or a record without create/join identity never discards.
-        if (
-            not requested
-            and operation.response.get("joined_draft") is False
-            and not operation.response.get("reused_source_declaration")
-        ):
+        if not requested and self._creator(operation.response):
             self._release_source_draft(operation.response)
         response = {
             **operation.response,
@@ -1299,6 +1320,7 @@ class AnalyticsService:
                         "native_tree": review["candidate_tree"],
                         "native_review": review["review_digest"],
                         "joined_draft": bool(started.get("joined")),
+                        "native_generation": self._draft_generation(),
                         "review_url": f"{self.external_url}/review/{operation.operation_id}",
                         "review_generation": 0,
                         "conversion": conversion,
@@ -1338,6 +1360,36 @@ class AnalyticsService:
             operation.operation_id,
             response.get(candidate_key, ""),
         )
+        rejected = self.state.get_review_approval(
+            self.workspace_id,
+            operation.operation_id,
+            response.get(candidate_key, ""),
+            decision="reject",
+        )
+        if (
+            rejected is not None
+            and rejected.binding.get("stage") == response.get("stage")
+            and self._creator(response)
+            and self._pinned_discarded(response)
+        ):
+            # A reject stopped after its exact discard: finish it, never discard again.
+            updated = {
+                **response,
+                "status": "rejected",
+                "review_decision": "reject",
+                "review_generation": response.get("review_generation", 0) + 1,
+                "published": False,
+            }
+            if not self.state.finish_review_task(
+                self.workspace_id,
+                operation.operation_id,
+                "rejected",
+                updated,
+                expected_response=response,
+            ):
+                return None
+            self.state.finish_review_action(rejected.action_digest, "completed")
+            return updated
         if (
             approval is None
             or approval.status not in {"completed", "failed"}

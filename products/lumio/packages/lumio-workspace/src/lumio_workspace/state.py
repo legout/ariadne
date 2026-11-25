@@ -608,19 +608,19 @@ class WorkspaceState:
         return cursor.rowcount == 1
 
     def get_review_approval(
-        self, workspace_id: str, task_id: str, candidate: str
+        self, workspace_id: str, task_id: str, candidate: str, *, decision: str = "approve"
     ) -> ReviewAction | None:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT action_digest, binding_json, status FROM review_actions "
-                "WHERE workspace_id = ? AND task_id = ? AND decision = 'approve' "
+                "WHERE workspace_id = ? AND task_id = ? AND decision = ? "
                 "ORDER BY updated_at DESC, created_at DESC",
-                (workspace_id, task_id),
+                (workspace_id, task_id, decision),
             ).fetchall()
         for action_digest, raw_binding, status in rows:
             binding = json.loads(raw_binding)
             if binding.get("candidate") == candidate:
-                return ReviewAction(action_digest, "approve", binding, status)
+                return ReviewAction(action_digest, decision, binding, status)
         return None
 
     def review_task_submitter(self, workspace_id: str, task_id: str) -> Actor | None:

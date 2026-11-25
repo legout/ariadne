@@ -498,6 +498,8 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "busy_reuse",
         "creator_submission",
         "creator_publication",
+        "creator_rebased",
+        "creator_interrupted",
         "concurrent_claim",
     ],
 )
@@ -931,6 +933,49 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 table="entries",
                 business_questions=["Still busy?"],
             )
+        return
+    if lifecycle_case == "creator_rebased":
+        # A rebase keeps the proposal and may keep HEAD but opens a new generation the
+        # reject never reviewed (spec 0040 §3.3, §3.7 rule 4): the draft survives.
+        slot = draft._load_slot(Path(project))
+        assert slot is not None
+        draft._store_slot(Path(project), {**slot, "generation": slot["generation"] + 1})
+        moved = draft.status(project)
+        context = review.get(reviewer, reused_contribution_task)
+        rejected = review.decide(
+            reviewer, reused_contribution_task, context.action_digest, "reject"
+        )
+        assert rejected["status"] == "rejected"
+        assert draft.status(project) == moved
+        return
+    if lifecycle_case == "creator_interrupted":
+        # The worker stops after the discard but before the outcome commits (spec 0034
+        # §10): reconciling finishes the one-use reject from its pinned evidence.
+        real_finish_reject = state.finish_review_task
+        real_discard = draft.discard
+        discards = []
+
+        def discard_spy(*args, **kwargs):
+            discards.append(args)
+            return real_discard(*args, **kwargs)
+
+        def fail_rejected(workspace_id, task_id, status, response, **kwargs):
+            if task_id == reused_contribution_task and status == "rejected":
+                raise RuntimeError("synthetic post-discard bookkeeping failure")
+            return real_finish_reject(workspace_id, task_id, status, response, **kwargs)
+
+        monkeypatch.setattr(draft, "discard", discard_spy)
+        monkeypatch.setattr(state, "finish_review_task", fail_rejected)
+        context = review.get(reviewer, reused_contribution_task)
+        with pytest.raises(ReviewError, match="post-discard bookkeeping failure"):
+            review.decide(reviewer, reused_contribution_task, context.action_digest, "reject")
+        monkeypatch.setattr(state, "finish_review_task", real_finish_reject)
+        assert draft.status(project) is None
+        recovered = review.reconcile_task(reused_contribution_task)
+        assert recovered is not None and recovered["status"] == "rejected"
+        assert analytics.get(contributor, reused_contribution_task)["status"] == "rejected"
+        assert draft.status(project) is None
+        assert len(discards) == 1
         return
     if lifecycle_case in {"creator_submission", "creator_publication"}:
         admitted_before = admission.load_current(project)
