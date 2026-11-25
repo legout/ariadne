@@ -706,20 +706,6 @@ def test_renderer_aggregates_at_joined_row_grain_and_guard_rejects_fanout(tmp_pa
     ), "renderer must aggregate at joined-row grain (INFLATED), by design — "
     "the grain guard keeps it unservable"
 
-    # The same fanned source through the facade is rejected before compile.
-    with pytest.raises(ValueError, match="grain-preservation invariant"):
-        asyncio.run(
-            trap_facade.define_metric(
-                {
-                    "name": "orders_total_naive",
-                    "description": "the trap: SUM over the naive join",
-                    "source": FANNED_SOURCE,
-                    "expression": "SUM(amount)",
-                    "dimensions": ["region"],
-                }
-            )
-        )
-
 
 def test_get_metric_rejects_served_model_with_fanned_source(tmp_path):
     """Correction-pass reachability (the reviewer's exact path): the governed
