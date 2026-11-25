@@ -236,9 +236,68 @@ def test_draft_survives_a_moved_project_and_legacy_absolute_records_still_load(t
 
     view = draft.status(moved)
     assert view and view["candidate_revision"] == first["candidate_revision"]
-    second = draft.edit_artifact(
-        moved, (1, first["candidate_revision"]), SEED_REL, "after move\n"
-    )["draft"]
+    second = draft.edit_artifact(moved, (1, first["candidate_revision"]), SEED_REL, "after move\n")[
+        "draft"
+    ]
     out = draft.discard(moved, (1, second["candidate_revision"]))
     assert out["branch"] == "ariadne/discarded/1"
     assert draft.status(moved) is None
+
+
+def _worktree_listing(project: Path) -> str:
+    return run_git(project, "worktree", "list", "--porcelain")
+
+
+def test_discard_as_first_mutation_after_a_move_removes_the_worktree(tmp_path):
+    import shutil
+
+    project = complete_bundle_project(tmp_path)
+    first = _first_edit(project)["draft"]
+    proposal = _read(project)["proposal"]
+    moved = tmp_path / "elsewhere" / "moved-project"
+    moved.parent.mkdir()
+    shutil.move(str(project), str(moved))
+
+    draft.discard(moved, (1, first["candidate_revision"]))
+    assert not (moved / proposals.WORKTREES_REL / proposal).exists()
+    assert proposal not in _worktree_listing(moved)
+    assert str(project) not in _worktree_listing(moved)
+
+
+def test_edit_in_a_copy_is_refused_and_leaves_the_original_untouched(tmp_path):
+    import shutil
+
+    project = complete_bundle_project(tmp_path)
+    first = _first_edit(project)["draft"]
+    proposal = _read(project)["proposal"]
+    link = project / ".git" / "worktrees" / proposal / "gitdir"
+    before = link.read_text(encoding="utf-8")
+    copy = tmp_path / "copy"
+    shutil.copytree(project, copy, symlinks=True)
+
+    with pytest.raises(ValueError, match="nothing was written"):
+        draft.edit_artifact(copy, (1, first["candidate_revision"]), SEED_REL, "from copy\n")
+    assert link.read_text(encoding="utf-8") == before
+    assert (copy / proposals.WORKTREES_REL / proposal / ".git").read_text(
+        encoding="utf-8"
+    ).startswith(f"gitdir: {project}")
+    # the original draft is still editable
+    draft.edit_artifact(project, (1, first["candidate_revision"]), SEED_REL, "original\n")
+
+
+def test_foreign_state_copied_into_another_repo_is_refused(tmp_path):
+    import shutil
+
+    a = complete_bundle_project(tmp_path / "a")
+    _first_edit(a)
+    b = complete_bundle_project(tmp_path / "b")
+    shutil.copytree(a / proposals.ARIADNE_STATE_DIR, b / proposals.ARIADNE_STATE_DIR,
+                    dirs_exist_ok=True, ignore=shutil.ignore_patterns("worktrees", "locks"))
+    slot_bytes = (b / draft.DRAFT_REL).read_bytes()
+    slot = json.loads(slot_bytes)
+
+    with pytest.raises(ValueError, match="belongs to"):
+        draft.status(b)
+    with pytest.raises(ValueError, match="belongs to"):
+        draft.discard(b, (slot["generation"], slot["candidate_revision"]))
+    assert (b / draft.DRAFT_REL).read_bytes() == slot_bytes

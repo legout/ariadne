@@ -329,7 +329,11 @@ def mutate(
         if slot_before is not None and slot_before["state"] == "active":
             # an interrupted transition refuses for human resolution BEFORE any
             # revision comparison, whatever the caller read
-            proposals._check_coherent(project, _coherent(project, slot_before))
+            record = _coherent(project, slot_before)
+            if proposals.links_broken(project, slot_before["proposal"]):
+                _check_expected(slot_before, expected)  # a stale call writes nothing
+                proposals.relink_moved_worktree(project, slot_before["proposal"])
+            proposals._check_coherent(project, record)
         active = _check_expected(slot_before, expected)
         created: str | None = None
         if active is None:
@@ -478,6 +482,8 @@ def discard(project: str | Path, expected: Expected) -> dict:
         slot = _check_expected(_load_slot(project), expected)
         assert slot is not None
         record = proposals._load_record(project, slot["proposal"])
+        if proposals.links_broken(project, slot["proposal"]):
+            proposals.relink_moved_worktree(project, slot["proposal"])
         branch = f"{DISCARDED_BRANCH_PREFIX}{slot['generation']}"
         _store_slot(
             project,
@@ -491,6 +497,12 @@ def discard(project: str | Path, expected: Expected) -> dict:
         worktree = project / proposals.WORKTREES_REL / slot["proposal"]
         proposals._git(["branch", "-m", record["branch"], branch], project)
         proposals._git(["worktree", "remove", "--force", str(worktree)], project, check=False)
+        listed = proposals._git(["worktree", "list", "--porcelain"], project).stdout
+        if worktree.exists() or f"worktree {worktree}\n" in listed:
+            raise ValueError(
+                f"the discarded draft's worktree {worktree} could not be removed"
+                + proposals._HUMAN_RESOLUTION
+            )
     return {"discarded": True, "generation": slot["generation"], "branch": branch}
 
 
@@ -879,6 +891,8 @@ def consume(project: Path, proposal: str) -> None:
     proposal's own active slot retires; the proposal branch stays as history."""
     slot = _load_slot(project)
     if slot is not None and slot["state"] == "active" and slot["proposal"] == proposal:
+        if proposals.links_broken(project, proposal):
+            proposals.relink_moved_worktree(project, proposal)
         _store_slot(
             project,
             {
@@ -942,6 +956,8 @@ def rebase(project: str | Path, expected: Expected) -> dict:
         slot = _check_expected(_load_slot(project), expected)
         assert slot is not None
         record = _coherent(project, slot)
+        if proposals.links_broken(project, slot["proposal"]):
+            proposals.relink_moved_worktree(project, slot["proposal"])
         proposals._check_coherent(project, record)  # clean worktree on the recorded branch
         served = _served_revision(project)
         if served is None or served == slot["base_served_revision"]:

@@ -325,12 +325,77 @@ def _load_record(project: Path, proposal: str) -> dict:
         )
     # "." is the current format; the absolute path is the pre-#137 fallback (a record
     # written before the move still loads at its original location).
-    if record["id"] != proposal or record["project"] not in (".", str(project)):
+    owned = record["project"] == str(project) or (
+        # a "." record is this project's only if THIS repository owns its proposal branch
+        record["project"] == "."
+        and isinstance(record["branch"], str)
+        and _git(
+            ["rev-parse", "--verify", "-q", f"refs/heads/{record['branch']}"],
+            project,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if record["id"] != proposal or not owned:
         raise ValueError(
             f"no proposal {proposal!r} in this project ({project}) — the record "
             f"belongs to {record.get('project')!r}; nothing was read or written"
         )
     return record
+
+
+def _worktree_links(project: Path, proposal: str) -> tuple[Path, Path, Path] | None:
+    """(worktree .git file, its admin dir, the admin dir's recorded gitdir file) when the
+    proposal worktree exists as a linked checkout, else None."""
+    dotgit = project / WORKTREES_REL / proposal / ".git"
+    try:
+        text = dotgit.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    admin = Path(text[len("gitdir:") :].strip())
+    return dotgit, admin, admin / "gitdir"
+
+
+def links_broken(project: Path, proposal: str) -> bool:
+    """True when the proposal worktree's git links do not point at THIS project's repo
+    (the project was moved or copied since the worktree was added)."""
+    links = _worktree_links(project, proposal)
+    if links is None:
+        return False
+    dotgit, admin, gitdir_file = links
+    try:
+        return not (
+            admin.resolve() == (project / ".git" / "worktrees" / admin.name).resolve()
+            and gitdir_file.read_text(encoding="utf-8").strip() == str(dotgit)
+        )
+    except OSError:
+        return True
+
+
+def relink_moved_worktree(project: Path, proposal: str) -> None:
+    """Re-point a MOVED project's proposal worktree at the new location. Only a true move
+    qualifies: this is the repository's main checkout, its admin entry travelled with it and
+    the recorded old worktree location is gone. A copy (old location still exists) or an
+    ambiguous layout refuses and writes nothing. Only this worktree's two link files are
+    written — never ``git worktree repair``, which also rewrites other checkouts' links."""
+    links = _worktree_links(project, proposal)
+    new_admin = project / ".git" / "worktrees"
+    if links is not None:
+        new_admin = new_admin / links[1].name
+    try:
+        old = Path((new_admin / "gitdir").read_text(encoding="utf-8").strip())
+        ok = links is not None and (project / ".git").is_dir() and not old.exists()
+    except OSError:
+        ok = False
+    if not ok or links is None:
+        raise ValueError(
+            f"the worktree of proposal {proposal} points at another checkout (copied or "
+            "shared project) — nothing was written" + _HUMAN_RESOLUTION
+        )
+    links[0].write_text(f"gitdir: {new_admin}\n", encoding="utf-8")
+    (new_admin / "gitdir").write_text(f"{links[0]}\n", encoding="utf-8")
 
 
 # ------------------------------------------------- the shared content boundary
@@ -848,9 +913,6 @@ def _check_coherent(project: Path, record: dict) -> None:
     and preserve every copy."""
     proposal = record["id"]
     worktree = project / WORKTREES_REL / proposal
-    if worktree.is_dir():
-        # a moved/copied project leaves absolute gitdir paths dangling; repair is idempotent
-        _git(["worktree", "repair", str(worktree)], project, check=False)
     if not worktree.is_dir():
         raise ValueError(
             f"the worktree of proposal {proposal} is missing ({worktree})" + _HUMAN_RESOLUTION
