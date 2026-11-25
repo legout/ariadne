@@ -128,11 +128,11 @@ sources with `governed:false` and state what the answer rests on.
 | `detail …` | Governed detail query (unchanged semantics of `query_detail`). |
 | `metrics`, `datasets`, `search <text>`, `page <path>` | Discovery (unchanged). |
 | `serve [--toolset analyst\|authoring\|combined] [--http …]` | MCP transport (optional extra). |
-
-`--filter` takes one quoted `FIELD OP VALUE` predicate per flag, e.g. `--filter 'label = a'`; repeat the flag to add predicates. OP is one of `= != < <= > >= in`, split at the first operator token surrounded by whitespace; FIELD and VALUE are trimmed. VALUE is a JSON number, `true`, `false` or `null` if it parses as one, otherwise the literal string (quotes optional: `'label = "a b"'` gives `a b`). For `in`, VALUE is a comma-separated list, each item typed the same way. A missing operator, empty FIELD or VALUE, or an unknown op refuses with `filter_invalid` before any read; the planner stays the single validator.
 | `skill install\|status\|path` | Unchanged. |
 | `profile` | Profile **approved served** sources of a managed project. The old `--db`/`--sources` inputs are not supported on a managed project. |
 | `migrate` | Spec 0039 §7, adapted to §3.3 (writes into the active draft). |
+
+`--filter` takes one quoted `FIELD OP VALUE` predicate per flag, e.g. `--filter 'label = a'`; repeat the flag to add predicates. OP is one of `= != < <= > >= in`, split at the first operator token surrounded by whitespace; FIELD and VALUE are trimmed. VALUE is a JSON number, `true`, `false` or `null` if it parses as one, otherwise the literal string (quotes optional: `'label = "a b"'` gives `a b`). For `in`, VALUE is a comma-separated list, each item typed the same way. A missing operator, empty FIELD or VALUE, or an unknown op refuses with `filter_invalid` before any read; the planner stays the single validator.
 
 3. **MCP surface after B1.** The read tools keep their names:
 
