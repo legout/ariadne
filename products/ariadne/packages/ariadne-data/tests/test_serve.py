@@ -475,6 +475,7 @@ def test_server_registers_five_query_and_five_authoring_tools(served):
         "authoring_resolve_term",
         "authoring_inspect_mapping",
         "draft_status",
+        "preview",
     }
     assert not [tool for tool in tools if "approve" in tool.name or "promot" in tool.name]
 
