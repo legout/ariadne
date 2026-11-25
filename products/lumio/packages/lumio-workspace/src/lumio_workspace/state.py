@@ -439,6 +439,20 @@ class WorkspaceState:
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
+    @contextmanager
+    def project_lock(self, project: str | Path) -> Iterator[None]:
+        """Spec 0040 §3.7 rule 3: one blocking interprocess lock per analytics project,
+        shared by every preparer, held only while selecting and recording a draft claim."""
+        name = hashlib.sha256(str(Path(project).resolve()).encode()).hexdigest()
+        lock_path = self.path.parent / "project-locks" / f"{name}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
     def finish_operation(
         self,
         workspace_id: str,
