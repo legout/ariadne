@@ -218,6 +218,12 @@ def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
     _validate(served)
     is_error, out = _mcp_preview(served, dimensions=["label"])
     assert is_error and out["error"]["exhausted_bound"] == {"mcp_response_bytes": 700}, out
+    # a planner error echoing a long agent-supplied op is refused within the ceiling too
+    bad = [{"field": "label", "op": "x" * 5000, "value": "a"}]
+    is_error, out = _mcp_preview(served, filters=bad)
+    wire = out if isinstance(out, str) else json.dumps(out)
+    assert is_error and len(wire.encode()) <= 700, len(wire)
+    assert isinstance(out, dict) and out["error"]["code"] == "result_byte_limit", out
 
 
 def test_a_budget_spent_after_the_fetch_refuses(served, capsys, monkeypatch):
