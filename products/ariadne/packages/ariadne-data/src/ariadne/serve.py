@@ -1026,6 +1026,7 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             from ariadne import preview as preview_module
 
+            _refuse_unrepresentable_mcp_ceiling(authoring_api.project)
             budget = query_results.load_host_query_limits(authoring_api.project)[
                 "mcp_response_bytes"
             ]
