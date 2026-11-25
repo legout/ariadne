@@ -538,6 +538,7 @@ def test_local_revenue_release_and_later_policy_isolation(tmp_path):
         runtime.con.close()
 
 
+@pytest.mark.real_execution_identity
 def test_composite_consent_binds_scope_build_and_full_previous_release(tmp_path, monkeypatch):
     project, _api, review = ready(tmp_path)
     destination = tmp_path / "published"
@@ -640,6 +641,7 @@ def test_hidden_required_policy_cannot_activate(tmp_path):
         runtime.con.close()
 
 
+@pytest.mark.real_execution_identity
 def test_validation_build_change_requires_revalidation_before_preview(tmp_path, monkeypatch):
     """Spec0029 §§4–5: preview B cannot confer B's identity on A's validation."""
     code = tmp_path / "temporary-consumer-build.py"
@@ -694,6 +696,7 @@ def test_validation_build_change_requires_revalidation_before_preview(tmp_path, 
     assert not destination.exists()
 
 
+@pytest.mark.real_execution_identity
 def test_same_location_build_content_change_refuses(tmp_path, monkeypatch):
     code = tmp_path / "temporary-sdk.py"
     code.write_text("reader = 1\n")
