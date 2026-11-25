@@ -565,10 +565,10 @@ def test_admitted_example_counts_from_pinned_scoped_native_view(tmp_path, capsys
     visible answer_example page exists in the pinned release; the retired
     dict-shape probe always reported zero)."""
 
-    from tests.test_answer_examples import _SMALL_RESULT, _example_release, _submission
+    from tests.test_answer_examples import _SMALL_RESULT, _build_example_release, _submission
     from tests.test_git_authoring import approved
 
-    project, api, review = _example_release(tmp_path / "project")
+    project, api, review = _build_example_release(tmp_path / "project")
     # the fixture itself activates the revision-4 base release; the Example
     # rides a fresh candidate that is validated, reviewed and admitted here
 
