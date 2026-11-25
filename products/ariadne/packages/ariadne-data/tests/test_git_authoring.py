@@ -1126,24 +1126,6 @@ def test_review_never_presents_a_moved_candidate_or_changed_evidence_as_validate
     assert refreshed["attempts"] == 3
 
 
-def test_review_bodies_arrive_in_bounded_parts(tmp_path):
-    """Bounded review bodies: a long artifact arrives in parts and a partial
-    part is never claimed complete."""
-    project = complete_bundle_project(tmp_path)
-    api = AuthoringProject(project)
-    started = api.start_proposal()
-    approved(api, project, started)
-    long_policy = NATIVE_POLICY_PAGE.replace("The rule body.", "policy line " * 4000)
-    api.edit_pages_batch(
-        started["proposal"],
-        started["candidate_revision"],
-        [{"path": NATIVE_POLICY_REL, "content": long_policy}],
-    )
-    review = api.review_proposal(started["proposal"])
-    policy = next(entry for entry in review["files"] if entry["resource"] == NATIVE_POLICY_REL)
-    assert policy["parts"] > 1 and policy["complete"] is False
-
-
 def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
     """Review fix (G4, issue #36 criterion 4 + plan §2 bounded-part contract):
     the requested part applies PER-ARTIFACT — requesting part 2 returns the
@@ -1165,6 +1147,8 @@ def test_review_parts_retrieve_every_artifacts_later_bodies(tmp_path):
     assert second["revision"] == edited["revision"]
 
     policy1 = next(entry for entry in first["files"] if entry["resource"] == NATIVE_POLICY_REL)
+    # a partial part is never claimed complete (bounded-parts contract)
+    assert policy1["complete"] is False
     policy2 = next(entry for entry in second["files"] if entry["resource"] == NATIVE_POLICY_REL)
     # the long policy's LATER content arrives: part 2 of the same artifact
     assert policy1["parts"] == policy2["parts"] > 1
