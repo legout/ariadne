@@ -22,6 +22,7 @@ oversized cell or continuing read crosses it.
 
 import asyncio
 import json
+import shutil
 import sqlite3
 import threading
 import time
@@ -365,6 +366,28 @@ def served(tmp_path_factory):
     return project, db
 
 
+@pytest.fixture(scope="module")
+def admitted_project(tmp_path_factory):
+    """Admit the native bundle project once per module; each case gets its own
+    copytree of the pristine admitted template (never a shared mutable project)."""
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_admission import _policy_edit, admit, admitted_ready
+    from tests.test_git_authoring import complete_bundle_project
+
+    root = tmp_path_factory.mktemp("admitted_template")
+    template = complete_bundle_project(root)
+    review, _ = admitted_ready(
+        AuthoringProject(template), template, _policy_edit("The rule body, revised.")
+    )
+    assert admit(template, review) == 0
+
+    def make(dest):
+        shutil.copytree(template, dest, symlinks=True)
+        return dest
+
+    return make
+
+
 def make_runtime(served, **limits):
     """The host-owned ceilings ride the project's operator config (tightening
     only); no-limits calls reset the section to the defaults."""
@@ -459,7 +482,7 @@ def _stepped_clock(jump_after: int):
         "mcp_error_envelope_matches_the_actual_form",
     ],
 )
-def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
+def test_query_result_limits(case, served, admitted_project, tmp_path, monkeypatch, capsys):
     root, db = served
     if case == "three_groups_refuse_at_row_ceiling_two":
         rt = make_runtime(served, max_rows=2)
@@ -658,16 +681,10 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         assert result["result"]["has_more_matching"] is True
 
     elif case == "rows_fit_but_metadata_overflows":
-        from ariadne.authoring import AuthoringProject
         from ariadne.query import QueryRuntime as ProjectRuntime
-        from tests.test_git_admission import _policy_edit, admit, admitted_ready
-        from tests.test_git_authoring import complete_bundle_project
 
         # the admitted native project: the row fits while the served metadata overflows
-        project = complete_bundle_project(tmp_path)
-        api = AuthoringProject(project)
-        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-        assert admit(project, review) == 0
+        project = admitted_project(tmp_path / "proj")
         registry = project / "ariadne.yaml"
         registry.write_text(
             registry.read_text(encoding="utf-8") + "\nquery:\n  response_bytes: 2000\n",
@@ -894,14 +911,8 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
 
     elif case == "host_config_file_tightens_the_cli":
         from ariadne import cli
-        from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import _policy_edit, admit, admitted_ready
-        from tests.test_git_authoring import complete_bundle_project
 
-        project = complete_bundle_project(tmp_path)
-        api = AuthoringProject(project)
-        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-        assert admit(project, review) == 0
+        project = admitted_project(tmp_path / "proj")
         capsys.readouterr()
         registry = project / "ariadne.yaml"
         original_registry = registry.read_text(encoding="utf-8")
@@ -1026,7 +1037,7 @@ def test_query_result_limits(case, served, tmp_path, monkeypatch, capsys):
         "fresh_budget_no_inherited_cancellation",
     ],
 )
-def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
+def test_query_deadline_contract(case, served, admitted_project, tmp_path, monkeypatch, capsys):
     if case == "setup_exhaustion_refuses_before_the_source_opens":
         monkeypatch.setattr(execution, "_deadline_clock", _jumped_clock())
         with pytest.raises(ValueError, match="deadline"):
@@ -1055,15 +1066,9 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(execution, "_deadline_clock", real)
 
     elif case == "expiry_between_phases_never_returns_success":
-        from ariadne.authoring import AuthoringProject
         from ariadne.query import QueryRuntime as ProjectRuntime
-        from tests.test_git_admission import _policy_edit, admit, admitted_ready
-        from tests.test_git_authoring import complete_bundle_project
 
-        project = complete_bundle_project(tmp_path)
-        api = AuthoringProject(project)
-        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-        assert admit(project, review) == 0
+        project = admitted_project(tmp_path / "proj")
         rt = ProjectRuntime.open_project(project)
         for jump_after in (2, 4, 6):  # deterministic expiry at varying phase points
             monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(jump_after))
@@ -1096,14 +1101,8 @@ def test_query_deadline_contract(case, served, tmp_path, monkeypatch, capsys):
 
     elif case == "cli_threads_one_request_budget_through_construction":
         from ariadne import cli
-        from ariadne.authoring import AuthoringProject
-        from tests.test_git_admission import _policy_edit, admit, admitted_ready
-        from tests.test_git_authoring import complete_bundle_project
 
-        project = complete_bundle_project(tmp_path)
-        api = AuthoringProject(project)
-        review, _ = admitted_ready(api, project, _policy_edit("The rule body, revised."))
-        assert admit(project, review) == 0
+        project = admitted_project(tmp_path / "proj")
         monkeypatch.setattr(execution, "_deadline_clock", _stepped_clock(3))
         code = cli.main(
             ["query", "event_count", "--project", str(project)],

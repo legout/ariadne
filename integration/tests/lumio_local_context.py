@@ -9,6 +9,7 @@ to precede the planner and any live bind/SELECT by spy guards.
 
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 import pytest  # pyright: ignore[reportMissingImports] — qualified test env is external
@@ -4296,8 +4297,28 @@ Q1_REVIEW_CASES = [
 ]
 
 
+@pytest.fixture(scope="module")
+def q1_copy(tmp_path_factory):
+    """Build each distinct ``_q1_release`` variant once per module; every case
+    gets its own ``copytree`` of the pristine template (never a shared mutable
+    project). The copy keeps the project's path relative to the template root."""
+    templates = {}
+
+    def make(dest: Path, **kwargs):
+        key = tuple(sorted(kwargs.items()))
+        if key not in templates:
+            root = tmp_path_factory.mktemp("q1_template")
+            project, review = _q1_release(root, **kwargs)
+            templates[key] = (root, project.relative_to(root), review)
+        root, rel, review = templates[key]
+        shutil.copytree(root, dest / "copy", symlinks=True)
+        return dest / "copy" / rel, review
+
+    return make
+
+
 @pytest.mark.parametrize("case", Q1_REVIEW_CASES)
-def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
+def test_integrated_query_review_refusals(case, q1_copy, tmp_path, monkeypatch):
     """Six finite refusal nodes of the final independent review (fix-first
     F1–F3), each over a real native rev-3 admission built per case with one
     validation: SEMI/ANTI membership-filtered sources must not lose their
@@ -4323,7 +4344,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # refusal must be the MISSING status Table Context, never an IO
         # permission failure masking it
         join = "SEMI" if case == "semi-context" else "ANTI"
-        project, _review = _q1_release(tmp_path, status_context=False)
+        project, _review = q1_copy(tmp_path, status_context=False)
         runtime = QueryRuntime.open_project(project)
         try:
             with monkeypatch.context() as m:
@@ -4355,7 +4376,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # that the actual source-only grain check never receives — the
         # obligation cannot be attested, so the operation refuses before
         # grain/bind naming the check id AND the unattested target
-        project, review = _q1_release(tmp_path, status_closure=True)
+        project, review = q1_copy(tmp_path, status_closure=True)
         from lumio_wiki.ariadne_context import (  # pyright: ignore[reportMissingImports] — qualified test env is external
             inspect_ariadne_candidate,
         )
@@ -4406,7 +4427,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # F3: the native planner's structured request validation owns the
         # malformed shape — request_invalid, never a TypeError from the
         # static dependency seam's hashing
-        project, _review = _q1_release(tmp_path)
+        project, _review = q1_copy(tmp_path)
         runtime = QueryRuntime.open_project(project)
         try:
             with pytest.raises(PlannerError) as caught:
@@ -4419,7 +4440,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
     if case == "detail-dataset-shape":
         # F3: an unhashable dataset name keeps the native unknown_dataset
         # refusal — the type check precedes any dictionary membership
-        project, _review = _q1_release(tmp_path)
+        project, _review = q1_copy(tmp_path)
         runtime = QueryRuntime.open_project(project)
         try:
             with pytest.raises(PlannerError) as caught:
@@ -4438,7 +4459,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # Context-preparation refusal (spec0032 §7, §10.5 stage 1; spec0014
         # order contract). Nothing in this request needs a live engine to
         # establish the native error (no filters, no regex, no timestamp)
-        project, _review = _q1_release(tmp_path, status_context=False)
+        project, _review = q1_copy(tmp_path, status_context=False)
         runtime = QueryRuntime.open_project(project)
         try:
             with pytest.raises(PlannerError) as caught:
@@ -4468,7 +4489,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # spec0014 §3's typed interpretation — the planner-side mirror of the
         # guarded SQL interpretation). The deliberately absent status Table
         # Context must not turn it into a Context-preparation refusal
-        project, _review = _q1_release(tmp_path, status_context=False)
+        project, _review = q1_copy(tmp_path, status_context=False)
         runtime = QueryRuntime.open_project(project)
         try:
             with pytest.raises(PlannerError) as caught:
@@ -4502,7 +4523,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
         # predicate construction, after Context (spec0032 §7, §10.5 stage 1:
         # pure caller-literal validation precedes the Context preflight). No
         # SQL, connection or live RE2 judgement is needed to establish it
-        project, _review = _q1_release(tmp_path, status_context=False)
+        project, _review = q1_copy(tmp_path, status_context=False)
         runtime = QueryRuntime.open_project(project)
         try:
             with pytest.raises(PlannerError) as caught:
@@ -4526,7 +4547,7 @@ def test_integrated_query_review_refusals(case, tmp_path, monkeypatch):
     # validation (non-empty fields) owns the refusal BEFORE the Context
     # lookup: the status dataset's Table Context is deliberately absent and
     # must NOT turn a malformed request into a Context error
-    project, _review = _q1_release(tmp_path, status_context=False)
+    project, _review = q1_copy(tmp_path, status_context=False)
     runtime = QueryRuntime.open_project(project)
     try:
         with pytest.raises(PlannerError) as caught:
