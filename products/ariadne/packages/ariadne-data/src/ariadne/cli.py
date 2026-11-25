@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import date, time
 from decimal import Decimal
@@ -298,6 +299,36 @@ def _pair(view: dict) -> tuple[int, str]:
     return (view["generation"], view["candidate_revision"])
 
 
+_FILTER_OP = re.compile(r"\s(<=|>=|!=|=|<|>|in)\s")
+
+
+def _literal(text: str) -> Any:
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _filters(specs: list[str]) -> list[dict]:
+    """``FIELD OP VALUE`` -> planner predicates; the planner validates them."""
+    out = []
+    for spec in specs:
+        m = _FILTER_OP.search(spec)
+        field, value = (spec[: m.start()].strip(), spec[m.end() :].strip()) if m else ("", "")
+        if not (m and field and value):
+            raise PlannerError("filter_invalid", f"--filter {spec!r}: expected 'FIELD OP VALUE'")
+        op = m.group(1)
+        out.append(
+            {
+                "field": field,
+                "op": op,
+                "value": [_literal(v) for v in value.split(",")] if op == "in" else _literal(value),
+            }
+        )
+    return out
+
+
 def _query(args: argparse.Namespace) -> dict:
     limits = query_results.load_host_query_limits(args.project)
     discovery = DiscoveryRuntime.open_project(args.project)
@@ -308,7 +339,8 @@ def _query(args: argparse.Namespace) -> dict:
         discovery=discovery if discovery._managed is not None else None,
     )
     if args.filter:
-        request = {"metrics": [args.metric], "dimensions": args.by, "filters": args.filter}
+        filters = _filters(args.filter)
+        request = {"metrics": [args.metric], "dimensions": args.by, "filters": filters}
         return asyncio.run(runtime.query_metrics(request))
     return asyncio.run(runtime.get_metric(args.metric, args.by or None))
 
@@ -379,7 +411,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     if command == "preview":
         from ariadne import preview
 
-        return _emit(preview.preview(project, args.metric, args.by, args.filter), args)
+        return _emit(preview.preview(project, args.metric, args.by, _filters(args.filter)), args)
     if command == "approve":
         from ariadne import approve
 

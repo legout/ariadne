@@ -209,6 +209,38 @@ def test_an_mcp_predicate_filter_changes_the_aggregate(served):
     assert out["rows"] == [{"events::events.event_count": 1}]  # unfiltered SUM(id) is 6
 
 
+def test_a_cli_filter_field_op_value_changes_the_preview_aggregate(served, capsys):
+    _edit(served, EDITED)
+    _validate(served)
+    base = ["--json", "--project", str(served)]
+
+    code, out, _ = _run(["preview", "event_count", "--filter", "label = a", *base], capsys)
+    assert code == 0, out
+    assert list(json.loads(out)["rows"][0].values()) == [1]  # unfiltered SUM(id) is 6
+
+
+def test_a_cli_filter_changes_the_query_aggregate(tmp_path, capsys):
+    from tests.test_data_signals import _admit_multifact_project
+
+    _runtime, project, *_ = _admit_multifact_project(tmp_path, quality=False)
+    base = ["--json", "--project", str(project)]
+    code, out, _ = _run(["query", "live_orders_total", *base], capsys)
+    assert code == 0, out
+    assert list(json.loads(out)["rows"][0].values()) == [700.0]  # NA 300 + EMEA 400
+
+    code, out, err = _run(["query", "live_orders_total", "--filter", "region = NA", *base], capsys)
+    assert code == 0, out + err
+    assert list(json.loads(out)["rows"][0].values()) == [300.0]
+
+
+@pytest.mark.parametrize("bad", ["label ~ a", "label=a", "= a", "label ="])
+def test_a_malformed_cli_filter_is_refused_as_filter_invalid(served, capsys, bad):
+    argv = ["preview", "event_count", "--filter", bad, "--json", "--project", str(served)]
+    code, out, err = _run(argv, capsys)
+    assert code != 0
+    assert "filter_invalid" in out + err
+
+
 def _set_mcp_cap(served, cap):
     registry = served / "ariadne.yaml"
     doc = yaml.safe_load(registry.read_text(encoding="utf-8"))
