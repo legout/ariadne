@@ -68,6 +68,7 @@ AUTHORING_TOOLS = {
     "authoring_inspect_mapping",
     "authoring_resolve_term",
     "draft_status",
+    "preview",
 }
 QUERY_TOOLS = {
     "list_metrics",

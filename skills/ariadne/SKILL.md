@@ -658,7 +658,7 @@ toolsets over one core — pick the registration at launch:
 `search_examples`), or
 `--toolset authoring` (the draft contract: `authoring_read_artifact`,
 `authoring_edit_proposal`, `authoring_inputs`, `authoring_refresh_schema`,
-`authoring_inspect_mapping`, `authoring_resolve_term`, `draft_status`; they act
+`authoring_inspect_mapping`, `authoring_resolve_term`, `preview`, `draft_status`; they act
 on the ONE active draft and take no proposal or base ID) — with the SAME
 checks and response contracts as the draft commands above. The
 answer-example tools ride the Analyst/Combined registrations with identical
