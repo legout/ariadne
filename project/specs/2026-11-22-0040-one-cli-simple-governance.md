@@ -15,6 +15,8 @@ exact granted draft identities before calculation approval; §4.4 makes exact Ex
 SQL opt-in. These amendments do not change governed query or ad-hoc source bindings,
 or grant new execution or integration authority.
 
+**Scoped owner decision, 2026-11-25 (#138):** §3.7 states the workspace draft lifecycle (busy-before-reuse, creator-only reject release, a per-project workspace lock with one state store per checkout), drafted by a read-only oracle and approved as written. It grants no new execution or integration authority.
+
 Revision 1 received a design review from `openai-codex/gpt-6.2-sol`, and the verdict
 was "revise first". The review is stored at
 `~/.local/state/ariadne-runs/s0040-review/review.md`. Revision 2 incorporates all of its
@@ -335,33 +337,28 @@ sources with `governed:false` and state what the answer rests on.
 
 ### 3.7 Workspace callers (`lumio-workspace` analytics)
 
-The workspace analytics adapter calls `AuthoringProject.approve_sources` and checks
-its grant before the caller's separate data grant (`analytics.py` around lines
-938–967). It also dispatches `query_records` and `define_metric` (around lines
-704–744).
+B1 moves the workspace source-grant caller to the human-only `grant_candidate` library call in the same candidate that removes `approve_sources`. Source Approval for the exact effective identity and the caller's data grant for the exact complete source set are separate decisions. Neither is admission. Both stay behind the existing browser reviewer capability and one-use action; preparing a task through MCP cannot approve, reject or discard.
 
-B1 **cuts these callers over in the same candidate**:
+**One project, one active draft (§3.3).** A request that opens an empty slot is **creating**; one that continues an existing draft is **joining**. Record which it did and which draft it holds. Reusing an admission does neither. A holder is **pending** through source approval and data grant, or through contribution submission and publication review, including after `request_changes`. A **granted** source request (`data_granted`) is decided, not pending: its draft, if any, stays active for refresh, validation and admission. A terminal reject or successful publication is also **decided**. Ending a request's pending claim is not the same as **releasing** the slot: released means that generation is no longer active.
 
-- the browser-reviewed source request records the source grant (§3.4.2), using the
-  existing reviewer capability and one-use action;
-- the per-caller data grant stays separate and is checked as before.
-- Amendment 2026-11-24 (owner, draft rule v3): the workspace holds the one active draft
-  per §3.3. While any request on it is pending (a source request at either stage, or a
-  contribution not yet decided), every new request refuses as stale. A data-granted
-  request keeps its draft active as the project's ongoing work (refresh, validate,
-  admit); an idle new source request **joins** it only when its declaration is already in
-  that draft, otherwise it refuses as stale until the work is admitted or discarded. A
-  contribution continues the granted request's draft. A browser **reject** discards the
-  exact draft only for the request that created it; rejecting a joined request never
-  discards. Restore retires the slot.
-- AC11a: a request made while another is pending refuses as stale; a request made after
-  a grant joins the granted draft only if it adds no declaration, else refuses as stale;
-  rejecting the creating request discards its draft, rejecting a joined request keeps it.
+1. **Check busy first.** For every fresh source request or contribution, check for *any* pending holder of the active draft before choosing admission reuse, join or create. A pending holder wins over any earlier grant on the same proposal, even if its candidate has since advanced. Refuse as `stale`; do not open a review, edit the draft or issue a grant. A pending review of a reused admission alone is not a holder of an active draft.
+2. **Select the work.** When not busy, a source request reuses an exact admitted declaration with current Source Approval: bind to the admitted revision and start at `pending_data_grant`, leaving the slot alone. Otherwise, for a non-admitted declaration, create a draft if none is active. Join an idle granted draft only if the declaration *and referenced Storage Profile* already match in its current candidate; add nothing. Both create and join start at `pending_source_approval`. A different declaration cannot be appended to granted work. A contribution requires the caller's own current grant for the project and exact source set: continue the eligible idle granted draft, or create a draft in an empty slot (including after admission). It may stage edits. Neither preparer takes over or discards unrelated active work; if it needs a draft but cannot create or join, it refuses as stale.
+3. **Serialize selection and claim.** Use an interprocess lock in workspace state, one per underlying analytics project, shared by source and contribution preparation across callers and retry keys. Under it, reread the active slot and holders, check busy, choose the route and, for a creator or joiner, make the pending holder and its create/join identity durable before unlocking. Do not hold the lock while waiting for human review. A same-key replay remains the same operation; different keys do not get separate chances at the same idle slot. Core's generation/candidate compare-and-set still applies to draft writes (§3.3). The lock assumes one workspace state store per analytics project checkout (owner, 2026-11-25); independent stores serving one checkout are unsupported.
+4. **Browser decisions.** Source approval grants only the reviewed identity and advances to `pending_data_grant` (still busy if draft-backed); data approval grants only the caller and ends that pending claim. Neither consumes the draft. Contribution submission approval advances to `pending_publication` (still busy), not to served. Successful admission activates only the reviewed revision and consumes its generation. `request_changes` is not a reject. At either review stage, a terminal **reject** of a creator, source or contribution, discards its exact still-active draft within that one-use action, before recording `rejected`. Match the creating proposal and the generation/candidate under review; never discard a moved or replacement draft. Reject of a joiner or admission-reuse request never discards. Rejection is not admission of staged edits.
+5. **Other releases.** Explicit operator `draft discard` retires the exact slot and keeps `ariadne/discarded/<generation>` (§3.3). Restore retires the restored active slot (`retire_stale`, no-op without an active slot) and invalidates outstanding browser actions; it does not rebase or resume the old review.
 
-B2 removes the two query dispatches from the adapter in the same candidate that removes
-the operations, and reports them as unsupported. B adds **no** workspace `sql`. The
-existing workspace journeys are rerun as the boundary check: role separation, private
-originals and curated scope (shared ADR-0028).
+**AC11a — observable examples** (independent cases; keys below are fresh unless replaying):
+
+| Given / action | Expected |
+|---|---|
+| Empty slot, `orders_sqlite` not admitted: prepare A, approve Source Approval, then approve its data grant. | A creates D: `pending_source_approval` → `pending_data_grant` → `data_granted`. Between approvals the caller still cannot profile. D stays active, nothing is served by either approval. In separate runs, reject A at either pending stage: D is released, no caller grant. |
+| A's idle granted D contains unadmitted `events_s3`. B asks for the same declaration; C asks while B is pending. | B joins the same proposal and candidate without a write; C refuses stale despite A's grant. Reject B at either stage: A's D remains usable for refresh/validate/admit. From idle D, a request for a new, non-admitted `private` declaration refuses stale. |
+| `orders_sqlite` is admitted with current Source Approval, slot empty. Reuse it, grant the caller access, then prepare contribution K against that grant. While K awaits submission, request `orders_sqlite` with another key. | Reuse returned `pending_data_grant` on the admitted revision; K **created** a distinct D. The fresh request refuses stale, **not** `pending_data_grant`. Browser-reject K: no active D, admission unchanged. A fresh request now reuses the admission again, without opening a draft. Same creator-release rule if K is rejected at publication review. |
+| Instead, prepare K against A's still-active granted D. Request changes; then reject K. Alternatively approve submission, then approve publication. | K **joins** D. After request-changes or submission approval a fresh prepare is still stale. Reject leaves D active and publishes nothing; on the approval path only successful publication serves the reviewed revision and retires D. |
+| On A's idle granted D, send two overlapping MCP prepares for its same non-admitted `events_s3` declaration, keys `events-B` and `events-C`. Make no browser decision between them. | Exactly one `pending_source_approval` on D, one stale refusal, either winner. One reviewable task from the pair; candidate unchanged. A retry of the winning key with identical input returns that task, not a second holder. |
+| Operator discards generation 7, then opens 8; or restores a backup with 7 active and a browser action outstanding. | Discard keeps `ariadne/discarded/7`; a reject bound to 7 cannot discard 8. On restore, no active draft, old action unusable; the next creation uses a new generation. |
+
+B1 retains `query_records` and `define_metric`. B2 removes both workspace dispatches in the same candidate that removes the operations and reports `operation_removed`; B adds no workspace `sql`. Keep the workspace journey checks for role separation, private originals and curated scope (shared ADR-0028).
 
 ### 3.8 Removals in B1, and the guarantees they keep
 
