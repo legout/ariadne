@@ -26,6 +26,8 @@ Evidence: [NVIDIA auto-ontology review](../research/2026-11-18-auto-ontology-com
 
 ## 1. Goal and target journey
 
+> **Reconciled by [spec 0040](2026-11-22-0040-one-cli-simple-governance.md) (B1):** the journey's `approve` now first grants the source (no release activation), then `preview`, then approves the calculation. History below is unchanged.
+
 From an empty directory to a governed answer, with no revision IDs, digests,
 namespaces or hand-written selector files ([0040](2026-11-22-0040-one-cli-simple-governance.md)
 owns approval; [0041](2026-11-24-0041-automatic-authoring.md) owns drafting):
@@ -121,6 +123,8 @@ admission) must keep at least one test that proves real behavior.
   and Answer Examples. Repository fixtures and examples are migrated by the same command.
 
 ### B — One CLI and simplified governance
+
+> **Superseded by [spec 0040](2026-11-22-0040-one-cli-simple-governance.md) (B1/B2):** approval, draft, preview and CLI surface follow 0040; the tier K paragraph moved to the B3 spec ([0042](2026-11-24-0042-knowledge-changes-review-revert.md)). Content stays as history.
 - One executable: `ariadne init | add | draft | preview | diff | approve | reject |
   review | revert | status | query | metrics | search | serve | import | skill | migrate`.
   All other `ariadne-*` executables are removed.

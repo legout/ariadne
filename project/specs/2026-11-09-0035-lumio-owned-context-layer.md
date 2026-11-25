@@ -52,6 +52,8 @@ A structurally valid draft can explicitly record unknown business meaning, hypot
 
 ### Physical data source, including an Iceberg table on S3
 
+> **Separate source-approval step superseded by [spec 0040](2026-11-22-0040-one-cli-simple-governance.md) (B1):** only that step; exact effective-identity binding and retention guarantees stand. The source grant is now part of the single `ariadne approve` ([ADR-0029](../../products/ariadne/project/adr/0029-single-approval-source-first-gate.md)).
+
 1. Identify the requested physical source and its effective storage identity. Obtain Source Approval through the existing operator boundary before profiling or reading data.
 2. Ariadne measures the selected source using existing supported access paths. No new Iceberg connector or implicit broad source scan is part of this change.
 3. Ariadne supplies Dataset Overview/Table content and identified schema/profile evidence to Lumio's page operations. Preserve observed scope, time, source bindings and evidence limitations. Reuse the existing native Table/Dataset profiles rather than copying classic bundle pages.

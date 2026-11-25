@@ -59,7 +59,7 @@ An observed difference between a supported contract expectation and its bound so
 _Avoid_: rewritten contract, unknown state, failed access
 
 **Governed Metric**:
-A named measure with one canonical Semantic Layer definition admitted by human review through the applicable Promotion or Git Review Admission route. Never computed by ad-hoc agent SQL.
+A named measure with one canonical Semantic Layer definition admitted by human review through Approval (Git Review Admission). Never computed by ad-hoc agent SQL.
 _Avoid_: KPI, ad-hoc metric
 
 **Freshness**:
@@ -113,31 +113,43 @@ Optional model suggestions about how to describe data or define metrics. It uses
 _Avoid_: automatic approval
 
 **Authoring Proposal**:
-A proposed change to the project's authored artifacts, including source declarations, Seed Notes, Semantic Layer, Context Layer, Data Contracts, Contract Bindings and explicitly saved Answer Examples, based on an identified artifact revision and awaiting human review. It is distinct from served state and from the legacy ad-hoc Proposal.
-_Avoid_: approved change, served branch
+The internal Git-backed machinery under a Draft: one proposal per Draft Generation, never named by users or agents. It carries source declarations, Seed Notes, Semantic Layer, Context Layer, Data Contracts, Contract Bindings and explicitly saved Answer Examples, based on an identified artifact revision, and awaits Approval. It is distinct from served state.
+_Avoid_: approved change, served branch, proposal ID
 
 **Candidate Revision**:
-The exact effective artifact state of an Authoring Proposal, including inherited artifacts and explicit edits, evaluated and reviewed as a unit. It is not an admitted revision merely because validation succeeds.
+The exact effective artifact state of a Draft, including inherited artifacts and explicit edits, evaluated and approved as a unit. It is internal to the Draft and is not an admitted revision merely because validation succeeds.
 _Avoid_: admitted revision, validation label
+
+**Draft**:
+The project's one active, uncommitted-to-served set of authored changes, tracked in `.ariadne/draft.json`. Every mutating command, MCP authoring tool and `migrate` edits it; a stale Draft (the served revision advanced) must be rebased before validate, preview or approve.
+_Avoid_: proposal, branch, staging
+
+**Draft Generation**:
+The counter of the Draft slot's state. Every mutation and finalizing step states the generation and candidate revision it read; a mismatch refuses and writes nothing. Approval consumes the generation.
+_Avoid_: revision, version
+
+**Source Grant**:
+The recorded approval of one exact source identity, kept in `.ariadne/source_grants.json` with attribution, time and approved digest. It authorizes reads for authoring only (profiling, inspection, preview), never a release activation or a change to served calculations.
+_Avoid_: source declaration, release activation
+
+**Calculation Approval**:
+The approval of any Draft that is not a Source Approval (models, joins, Policies, bindings, contracts, Computation pages). It validates over granted sources, shows the summary, and on "yes" activates a release atomically.
+_Avoid_: promotion, admission command
+
+**Preview Query**:
+A governed-compiler run of a metric from the active Draft over granted source identities. It returns `governed: false` and the draft revision, is never stored as an Answer Example, and does not repoint a served calculation.
+_Avoid_: ad-hoc metric, governed query
 
 **Storage Profile**:
 A named, operator-configured access description shared by data sources using the same storage service and credential binding. It is distinct from a source declaration, a business dataset and Source Approval.
 _Avoid_: data source, semantic dataset, source approval
 
 **Source Approval**:
-The operator's explicit permission to open identified source locations, including the effective storage endpoint where applicable. Artifact review, a source declaration and technical validation do not grant this permission.
-_Avoid_: source discovery, artifact admission
+The first approval of a source identity: the operator's explicit permission, given through `ariadne approve`, to open an exact effective location (including the storage endpoint where applicable). It records a Source Grant and does not activate a release. Artifact review, a source declaration and technical validation do not grant this permission.
+_Avoid_: source discovery, artifact admission, release activation
 
-**Staging**:
-The legacy holding area for authored artifacts and Answer Examples awaiting their former review routes. It is a historical persistence concept, not a Git-backed Authoring Proposal or Candidate Revision.
-_Avoid_: drafts, sandbox
-
-**Promotion**:
-The legacy local human act of admitting a staged artifact into its reviewed destination. It is distinct from Git Review Admission; discoverability was never admission.
-_Avoid_: publish, deploy
-
-**Git Review Admission**:
-The route that serves a human-reviewed Git artifact revision only after validation of the exact revision, including local Git-backed authoring and the production review route. A commit or validator label alone does not mean review; this route is distinct from staged-artifact Promotion.
+**Git Review Admission** (now "Approval"):
+The route that serves a human-approved Git artifact revision only after validation of the exact draft generation and revision, through `ariadne approve` on an interactive TTY. A commit or validator label alone does not mean approval.
 _Avoid_: automatic promotion, validated commit
 
 **Verbatim Ingestion**:
@@ -199,10 +211,6 @@ _Avoid_: admitted ad-hoc definition, source approval
 **Ad-hoc Record Query**:
 A bounded selection of records from a known project dataset, validated and executed read-only but not admitted as a governed definition. It is not a metric and produces no Proposal.
 _Avoid_: ad-hoc metric, governed detail query, raw SQL
-
-**Proposal**:
-A legacy persisted Ad-hoc Metric definition awaiting its former human review route. An ephemeral Ad-hoc Metric is not a Proposal; an explicitly retained definition is an Authoring Proposal.
-_Avoid_: draft, candidate file
 
 **Answer Example**:
 An explicitly submitted knowledge page recording a question, intended meaning, ad-hoc SQL method (or a legacy method) and bounded historical answer in the project's Lumio Knowledge Base. Review approves it as a reusable reference, not a Policy, governed definition or answer cache.

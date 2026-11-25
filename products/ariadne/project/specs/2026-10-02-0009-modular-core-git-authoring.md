@@ -60,6 +60,8 @@ Unchanged artifacts are inherited from the base revision. A model-only or page-o
 
 ## 4. Git proposal lifecycle
 
+> **CLI parts superseded by [spec 0040](../../../../project/specs/2026-11-22-0040-one-cli-simple-governance.md) (B1):** one active draft per project replaces multiple concurrent proposals and proposal IDs in the CLI.
+
 Git is used in the **data project**, which need not be Ariadne's code repository. A proposal records its identity, branch, base artifact commit and current candidate commit. Each active writer owns a separate worktree. Multiple proposals may coexist; two writers must not mutate one proposal/worktree simultaneously.
 
 Artifact edits require the expected candidate revision. A stale revision or conflicting writer is refused without overwriting the candidate. A successful edit records the new candidate revision; repeating an identical edit against its still-current revision must not create another distinct candidate. Uncommitted changes are visibly drafts, not validated or admitted state.
@@ -73,6 +75,8 @@ Review exposes the exact revision, diff, effective content, validation scope and
 Validation failures leave a recoverable proposal with errors, not a served revision. The existing bounded authoring repair policy is not silently reset by creating another commit. Missing Git, conflicts, incomplete transitions or inconsistent proposal/revision metadata produce actionable errors; do not fall back to a mutable served checkout, discard edits or silently reset a proposal. Ordinary Git history is not proof of human review.
 
 ## 5. Source approval and artifact admission
+
+> **CLI parts superseded by [spec 0040](../../../../project/specs/2026-11-22-0040-one-cli-simple-governance.md) (B1):** one `ariadne approve` with a source-first gate replaces the separate source-approval and admission commands ([ADR-0029](../adr/0029-single-approval-source-first-gate.md)).
 
 Source approval and artifact admission are distinct decisions. A proposed or committed `ariadne.yaml` entry never grants permission to connect to a new location. Worktree-relative paths must resolve to the operator-approved source identity; changing a checkout must not silently retarget that identity. Credentials, uploaded evidence, database files and operational approval records are not committed merely because a proposal is created.
 
