@@ -209,15 +209,52 @@ def test_an_mcp_predicate_filter_changes_the_aggregate(served):
     assert out["rows"] == [{"events::events.event_count": 1}]  # unfiltered SUM(id) is 6
 
 
-def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
+def _set_mcp_cap(served, cap):
     registry = served / "ariadne.yaml"
     doc = yaml.safe_load(registry.read_text(encoding="utf-8"))
-    doc["query"] = {"mcp_response_bytes": 700}
+    doc["query"] = {"mcp_response_bytes": cap}
     registry.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+
+def _preview_wire(project, **arguments):
+    """The real CallToolResult of one preview call and its wire bytes."""
+    import asyncio
+
+    from ariadne.serve import _wire_bytes
+    from tests.mcp_inproc import build
+
+    result = asyncio.run(
+        build(project).call_tool("preview", {"metric": "event_count", **arguments})
+    )
+    return result, _wire_bytes(result)
+
+
+def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
+    from ariadne import query_results
+    from ariadne.serve import _refusal_envelope_bytes
+
+    cap = max(_refusal_envelope_bytes(f) for f in query_results.refusal_forms())  # smallest usable
+    _set_mcp_cap(served, cap)
+    many = [(i, f"label-{i:04d}") for i in range(1, 400)]  # one group each: > cap bytes
+    write_parquet(served / "data" / "events.parquet", many, ["id", "label"])
+    _edit(served, EDITED)
+    _validate(served)
+    result, size = _preview_wire(served, dimensions=["label"])
+    assert result.is_error and size <= cap, (size, cap)
+    assert result.structured_content["error"]["exhausted_bound"] == {"mcp_response_bytes": cap}
+    # a planner error echoing a long agent-supplied op is bounded by the same cap
+    bad = [{"field": "label", "op": "x" * 5000, "value": "a"}]
+    result, size = _preview_wire(served, filters=bad)
+    assert result.is_error and size <= cap, (size, cap)
+    assert result.structured_content["error"]["code"] == "result_byte_limit"
+
+
+def test_an_mcp_preview_with_an_unrepresentable_cap_is_a_configuration_error(served):
+    _set_mcp_cap(served, 700)  # below the largest refusal form on this transport
     _edit(served, EDITED)
     _validate(served)
     is_error, out = _mcp_preview(served, dimensions=["label"])
-    assert is_error and out["error"]["exhausted_bound"] == {"mcp_response_bytes": 700}, out
+    assert is_error and "cannot represent every refusal form" in out, out
 
 
 def test_a_budget_spent_after_the_fetch_refuses(served, capsys, monkeypatch):

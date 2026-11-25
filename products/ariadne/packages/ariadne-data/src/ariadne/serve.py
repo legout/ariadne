@@ -1026,6 +1026,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
             """
             from ariadne import preview as preview_module
 
+            _refuse_unrepresentable_mcp_ceiling(authoring_api.project)
+            budget = query_results.load_host_query_limits(authoring_api.project)[
+                "mcp_response_bytes"
+            ]
             try:
                 return preview_module.preview(
                     authoring_api.project,
@@ -1036,6 +1040,11 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                 )
             except QueryResultError as exc:  # isError + refusal, as get_metric
                 return _refusal(exc)
+            except Exception as exc:  # planner errors: fitting keeps the SDK path
+                bounded = _bounded_tool_error("preview", exc, budget)
+                if bounded is not None:
+                    return bounded
+                raise
 
         @app.tool()
         @_tool_errors
