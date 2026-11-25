@@ -1,6 +1,7 @@
 """Git-backed Answer Example input, provenance and size boundaries (spec 0027)."""
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -96,12 +97,16 @@ def _record_revision(project, proposal):
     return proposals._load_record(project, proposal)["candidate_revision"]
 
 
-def _example_release(root):
+def _build_example_release(root):
     """One admitted revision-4 integrated release carrying the retail metric,
     both Policies, the finalize computations category and the answer-examples
     category/entity type — the shared native Example baseline (extracted
     owned-fixture helper; expectations stay independently authored constants)."""
     import yaml
+    from ariadne import admission
+    from ariadne.authoring import AuthoringProject
+    from tests.test_git_authoring import approved, run_git, worktree_of
+
     from integration.tests.lumio_metric_mvp import (
         CONTROL,
         NAMESPACE,
@@ -111,10 +116,6 @@ def _example_release(root):
         preview,
         write_page,
     )
-
-    from ariadne import admission
-    from ariadne.authoring import AuthoringProject
-    from tests.test_git_authoring import approved, run_git, worktree_of
 
     project = content_project(root)
     # The revision-4 integrated selector validates the WHOLE candidate under
@@ -180,7 +181,26 @@ def _example_release(root):
     return project, api, review
 
 
-def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path, capsys):
+@pytest.fixture(scope="module")
+def example_release(tmp_path_factory):
+    """Build the admitted release once per module; each case gets its own
+    copytree taken before any mutation (never a shared mutable project)."""
+    root = tmp_path_factory.mktemp("example_release_template") / "project"
+    project, _api, review = _build_example_release(root)
+    rel = project.relative_to(root)
+
+    def make(dest):
+        from ariadne.authoring import AuthoringProject
+
+        shutil.copytree(root, dest, symlinks=True)
+        return dest / rel, AuthoringProject(dest / rel), review
+
+    return make
+
+
+def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(
+    example_release, tmp_path, capsys
+):
     """The exact submitted SQL is opt-in historical evidence, not executable input
 
     spec0035 C4 native journey: one revision-4 integrated release admits the
@@ -193,11 +213,11 @@ def test_exact_sql_provenance_is_git_candidate_only_and_never_executed(tmp_path,
     import json
 
     import yaml
-    from integration.tests.lumio_metric_mvp import activate, preview
-
     from tests.test_git_authoring import worktree_of
 
-    project, api, review = _example_release(tmp_path / "project")
+    from integration.tests.lumio_metric_mvp import activate, preview
+
+    project, api, review = _build_example_release(tmp_path / "project")
 
     db_path = project / "data" / "orders.duckdb"
     db_before = db_path.read_bytes()
@@ -327,7 +347,7 @@ def test_invalid_citations_and_method_or_sql_provenance_refuse_without_refs(
     assert _refs(project) == refs_before
 
 
-def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys):
+def test_candidate_sql_provenance_absence_and_malformed_refusal(example_release, tmp_path, capsys):
     """Spec 0023 §§3–4 on the NATIVE Example journey: a record WITHOUT
     sql_provenance is the honest legacy form (search discloses sql: null,
     never backfilled or excluded); PRESENT-but-malformed provenance is invalid
@@ -335,7 +355,7 @@ def test_candidate_sql_provenance_absence_and_malformed_refusal(tmp_path, capsys
     as native answer_example pages through the public page batch."""
     from tests.test_git_authoring import approved
 
-    project, api, _review = _example_release(tmp_path / "project")
+    project, api, _review = example_release(tmp_path / "project")
     started = api.start_proposal()
     approved(api, project, started)
     capsys.readouterr()
@@ -428,7 +448,9 @@ def test_define_metric_examples_retain_only_the_actual_operation_arguments(proje
     assert method["arguments"]["source"] == "demo.main.orders"
 
 
-def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, capsys):
+def test_native_example_save_search_never_opens_sources(
+    example_release, tmp_path, monkeypatch, capsys
+):
     """F1: an actual CLI save, CLI admitted/candidate search and the MCP save
     tool never construct the source builder — a boundary sentinel on
     ``DuckDBExecution`` trips on any construction (the sentinel is boundary
@@ -441,7 +463,7 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     from ariadne import answer_examples, execution, serve
     from ariadne.query import QueryRuntime
 
-    project, api, review = _example_release(tmp_path / "project")
+    project, api, review = _build_example_release(tmp_path / "project")
     db_path = project / "data" / "orders.duckdb"
     db_before = db_path.read_bytes()
 
@@ -508,7 +530,9 @@ def test_native_example_save_search_never_opens_sources(tmp_path, monkeypatch, c
     assert validated["ok"] is True, validated["errors"]
 
 
-def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, capsys):
+def test_native_example_repeated_question_creates_distinct_drafts(
+    example_release, tmp_path, capsys
+):
     """F2: the same question saved into the same candidate revision and again
     after admission creates distinct drafts — the generated identity suffixes
     the Entity id and the canonical title, the writer's identity guard holds,
@@ -517,11 +541,11 @@ def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, caps
     import json
 
     import yaml
-    from integration.tests.lumio_metric_mvp import activate, preview
-
     from tests.test_git_authoring import worktree_of
 
-    project, api, review = _example_release(tmp_path / "project")
+    from integration.tests.lumio_metric_mvp import activate, preview
+
+    project, api, review = _build_example_release(tmp_path / "project")
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
 
@@ -567,7 +591,7 @@ def test_native_example_repeated_question_creates_distinct_drafts(tmp_path, caps
     assert title3 not in (title1, title2)
 
 
-def test_native_example_candidate_preview_uses_persisted_identity(tmp_path):
+def test_native_example_candidate_preview_uses_persisted_identity(example_release, tmp_path):
     """F3: the explicit candidate preview selects parsed producer kinds
     through the public SDK capture — a valid answer_example page under ANOTHER
     declared category, whose persisted Entity id differs from its filename
@@ -579,7 +603,7 @@ def test_native_example_candidate_preview_uses_persisted_identity(tmp_path):
     from ariadne import answer_examples, proposals
     from tests.test_git_authoring import approved
 
-    project, api, review = _example_release(tmp_path / "project")
+    project, api, review = example_release(tmp_path / "project")
     result_literal = {
         "metric": "revenue",
         "governed": True,
@@ -657,7 +681,7 @@ def test_native_example_candidate_preview_uses_persisted_identity(tmp_path):
     assert "rows" not in hit
 
 
-def test_native_example_edits_keep_core_validation(tmp_path):
+def test_native_example_edits_keep_core_validation(example_release, tmp_path):
     """F4: generic native page edits cannot smuggle invalid Example records
     past candidate validation — a record missing its required structured
     argument, an oversize encoded page, and a changed citation with a forged
@@ -669,12 +693,11 @@ def test_native_example_edits_keep_core_validation(tmp_path):
 
     import pytest
     import yaml
-    from lumio_wiki.git_authoring import GitAuthoringError
-
     from ariadne import proposals
+    from lumio_wiki.git_authoring import GitAuthoringError
     from tests.test_git_authoring import approved
 
-    project, api, review = _example_release(tmp_path / "project")
+    project, api, review = example_release(tmp_path / "project")
     result_literal = {
         "metric": "revenue",
         "governed": True,
@@ -796,11 +819,11 @@ def test_native_example_history_deletion_refuses(tmp_path, capsys):
     never a filename guess, never a floating HEAD)."""
     import json
 
-    from integration.tests.lumio_metric_mvp import activate, preview, reconcile_knowledge
-
     from tests.test_git_authoring import approved, worktree_of
 
-    project, api, review = _example_release(tmp_path / "project")
+    from integration.tests.lumio_metric_mvp import activate, preview, reconcile_knowledge
+
+    project, api, review = _build_example_release(tmp_path / "project")
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
     assert mcp_save(project, submission) == 0
@@ -836,7 +859,9 @@ def test_native_example_history_deletion_refuses(tmp_path, capsys):
     ), validated["errors"]
 
 
-def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, capsys):
+def test_native_example_body_excerpt_keeps_presence_and_byte_bound(
+    example_release, tmp_path, capsys
+):
     """F4 body (owner completion): the fenced JSON excerpt in the page BODY is
     required and stays within the 8 KiB UTF-8 bound — independent of the
     caption line, of the structured native.answer.excerpt and of the 64 KiB
@@ -848,7 +873,7 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
     from ariadne import proposals
     from tests.test_git_authoring import approved, worktree_of
 
-    project, api, review = _example_release(tmp_path / "project")
+    project, api, review = _build_example_release(tmp_path / "project")
     submission = _submission({**_SMALL_RESULT, "sql": _EXACT_SQL})
     submission["sources"] = ["metrics/retail-revenue.md", "policies/retail-return-policy.md"]
 
@@ -913,14 +938,14 @@ def test_native_example_body_excerpt_keeps_presence_and_byte_bound(tmp_path, cap
 
 
 def test_a_save_prepared_against_one_base_refuses_when_the_first_write_base_moves(
-    tmp_path, monkeypatch, capsys
+    example_release, tmp_path, monkeypatch, capsys
 ):
     """Finding 4 (second pass): with no active draft the save pins the first-write base it
     checked citations against; if another approval moves it before the write, the save
     refuses instead of writing into the newer base."""
     from ariadne import answer_examples, draft
 
-    root, _api, _review = _example_release(tmp_path / "project")
+    root, _api, _review = example_release(tmp_path / "project")
     assert draft.status(root) is None
     real = answer_examples._verify_citation
     moved = {"done": False}
