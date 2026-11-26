@@ -289,7 +289,7 @@ def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
     assert "    + extra: parquet" in shown and "extra2.parquet" in shown
 
 
-def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_path):
+def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_path, capsys):
     """#189: before any served release, A -> B -> A -> B. The revert and the re-proposal append
     no grant, yet the prompt's old side is the draft's base and each receipt names what it
     approved: re-approving B gives B's first receipt, and differs from the revert to A."""
@@ -303,6 +303,13 @@ def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_pa
 
     first_b, _ = to("data/extra2.parquet")
     back_to_a, _ = to("data/extra.parquet")
+    from ariadne.cli import main as cli
+
+    assert cli(["profile", "--json", "--project", str(project)]) == 0
+    profile = json.loads(capsys.readouterr().out)
+    extra = next(source for source in profile["sources"] if source["name"] == "extra")
+    (table,) = extra["tables"].values()
+    assert table["row_count"] == 2
     again_b, shown = to("data/extra2.parquet")
     old, new = (line for line in shown.splitlines() if line.startswith(("    - ", "    + ")))
     assert old.startswith("    - extra: parquet ") and "/data/extra.parquet " in old
