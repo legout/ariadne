@@ -302,6 +302,11 @@ def main():
         diff = cli("diff")
         assert diff["approval_kind"] == "calculation" and diff["validation"] == "validated"
 
+        # pre-approval draft preview (spec 0040 §3.6): same numbers, not yet governed
+        preview = cli("preview", "event_count")
+        assert preview["rows"] == [{"event_count": 3}]
+        assert preview["governed"] is False
+
         # no terminal, no approval: stdin/stdout are pipes here
         refused = subprocess.run(
             [ariadne_bin, "approve", "--project", str(project)],
