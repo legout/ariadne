@@ -1443,7 +1443,17 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
                 "claimed effective source digest — a mutated binding never serves; "
                 "this needs human resolution and re-admission, never a fallback"
             )
-        current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
+        try:
+            current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
+        except ValueError as exc:
+            # spec 0040 §3.4: the served binding no longer resolves (e.g. a retired
+            # variable); this release is never read from a newer granted binding
+            raise ValueError(
+                f"{exc} — the served release cannot resolve its admitted binding and is "
+                "never read from another one. If you granted a changed source with "
+                "'ariadne approve', a calculation approval is still pending: run "
+                "'ariadne approve' again on a new draft to serve the current binding"
+            ) from None
         if current != bindings:
             changed = sorted(
                 {

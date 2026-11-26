@@ -151,9 +151,7 @@ def test_source_change_stages_only_events_and_refuses_ungranted_preview(
     target.parent.mkdir(parents=True)
     write_parquet(target, [(9, "z")], ["id", "label"])
     before = yaml.safe_load((served / "ariadne.yaml").read_text())
-    edit = {
-        "kind": "source_change", "name": "events", "changes": {"path": "data/b/events.parquet"}
-    }
+    edit = {"kind": "source_change", "name": "events", "changes": {"path": "data/b/events.parquet"}}
     if surface == "cli":
         code, out, err = _source_change_cli(served, tmp_path, capsys, edit["changes"])
         assert code == 0, out + err
@@ -162,9 +160,7 @@ def test_source_change_stages_only_events_and_refuses_ungranted_preview(
         assert not is_error, out
     after = _candidate_registry(served)
     expected = yaml.safe_load(yaml.safe_dump(before))
-    next(s for s in expected["sources"] if s["name"] == "events")["path"] = (
-        "data/b/events.parquet"
-    )
+    next(s for s in expected["sources"] if s["name"] == "events")["path"] = "data/b/events.parquet"
     assert after == expected
     opened = []
     monkeypatch.setattr("ariadne.preview.DuckDBExecution", lambda *a, **k: opened.append(a))
@@ -177,17 +173,34 @@ def test_source_change_stages_only_events_and_refuses_ungranted_preview(
 
 
 @pytest.mark.parametrize("active", [False, True])
-@pytest.mark.parametrize(("name", "changes", "reason"), [
-    ("missing", {"path": "data/b/events.parquet"}, r"(?i)(unknown|no such|not found)"),
-    ("events", {}, r"(?i)(empty|no change)"),
-    ("events", {"path": "data/events.parquet"}, r"(?i)(unchanged|no change)"),
-    *[("events", {key: value}, rf"(?i)({key}).*(disallow|unknown|invalid|not allowed)"
-       rf"|(?i:disallow|unknown|invalid|not allowed).*{key}")
-      for key, value in [("type", "parquet"), ("name", "other"), ("approved", True),
-                         ("table", "other"), ("read_only", False)]],
-    ("events", {"path": "s3://user:secret@example.com/events.parquet"},
-     r"(?i)(credential|secret|password|userinfo)"),
-])
+@pytest.mark.parametrize(
+    ("name", "changes", "reason"),
+    [
+        ("missing", {"path": "data/b/events.parquet"}, r"(?i)(unknown|no such|not found)"),
+        ("events", {}, r"(?i)(empty|no change)"),
+        ("events", {"path": "data/events.parquet"}, r"(?i)(unchanged|no change)"),
+        *[
+            (
+                "events",
+                {key: value},
+                rf"(?i)({key}).*(disallow|unknown|invalid|not allowed)"
+                rf"|(?i:disallow|unknown|invalid|not allowed).*{key}",
+            )
+            for key, value in [
+                ("type", "parquet"),
+                ("name", "other"),
+                ("approved", True),
+                ("table", "other"),
+                ("read_only", False),
+            ]
+        ],
+        (
+            "events",
+            {"path": "s3://user:secret@example.com/events.parquet"},
+            r"(?i)(credential|secret|password|userinfo)",
+        ),
+    ],
+)
 def test_source_change_refusals_leave_state_untouched(
     served, tmp_path, capsys, name, changes, reason, active
 ):
@@ -255,9 +268,17 @@ def test_source_change_duplicate_add_still_refuses(served, tmp_path, capsys, sur
         argv = ["add", "data/b/events.parquet", "--name", "events", *base]
     else:
         edit = tmp_path / "add.json"
-        edit.write_text(json.dumps({"kind": "sources", "storages": {}, "entries": [
-            {"name": "events", "type": "parquet", "path": "data/b/events.parquet"}
-        ]}))
+        edit.write_text(
+            json.dumps(
+                {
+                    "kind": "sources",
+                    "storages": {},
+                    "entries": [
+                        {"name": "events", "type": "parquet", "path": "data/b/events.parquet"}
+                    ],
+                }
+            )
+        )
         argv = ["draft", "edit", str(edit), *base]
     code, out, err = _run(argv, capsys)
     assert code == 1 and not out
@@ -278,9 +299,16 @@ def test_source_change_losing_a_race_refuses_stale(served, tmp_path, capsys, mon
         view = real_status(project)
         if not winner:
             winner.append(None)
-            error, result = call(project, "authoring_edit_proposal", {"edit": {
-                "kind": "seed_notes", "content": "# winner\n",
-            }})
+            error, result = call(
+                project,
+                "authoring_edit_proposal",
+                {
+                    "edit": {
+                        "kind": "seed_notes",
+                        "content": "# winner\n",
+                    }
+                },
+            )
             assert not error, result
             winner[0] = real_status(project)
         return view

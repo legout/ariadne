@@ -614,17 +614,28 @@ def test_source_change_postgres_variable_requires_calculation_approval(
     _run(project, Tty())
     record = admission.load_current(project)
     assert record is not None
-    binding = {"host": ["db-a.internal"], "hostaddr": [], "port": ["5432"],
-               "dbname": "app", "user": "owner"}
+    binding = {
+        "host": ["db-a.internal"],
+        "hostaddr": [],
+        "port": ["5432"],
+        "dbname": "app",
+        "user": "owner",
+    }
     declared = record.get("source_declaration_digest") or record["source_digest"]
-    shaped = {**record, "sources": [*record["sources"], entry],
-              "storage_bindings": {"postgres:pg": binding}}
+    shaped = {
+        **record,
+        "sources": [*record["sources"], entry],
+        "storage_bindings": {"postgres:pg": binding},
+    }
     shaped["source_digest"] = authoring_sources.approval_digest(declared, {"postgres:pg": binding})
     (project / CURRENT).write_text(json.dumps(shaped))
     served_before = (project / CURRENT).read_bytes()
     change = tmp_path / "change.json"
-    change.write_text(json.dumps({"kind": "source_change", "name": "pg",
-                                  "changes": {"connection_env": "EVENTS_B"}}))
+    change.write_text(
+        json.dumps(
+            {"kind": "source_change", "name": "pg", "changes": {"connection_env": "EVENTS_B"}}
+        )
+    )
     capsys.readouterr()
     code = cli(["draft", "edit", str(change), "--json", "--project", str(project)])
     captured = capsys.readouterr()
