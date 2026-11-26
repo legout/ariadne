@@ -1265,7 +1265,7 @@ def test_local_cli_serves_the_context_only_project(tmp_path, capsys):
         assert MISSING_CATALOG_MARK in error["error"]["message"], argv
 
     # the multi-fact path (a filtered `query`) carries the stable planner code
-    assert cli(["query", "order_number_count", "--filter", "x=1", "--project", str(project)]) == 1
+    assert cli(["query", "order_number_count", "--filter", "x = 1", "--project", str(project)]) == 1
     error = json.loads(capsys.readouterr().err)
     assert MISSING_CATALOG_MARK in error["error"]["message"]
     assert error["error"]["code"] == "missing_catalog"
