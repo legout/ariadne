@@ -370,7 +370,11 @@ def _query(args: argparse.Namespace) -> dict:
         deadline_budget=DeadlineBudget(limits["execution_seconds"]),
         discovery=discovery if discovery._managed is not None else None,
     )
-    if filters:
+    try:  # an unresolvable name falls through to get_metric's own refusal
+        cross_fact = len(runtime._metric_datasets(runtime._resolve(args.metric))) > 1
+    except ValueError:
+        cross_fact = False
+    if filters or cross_fact:  # the planner is chosen by what the metric needs
         request = {"metrics": [args.metric], "dimensions": args.by, "filters": filters}
         return asyncio.run(runtime.query_metrics(request))
     return asyncio.run(runtime.get_metric(args.metric, args.by or None))

@@ -66,8 +66,10 @@ def preview(
         name = session._resolve(metric)
         request = {"metrics": [name], "dimensions": dimensions or [], "filters": filters or []}
 
+        planned = bool(filters) or len(session._metric_datasets(name)) > 1
+
         def compile_(con=None) -> str:
-            if filters:
+            if planned:
                 return plan_query(load_graph(tree / "semantic_layer"), request, con).sql
             spec, output = session._metric_slice(name)
             return render(spec, dimensions or [], {}, metric=output)
@@ -78,7 +80,7 @@ def preview(
         execution = DuckDBExecution(registry, budget=budget, locked=True)
         try:
             with budget.guard(execution.con):
-                if filters:
+                if planned:
                     sql = compile_(execution.con)  # per-request live audits
                     authoring._authorize_statement(name, sql, approved)
                 else:
