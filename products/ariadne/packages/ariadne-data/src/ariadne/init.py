@@ -65,8 +65,8 @@ ENV_EXAMPLE = """\
 MCP_JSON = {
     "mcpServers": {
         "ariadne": {
-            "command": "ariadne-serve",
-            "args": ["--project", "."],
+            "command": "ariadne",
+            "args": ["serve", "--project", "."],
             "lifecycle": "lazy",
             "requestTimeoutMs": 120000,
         }

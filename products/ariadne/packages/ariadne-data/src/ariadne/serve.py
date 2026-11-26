@@ -31,7 +31,7 @@ The three registrations:
   ``authoring_refresh_schema``, ``authoring_inspect_mapping``,
   ``authoring_resolve_term``, ``preview`` and ``draft_status``. No query operation; the
   registration starts without a governed catalog (AC5).
-- **combined** (the ``ariadne-serve`` default) — their union.
+- **combined** (the ``ariadne serve`` default) — their union.
 
 No MCP tool approves, rejects, discards, grants a source or confirms a mapping;
 validation, approval and discard are human CLI commands (``ariadne validate`` /
