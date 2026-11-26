@@ -95,11 +95,16 @@ _SIGNED_URL_KEYS = frozenset(
 )
 
 
-def _has_signed_query(value: str) -> bool:
-    query = urlsplit(value).query
-    return any(
-        key.lower() in _SIGNED_URL_KEYS for key, _ in parse_qsl(query, keep_blank_values=True)
-    )
+def _has_signed_query(value: str, depth: int = 3) -> bool:
+    # Also looks into URL-valued query parameters (redirect/download links).
+    for key, val in parse_qsl(urlsplit(value).query, keep_blank_values=True):
+        if key.lower() in _SIGNED_URL_KEYS:
+            return True
+        nested = _URI_SCHEME_RE.match(val) or "?" in val
+        if depth and nested and _has_signed_query(val, depth - 1):
+            return True
+    return False
+
 
 SOURCE_TYPES = (
     "sqlite",

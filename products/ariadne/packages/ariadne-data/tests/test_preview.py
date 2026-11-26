@@ -211,6 +211,8 @@ def test_source_change_stages_only_events_and_refuses_ungranted_preview(
                 "https://example.com/events.parquet?access_token=SECRETSIG",
                 "https://example.com/events.parquet?token=SECRETSIG",
                 "https://example.com/events.parquet?signature=SECRETSIG",
+                "https://cdn.example/dl?file=https%3A%2F%2Fb.blob.core.windows.net%2Fc"
+                "%2Fx.parquet%3Fsv%3D2022-11-02%26sig%3DSECRETSIG",
             ]
         ],
         ("sqlite", {"path": "data/other.db", "storage": None}, r"(?i)storage.*not allowed"),
