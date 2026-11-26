@@ -894,9 +894,12 @@ def retire_stale(project: str | Path, *, moved_only: bool = False) -> dict:
     record names the old project path, so every slot read refuses). Same retired shape
     as ``consume``: the generation is kept, so the next draft is generation+1 and a
     retired draft is never resurrected. Idempotent: no slot or an already retired slot
-    is a no-op. ``moved_only`` refuses an active slot whose record belongs to this project
-    (nothing stale; plain discard applies). Returns the slot's state."""
+    is a no-op. ``moved_only`` retires only on positive evidence of a move (a readable record with a
+    valid identity naming another absolute project path) and refuses a symlinked
+    state dir. Returns the slot's state."""
     project = Path(project).resolve()
+    if moved_only:  # a linked .ariadne must never redirect this write to another project's slot
+        proposals._refuse_symlinked_component(project, proposals.ARIADNE_STATE_DIR)
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
         # an interrupted source approval resolves first (as recover does, minus the slot
         # read), or its rollback would later write the old active slot back
@@ -919,14 +922,23 @@ def retire_stale(project: str | Path, *, moved_only: bool = False) -> dict:
             if moved_only:
                 record = proposals.PROPOSALS_REL / f"{slot.get('proposal')}.json"
                 try:
-                    text = (project / record).read_text(encoding="utf-8")
-                    owner = json.loads(text).get("project")
+                    data = json.loads((project / record).read_text(encoding="utf-8"))
+                    owner = data.get("project")
+                    named = data.get("id")
                 except (OSError, ValueError, AttributeError):
-                    owner = None  # unreadable record: it cannot belong to this project
-                if owner == str(project):
+                    owner = named = None
+                # retire only on positive evidence of a move: a readable record with a valid
+                # identity that names a DIFFERENT absolute project path
+                if not (
+                    isinstance(owner, str)
+                    and Path(owner).is_absolute()
+                    and owner != str(project)
+                    and named == slot.get("proposal")
+                ):
                     raise ValueError(
-                        "the active draft's record belongs to this project — nothing is stale; "
-                        "use 'ariadne draft discard' instead"
+                        "the active draft's record does not show a move (it belongs to this "
+                        "project, or is missing, unreadable or malformed) — nothing is "
+                        "retired; use 'ariadne draft discard' instead"
                     )
             slot = {
                 "state": "retired",

@@ -165,9 +165,36 @@ def test_moved_project_draft_status_hints_and_discard_stale_retires_it(tmp_path,
     assert _first_edit(new, "fresh\n")["draft"]["generation"] == 2
     capsys.readouterr()
     assert cli.main(["draft", "discard", "--stale", "--project", str(new), "--json"]) != 0
-    assert "belongs to this project" in capsys.readouterr().err
+    assert "does not show a move" in capsys.readouterr().err
     view = draft.status(new)
     assert view is not None and view["generation"] == 2
+
+    # a temporarily unreadable local record is no evidence of a move: same draft stays active
+    record = new / proposals.PROPOSALS_REL / f"{_read(new)['proposal']}.json"
+    record.chmod(0)
+    try:
+        assert cli.main(["draft", "discard", "--stale", "--project", str(new), "--json"]) != 0
+    finally:
+        record.chmod(0o644)
+    capsys.readouterr()
+    view = draft.status(new)
+    assert view is not None and view["generation"] == 2
+
+
+def test_discard_stale_refuses_a_symlinked_state_dir(tmp_path, capsys):
+    """A copy whose .ariadne links to the original's cannot make --stale write its slot."""
+    from ariadne import cli
+
+    orig = complete_bundle_project(tmp_path / "a")
+    _first_edit(orig)
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    (copy / ".ariadne").symlink_to(orig / ".ariadne")
+    slot = orig / draft.DRAFT_REL
+    before = slot.read_bytes()
+    assert cli.main(["draft", "discard", "--stale", "--project", str(copy), "--json"]) != 0
+    assert "symlinked" in capsys.readouterr().err
+    assert slot.read_bytes() == before
 
 
 def test_stale_draft_refuses_validate_until_rebase(tmp_path, monkeypatch):
