@@ -191,6 +191,7 @@ def identity_registry(resolved: list[dict], bindings: dict | None = None) -> Reg
     frozen effective identity, spec 0025 §4) pins each used profile's
     endpoint/region so the connection opens exactly the checked binding."""
     storages: dict[str, sources.StorageProfile] = {}
+    owners: dict[str, str] = {}
     objects: list[Source] = []
     for entry in resolved:
         storage = entry.get("storage")
@@ -202,8 +203,14 @@ def identity_registry(resolved: list[dict], bindings: dict | None = None) -> Reg
                     "a resolved source identity carries a malformed storage "
                     "declaration — this needs human resolution, never a silent reset"
                 )
+            profile = sources.profile_from_identity(name, storage)
             if name not in storages:
-                storages[name] = sources.profile_from_identity(name, storage)
+                storages[name], owners[name] = profile, entry["name"]
+            elif profile != storages[name]:  # merged entries must agree (spec 0040 §3.4.4)
+                raise ValueError(
+                    f"storage profile {name!r} has conflicting definitions in sources "
+                    f"{owners[name]!r} and {entry['name']!r} — one name, one definition"
+                )
         elif isinstance(storage, str):  # a bare reference (defensive)
             name = storage
         objects.append(
