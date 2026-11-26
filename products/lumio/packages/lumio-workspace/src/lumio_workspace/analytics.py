@@ -1307,12 +1307,14 @@ class AnalyticsService:
                     started = self._joined_draft()
                     if started is None:
                         started = self._open_draft()
-                        if started.pop("clean"):
-                            opened = {
-                                "generation": started.pop("generation"),
-                                "proposal": started["proposal"],
-                            }
-                            pin(started["candidate_revision"])
+                        if not started.pop("clean"):
+                            # Another writer moved the opened draft: never stage on it.
+                            raise ValueError("stale: the opened draft moved before the claim")
+                        opened = {
+                            "generation": started.pop("generation"),
+                            "proposal": started["proposal"],
+                        }
+                        pin(started["candidate_revision"])
                     proposal = started["proposal"]
                     revision = started["candidate_revision"]
                     if entries and not self._declarations_present(revision, entries, storages):

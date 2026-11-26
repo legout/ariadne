@@ -508,6 +508,7 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "failed_cleanup_interrupted",
         "failed_moved_candidate",
         "failed_open_moved",
+        "failed_open_moved_valid",
         "pending_pin_replay",
         "pending_pin_holder",
     ],
@@ -939,6 +940,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "failed_cleanup_interrupted",
         "failed_moved_candidate",
         "failed_open_moved",
+        "failed_open_moved_valid",
         "pending_pin_replay",
         "pending_pin_holder",
     }
@@ -959,7 +961,10 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 {"kind": "model", "name": "retail_sales", "content": changed_model}
                 if lifecycle_case == "failed_stale_grant"
                 else {"kind": "invalid-edit-kind"}
-            ],
+            ]
+            # A valid page with no Core edit: no Core write checks the expected revision.
+            if lifecycle_case != "failed_open_moved_valid"
+            else [],
         }
         error = (
             "Source Approval|data authorization"
@@ -998,7 +1003,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
             assert moved["status"]["candidate_revision"] != moved["before"]
             assert draft.status(project) == moved["status"]
             return
-        if lifecycle_case == "failed_open_moved":
+        if lifecycle_case in {"failed_open_moved", "failed_open_moved_valid"}:
             # The operator's `ariadne draft edit` lands between Core's open and the
             # workspace pin (start_proposal reads the record after releasing Core's lock):
             # the pin must not adopt the operator's candidate, so the cleanup keeps it.
@@ -1027,10 +1032,18 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
 
             monkeypatch.setattr(draft, "open_draft", open_spy)
             monkeypatch.setattr(draft, "proposal_of", proposal_of_then_edit)
-            with pytest.raises(AnalyticsError):
+            stale = "stale" if lifecycle_case == "failed_open_moved_valid" else None
+            with pytest.raises(AnalyticsError, match=stale):
                 analytics.prepare_contribution(contributor, **failing)
             assert moved["status"]["candidate_revision"] != moved["before"]
             assert draft.status(project) == moved["status"]
+            if lifecycle_case == "failed_open_moved_valid":
+                # Refused before staging: the task is recorded failed, no review task exists.
+                replay = analytics.prepare_contribution(contributor, **failing)
+                assert replay["status"] == "failed"
+                assert "stale" in replay["error"]
+                with pytest.raises(ReviewError):
+                    review.get(reviewer, replay["task_id"])
             return
         if lifecycle_case in {"pending_pin_replay", "pending_pin_holder"}:
             # A preparation holding its creator pin is in flight (replay sees it pending)
