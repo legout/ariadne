@@ -359,6 +359,40 @@ def test_profile_free_direct_s3_source_cannot_inherit_a_named_secret(tmp_path, b
         load_registry(write_registry(tmp_path, document))
 
 
+def test_profile_refuses_a_merged_profile_free_source_inheriting_a_served_profile(
+    tmp_path, builder_canary, monkeypatch
+):
+    """``ariadne profile`` merges served declarations with source grants: a
+    served ``events`` on the named ``remote`` profile plus a granted
+    profile-free S3 source under its scope is valid in neither alone but
+    would inherit the named secret together — refuse before any open."""
+    from ariadne import admission, authoring_inputs, authoring_sources, profiler, proposals
+
+    registry = load_registry(write_registry(tmp_path, SPEC_EXAMPLE))
+    served_events = _resolved_entries(registry.sources, registry.storages)[1]
+    stray = {"name": "stray", "type": "parquet", "path": "s3://analytics/other/x.parquet"}
+    monkeypatch.setattr(proposals, "refuse_unsupported_project", lambda project: None)
+    monkeypatch.setattr(admission, "load_current", lambda project: {"sources": [served_events]})
+    monkeypatch.setattr(authoring_sources, "_load_grants", lambda project: [{"source": stray}])
+    monkeypatch.setattr(
+        authoring_sources,
+        "approval_state",
+        lambda project, entries, digest: {"approved": True, "storage_bindings": {}},
+    )
+    monkeypatch.setattr(
+        authoring_inputs,
+        "project_profiling_limits",
+        lambda project: {"execution_seconds": 5, "response_bytes": 10_000},
+    )
+
+    def never_open(**kwargs):
+        raise AssertionError("the merged registry must refuse before opening")
+
+    monkeypatch.setattr(profiler, "profile", never_open)
+    with pytest.raises(ValueError, match="would silently inherit its named secret"):
+        profiler.profile_served(tmp_path)
+
+
 def test_directory_prefix_boundary_is_respected(tmp_path, builder_canary):
     """``s3://retail/`` does NOT cover ``s3://retail-other/…`` (or any other
     similarly named bucket/directory): boundary-similar paths outside the

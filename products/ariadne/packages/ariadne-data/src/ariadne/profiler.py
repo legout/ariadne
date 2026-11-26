@@ -103,6 +103,7 @@ from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
+    _validate_storage_usage,
     implicit_registry,
     load_registry,
 )
@@ -743,19 +744,26 @@ def profile_served(project: str | Path) -> dict:
     from ariadne import admission
 
     served = admission.load_current(project)
-    entries: list[dict] = list((served or {}).get("sources") or [])
+    # one declaration per name: the served one, else the NEWEST grant (the list is
+    # append-only); grants authorize it below, so a replaced source never re-enters
+    by_name: dict[str, dict] = {}
     for grant in authoring_sources._load_grants(project):
-        if grant["source"] not in entries:
-            entries.append(grant["source"])
+        by_name[grant["source"]["name"]] = grant["source"]
+    for entry in (served or {}).get("sources") or []:
+        by_name[entry["name"]] = entry
+    entries: list[dict] = list(by_name.values())
     if not entries:
         raise ValueError("no source is approved yet — run 'ariadne add' and 'ariadne approve'")
     resolved_digest = authoring_sources.resolved_digest(entries)
     state = authoring_sources.approval_state(project, entries, resolved_digest)
     if not state["approved"]:
         raise ValueError("an approved source identity is no longer current (changed binding)")
+    registry = authoring_sources.identity_registry(entries, state["storage_bindings"])
+    # the merge can combine entries valid only apart (spec 0025 §2): recheck it whole
+    _validate_storage_usage(registry.sources, registry.storages or {}, Path("approved sources"))
     limits = authoring_inputs.project_profiling_limits(project)
     return profile(
-        registry=authoring_sources.identity_registry(entries, state["storage_bindings"]),
+        registry=registry,
         budget=execution.DeadlineBudget(limits["execution_seconds"]),
         payload_bytes=limits["response_bytes"],
         locked=True,
