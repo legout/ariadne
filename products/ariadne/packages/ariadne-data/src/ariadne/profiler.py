@@ -743,10 +743,14 @@ def profile_served(project: str | Path) -> dict:
     from ariadne import admission
 
     served = admission.load_current(project)
-    entries: list[dict] = list((served or {}).get("sources") or [])
+    # one declaration per name: the served one, else the NEWEST grant (the list is
+    # append-only); grants authorize it below, so a replaced source never re-enters
+    by_name: dict[str, dict] = {}
     for grant in authoring_sources._load_grants(project):
-        if grant["source"] not in entries:
-            entries.append(grant["source"])
+        by_name[grant["source"]["name"]] = grant["source"]
+    for entry in (served or {}).get("sources") or []:
+        by_name[entry["name"]] = entry
+    entries: list[dict] = list(by_name.values())
     if not entries:
         raise ValueError("no source is approved yet — run 'ariadne add' and 'ariadne approve'")
     resolved_digest = authoring_sources.resolved_digest(entries)
