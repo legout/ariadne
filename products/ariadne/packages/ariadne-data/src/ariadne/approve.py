@@ -84,7 +84,7 @@ def classify(project: Path, view: dict, record: dict) -> dict:
     """``{kind, new, resolved, digest, changed}`` for the draft at ``view``."""
     revision = view["candidate_revision"]
     resolved, digest = authoring_sources.candidate_sources(project, revision)
-    new = [
+    ungranted = [
         entry
         for entry in resolved or []
         if authoring_sources._covering(
@@ -92,6 +92,10 @@ def classify(project: Path, view: dict, record: dict) -> dict:
         )
         is None
     ]
+    # an older grant authorizes reads, but a declaration that differs from the draft's approved
+    # base is still a changed identity and needs its own source approval (#189)
+    base = authoring_sources.candidate_sources(project, record["base_revision"])[0] or []
+    new = [entry for entry in resolved or [] if entry in ungranted or entry not in base]
     changed = proposals._git(
         ["diff", "--name-only", record["base_revision"], revision], project
     ).stdout.split()
@@ -106,8 +110,9 @@ def classify(project: Path, view: dict, record: dict) -> dict:
                 "profiles; move the other changes into a later draft"
             )
     return {
-        "kind": "source" if new else "calculation",
+        "kind": "sources" if new else "calculation",
         "new": new,
+        "ungranted": ungranted,
         "resolved": resolved or [],
         "digest": digest,
         "changed": changed,
@@ -207,7 +212,10 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 f"{chr(10).join(_identity_lines([entry], prefix='    + '))}\n"
                 f"      new binding: {esc(json.dumps(own, sort_keys=True))}\n"
             )
-    stdout.write(f"Grant delta: {len(new)} source(s) will be granted read access for authoring.\n")
+    ungranted = kind["ungranted"]
+    stdout.write(
+        f"Grant delta: {len(ungranted)} source(s) will be granted read access for authoring.\n"
+    )
     if bindings:
         stdout.write(f"Effective bindings: {esc(json.dumps(bindings, sort_keys=True))}\n")
     stdout.write("Live checks (attach, catalog enumeration) run only after you answer yes.\n")
@@ -285,10 +293,12 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
                 draft.begin_source_txn(project)  # journal creation is inside the protected block
                 draft.set_source_baseline(project, view["candidate_revision"])
                 draft.consume(project, record["id"])
+                # an identity an older grant already covers becomes the baseline without a
+                # duplicate grant
                 result = authoring_sources.record_grants(
                     project,
-                    new,
-                    authoring_sources.resolved_digest(new),
+                    ungranted,
+                    authoring_sources.resolved_digest(ungranted),
                     by=by,
                     generation=view["generation"],
                     _lock_held=True,
@@ -489,7 +499,7 @@ def approve(
     stdout = display if display is not None else stdout
     view, record = _view(project)
     kind = classify(project, view, record)
-    if kind["kind"] == "source":
+    if kind["kind"] == "sources":
         if confirm_mappings:
             raise ApprovalRefused("--confirm-mapping belongs to a calculation approval")
         return approve_sources(project, view, record, kind, stdin, stdout)

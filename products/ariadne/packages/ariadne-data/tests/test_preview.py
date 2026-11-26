@@ -373,9 +373,7 @@ def test_reverted_source_requires_sources_approval_and_records_baseline(
     assert json.loads(capsys.readouterr().out)["rows"] == [{"event_count": 3}]
 
 
-def test_reverted_source_and_model_edit_are_refused_as_mixed(
-    served, tmp_path, monkeypatch, capsys
-):
+def test_reverted_source_and_model_edit_are_refused_as_mixed(served, tmp_path, monkeypatch, capsys):
     import tests.test_approve as approval_tests
 
     project, _base = _reverted_source_draft(served, tmp_path, monkeypatch, capsys)
