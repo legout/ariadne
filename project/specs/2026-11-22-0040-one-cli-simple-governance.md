@@ -280,7 +280,11 @@ Apply the change under the ordinary §3.3 draft pin: compare the generation and 
         still resolvable in the current environment; or
       - **refuse with a clear message** naming the source and the pending calculation
         approval, when the environment now resolves only the new identity (for example,
-        the same `connection_env` or storage profile variables now point at B).
+        the operator changed the declaration, for example a `source_change` to another
+        `connection_env` variable (§3.1), and retired or repointed the old one, so the
+        environment now resolves B only). An environment-only change, where the same
+        `connection_env` variable now holds a DSN for B and no declaration field changed,
+        opens no draft and is not an operator action staged through the public surface.
 
       They never silently read the new identity before a calculation approval admits a
       release bound to it. Preview uses the new identity. (Owner decision 2026-11-23 at
@@ -625,8 +629,9 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
    its endpoint or DSN destination.
    - It requires a new source approval. Until then, preview and profiling refuse the
      new identity.
-   - After the source approval, with the environment variables now pointing at B,
-     governed `query` of that metric **refuses** with a message naming the source and
+   - After the source approval, with the environment now resolving B only (the operator
+     changed the declaration through `ariadne draft edit` `source_change` to another
+     `connection_env` variable and retired or repointed the old one), governed `query` of that metric **refuses** with a message naming the source and
      the pending calculation approval. It never returns B's data. `preview` reads B.
    - Only after a calculation approval does `query` use the new identity and answer.
    - A test proves this with distinguishable A and B data through the real CLI
