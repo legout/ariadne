@@ -974,6 +974,7 @@ class AnalyticsService:
                     "proposal": proposal,
                     "base_revision": base,
                     "candidate_revision": active["candidate_revision"],
+                    "generation": active["generation"],
                     "joined": True,
                 }
         raise AnalyticsError(
@@ -1311,7 +1312,7 @@ class AnalyticsService:
                             # Another writer moved the opened draft: never stage on it.
                             raise ValueError("stale: the opened draft moved before the claim")
                         opened = {
-                            "generation": started.pop("generation"),
+                            "generation": started["generation"],
                             "proposal": started["proposal"],
                         }
                         pin(started["candidate_revision"])
@@ -1351,6 +1352,17 @@ class AnalyticsService:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         atomic_write_bytes(path, markdown.encode())
                         page_paths.append(str(path))
+
+                    def require_held() -> None:
+                        # §3.7 rules 2-4: never stage on, or claim, a draft another writer moved.
+                        active = draft.status(self.project)
+                        if active is None or (
+                            active["generation"],
+                            active["candidate_revision"],
+                        ) != (started["generation"], revision):
+                            raise ValueError("stale: the draft moved before staging")
+
+                    require_held()
                     ingest_candidate(
                         task_kb,
                         CandidateRequest(
@@ -1378,6 +1390,9 @@ class AnalyticsService:
                             "native_base": started["base_revision"],
                         }
                     )
+                    require_held()
+                    if review["head_revision"] != revision:
+                        raise ValueError("stale: the draft moved before staging")
                     response = {
                         "task_id": operation.operation_id,
                         "status": "pending_submission",
