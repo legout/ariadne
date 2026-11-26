@@ -133,6 +133,11 @@ def build_parser() -> _Parser:
     draft_sub.add_parser("rebase", parents=[common], help="rebase the draft onto the served state")
     p = draft_sub.add_parser("discard", parents=[common], help="discard the active draft")
     p.add_argument("--yes", action="store_true", help="skip the confirmation (not for approve)")
+    p.add_argument(
+        "--stale",
+        action="store_true",
+        help="retire a draft stranded by a moved or copied project (no confirmation)",
+    )
 
     sub.add_parser("validate", parents=[common], help="validate the active draft")
     p = sub.add_parser("diff", parents=[common], help="the draft against the served state")
@@ -257,6 +262,8 @@ def _draft_commands(args: argparse.Namespace, stdin: Any) -> int:
         edit = _read_json(None if args.file == "-" else args.file, stdin, "the edit file")
         result = AuthoringProject(project).apply_edit(edit)
         return _emit(result, args)
+    if args.draft_command == "discard" and args.stale:
+        return _emit(draft.retire_stale(project, moved_only=True), args)
     expected = _expected(project)
     if expected is None:
         raise ValueError("there is no active draft")
@@ -353,7 +360,8 @@ def _filters(specs: list[str]) -> list[dict]:
             {
                 "field": field,
                 "op": op,
-                "value": [_literal(v) for v in _split_list(value)] if op == "in"
+                "value": [_literal(v) for v in _split_list(value)]
+                if op == "in"
                 else _literal(value),
             }
         )

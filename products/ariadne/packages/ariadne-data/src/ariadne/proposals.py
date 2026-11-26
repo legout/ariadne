@@ -326,7 +326,9 @@ def _load_record(project: Path, proposal: str) -> dict:
     if record["id"] != proposal or record["project"] != str(project):
         raise ValueError(
             f"no proposal {proposal!r} in this project ({project}) — the record "
-            f"belongs to {record.get('project')!r}; nothing was read or written"
+            f"belongs to {record.get('project')!r} (a moved or copied project?); if that is "
+            "the active draft's record, run 'ariadne draft discard --stale' to retire it; "
+            "nothing was read or written"
         )
     return record
 
