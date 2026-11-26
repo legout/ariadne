@@ -115,6 +115,27 @@ def test_init_in_an_existing_repository_commits_only_its_own_files(tmp_path):
     assert (project / "notes.txt").read_text() == "unstaged edit\n"
 
 
+def test_init_never_commits_a_file_another_writer_creates_while_it_runs(tmp_path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    git(project, "init", "-q")
+    identity(project)
+    real_record = profile_pair.record
+
+    def record_then_foreign_write(*args, **kwargs):
+        real_record(*args, **kwargs)
+        (project / "analysis.sql").write_text("select 1;\n")  # an editor saves mid-init
+
+    monkeypatch.setattr(profile_pair, "record", record_then_foreign_write)
+
+    result = init.init_project(project)
+
+    committed = set(git(project, "show", "--name-only", "--format=", "HEAD").split())
+    assert "analysis.sql" not in committed and "analysis.sql" not in result["committed"]
+    assert "context_integration.yaml" in committed
+    assert git(project, "status", "--porcelain", "analysis.sql").strip() == "?? analysis.sql"
+
+
 def test_init_refuses_a_conflicting_existing_file_and_writes_nothing(tmp_path):
     project = tmp_path / "proj"
     project.mkdir()
