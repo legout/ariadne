@@ -199,6 +199,21 @@ def test_source_change_stages_only_events_and_refuses_ungranted_preview(
             {"path": "s3://user:secret@example.com/events.parquet"},
             r"(?i)(credential|secret|password|userinfo)",
         ),
+        *[
+            ("signed", {"path": url}, r"(?i)credential")
+            for url in [
+                "https://acct.blob.core.windows.net/c/events.parquet"
+                "?sv=2022-11-02&se=2026-12-01&sig=SECRETSIG",
+                "https://b.s3.amazonaws.com/events.parquet?X-Amz-Credential=AKIA"
+                "&X-Amz-Signature=SECRETSIG",
+                "https://storage.googleapis.com/b/events.parquet?GoogleAccessId=a"
+                "&X-Goog-Signature=SECRETSIG",
+                "https://example.com/events.parquet?access_token=SECRETSIG",
+                "https://example.com/events.parquet?token=SECRETSIG",
+                "https://example.com/events.parquet?signature=SECRETSIG",
+            ]
+        ],
+        ("sqlite", {"path": "data/other.db", "storage": None}, r"(?i)storage.*not allowed"),
     ],
 )
 def test_source_change_refusals_leave_state_untouched(
@@ -212,14 +227,56 @@ def test_source_change_refusals_leave_state_untouched(
     registry_before = _candidate_registry(served) if active else None
     paths = [draft.DRAFT_REL, Path(".ariadne/source_grants.json"), Path(".ariadne/current.json")]
     before = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
+    extra = {  # a declared source of the type the case changes
+        "sqlite": {"name": "sqlite", "type": "sqlite", "path": "data/x.db"},
+        "signed": {"name": "signed", "type": "parquet", "path": "data/x.parquet", "table": "t"},
+    }.get(name)
+    if extra:
+        doc = yaml.safe_load((served / "ariadne.yaml").read_text(encoding="utf-8"))
+        doc["sources"].append(extra)
+        draft.edit_artifact(
+            served,
+            _pin(served) if active else None,
+            "ariadne.yaml",
+            yaml.safe_dump(doc, sort_keys=False),
+        )
+        view_before = draft.status(served)
+        registry_before = _candidate_registry(served)
+        before = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
     code, out, err = _source_change_cli(served, tmp_path, capsys, changes, name)
     assert code == 1 and not out
     assert re.search(reason, json.loads(err)["error"]["message"]), err
+    assert "SECRETSIG" not in err
     after = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
     assert after == before
     assert draft.status(served) == view_before
-    if active:
+    if active or extra:
         assert _candidate_registry(served) == registry_before
+
+
+def test_a_changed_source_with_an_unresolvable_profile_refuses_naming_the_source(
+    served, capsys, monkeypatch
+):
+    """Spec 0040 §3.4: the refusal names the owning source and keeps the profile reason."""
+    monkeypatch.delenv("ARCHIVE_ENDPOINT", raising=False)
+    doc = yaml.safe_load((served / "ariadne.yaml").read_text(encoding="utf-8"))
+    doc["storages"] = {
+        "archive": {
+            "type": "s3",
+            "access_key_id_env": "ARCHIVE_KEY_ID",
+            "secret_access_key_env": "ARCHIVE_SECRET",
+            "endpoint_url_env": "ARCHIVE_ENDPOINT",
+            "scopes": ["s3://archive/"],
+        }
+    }
+    for entry in doc["sources"]:
+        if entry["name"] == "events":
+            entry.update(path="s3://archive/events.parquet", storage="archive")
+    draft.edit_artifact(served, None, "ariadne.yaml", yaml.safe_dump(doc, sort_keys=False))
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
+    message = json.loads(err)["error"]["message"]
+    assert code == 1 and out == ""
+    assert "events" in message and "archive" in message and "ARCHIVE_ENDPOINT" in message
 
 
 def test_source_change_approval_keeps_query_on_a_until_calculation_approval(

@@ -100,8 +100,11 @@ def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
         name = storage["name"]
         if name in bindings:
             continue
-        profile = sources.profile_from_identity(name, storage)
-        bindings[name] = sources.resolve_binding(profile).record()
+        try:
+            profile = sources.profile_from_identity(name, storage)
+            bindings[name] = sources.resolve_binding(profile).record()
+        except ValueError as exc:  # spec 0040 §3.4: name the owning source
+            raise ValueError(f"source {entry.get('name')!r}: {exc}") from None
     return bindings
 
 
@@ -371,7 +374,6 @@ def add_sources(
 
 # spec 0040 §3.1 "Changing one declared source": the only settable fields, per type.
 _CHANGE_FIELDS = {"postgres": frozenset({"connection_env"})}
-_CHANGE_FIELDS_DEFAULT = frozenset({"path", "storage"})
 
 
 def change_source(
@@ -406,7 +408,11 @@ def change_source(
         if index is None:
             raise ValueError(f"no such source {name!r} in the draft registry — nothing was written")
         entry = dict(existing[index])
-        allowed = _CHANGE_FIELDS.get(str(entry.get("type")), _CHANGE_FIELDS_DEFAULT)
+        kind = str(entry.get("type"))
+        allowed = _CHANGE_FIELDS.get(
+            kind,
+            frozenset({"path", "storage"} if kind in sources.STORAGE_SOURCE_TYPES else {"path"}),
+        )
         disallowed = sorted(set(changes) - allowed)
         if disallowed:
             raise ValueError(
