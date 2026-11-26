@@ -840,6 +840,12 @@ def test_query_result_limits(case, served, admitted_project, tmp_path, monkeypat
             async def get_metric(self, name, dimensions=None, range=None):
                 raise ValueError(self.message)
 
+            def _resolve(self, name):
+                return name
+
+            def _metric_datasets(self, name):
+                return [object()]
+
         runtime = FailingRuntime()
         monkeypatch.setattr(cli.QueryRuntime, "open_project", lambda *args, **kwargs: runtime)
         capsys.readouterr()

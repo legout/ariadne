@@ -56,7 +56,7 @@ def _edit(project, content, expected=None):
 
 def _validate(project):
     result = draft.validate(project, _pin(project))
-    assert result["ok"] is True, result["errors"]
+    assert result["ok"] is True, "\n".join(result["errors"])
 
 
 def _run(argv, capsys):
@@ -231,6 +231,62 @@ def test_a_cli_filter_changes_the_query_aggregate(tmp_path, capsys):
     code, out, err = _run(["query", "live_orders_total", "--filter", "region = NA", *base], capsys)
     assert code == 0, out + err
     assert list(json.loads(out)["rows"][0].values()) == [300.0]
+
+
+def test_an_unfiltered_cross_fact_metric_answers_through_the_cli_query(tmp_path, capsys):
+    from tests.test_data_signals import _admit_multifact_project
+
+    _runtime, project, *_ = _admit_multifact_project(tmp_path, quality=False)
+    base = ["--json", "--project", str(project)]
+    code, out, err = _run(["query", "combined_orders_total", *base], capsys)
+    assert code == 0, out + err
+    assert list(json.loads(out)["rows"][0].values()) == [2000.0]  # live 700 + archive 1300
+
+
+CROSS_FACT = (
+    EDITED
+    + """\
+- name: twin
+  source: events.events
+  primary_key:
+  - id
+  fields:
+  - name: id
+    expression:
+      sql: id
+  metrics:
+  - name: twin_count
+    expression:
+      sql: COUNT(*)
+metrics:
+- name: event_ratio
+  expression:
+    sql: AGG(events.event_count) / AGG(twin.twin_count)
+"""
+)
+
+
+def test_an_unfiltered_cross_fact_preview_answers(served, capsys):
+    from tests.test_git_authoring import NATIVE_METRIC_PAGE
+
+    _edit(served, CROSS_FACT)
+    selector = (served / "context_integration.yaml").read_text(encoding="utf-8")
+    one = selector.split("  bindings:\n")[1]
+    for name, ref in (("event_ratio", "event_ratio"), ("twin_count", "twin.twin_count")):
+        slug = name.replace("_", "-")
+        page = (
+            NATIVE_METRIC_PAGE.replace("entity:event-count", f"entity:{slug}")
+            .replace('title: "event_count"', f'title: "{name}"')
+            .replace("title: event_count", f"title: {name}")
+            .replace("events.event_count", ref)
+        )
+        draft.edit_artifact(served, _pin(served), f"knowledge/metrics/{slug}.md", page)
+        selector += one.replace("events::events.event_count", f"events::{ref}")
+    draft.edit_artifact(served, _pin(served), "context_integration.yaml", selector)
+    _validate(served)
+    code, out, err = _run(["preview", "event_ratio", "--json", "--project", str(served)], capsys)
+    assert code == 0, out + err
+    assert list(json.loads(out)["rows"][0].values()) == [2.0]  # SUM(id) 6 / COUNT(*) 3
 
 
 def test_a_malformed_cli_query_filter_is_refused_before_the_project_opens(tmp_path, capsys):
