@@ -989,6 +989,17 @@ class AnalyticsService:
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
 
+    def _release_opened_draft(self, generation: int | None, proposal: str) -> None:
+        """§3.7 rules 2-3: a failed first preparation frees the slot it created. Only
+        that exact draft (same generation, same proposal) is discarded; the generation
+        is never reused, so another request's draft can never match."""
+        active = draft.status(self.project)
+        if active is None or generation is None or active["generation"] != generation:
+            return
+        expected = (active["generation"], active["candidate_revision"])
+        if draft.proposal_of(self.project, expected) == proposal:
+            draft.discard(self.project, expected)
+
     def _pinned_discarded(self, response: dict) -> bool:
         """Evidence that this task's pinned generation was discarded (spec 0034 §10):
         it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists.
@@ -1250,8 +1261,12 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             with self.state.project_lock(self.project):
+                opened = None  # (generation, proposal) of a draft THIS call created
                 try:
-                    started = self._joined_draft() or self.api.start_proposal()
+                    started = self._joined_draft()
+                    if started is None:
+                        started = self.api.start_proposal()
+                        opened = (self._draft_generation(), started["proposal"])
                     proposal = started["proposal"]
                     revision = started["candidate_revision"]
                     if entries and not self._declarations_present(revision, entries, storages):
@@ -1341,6 +1356,8 @@ class AnalyticsService:
                     self.state.finish_operation(
                         self.workspace_id, actor, current, "failed", response
                     )
+                    if opened is not None:
+                        self._release_opened_draft(*opened)
                     if isinstance(exc, RetryConflict):
                         raise
                     raise AnalyticsError(str(exc)) from exc
