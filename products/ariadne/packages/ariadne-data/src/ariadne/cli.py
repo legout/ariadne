@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import csv
 import json
 import math
 import os
@@ -323,6 +322,24 @@ def _not_json(name: str) -> Any:
     raise ValueError(name)  # NaN/Infinity stay literal text
 
 
+def _split_list(text: str) -> list[str]:
+    """Split on commas outside double quotes (``\\"`` escapes); items keep their raw quoting."""
+    items, buf, quoted, escaped = [], "", False, False
+    for ch in text:
+        if ch == "," and not quoted:
+            items.append(buf)
+            buf = ""
+            continue
+        buf += ch
+        if escaped:
+            escaped = False
+        elif quoted and ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+    return [*items, buf]
+
+
 def _filters(specs: list[str]) -> list[dict]:
     """``FIELD OP VALUE`` -> planner predicates; the planner validates them."""
     out = []
@@ -336,8 +353,7 @@ def _filters(specs: list[str]) -> list[dict]:
             {
                 "field": field,
                 "op": op,
-                "value": [_literal(v) for v in next(csv.reader([value], skipinitialspace=True))]
-                if op == "in"
+                "value": [_literal(v) for v in _split_list(value)] if op == "in"
                 else _literal(value),
             }
         )

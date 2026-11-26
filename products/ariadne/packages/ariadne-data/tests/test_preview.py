@@ -254,6 +254,9 @@ def test_a_malformed_cli_query_filter_is_refused_before_the_project_opens(tmp_pa
         ('y = {"a": 1}', "=", '{"a": 1}'),
         ("label in a, 2", "in", ["a", 2]),
         ('label in "Paris, TX",London', "in", ["Paris, TX", "London"]),
+        ('label in "null",active', "in", ["null", "active"]),
+        ('label in "ACME \\"West, Inc.\\"",London', "in", ['ACME "West, Inc."', "London"]),
+        ("n in 1,2.5,x", "in", [1, 2.5, "x"]),
     ],
 )
 def test_cli_filter_values_are_typed_per_the_spec(spec, op, value):
