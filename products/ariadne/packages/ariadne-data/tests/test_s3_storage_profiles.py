@@ -392,6 +392,23 @@ def test_profile_refuses_a_merged_profile_free_source_inheriting_a_served_profil
     with pytest.raises(ValueError, match="would silently inherit its named secret"):
         profiler.profile_served(tmp_path)
 
+    archive = {
+        **served_events,
+        "name": "archive",
+        "path": "s3://analytics/archive",
+        "storage": {**served_events["storage"]},
+    }
+    monkeypatch.setattr(authoring_sources, "_load_grants", lambda project: [{"source": archive}])
+    monkeypatch.setattr(profiler, "profile", lambda **kwargs: {"profiled": True})
+    assert profiler.profile_served(tmp_path) == {"profiled": True}
+
+    archive["storage"]["endpoint_url_env"] = "ARCHIVE_S3_ENDPOINT_URL"
+    monkeypatch.setattr(profiler, "profile", never_open)
+    with pytest.raises(ValueError) as refused:
+        profiler.profile_served(tmp_path)
+    for name in ("remote", "archive", "events"):
+        assert name in str(refused.value)
+
 
 def test_directory_prefix_boundary_is_respected(tmp_path, builder_canary):
     """``s3://retail/`` does NOT cover ``s3://retail-other/…`` (or any other
