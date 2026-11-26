@@ -500,6 +500,7 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "creator_publication",
         "creator_rebased",
         "creator_interrupted",
+        "creator_reconnect",
         "concurrent_claim",
     ],
 )
@@ -948,7 +949,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         assert rejected["status"] == "rejected"
         assert draft.status(project) == moved
         return
-    if lifecycle_case == "creator_interrupted":
+    if lifecycle_case in {"creator_interrupted", "creator_reconnect"}:
         # The worker stops after the discard but before the outcome commits (spec 0034
         # §10): reconciling finishes the one-use reject from its pinned evidence.
         real_finish_reject = state.finish_review_task
@@ -970,8 +971,51 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         with pytest.raises(ReviewError, match="post-discard bookkeeping failure"):
             review.decide(reviewer, reused_contribution_task, context.action_digest, "reject")
         monkeypatch.setattr(state, "finish_review_task", real_finish_reject)
-        assert draft.status(project) is None
+        # A later slot whose admission activated but was never retired (interrupted):
+        # reconciling the old reject must not run Core recovery on it.
+        retired = draft._load_slot(Path(project))
+        assert retired is not None and retired["state"] == "retired"
+        served = admission.load_current(project)
+        assert served is not None
+        later = {
+            "state": "active",
+            "generation": retired["generation"] + 1,
+            "proposal": served["proposal"],
+            "candidate_revision": served["commit"],
+            "base_served_revision": served["commit"],
+        }
+        draft._store_slot(Path(project), later)
+        if lifecycle_case == "creator_reconnect":
+            # The contributor reconnects and polls over MCP: the stored pending_review
+            # row, not the overlaid pending_submission, triggers the recovery.
+            token = state.issue_local_credential("contributor", "api", expires_at=1_800_000_000)[1]
+            with TestClient(create_app(config), base_url="https://workspace.test") as client:
+                response = client.post(
+                    "/mcp",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json, text/event-stream",
+                        "MCP-Protocol-Version": "2025-06-18",
+                    },
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "get_task",
+                            "arguments": {"task_id": reused_contribution_task},
+                        },
+                    },
+                )
+            assert response.status_code == 200, response.text
+            polled = response.json()["result"]
+            assert not polled["isError"], polled
+            assert polled["structuredContent"]["status"] == "rejected"
+            assert draft._load_slot(Path(project)) == later
+            assert len(discards) == 1
+            return
         recovered = review.reconcile_task(reused_contribution_task)
+        assert draft._load_slot(Path(project)) == later
         assert recovered is not None and recovered["status"] == "rejected"
         assert analytics.get(contributor, reused_contribution_task)["status"] == "rejected"
         assert draft.status(project) is None

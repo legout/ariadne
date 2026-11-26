@@ -982,17 +982,22 @@ class AnalyticsService:
         exact draft (the generation, proposal and candidate the reviewer saw). Another
         task's draft, a rebased generation or this proposal after it moved is left alone."""
         active = draft.status(self.project)
-        expected = (response.get("native_generation"), response.get("native_candidate"))
-        if active is None or (active["generation"], active["candidate_revision"]) != expected:
+        pinned = (response.get("native_generation"), response.get("native_candidate"))
+        if active is None or (active["generation"], active["candidate_revision"]) != pinned:
             return
+        expected = (active["generation"], active["candidate_revision"])  # == pinned
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
 
     def _pinned_discarded(self, response: dict) -> bool:
         """Evidence that this task's pinned generation was discarded (spec 0034 §10):
-        it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists."""
+        it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists.
+        Reads the slot without ``draft.status``: its recovery could retire a later slot."""
         generation = response.get("native_generation")
-        if generation is None or (draft.status(self.project) or {}).get("generation") == generation:
+        slot = draft._load_slot(self.project.resolve())  # shortcut: Core has no pure reader
+        if generation is None or (
+            slot is not None and slot["state"] == "active" and slot["generation"] == generation
+        ):
             return False
         branch = f"refs/heads/{draft.DISCARDED_BRANCH_PREFIX}{generation}"
         found = subprocess.run(

@@ -1067,7 +1067,11 @@ def create_app(config: WorkspaceConfig, *, token_verifier: TokenVerifier | None 
                         return {"task_id": task_id, **recovered}
                 return analytics_service().get(actor, task_id)
             current = contribution_service().get(actor, task_id)
-            if current["status"] == "pending_review":
+            stored = state.get_operation(
+                config.workspace_id, actor, "prepare_contribution", task_id
+            )
+            # The response overlays its review stage; recovery keys on the stored status.
+            if stored is not None and stored.status == "pending_review":
                 recovered = review_service().reconcile_task(task_id)
                 if recovered is not None:
                     return {"task_id": task_id, **recovered}
