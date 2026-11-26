@@ -328,6 +328,8 @@ def _load_record(project: Path, proposal: str) -> dict:
     owned = record["project"] == str(project) or (
         # a "." record is this project's only if THIS repository owns its proposal branch
         record["project"] == "."
+        and (project / ".git").is_dir()  # main checkout only: never a sibling worktree
+        and _origin_gone_or_here(record, project)  # never a copy / restore of a live original
         and isinstance(record["branch"], str)
         and _git(
             ["rev-parse", "--verify", "-q", f"refs/heads/{record['branch']}"],
@@ -374,6 +376,27 @@ def links_broken(project: Path, proposal: str) -> bool:
         return True
 
 
+def _moved_here(project: Path, links: tuple[Path, Path, Path] | None, proposal: str) -> bool:
+    """True when the worktree's admin entry travelled with this main checkout and the
+    recorded old worktree location is gone (a true move, not a copy)."""
+    new_admin = project / ".git" / "worktrees"
+    if links is not None:
+        new_admin = new_admin / links[1].name
+    try:
+        old = Path((new_admin / "gitdir").read_text(encoding="utf-8").strip())
+        return links is not None and (project / ".git").is_dir() and not old.exists()
+    except OSError:
+        return False
+
+
+def _origin_gone_or_here(record: dict, project: Path) -> bool:
+    """A "." record belongs here only at the location that wrote it, or after a true move
+    (the writing location no longer exists). A copy, restore or sibling checkout leaves the
+    original alive, so its record refuses."""
+    origin = record.get("origin")
+    return not isinstance(origin, str) or origin == str(project) or not Path(origin).exists()
+
+
 def relink_moved_worktree(project: Path, proposal: str) -> None:
     """Re-point a MOVED project's proposal worktree at the new location. Only a true move
     qualifies: this is the repository's main checkout, its admin entry travelled with it and
@@ -384,12 +407,7 @@ def relink_moved_worktree(project: Path, proposal: str) -> None:
     new_admin = project / ".git" / "worktrees"
     if links is not None:
         new_admin = new_admin / links[1].name
-    try:
-        old = Path((new_admin / "gitdir").read_text(encoding="utf-8").strip())
-        ok = links is not None and (project / ".git").is_dir() and not old.exists()
-    except OSError:
-        ok = False
-    if not ok or links is None:
+    if links is None or not _moved_here(project, links, proposal):
         raise ValueError(
             f"the worktree of proposal {proposal} points at another checkout (copied or "
             "shared project) — nothing was written" + _HUMAN_RESOLUTION
@@ -1070,6 +1088,7 @@ def start_proposal(
         _git(["worktree", "add", "-q", "-b", branch, str(worktree), base], project)
         record = {
             "id": proposal,
+            "origin": str(project),  # where it was written; a live other origin = copy/restore
             "project": ".",  # repo-relative: the record lives in THIS project's state dir
             "base_revision": base,
             "candidate_revision": base,

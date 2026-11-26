@@ -275,12 +275,18 @@ def test_edit_in_a_copy_is_refused_and_leaves_the_original_untouched(tmp_path):
     copy = tmp_path / "copy"
     shutil.copytree(project, copy, symlinks=True)
 
-    with pytest.raises(ValueError, match="nothing was written"):
+    with pytest.raises(ValueError, match="nothing was"):
         draft.edit_artifact(copy, (1, first["candidate_revision"]), SEED_REL, "from copy\n")
+    with pytest.raises(ValueError, match="no proposal"):
+        proposals.edit_proposal(
+            copy, proposal, first["candidate_revision"], SEED_REL, "from copy\n"
+        )
     assert link.read_text(encoding="utf-8") == before
-    assert (copy / proposals.WORKTREES_REL / proposal / ".git").read_text(
-        encoding="utf-8"
-    ).startswith(f"gitdir: {project}")
+    assert (
+        (copy / proposals.WORKTREES_REL / proposal / ".git")
+        .read_text(encoding="utf-8")
+        .startswith(f"gitdir: {project}")
+    )
     # the original draft is still editable
     draft.edit_artifact(project, (1, first["candidate_revision"]), SEED_REL, "original\n")
 
@@ -291,8 +297,12 @@ def test_foreign_state_copied_into_another_repo_is_refused(tmp_path):
     a = complete_bundle_project(tmp_path / "a")
     _first_edit(a)
     b = complete_bundle_project(tmp_path / "b")
-    shutil.copytree(a / proposals.ARIADNE_STATE_DIR, b / proposals.ARIADNE_STATE_DIR,
-                    dirs_exist_ok=True, ignore=shutil.ignore_patterns("worktrees", "locks"))
+    shutil.copytree(
+        a / proposals.ARIADNE_STATE_DIR,
+        b / proposals.ARIADNE_STATE_DIR,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("worktrees", "locks"),
+    )
     slot_bytes = (b / draft.DRAFT_REL).read_bytes()
     slot = json.loads(slot_bytes)
 
@@ -301,3 +311,23 @@ def test_foreign_state_copied_into_another_repo_is_refused(tmp_path):
     with pytest.raises(ValueError, match="belongs to"):
         draft.discard(b, (slot["generation"], slot["candidate_revision"]))
     assert (b / draft.DRAFT_REL).read_bytes() == slot_bytes
+
+
+def test_sibling_checkout_with_copied_state_is_refused(tmp_path):
+    import shutil
+
+    a = complete_bundle_project(tmp_path / "a")
+    first = _first_edit(a)["draft"]
+    b = tmp_path / "b"
+    run_git(a, "worktree", "add", "--detach", str(b))
+    shutil.copytree(a / proposals.ARIADNE_STATE_DIR, b / proposals.ARIADNE_STATE_DIR,
+                    dirs_exist_ok=True, ignore=shutil.ignore_patterns("worktrees", "locks"))
+    slot_bytes = (b / draft.DRAFT_REL).read_bytes()
+    branches = run_git(a, "branch", "--list")
+
+    with pytest.raises(ValueError, match="no proposal"):
+        draft.status(b)
+    with pytest.raises(ValueError, match="no proposal"):
+        draft.discard(b, (1, first["candidate_revision"]))
+    assert (b / draft.DRAFT_REL).read_bytes() == slot_bytes
+    assert run_git(a, "branch", "--list") == branches
