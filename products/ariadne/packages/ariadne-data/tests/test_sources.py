@@ -861,6 +861,23 @@ def test_credentialed_url_userinfo_rejected_naming_adr(tmp_path):
         load_registry(reg)
 
 
+def test_signature_in_object_key_path_is_not_a_credential(tmp_path):
+    """#186: a credential-looking key inside an s3 object key is part of the
+    path, not the query — the registry must still load it."""
+    reg = write_registry(
+        tmp_path,
+        [
+            {
+                "name": "pred",
+                "type": "parquet",
+                "path": "s3://reports/model=forecast&signature=v2/predictions.parquet",
+                "table": "pred",
+            }
+        ],
+    )
+    assert load_registry(reg) is not None
+
+
 def test_unknown_keys_rejected(tmp_path):
     """Strict entry schema: freestyle keys fail loudly instead of passing."""
     reg = write_registry(tmp_path, [{"name": "a", "type": "sqlite", "path": "x.db", "extra": 1}])
