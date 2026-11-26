@@ -316,6 +316,13 @@ def test_source_change_approval_keeps_query_on_a_until_calculation_approval(
     assert code == 0, err
     assert json.loads(out)["rows"] == [{"event_count": 1}] and json.loads(out)["governed"] is True
 
+    code, out, err = _run(["profile", *base], capsys)
+    assert code == 0, err
+    events = [source for source in json.loads(out)["sources"] if source["name"] == "events"]
+    assert len(events) == 1
+    assert list(events[0]["tables"]) == ["events"]
+    assert events[0]["tables"]["events"]["row_count"] == 1
+
 
 @pytest.mark.parametrize("surface", ["add", "sources"])
 def test_source_change_duplicate_add_still_refuses(served, tmp_path, capsys, surface):
