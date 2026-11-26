@@ -507,6 +507,9 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "failed_invalid_edit",
         "failed_cleanup_interrupted",
         "failed_moved_candidate",
+        "failed_open_moved",
+        "pending_pin_replay",
+        "pending_pin_holder",
     ],
 )
 def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch, lifecycle_case):
@@ -935,6 +938,9 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "failed_invalid_edit",
         "failed_cleanup_interrupted",
         "failed_moved_candidate",
+        "failed_open_moved",
+        "pending_pin_replay",
+        "pending_pin_holder",
     }
     if lifecycle_case in failed_cases:
         assert draft.status(project) is None
@@ -991,6 +997,80 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 analytics.prepare_contribution(contributor, **failing)
             assert moved["status"]["candidate_revision"] != moved["before"]
             assert draft.status(project) == moved["status"]
+            return
+        if lifecycle_case == "failed_open_moved":
+            # The operator's `ariadne draft edit` lands between Core's open and the
+            # workspace pin (start_proposal reads the record after releasing Core's lock):
+            # the pin must not adopt the operator's candidate, so the cleanup keeps it.
+            real_open, real_proposal_of = draft.open_draft, draft.proposal_of
+            armed, moved = [], {}
+
+            def open_spy(*args, **kwargs):
+                view = real_open(*args, **kwargs)
+                armed.append(True)
+                return view
+
+            def proposal_of_then_edit(project_arg, expected):
+                proposal = real_proposal_of(project_arg, expected)
+                if armed:
+                    armed.clear()
+                    operator_model = changed_model + "# operator edit\n"
+                    rel, _ = authoring_edits.resolve_edit(
+                        {"kind": "model", "name": "retail_sales", "content": operator_model},
+                        project=project,
+                        proposal=proposal,
+                    )
+                    draft.edit_artifact(project, expected, rel, operator_model)
+                    moved["before"] = expected[1]
+                    moved["status"] = draft.status(project)
+                return proposal
+
+            monkeypatch.setattr(draft, "open_draft", open_spy)
+            monkeypatch.setattr(draft, "proposal_of", proposal_of_then_edit)
+            with pytest.raises(AnalyticsError):
+                analytics.prepare_contribution(contributor, **failing)
+            assert moved["status"]["candidate_revision"] != moved["before"]
+            assert draft.status(project) == moved["status"]
+            return
+        if lifecycle_case in {"pending_pin_replay", "pending_pin_holder"}:
+            # A preparation holding its creator pin is in flight (replay sees it pending)
+            # and then the worker stops mid-prepare, leaving the pinned row pending.
+            from lumio_workspace.contributions import ContributionService
+
+            contributions = ContributionService(
+                state,
+                intake,
+                workspace_id=config.workspace_id,
+                external_url=config.external_url,
+                authoring_path=config.authoring_path,
+                profile_path=profile,
+            )
+            seen = {}
+
+            def stop_mid_prepare(self, proposal, revision, edit):
+                replay = analytics.prepare_contribution(contributor, **failing)
+                seen["replay"] = replay
+                seen["task"] = contributions.get(contributor, replay["task_id"])
+                raise RuntimeError("synthetic worker stop mid-prepare")
+
+            monkeypatch.setattr(AuthoringProject, "edit_proposal", stop_mid_prepare)
+            with pytest.raises(RuntimeError, match="worker stop"):
+                analytics.prepare_contribution(contributor, **failing)
+            if lifecycle_case == "pending_pin_replay":
+                assert seen["task"]["status"] == "pending"
+                assert "opened" not in seen["replay"]
+                assert "opened" not in seen["task"]
+                return
+            assert draft.status(project) is not None
+            with pytest.raises(AnalyticsError, match="stale"):
+                analytics.prepare_data_source(
+                    contributor,
+                    retry_key="reuse-while-pinned-prepare-stopped",
+                    project="retail",
+                    source="orders_sqlite",
+                    table="entries",
+                    business_questions=["Still busy after a worker stop?"],
+                )
             return
         if lifecycle_case == "failed_cleanup_interrupted":
             # The worker stops at the cleanup boundary, before the terminal failure is
