@@ -12,5 +12,5 @@ ENV PYTHONUNBUFFERED=1 HOME=/tmp
 WORKDIR /project
 USER 1000:1000
 
-ENTRYPOINT ["ariadne-serve"]
+ENTRYPOINT ["ariadne", "serve"]
 CMD ["--project", "/project", "--http", "--http-container", "--http-host", "0.0.0.0", "--http-allowed-host", "ariadne:8000"]
