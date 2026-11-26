@@ -502,6 +502,9 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "creator_interrupted",
         "creator_reconnect",
         "concurrent_claim",
+        "failed_joined_contribution",
+        "failed_stale_grant",
+        "failed_invalid_edit",
     ],
 )
 def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch, lifecycle_case):
@@ -805,6 +808,20 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)", FILTER_EXPRESSION
     )
     assert FILTER_EXPRESSION in changed_model
+    if lifecycle_case == "failed_joined_contribution":
+        before = draft.status(project)
+        assert before is not None
+        with pytest.raises(AnalyticsError):
+            analytics.prepare_contribution(
+                contributor,
+                retry_key="failed-joined-contribution",
+                source_task_id=source_task,
+                sources=[{"upload_id": uploaded["upload_id"], "intent": "new"}],
+                pages=[{"filename": "cancelled-orders.md", "markdown": WORKSPACE_POLICY}],
+                core_edits=[{"kind": "invalid-edit-kind"}],
+            )
+        assert draft.status(project) == before
+
     candidate = analytics.prepare_contribution(
         contributor,
         retry_key="sqlite-policy-filter-one",
@@ -822,6 +839,9 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     )
     contribution_task = candidate["task_id"]
     assert candidate["status"] == "pending_submission"
+    if lifecycle_case == "failed_joined_contribution":
+        review.get(reviewer, contribution_task)
+        return
     if lifecycle_case == "joiner_reject":
         before = draft.status(project)
         context = review.get(reviewer, contribution_task)
@@ -908,6 +928,36 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "policy-upload-reuse",
         original + b"Review exact declaration reuse.\n",
     )
+    if lifecycle_case in {"failed_stale_grant", "failed_invalid_edit"}:
+        assert draft.status(project) is None
+        original_bindings = bindings.read_text(encoding="utf-8")
+        if lifecycle_case == "failed_stale_grant":
+            bindings.write_text(
+                original_bindings.replace('"name": "orders_sqlite"', '"name": "new_orders"'),
+                encoding="utf-8",
+            )
+        try:
+            with pytest.raises(
+                AnalyticsError,
+                match="Source Approval|data authorization" if lifecycle_case == "failed_stale_grant"
+                else "invalid-edit-kind",
+            ):
+                analytics.prepare_contribution(
+                    contributor,
+                    retry_key=f"{lifecycle_case}-first",
+                    source_task_id=reused_task,
+                    sources=[{"upload_id": reused_upload["upload_id"], "intent": "update"}],
+                    pages=[{"filename": "cancelled-orders.md", "markdown": WORKSPACE_POLICY}],
+                    core_edits=[
+                        {"kind": "invalid-edit-kind"}
+                        if lifecycle_case == "failed_invalid_edit"
+                        else {"kind": "model", "name": "retail_sales", "content": changed_model}
+                    ],
+                )
+        finally:
+            bindings.write_text(original_bindings, encoding="utf-8")
+        assert draft.status(project) is None
+
     reused_candidate = analytics.prepare_contribution(
         contributor,
         retry_key="sqlite-policy-filter-reuse",
@@ -924,6 +974,10 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
     )
     reused_contribution_task = reused_candidate["task_id"]
+    if lifecycle_case in {"failed_stale_grant", "failed_invalid_edit"}:
+        assert reused_candidate["status"] == "pending_submission"
+        review.get(reviewer, reused_contribution_task)
+        return
     if lifecycle_case == "busy_reuse":
         with pytest.raises(AnalyticsError, match="stale"):
             analytics.prepare_data_source(
