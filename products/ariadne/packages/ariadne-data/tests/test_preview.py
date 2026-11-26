@@ -324,6 +324,78 @@ def test_source_change_approval_keeps_query_on_a_until_calculation_approval(
     assert events[0]["tables"]["events"]["row_count"] == 1
 
 
+def _reverted_source_draft(served, tmp_path, monkeypatch, capsys):
+    import tests.test_approve as approval_tests
+
+    project = served
+    api = AuthoringProject(project)
+    target = project / "data" / "b" / "events.parquet"
+    target.parent.mkdir(parents=True)
+    write_parquet(target, [(9, "z")], ["id", "label"])
+    code, out, err = _source_change_cli(
+        project, tmp_path, capsys, {"path": "data/b/events.parquet"}
+    )
+    assert code == 0, out + err
+    assert approval_tests._run(project, approval_tests.Tty())[0]["approved"] == "sources"
+    approval_tests._profile_pair(project, tmp_path, monkeypatch)
+    started = api.start_proposal()
+    api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], _policy_edit("Rule B.")
+    )
+    _validate(project)
+    assert approval_tests._run(project, approval_tests.Tty())[0]["approved"] == "calculation"
+    base = ["--json", "--project", str(project)]
+    assert cli(["query", "event_count", *base]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"event_count": 1}]
+    code, out, err = _source_change_cli(project, tmp_path, capsys, {"path": "data/events.parquet"})
+    assert code == 0, out + err
+    return project, base
+
+
+def test_reverted_source_requires_sources_approval_and_records_baseline(
+    served, tmp_path, monkeypatch, capsys
+):
+    import tests.test_approve as approval_tests
+
+    project, base = _reverted_source_draft(served, tmp_path, monkeypatch, capsys)
+    served_before = (project / ".ariadne/current.json").read_bytes()
+    assert cli(["diff", *base]) == 0
+    assert json.loads(capsys.readouterr().out)["approval_kind"] == "sources"
+    outcome, shown = approval_tests._run(project, approval_tests.Tty())
+    assert outcome["approved"] == "sources"
+    assert "CHANGED source events" in shown
+    assert (project / ".ariadne/current.json").read_bytes() == served_before
+    assert cli(["query", "event_count", *base]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"event_count": 1}]
+    api = AuthoringProject(project)
+    started = api.start_proposal()
+    api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], _policy_edit("Rule C.")
+    )
+    assert cli(["diff", *base]) == 0
+    assert json.loads(capsys.readouterr().out)["approval_kind"] == "calculation"
+    _validate(project)
+    assert approval_tests._run(project, approval_tests.Tty())[0]["approved"] == "calculation"
+    assert cli(["query", "event_count", *base]) == 0
+    assert json.loads(capsys.readouterr().out)["rows"] == [{"event_count": 3}]
+
+
+def test_reverted_source_and_model_edit_are_refused_as_mixed(served, tmp_path, monkeypatch, capsys):
+    import tests.test_approve as approval_tests
+
+    project, _base = _reverted_source_draft(served, tmp_path, monkeypatch, capsys)
+    view = draft.status(project)
+    assert view is not None
+    draft.edit_artifact(
+        project,
+        (view["generation"], view["candidate_revision"]),
+        MODEL_REL,
+        MODEL_YML.replace("COUNT(*)", "SUM(id)"),
+    )
+    with pytest.raises(approval_tests.approve.ApprovalRefused, match="approve the sources first"):
+        approval_tests._run(project, approval_tests.Tty())
+
+
 @pytest.mark.parametrize("surface", ["add", "sources"])
 def test_source_change_duplicate_add_still_refuses(served, tmp_path, capsys, surface):
     current = (served / ".ariadne/current.json").read_bytes()
