@@ -289,7 +289,19 @@ def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
     assert "    + extra: parquet" in shown and "extra2.parquet" in shown
 
 
-def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_path):
+def _profiled_extra_rows(project, capsys) -> int:
+    from ariadne.cli import main as cli
+
+    assert cli(["profile", "--json", "--project", str(project)]) == 0
+    profile = json.loads(capsys.readouterr().out)
+    extra = next(source for source in profile["sources"] if source["name"] == "extra")
+    (table,) = extra["tables"].values()
+    return table["row_count"]
+
+
+def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(
+    tmp_path, capsys, monkeypatch
+):
     """#189: before any served release, A -> B -> A -> B. The revert and the re-proposal append
     no grant, yet the prompt's old side is the draft's base and each receipt names what it
     approved: re-approving B gives B's first receipt, and differs from the revert to A."""
@@ -303,7 +315,35 @@ def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_pa
 
     first_b, _ = to("data/extra2.parquet")
     back_to_a, _ = to("data/extra.parquet")
+    assert _profiled_extra_rows(project, capsys) == 2
+    commit_a = json.loads((project / draft.BASELINE_REL).read_text(encoding="utf-8"))["commit"]
     again_b, shown = to("data/extra2.parquet")
+    assert _profiled_extra_rows(project, capsys) == 1
+
+    # a concurrent approve of B -> A that ROLLS BACK (spec 0040 §3.4.2.5): it takes grants.lock
+    # right after profile's grants read and writes the A pointer before its commit point; the
+    # rollback runs before profile's next lock. profile must report the committed B, never A.
+    real_lock, calls = draft.grants_lock, []
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def interleaved(p):
+        calls.append(p)
+        if len(calls) == 2:  # the approval fails and restores B under the lock
+            with real_lock(p):
+                draft.rollback_source_txn(Path(p))
+        with real_lock(p):
+            yield
+        if len(calls) == 1:  # the approval begins and writes the A pointer
+            with real_lock(p):
+                draft.begin_source_txn(Path(p))
+                draft.set_source_baseline(Path(p), commit_a)
+
+    monkeypatch.setattr(draft, "grants_lock", interleaved)
+    assert _profiled_extra_rows(project, capsys) == 1
+    monkeypatch.undo()
+    assert len(calls) >= 2 and not draft.source_txn_pending(project)
     old, new = (line for line in shown.splitlines() if line.startswith(("    - ", "    + ")))
     assert old.startswith("    - extra: parquet ") and "/data/extra.parquet " in old
     assert new.startswith("    + extra: parquet ") and "/data/extra2.parquet " in new

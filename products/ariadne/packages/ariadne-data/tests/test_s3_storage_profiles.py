@@ -373,7 +373,9 @@ def test_profile_refuses_a_merged_profile_free_source_inheriting_a_served_profil
     stray = {"name": "stray", "type": "parquet", "path": "s3://analytics/other/x.parquet"}
     monkeypatch.setattr(proposals, "refuse_unsupported_project", lambda project: None)
     monkeypatch.setattr(admission, "load_current", lambda project: {"sources": [served_events]})
-    monkeypatch.setattr(authoring_sources, "_load_grants", lambda project: [{"source": stray}])
+    monkeypatch.setattr(
+        authoring_sources, "grants_and_baseline", lambda project: ([{"source": stray}], None)
+    )
     monkeypatch.setattr(
         authoring_sources,
         "approval_state",
@@ -398,7 +400,9 @@ def test_profile_refuses_a_merged_profile_free_source_inheriting_a_served_profil
         "path": "s3://analytics/archive",
         "storage": {**served_events["storage"]},
     }
-    monkeypatch.setattr(authoring_sources, "_load_grants", lambda project: [{"source": archive}])
+    monkeypatch.setattr(
+        authoring_sources, "grants_and_baseline", lambda project: ([{"source": archive}], None)
+    )
     monkeypatch.setattr(profiler, "profile", lambda **kwargs: {"profiled": True})
     assert profiler.profile_served(tmp_path) == {"profiled": True}
 
