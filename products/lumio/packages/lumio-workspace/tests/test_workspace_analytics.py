@@ -15,7 +15,7 @@ from threading import Barrier, BrokenBarrierError
 
 import duckdb
 import pytest
-from ariadne import admission, authoring_sources, draft, execution, proposals
+from ariadne import admission, authoring_edits, authoring_sources, draft, execution, proposals
 from ariadne import sources as native_sources
 from ariadne.authoring import AuthoringProject
 from lumio_wiki.artifact_store import LocalDirectoryArtifactStore, retain_artifact
@@ -502,6 +502,15 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "creator_interrupted",
         "creator_reconnect",
         "concurrent_claim",
+        "failed_joined_contribution",
+        "failed_stale_grant",
+        "failed_invalid_edit",
+        "failed_cleanup_interrupted",
+        "failed_moved_candidate",
+        "failed_open_moved",
+        "failed_open_moved_valid",
+        "pending_pin_replay",
+        "pending_pin_holder",
     ],
 )
 def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch, lifecycle_case):
@@ -805,6 +814,20 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "SUM(CASE WHEN status <> 'cancelled' THEN amount ELSE 0 END)", FILTER_EXPRESSION
     )
     assert FILTER_EXPRESSION in changed_model
+    if lifecycle_case == "failed_joined_contribution":
+        before = draft.status(project)
+        assert before is not None
+        with pytest.raises(AnalyticsError):
+            analytics.prepare_contribution(
+                contributor,
+                retry_key="failed-joined-contribution",
+                source_task_id=source_task,
+                sources=[{"upload_id": uploaded["upload_id"], "intent": "new"}],
+                pages=[{"filename": "cancelled-orders.md", "markdown": WORKSPACE_POLICY}],
+                core_edits=[{"kind": "invalid-edit-kind"}],
+            )
+        assert draft.status(project) == before
+
     candidate = analytics.prepare_contribution(
         contributor,
         retry_key="sqlite-policy-filter-one",
@@ -822,6 +845,9 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
     )
     contribution_task = candidate["task_id"]
     assert candidate["status"] == "pending_submission"
+    if lifecycle_case == "failed_joined_contribution":
+        review.get(reviewer, contribution_task)
+        return
     if lifecycle_case == "joiner_reject":
         before = draft.status(project)
         context = review.get(reviewer, contribution_task)
@@ -908,6 +934,192 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "policy-upload-reuse",
         original + b"Review exact declaration reuse.\n",
     )
+    failed_cases = {
+        "failed_stale_grant",
+        "failed_invalid_edit",
+        "failed_cleanup_interrupted",
+        "failed_moved_candidate",
+        "failed_open_moved",
+        "failed_open_moved_valid",
+        "pending_pin_replay",
+        "pending_pin_holder",
+    }
+    if lifecycle_case in failed_cases:
+        assert draft.status(project) is None
+        original_bindings = bindings.read_text(encoding="utf-8")
+        if lifecycle_case == "failed_stale_grant":
+            bindings.write_text(
+                original_bindings.replace('"name": "orders_sqlite"', '"name": "new_orders"'),
+                encoding="utf-8",
+            )
+        failing = {
+            "retry_key": f"{lifecycle_case}-first",
+            "source_task_id": reused_task,
+            "sources": [{"upload_id": reused_upload["upload_id"], "intent": "update"}],
+            "pages": [{"filename": "cancelled-orders.md", "markdown": WORKSPACE_POLICY}],
+            "core_edits": [
+                {"kind": "model", "name": "retail_sales", "content": changed_model}
+                if lifecycle_case == "failed_stale_grant"
+                else {"kind": "invalid-edit-kind"}
+            ]
+            # A valid page with no Core edit: no Core write checks the expected revision.
+            if lifecycle_case != "failed_open_moved_valid"
+            else [],
+        }
+        error = (
+            "Source Approval|data authorization"
+            if lifecycle_case == "failed_stale_grant"
+            else "invalid-edit-kind"
+        )
+        if lifecycle_case == "failed_moved_candidate":
+            # An operator's `ariadne draft edit` (Core's lock, not the workspace
+            # project lock) advances the candidate while the prepare is in flight
+            # (§3.7 rules 2-3): the cleanup must leave that edited draft active.
+            real_edit = AuthoringProject.edit_proposal
+            moved = {}
+
+            def operator_edit_first(self, proposal, revision, edit):
+                active = draft.status(project)
+                assert active is not None
+                operator_model = changed_model + "# operator edit\n"
+                rel, _ = authoring_edits.resolve_edit(
+                    {"kind": "model", "name": "retail_sales", "content": operator_model},
+                    project=project,
+                    proposal=proposal,
+                )
+                draft.edit_artifact(
+                    project,
+                    (active["generation"], active["candidate_revision"]),
+                    rel,
+                    operator_model,
+                )
+                moved["before"] = active["candidate_revision"]
+                moved["status"] = draft.status(project)
+                return real_edit(self, proposal, revision, edit)
+
+            monkeypatch.setattr(AuthoringProject, "edit_proposal", operator_edit_first)
+            with pytest.raises(AnalyticsError, match=error):
+                analytics.prepare_contribution(contributor, **failing)
+            assert moved["status"]["candidate_revision"] != moved["before"]
+            assert draft.status(project) == moved["status"]
+            return
+        if lifecycle_case in {"failed_open_moved", "failed_open_moved_valid"}:
+            # The operator's `ariadne draft edit` lands between Core's open and the
+            # workspace pin (start_proposal reads the record after releasing Core's lock):
+            # the pin must not adopt the operator's candidate, so the cleanup keeps it.
+            real_open, real_proposal_of = draft.open_draft, draft.proposal_of
+            armed, moved = [], {}
+
+            def open_spy(*args, **kwargs):
+                view = real_open(*args, **kwargs)
+                armed.append(True)
+                return view
+
+            def proposal_of_then_edit(project_arg, expected):
+                proposal = real_proposal_of(project_arg, expected)
+                if armed:
+                    armed.clear()
+                    operator_model = changed_model + "# operator edit\n"
+                    rel, _ = authoring_edits.resolve_edit(
+                        {"kind": "model", "name": "retail_sales", "content": operator_model},
+                        project=project,
+                        proposal=proposal,
+                    )
+                    draft.edit_artifact(project, expected, rel, operator_model)
+                    moved["before"] = expected[1]
+                    moved["status"] = draft.status(project)
+                return proposal
+
+            monkeypatch.setattr(draft, "open_draft", open_spy)
+            monkeypatch.setattr(draft, "proposal_of", proposal_of_then_edit)
+            stale = "stale" if lifecycle_case == "failed_open_moved_valid" else None
+            with pytest.raises(AnalyticsError, match=stale):
+                analytics.prepare_contribution(contributor, **failing)
+            assert moved["status"]["candidate_revision"] != moved["before"]
+            assert draft.status(project) == moved["status"]
+            if lifecycle_case == "failed_open_moved_valid":
+                # Refused before staging: the task is recorded failed, no review task exists.
+                replay = analytics.prepare_contribution(contributor, **failing)
+                assert replay["status"] == "failed"
+                assert "stale" in replay["error"]
+                with pytest.raises(ReviewError):
+                    review.get(reviewer, replay["task_id"])
+            return
+        if lifecycle_case in {"pending_pin_replay", "pending_pin_holder"}:
+            # A preparation holding its creator pin is in flight (replay sees it pending)
+            # and then the worker stops mid-prepare, leaving the pinned row pending.
+            from lumio_workspace.contributions import ContributionService
+
+            contributions = ContributionService(
+                state,
+                intake,
+                workspace_id=config.workspace_id,
+                external_url=config.external_url,
+                authoring_path=config.authoring_path,
+                profile_path=profile,
+            )
+            seen = {}
+
+            def stop_mid_prepare(self, proposal, revision, edit):
+                replay = analytics.prepare_contribution(contributor, **failing)
+                seen["replay"] = replay
+                seen["task"] = contributions.get(contributor, replay["task_id"])
+                raise RuntimeError("synthetic worker stop mid-prepare")
+
+            monkeypatch.setattr(AuthoringProject, "edit_proposal", stop_mid_prepare)
+            with pytest.raises(RuntimeError, match="worker stop"):
+                analytics.prepare_contribution(contributor, **failing)
+            if lifecycle_case == "pending_pin_replay":
+                assert seen["task"]["status"] == "pending"
+                assert "opened" not in seen["replay"]
+                assert "opened" not in seen["task"]
+                return
+            assert draft.status(project) is not None
+            with pytest.raises(AnalyticsError, match="stale"):
+                analytics.prepare_data_source(
+                    contributor,
+                    retry_key="reuse-while-pinned-prepare-stopped",
+                    project="retail",
+                    source="orders_sqlite",
+                    table="entries",
+                    business_questions=["Still busy after a worker stop?"],
+                )
+            return
+        if lifecycle_case == "failed_cleanup_interrupted":
+            # The worker stops at the cleanup boundary, before the terminal failure is
+            # recorded (spec 0034 §10): reconnecting must not need an operator discard.
+            real_finish_operation = state.finish_operation
+
+            def fail_failed(workspace_id, actor, operation, status, response):
+                if status == "failed":
+                    raise RuntimeError("synthetic failure-bookkeeping crash")
+                return real_finish_operation(workspace_id, actor, operation, status, response)
+
+            real_discard = draft.discard
+
+            def fail_discard(*args, **kwargs):
+                raise RuntimeError("synthetic crash before the slot release")
+
+            # First stop: inside the release itself, so the slot is still claimed and
+            # only the persisted creator pin can finish the cleanup on replay.
+            monkeypatch.setattr(draft, "discard", fail_discard)
+            with pytest.raises(RuntimeError, match="before the slot release"):
+                analytics.prepare_contribution(contributor, **failing)
+            monkeypatch.setattr(draft, "discard", real_discard)
+            assert draft.status(project) is not None
+            # Second stop (same-key replay): after the release, before the failure row.
+            monkeypatch.setattr(state, "finish_operation", fail_failed)
+            with pytest.raises(RuntimeError, match="failure-bookkeeping crash"):
+                analytics.prepare_contribution(contributor, **failing)
+            monkeypatch.setattr(state, "finish_operation", real_finish_operation)
+            assert draft.status(project) is None
+        try:
+            with pytest.raises(AnalyticsError, match=error):
+                analytics.prepare_contribution(contributor, **failing)
+        finally:
+            bindings.write_text(original_bindings, encoding="utf-8")
+        assert draft.status(project) is None
+
     reused_candidate = analytics.prepare_contribution(
         contributor,
         retry_key="sqlite-policy-filter-reuse",
@@ -924,6 +1136,10 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         core_edits=[{"kind": "model", "name": "retail_sales", "content": changed_model}],
     )
     reused_contribution_task = reused_candidate["task_id"]
+    if lifecycle_case in failed_cases:
+        assert reused_candidate["status"] == "pending_submission"
+        review.get(reviewer, reused_contribution_task)
+        return
     if lifecycle_case == "busy_reuse":
         with pytest.raises(AnalyticsError, match="stale"):
             analytics.prepare_data_source(
