@@ -939,7 +939,8 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         try:
             with pytest.raises(
                 AnalyticsError,
-                match="Source Approval|data authorization" if lifecycle_case == "failed_stale_grant"
+                match="Source Approval|data authorization"
+                if lifecycle_case == "failed_stale_grant"
                 else "invalid-edit-kind",
             ):
                 analytics.prepare_contribution(

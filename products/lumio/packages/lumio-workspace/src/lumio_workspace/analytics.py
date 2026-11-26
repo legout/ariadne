@@ -989,15 +989,16 @@ class AnalyticsService:
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
 
-    def _release_opened_draft(self, generation: int | None, proposal: str) -> None:
+    def _release_opened_draft(self, pin: dict) -> None:
         """§3.7 rules 2-3: a failed first preparation frees the slot it created. Only
-        that exact draft (same generation, same proposal) is discarded; the generation
-        is never reused, so another request's draft can never match."""
+        that exact draft is discarded: the pinned generation, proposal AND the last
+        candidate revision this preparation itself wrote. A candidate another writer
+        advanced (e.g. ``ariadne draft edit`` under Core's lock) stays active."""
         active = draft.status(self.project)
-        if active is None or generation is None or active["generation"] != generation:
+        expected = (pin["generation"], pin["revision"])
+        if active is None or (active["generation"], active["candidate_revision"]) != expected:
             return
-        expected = (active["generation"], active["candidate_revision"])
-        if draft.proposal_of(self.project, expected) == proposal:
+        if draft.proposal_of(self.project, expected) == pin["proposal"]:
             draft.discard(self.project, expected)
 
     def _pinned_discarded(self, response: dict) -> bool:
@@ -1261,18 +1262,37 @@ class AnalyticsService:
             if current.status != "pending":
                 return current.response
             with self.state.project_lock(self.project):
-                opened = None  # (generation, proposal) of a draft THIS call created
+                if current.response.get("opened"):
+                    # Replay of a preparation that stopped before recording its outcome
+                    # (spec 0034 §10): finish the cleanup from its persisted creator pin.
+                    self._release_opened_draft(current.response["opened"])
+                opened = None  # creator pin of a draft THIS call created
+
+                def pin(revision: str) -> None:
+                    # shortcut: a crash between a Core write and this record leaves the
+                    # pin one revision behind (slot kept); upgrade with a Core-side journal.
+                    if opened is not None:
+                        opened["revision"] = revision
+                        self.state.finish_operation(
+                            self.workspace_id, actor, current, "pending", {"opened": opened}
+                        )
+
                 try:
                     started = self._joined_draft()
                     if started is None:
                         started = self.api.start_proposal()
-                        opened = (self._draft_generation(), started["proposal"])
+                        opened = {
+                            "generation": self._draft_generation(),
+                            "proposal": started["proposal"],
+                        }
+                        pin(started["candidate_revision"])
                     proposal = started["proposal"]
                     revision = started["candidate_revision"]
                     if entries and not self._declarations_present(revision, entries, storages):
                         revision = self.api.propose_sources(proposal, revision, entries, storages)[
                             "revision"
                         ]
+                        pin(revision)
                     resolved, source_digest = authoring_sources.candidate_sources(
                         self.project, revision
                     )
@@ -1285,6 +1305,7 @@ class AnalyticsService:
                     )
                     for edit in core_edits:
                         revision = self.api.edit_proposal(proposal, revision, edit)["revision"]
+                        pin(revision)
                     resources = self._resources()
                     _repo_root, subtree = resolve_repository(self.authoring_path)
                     tree = self.project / proposals.WORKTREES_REL / proposal
@@ -1353,11 +1374,11 @@ class AnalyticsService:
                         "error": str(exc),
                         "published": False,
                     }
+                    if opened is not None:  # release BEFORE the terminal failure is recorded
+                        self._release_opened_draft(opened)
                     self.state.finish_operation(
                         self.workspace_id, actor, current, "failed", response
                     )
-                    if opened is not None:
-                        self._release_opened_draft(*opened)
                     if isinstance(exc, RetryConflict):
                         raise
                     raise AnalyticsError(str(exc)) from exc
