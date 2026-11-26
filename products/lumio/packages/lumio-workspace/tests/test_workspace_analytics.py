@@ -26,6 +26,7 @@ from lumio_wiki.source_references import (
 )
 from lumio_wiki.source_registry import SourceRegistry
 from lumio_workspace import Actor, WorkspaceConfig, WorkspaceState, create_app
+from lumio_workspace import analytics as analytics_module
 from lumio_workspace.analytics import AnalyticsError, AnalyticsService
 from lumio_workspace.intake import IntakeService
 from lumio_workspace.review import ReviewError, ReviewService, render_review
@@ -509,6 +510,7 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "failed_moved_candidate",
         "failed_open_moved",
         "failed_open_moved_valid",
+        "failed_staging_moved",
         "pending_pin_replay",
         "pending_pin_holder",
     ],
@@ -941,6 +943,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "failed_moved_candidate",
         "failed_open_moved",
         "failed_open_moved_valid",
+        "failed_staging_moved",
         "pending_pin_replay",
         "pending_pin_holder",
     }
@@ -963,7 +966,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 else {"kind": "invalid-edit-kind"}
             ]
             # A valid page with no Core edit: no Core write checks the expected revision.
-            if lifecycle_case != "failed_open_moved_valid"
+            if lifecycle_case not in {"failed_open_moved_valid", "failed_staging_moved"}
             else [],
         }
         error = (
@@ -1044,6 +1047,50 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 assert "stale" in replay["error"]
                 with pytest.raises(ReviewError):
                     review.get(reviewer, replay["task_id"])
+            return
+        if lifecycle_case == "failed_staging_moved":
+            # The operator edits after the grant check, while staging is being prepared.
+            real_write_control = analytics_module.write_control_file
+            moved = {}
+
+            def write_control_then_edit(*args, **kwargs):
+                active = draft.status(project)
+                assert active is not None
+                expected = (active["generation"], active["candidate_revision"])
+                proposal = draft.proposal_of(project, expected)
+                operator_model = changed_model + "# operator edit at staging\n"
+                rel, _ = authoring_edits.resolve_edit(
+                    {"kind": "model", "name": "retail_sales", "content": operator_model},
+                    project=project,
+                    proposal=proposal,
+                )
+                draft.edit_artifact(
+                    project,
+                    (active["generation"], active["candidate_revision"]),
+                    rel,
+                    operator_model,
+                )
+                moved["before"] = active["candidate_revision"]
+                moved["status"] = draft.status(project)
+                tree = project / proposals.WORKTREES_REL / proposal
+                moved["tree"] = tree
+                moved["index"] = _git(tree, "write-tree")
+                return real_write_control(*args, **kwargs)
+
+            monkeypatch.setattr(analytics_module, "write_control_file", write_control_then_edit)
+            with pytest.raises(AnalyticsError, match="stale"):
+                analytics.prepare_contribution(contributor, **failing)
+            assert moved["status"]["candidate_revision"] != moved["before"]
+            assert draft.status(project) == moved["status"]
+            assert _git(moved["tree"], "write-tree") == moved["index"]
+            replay = analytics.prepare_contribution(contributor, **failing)
+            assert replay["status"] == "failed"
+            assert "stale" in replay["error"]
+            with pytest.raises(ReviewError):
+                review.get(reviewer, replay["task_id"])
+            with pytest.raises(ReviewError):
+                review.decide(reviewer, replay["task_id"], "invalid", "reject")
+            assert draft.status(project) == moved["status"]
             return
         if lifecycle_case in {"pending_pin_replay", "pending_pin_holder"}:
             # A preparation holding its creator pin is in flight (replay sees it pending)
