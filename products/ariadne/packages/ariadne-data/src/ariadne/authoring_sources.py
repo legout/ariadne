@@ -521,6 +521,27 @@ def _load_grants(project: Path, *, _held: bool = False) -> list[dict]:
         return _read_grants_file(project)
 
 
+def grants_and_baseline(project: Path) -> tuple[list[dict], object]:
+    """The grant list AND the raw source-baseline commit id, read TOGETHER under
+    ``grants.lock`` with the pending-journal check (as :func:`_load_grants`): an approval writes
+    the pointer before its commit point and may roll it back, so an unlocked pointer read could
+    name a baseline that never committed (spec 0040 §3.4.2.5-6). The commit id is ``None`` when
+    the pointer is missing or unreadable; the caller validates and resolves it after release."""
+    project = Path(project)
+    if not (project / proposals.ARIADNE_STATE_DIR).is_dir():
+        return [], None
+    with draft.grants_lock(project):
+        if draft.source_txn_pending(project):
+            raise SourceApprovalPending(_PENDING_MESSAGE)
+        grants = _read_grants_file(project)
+        try:
+            commit = json.loads((project / draft.BASELINE_REL).read_text(encoding="utf-8"))
+            commit = commit["commit"]
+        except (OSError, ValueError, KeyError, TypeError):
+            commit = None
+    return grants, commit
+
+
 def _read_grants_file(project: Path) -> list[dict]:
     path = project / SOURCE_GRANTS_REL
     entry = proposals._lstat(path)

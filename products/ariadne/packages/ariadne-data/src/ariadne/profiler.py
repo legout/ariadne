@@ -733,15 +733,11 @@ def profile(
     return result
 
 
-def _baseline_sources(project: Path) -> list[dict]:
-    """The resolved declarations at the approved source baseline (the commit the last
-    source approval consumed); empty when none is recorded or it is unreadable."""
-    from ariadne import authoring_sources, draft, proposals
+def _baseline_sources(project: Path, commit: object) -> list[dict]:
+    """The resolved declarations at the approved source baseline ``commit`` (snapshotted under
+    ``grants.lock`` with the grants); empty when none is recorded or it is unreadable."""
+    from ariadne import authoring_sources, proposals
 
-    try:
-        commit = json.loads((project / draft.BASELINE_REL).read_text(encoding="utf-8"))["commit"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
     if not isinstance(commit, str) or not proposals._COMMIT_RE.fullmatch(commit):
         return []
     if proposals._git(["cat-file", "-e", f"{commit}^{{commit}}"], project, check=False).returncode:
@@ -764,9 +760,10 @@ def profile_served(project: str | Path) -> dict:
     # revert A -> B -> A appends no grant, spec 0040 §3.4.2.6), else the NEWEST grant (the
     # list is append-only); grants only authorize it below, so a replaced source never re-enters
     by_name: dict[str, dict] = {}
-    for grant in authoring_sources._load_grants(project):
+    grants, baseline = authoring_sources.grants_and_baseline(project)  # one locked snapshot
+    for grant in grants:
         by_name[grant["source"]["name"]] = grant["source"]
-    for entry in _baseline_sources(project):
+    for entry in _baseline_sources(project, baseline):
         by_name[entry["name"]] = entry
     for entry in (served or {}).get("sources") or []:
         by_name[entry["name"]] = entry
