@@ -149,6 +149,16 @@ sources with `governed:false` and state what the answer rests on.
    `authoring_edit_proposal`. No MCP tool approves, rejects, discards or grants a
    source. `define_metric`/`query_records` stay until B2 replaces them.
 
+**§3.1 — Changing one declared source.** `ariadne draft edit FILE` accepts the following typed JSON edit. The existing MCP tool `authoring_edit_proposal` accepts the same object as its `edit` argument. No new command, flag or tool is needed. `ariadne add` and `kind: sources` remain append-only: an existing source name is an error, never a request to replace it.
+
+```json
+{"kind":"source_change","name":"events","changes":{"path":"data/b/events.parquet"}}
+```
+
+`name` selects one existing source in the draft candidate. `changes` sets only the supplied fields: `path` (local path or supported URI), `connection_env` (Postgres DSN **variable name**, never a DSN), or `storage` (a declared Storage Profile name; `null` removes the optional binding). Only fields valid for that source type are allowed. Omitted fields, other sources and profile definitions are unchanged. This cannot rename or retype a source, change `table` or `read_only`, or set any approval or access field.
+
+Apply the change under the ordinary §3.3 draft pin: compare the generation and candidate revision read by the operation under the project lock. On first write, compare against an empty slot and use the normal first-write base. The caller supplies no IDs or revision. Validate the whole resulting registry offline before committing. Refuse an unknown source, an empty change or unchanged resolved declaration, unknown keys, inline credentials, or an invalid registry. A refusal leaves no edit or newly opened draft; a competing write that moved the pin wins and this edit refuses as stale.
+
 ### 3.2 `ariadne init`
 
 1. `init` creates a Git repository if none exists. If no Git identity resolves, it
@@ -299,6 +309,18 @@ sources with `governed:false` and state what the answer rests on.
 5. **Mapping confirmations.** The former `--confirm-mapping` appears as a numbered list
    in the summary and is confirmed with `approve --confirm-mapping SEL…`, under the
    same rules as before. A hypothesis is never confirmable.
+
+**§3.4 — A change is a declaration, not consent (AC4/AC9).** The edit opens no source and grants no read. An old grant for the same name does not cover the new effective identity. Until that exact identity is granted, draft reads (including preview and profiling of that identity) refuse **naming the source**, before opening it; they never substitute the old binding. A sources-only `ariadne approve` shows old and new identities, checks offline before TTY consent and records the grant only after the bounded live checks succeed (§3.4.2). This consumes the draft and updates the source baseline, not the served release. A validated subsequent draft may preview the new binding. Governed `query`/`detail` keep using the served binding if resolvable; otherwise they refuse naming the source and pending calculation approval. Only calculation approval can serve the new binding.
+
+**Observable examples** (independent unless a row says it continues another):
+
+| Given / action | Expected |
+|---|---|
+| An admitted `event_count = COUNT(*)` uses `events`: A has 3 rows, B has 1, with the same table schema. Only A is granted. Apply the JSON above with `ariadne draft edit change.json`; independently, repeat from A with MCP `authoring_edit_proposal(edit=…)`. | Each stages just `events` at B. Preview refuses naming `events`, with no B read and no fallback to 3. Governed query still returns 3 from A. |
+| From A, try `add data/b/events.parquet --name events` or a `sources` edit adding `events`. Separately try `source_change` for a missing name, the current path, or with `type`, `name` or `approved` in `changes`. | Both adds refuse the duplicate. Each change refuses respectively: no such source, no change, or disallowed field. Candidate, grants and served release stay as before. |
+| CLI and MCP read generation 7, candidate R. MCP commits a change at R before the CLI can write its different change. | MCP's candidate stands. CLI refuses stale; it neither overwrites the winner nor retries against the new revision. |
+| Continue the first row with A still available. Confirm the sources-only `ariadne approve`; open and validate a calculation draft on the new baseline. | Approval showed A → B. Served digest is unchanged. `preview event_count` returns 1 (`governed:false`); `query event_count` still returns 3. After calculation approval, query returns 1 (`governed:true`). |
+| Instead change Postgres `events` from `connection_env: EVENTS_A` to `EVENTS_B` and grant B. The old variable is retired; only B resolves. | Governed query refuses naming `events` and the pending calculation approval. It never answers from B on A's release. |
 
 ### 3.5 What the interactive confirmation is, and is not
 
