@@ -396,7 +396,9 @@ def _scaffold(
         destination.write_bytes(plan.agents_bytes)
 
     try:
-        apply_plan(plan, write_env=_write_env, write_agents=_write_agents, install_skill=None)
+        sdk_created = apply_plan(
+            plan, write_env=_write_env, write_agents=_write_agents, install_skill=None
+        )
     except EmptySetupError as exc:
         raise ValueError(str(exc)) from exc
 
@@ -406,7 +408,11 @@ def _scaffold(
 
     write_control_file(kb_target, _core_control_file())
     (target / "data").mkdir(exist_ok=True)  # local inputs are ignored by the project template
-    created: list[str] = []
+    created = [  # the SDK's own files, as it reports them (directories and outside paths dropped)
+        Path(p).relative_to(target).as_posix()
+        for p in sdk_created
+        if Path(p).is_file() and Path(p).is_relative_to(target)
+    ]
     for rel, content in _scaffold_files(with_mcp):
         if rel in matching:
             continue  # byte-identical: nothing to write
@@ -430,16 +436,6 @@ policy_bindings:
   version: 1
   bindings: []
 """
-
-
-def _created_by_init(target: Path, before: set[str]) -> list[str]:
-    """Paths (relative, sorted) that exist now and did not before — init's own files."""
-    now = {
-        p.relative_to(target).as_posix()
-        for p in target.rglob("*")
-        if p.is_file() and ".git" not in p.relative_to(target).parts
-    }
-    return sorted(now - before)
 
 
 def _git(target: Path, *argv: str, check: bool = True) -> str:
@@ -525,17 +521,12 @@ def init_project(
     ensure_git(target, assume_yes=assume_yes, stdin=stdin, stdout=stdout, prompt=prompt)
     # the user's index and working tree stay untouched except for init's own files
     staged_before = _git(target, "diff", "--cached", "--name-only").split()
-    before = {
-        p.relative_to(target).as_posix()
-        for p in target.rglob("*")
-        if p.is_file() and ".git" not in p.relative_to(target).parts
-    }
     identifier = profile_pair.new_identifier()
     namespace = f"urn:uuid:{identifier}"
     lumio_profile = profile_pair.config_dir() / f"{identifier}.json"
     sibling = profile_pair.sibling_path(lumio_profile)
     revision = max(lumio_context.IMPLEMENTED_PROFILE_REVISIONS)
-    _scaffold(target, namespace, lumio_profile)
+    created = _scaffold(target, namespace, lumio_profile)
     (target / "context_integration.yaml").write_text(
         SELECTOR_YAML.format(namespace=namespace, revision=revision), encoding="utf-8"
     )
@@ -544,8 +535,8 @@ def init_project(
         json.dumps(profile_pair.default_sibling(identifier), indent=2, sort_keys=True) + "\n",
     )
     profile_pair.record(target, lumio_profile, sibling)
-    created = _created_by_init(target, before)
-    tracked = [rel for rel in created if not rel.startswith(".ariadne/")]
+    created += ["context_integration.yaml"]  # the record lives in .ariadne/, never committed
+    tracked = sorted(rel for rel in created if not rel.startswith(".ariadne/"))
     ignored = [
         rel
         for rel in tracked
