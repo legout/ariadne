@@ -252,12 +252,26 @@ On the final tree:
   B answers only after a calculation approval. It runs against a live Postgres source
   in CI, not only offline (owner decision 2026-11-23: R1 accepts the offline proof of
   the named refusal; this live leg must pass before V is accepted).
+  Superseded 2026-11-26 (#171): the owner accepts the offline proof instead of a live
+  Postgres CI leg. R1's offline named-refusal proof
+  (`tests/test_approve.py::test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calculation_approval`,
+  offline fixture with a stubbed live check) is the accepted AC4 proof; the 2026-11-23
+  requirement that the live leg pass before V is accepted no longer applies. The V
+  verifier's local docker `postgres:17-alpine` attempt on e6dc3c3 (comment on #135)
+  served A but could not reach B, because there is no public edit that changes an
+  existing source's declaration (#170 adds it); the live A/B was not completed.
 - the strict interruption oracle for the stdio regression test (spec 0040 §3.4.2.5): a
   signal told apart as late, missing, or crossing the close of the cleanup window, and
   the test launcher's own handler observation restored on every unwind. R1 closes with
   the reduced test (a real interrupt in the window leaves a consistent state, and a
   later `draft status` reports the outcome); this stricter proof is settled here
   (owner decision 2026-11-24).
+  Superseded 2026-11-26 (#172): the owner accepts the reduced test (a real self-sent
+  SIGINT in the cleanup window leaves a consistent state, and a later `draft status`
+  reports the outcome) as settled for B1. The stricter proof (a signal told apart as
+  late, missing, or crossing the close of the cleanup window; an independent receipt
+  witness; the launcher's handler observation restored on every unwind) is an accepted
+  limit, not a V blocker.
 
 Run the AC1 owner path end to end against the installed wheel in a temporary
 directory, with the TTY simulated through a pty.
