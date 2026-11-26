@@ -289,6 +289,29 @@ def test_a_changed_source_shows_the_old_and_the_new_identity(tmp_path):
     assert "    + extra: parquet" in shown and "extra2.parquet" in shown
 
 
+def test_a_reverted_source_shows_its_base_as_old_and_gets_its_own_receipt(tmp_path):
+    """#189: before any served release, A -> B -> A -> B. The revert and the re-proposal append
+    no grant, yet the prompt's old side is the draft's base and each receipt names what it
+    approved: re-approving B gives B's first receipt, and differs from the revert to A."""
+    project, _api, _result = _project_with_new_source(tmp_path)
+    write_parquet(project / "data" / "extra2.parquet", [(1,)], ["n"])
+    _run(project, Tty())  # grants events, labels and extra=A
+
+    def to(path):
+        authoring_sources.change_source(project, None, "extra", {"path": path})
+        return _run(project, Tty())
+
+    first_b, _ = to("data/extra2.parquet")
+    back_to_a, _ = to("data/extra.parquet")
+    again_b, shown = to("data/extra2.parquet")
+    old, new = (line for line in shown.splitlines() if line.startswith(("    - ", "    + ")))
+    assert old.startswith("    - extra: parquet ") and "/data/extra.parquet " in old
+    assert new.startswith("    + extra: parquet ") and "/data/extra2.parquet " in new
+    assert again_b["grants"] == back_to_a["grants"] == 0
+    assert again_b["approval_digest"] == first_b["approval_digest"]
+    assert back_to_a["approval_digest"] != again_b["approval_digest"]
+
+
 def _view(project):
     view = draft.status(project)
     assert view is not None
@@ -1238,9 +1261,9 @@ def test_a_journal_appearing_after_classification_refuses_before_any_consent(tmp
     )
     real = approve._previous_identities
 
-    def journal_appears_first(proj, names):
+    def journal_appears_first(proj, *args):
         draft.begin_source_txn(proj)  # after classification, before the prior identities
-        return real(proj, names)
+        return real(proj, *args)
 
     monkeypatch.setattr(approve, "_previous_identities", journal_appears_first)
     asked = {"n": 0}

@@ -163,10 +163,15 @@ def _binding_keys(entry: dict) -> set[str]:
     return set()
 
 
-def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict, dict]]:
+def _previous_identities(
+    project: Path, names: set[str], base: list[dict]
+) -> dict[str, tuple[dict, dict]]:
     """The identity AND frozen credential-free binding each named source had before this
-    draft: the served release's, else the newest source grant's (absent when brand new)."""
+    draft: the served release's, else the draft base's declaration with its grant's binding,
+    else the newest source grant's (absent when brand new). A revert appends no grant, so the
+    newest grant by name is not necessarily the base (#189)."""
     previous: dict[str, tuple[dict, dict]] = {}
+    matching: dict[str, tuple[dict, dict]] = {}
     try:
         grants = authoring_sources._load_grants(project)
     except authoring_sources.SourceApprovalPending as exc:
@@ -181,6 +186,9 @@ def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict
             if grant.get("postgres_binding"):
                 own[f"postgres:{grant['source']['name']}"] = grant["postgres_binding"]
             previous[grant["source"]["name"]] = (grant["source"], own)
+            if grant["source"] in base:
+                matching[grant["source"]["name"]] = (grant["source"], own)
+    previous.update(matching)
     served = admission.load_current(project)
     for entry in (served or {}).get("sources") or []:
         if entry["name"] in names:
@@ -195,7 +203,8 @@ def _previous_identities(project: Path, names: set[str]) -> dict[str, tuple[dict
 def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, stdout) -> dict:
     new = kind["new"]
     bindings = authoring_sources.storage_bindings_from_identity(new)  # offline; refuses early
-    previous = _previous_identities(project, {e["name"] for e in new})
+    base = authoring_sources.candidate_sources(project, record["base_revision"])[0] or []
+    previous = _previous_identities(project, {e["name"] for e in new}, base)
     stdout.write("Source approval (no source has been read):\n")
     for entry in new:
         old = previous.get(entry["name"])
@@ -358,7 +367,10 @@ def approve_sources(project: Path, view: dict, record: dict, kind: dict, stdin, 
         "sources": [e["name"] for e in new],
         "tables_enumerated": tables,
         "grants": result["grants"],
-        "approval_digest": result["approval_digest"],
+        # the receipt names what was displayed and approved, not only the appended grants (#189)
+        "approval_digest": authoring_sources.approval_digest(
+            authoring_sources.resolved_digest(new), bindings
+        ),
     }
 
 
