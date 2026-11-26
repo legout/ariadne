@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
+import re
 import sys
 from datetime import date, time
 from decimal import Decimal
@@ -298,7 +300,68 @@ def _pair(view: dict) -> tuple[int, str]:
     return (view["generation"], view["candidate_revision"])
 
 
+_FILTER_OP = re.compile(r"\s(<=|>=|!=|=|<|>|in)\s")
+
+
+def _literal(text: str) -> Any:
+    """JSON number/true/false/null -> typed; a quoted string -> its content; else the text."""
+    text = text.strip()
+    try:
+        value = json.loads(text, parse_constant=_not_json)
+    except ValueError:
+        return text
+    ok = (
+        value is None
+        or isinstance(value, (bool, str))
+        or (isinstance(value, (int, float)) and math.isfinite(value))
+    )
+    return value if ok else text
+
+
+def _not_json(name: str) -> Any:
+    raise ValueError(name)  # NaN/Infinity stay literal text
+
+
+def _split_list(text: str) -> list[str]:
+    """Split on commas outside double quotes (``\\"`` escapes); items keep their raw quoting."""
+    items, buf, quoted, escaped = [], "", False, False
+    for ch in text:
+        if ch == "," and not quoted:
+            items.append(buf)
+            buf = ""
+            continue
+        buf += ch
+        if escaped:
+            escaped = False
+        elif quoted and ch == "\\":
+            escaped = True
+        elif ch == '"':
+            quoted = not quoted
+    return [*items, buf]
+
+
+def _filters(specs: list[str]) -> list[dict]:
+    """``FIELD OP VALUE`` -> planner predicates; the planner validates them."""
+    out = []
+    for spec in specs:
+        m = _FILTER_OP.search(spec)
+        field, value = (spec[: m.start()].strip(), spec[m.end() :].strip()) if m else ("", "")
+        if not (m and field and value):
+            raise PlannerError("filter_invalid", f"--filter {spec!r}: expected 'FIELD OP VALUE'")
+        op = m.group(1)
+        out.append(
+            {
+                "field": field,
+                "op": op,
+                "value": [_literal(v) for v in _split_list(value)] if op == "in"
+                else _literal(value),
+            }
+        )
+    return out
+
+
 def _query(args: argparse.Namespace) -> dict:
+    filters = _filters(args.filter)  # refuse a malformed filter before any read
     limits = query_results.load_host_query_limits(args.project)
     discovery = DiscoveryRuntime.open_project(args.project)
     discovery._refuse_unsupported("get_metric")
@@ -307,8 +370,8 @@ def _query(args: argparse.Namespace) -> dict:
         deadline_budget=DeadlineBudget(limits["execution_seconds"]),
         discovery=discovery if discovery._managed is not None else None,
     )
-    if args.filter:
-        request = {"metrics": [args.metric], "dimensions": args.by, "filters": args.filter}
+    if filters:
+        request = {"metrics": [args.metric], "dimensions": args.by, "filters": filters}
         return asyncio.run(runtime.query_metrics(request))
     return asyncio.run(runtime.get_metric(args.metric, args.by or None))
 
@@ -379,7 +442,7 @@ def _dispatch(args: argparse.Namespace, stdin: Any) -> int:
     if command == "preview":
         from ariadne import preview
 
-        return _emit(preview.preview(project, args.metric, args.by, args.filter), args)
+        return _emit(preview.preview(project, args.metric, args.by, _filters(args.filter)), args)
     if command == "approve":
         from ariadne import approve
 
