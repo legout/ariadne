@@ -923,5 +923,6 @@ class ContributionService:
         return {
             "task_id": task_id,
             "status": operation.status,
-            **operation.response,
+            # the internal creator pin of a pending analytics preparation stays private
+            **{key: value for key, value in operation.response.items() if key != "opened"},
         }

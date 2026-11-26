@@ -79,6 +79,11 @@ def _candidate_page(filename: str, markdown: str) -> tuple[str, dict]:
     return markdown, frontmatter
 
 
+def _public(response: dict) -> dict:
+    """A task response without the internal creator pin (``opened``) of a pending row."""
+    return {key: value for key, value in response.items() if key != "opened"}
+
+
 class AnalyticsService:
     def __init__(self, config: Any, state: WorkspaceState, intake: IntakeService) -> None:
         self.config = config
@@ -936,12 +941,14 @@ class AnalyticsService:
             self.project, (active["generation"], active["candidate_revision"])
         )
         with self.state._connect() as connection:  # shortcut: no state.py lookup by proposal
+            # a pending preparation's creator pin ($.opened) also holds the draft
             rows = connection.execute(
                 "SELECT status, json_extract(response_json, '$.native_base') "
                 "FROM operations WHERE workspace_id = ? "
                 "AND action IN ('prepare_data_source', 'prepare_contribution') "
-                "AND json_extract(response_json, '$.native_proposal') = ?",
-                (self.workspace_id, proposal),
+                "AND (json_extract(response_json, '$.native_proposal') = ? "
+                "OR json_extract(response_json, '$.opened.proposal') = ?)",
+                (self.workspace_id, proposal, proposal),
             ).fetchall()
         if any(status.startswith("pending") for status, _ in rows):
             raise AnalyticsError("stale: the active draft has a pending request")
@@ -988,6 +995,25 @@ class AnalyticsService:
         expected = (active["generation"], active["candidate_revision"])  # == pinned
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
+
+    def _open_draft(self) -> dict:
+        """Open a fresh draft, keeping the revision Core's open itself returned: Core's
+        lock is released before the proposal record is read, so an operator edit can
+        already have advanced the candidate. ``clean`` is False when the slot no longer
+        holds the opened revision; the caller then must not claim (pin or discard) it."""
+        view = draft.open_draft(self.project)
+        expected = (view["generation"], view["candidate_revision"])
+        proposal = draft.proposal_of(self.project, expected)
+        record = proposals._load_record(self.project.resolve(), proposal)
+        active = draft.status(self.project)
+        return {
+            "proposal": proposal,
+            "base_revision": record["base_revision"],
+            "candidate_revision": view["candidate_revision"],
+            "generation": view["generation"],
+            "clean": active is not None
+            and (active["generation"], active["candidate_revision"]) == expected,
+        }
 
     def _release_opened_draft(self, pin: dict) -> None:
         """§3.7 rules 2-3: a failed first preparation frees the slot it created. Only
@@ -1257,7 +1283,7 @@ class AnalyticsService:
             return operation.response
         with self.state.operation_lock(operation) as acquired:
             if not acquired:
-                return {**operation.response, "task_id": operation.operation_id}
+                return {**_public(operation.response), "task_id": operation.operation_id}
             current = self._operation(actor, "prepare_contribution", operation.operation_id)
             if current.status != "pending":
                 return current.response
@@ -1280,12 +1306,13 @@ class AnalyticsService:
                 try:
                     started = self._joined_draft()
                     if started is None:
-                        started = self.api.start_proposal()
-                        opened = {
-                            "generation": self._draft_generation(),
-                            "proposal": started["proposal"],
-                        }
-                        pin(started["candidate_revision"])
+                        started = self._open_draft()
+                        if started.pop("clean"):
+                            opened = {
+                                "generation": started.pop("generation"),
+                                "proposal": started["proposal"],
+                            }
+                            pin(started["candidate_revision"])
                     proposal = started["proposal"]
                     revision = started["candidate_revision"]
                     if entries and not self._declarations_present(revision, entries, storages):
@@ -1391,7 +1418,7 @@ class AnalyticsService:
         source = self.state.get_operation(self.workspace_id, actor, "prepare_data_source", task_id)
         if source is not None:
             return source.response
-        return self._operation(actor, "prepare_contribution", task_id).response
+        return _public(self._operation(actor, "prepare_contribution", task_id).response)
 
     def reconcile(self, operation: Operation) -> dict | None:
         response = operation.response
