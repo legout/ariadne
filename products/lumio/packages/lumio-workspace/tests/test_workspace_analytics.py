@@ -11,7 +11,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from html import unescape
 from pathlib import Path, PurePosixPath
-from threading import Barrier, BrokenBarrierError
+from threading import Barrier, BrokenBarrierError, Thread
 
 import duckdb
 import pytest
@@ -511,6 +511,7 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "failed_open_moved",
         "failed_open_moved_valid",
         "failed_staging_moved",
+        "failed_ingest_moved",
         "pending_pin_replay",
         "pending_pin_holder",
     ],
@@ -944,6 +945,7 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "failed_open_moved",
         "failed_open_moved_valid",
         "failed_staging_moved",
+        "failed_ingest_moved",
         "pending_pin_replay",
         "pending_pin_holder",
     }
@@ -966,7 +968,8 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 else {"kind": "invalid-edit-kind"}
             ]
             # A valid page with no Core edit: no Core write checks the expected revision.
-            if lifecycle_case not in {"failed_open_moved_valid", "failed_staging_moved"}
+            if lifecycle_case
+            not in {"failed_open_moved_valid", "failed_staging_moved", "failed_ingest_moved"}
             else [],
         }
         error = (
@@ -1091,6 +1094,75 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
             with pytest.raises(ReviewError):
                 review.decide(reviewer, replay["task_id"], "invalid", "reject")
             assert draft.status(project) == moved["status"]
+            return
+        if lifecycle_case == "failed_ingest_moved":
+            # The operator's `ariadne draft edit` runs while ingest_candidate validates:
+            # it must wait for the staging, or the prepare refuses stale before writing.
+            real_ingest = analytics_module.ingest_candidate
+            moved, errors = {}, []
+
+            def operator_edit():
+                try:
+                    active = draft.status(project)
+                    assert active is not None
+                    expected = (active["generation"], active["candidate_revision"])
+                    proposal = draft.proposal_of(project, expected)
+                    operator_model = changed_model + "# operator edit during ingest\n"
+                    rel, _ = authoring_edits.resolve_edit(
+                        {"kind": "model", "name": "retail_sales", "content": operator_model},
+                        project=project,
+                        proposal=proposal,
+                    )
+                    moved["before"], moved["rel"] = active["candidate_revision"], rel
+                    draft.edit_artifact(project, expected, rel, operator_model)
+                    moved["status"] = draft.status(project)
+                    moved["tree"] = project / proposals.WORKTREES_REL / proposal
+                    moved["index"] = _git(moved["tree"], "write-tree")
+                except Exception as exc:  # surfaced below
+                    errors.append(exc)
+
+            def ingest_with_edit(*args, **kwargs):
+                edit = Thread(target=operator_edit)
+                edit.start()
+                edit.join(timeout=1)
+                moved["waited"] = edit.is_alive()
+                moved["thread"] = edit
+                return real_ingest(*args, **kwargs)
+
+            monkeypatch.setattr(analytics_module, "ingest_candidate", ingest_with_edit)
+            try:
+                prepared = analytics.prepare_contribution(contributor, **failing)
+            except AnalyticsError as exc:
+                prepared = None
+                assert "stale" in str(exc)
+            moved["thread"].join(timeout=30)
+            assert not moved["thread"].is_alive()
+            if prepared is None:
+                # Refused stale: the slot and its index hold only the operator's change.
+                assert not errors
+                assert draft.status(project) == moved["status"]
+                assert moved["status"]["candidate_revision"] != moved["before"]
+                assert _git(
+                    moved["tree"], "diff", "--name-only", moved["before"], "HEAD"
+                ).split() == [moved["rel"]]
+                assert _git(moved["tree"], "write-tree") == moved["index"]
+                assert _git(moved["tree"], "diff", "--cached", "--name-only") == ""
+                replay = analytics.prepare_contribution(contributor, **failing)
+                assert replay["status"] == "failed" and "stale" in replay["error"]
+                with pytest.raises(ReviewError):
+                    review.get(reviewer, replay["task_id"])
+            else:
+                # Serialized: the edit waited for the claim on the held revision, then Core
+                # refused it on the staged worktree; nothing of the operator's landed.
+                assert moved["waited"]
+                assert len(errors) == 1 and "uncommitted changes" in str(errors[0])
+                assert "status" not in moved
+                assert prepared["status"] == "pending_submission"
+                assert prepared["native_candidate"] == moved["before"]
+                active = draft.status(project)
+                assert active is not None
+                assert active["candidate_revision"] == moved["before"]
+                assert prepared["native_generation"] == active["generation"]
             return
         if lifecycle_case in {"pending_pin_replay", "pending_pin_holder"}:
             # A preparation holding its creator pin is in flight (replay sees it pending)
