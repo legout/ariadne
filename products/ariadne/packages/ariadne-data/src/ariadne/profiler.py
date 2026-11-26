@@ -103,6 +103,7 @@ from ariadne.execution import (  # pyright: ignore[reportMissingImports] — new
 )
 from ariadne.sources import (  # pyright: ignore[reportMissingImports] — new-module resolver drift
     Registry,
+    _validate_storage_usage,
     implicit_registry,
     load_registry,
 )
@@ -757,9 +758,12 @@ def profile_served(project: str | Path) -> dict:
     state = authoring_sources.approval_state(project, entries, resolved_digest)
     if not state["approved"]:
         raise ValueError("an approved source identity is no longer current (changed binding)")
+    registry = authoring_sources.identity_registry(entries, state["storage_bindings"])
+    # the merge can combine entries valid only apart (spec 0025 §2): recheck it whole
+    _validate_storage_usage(registry.sources, registry.storages or {}, Path("approved sources"))
     limits = authoring_inputs.project_profiling_limits(project)
     return profile(
-        registry=authoring_sources.identity_registry(entries, state["storage_bindings"]),
+        registry=registry,
         budget=execution.DeadlineBudget(limits["execution_seconds"]),
         payload_bytes=limits["response_bytes"],
         locked=True,
