@@ -974,6 +974,7 @@ class AnalyticsService:
                     "proposal": proposal,
                     "base_revision": base,
                     "candidate_revision": active["candidate_revision"],
+                    "generation": active["generation"],
                     "joined": True,
                 }
         raise AnalyticsError(
@@ -1311,7 +1312,7 @@ class AnalyticsService:
                             # Another writer moved the opened draft: never stage on it.
                             raise ValueError("stale: the opened draft moved before the claim")
                         opened = {
-                            "generation": started.pop("generation"),
+                            "generation": started["generation"],
                             "proposal": started["proposal"],
                         }
                         pin(started["candidate_revision"])
@@ -1351,33 +1352,39 @@ class AnalyticsService:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         atomic_write_bytes(path, markdown.encode())
                         page_paths.append(str(path))
-                    ingest_candidate(
-                        task_kb,
-                        CandidateRequest(
-                            schema_version=1,
-                            base_revision=started["base_revision"],
-                            sources=[
-                                CandidateSourceRecord(
-                                    source_id=source.source_id or "",
-                                    original_path=str(path),
-                                    expected_digest=source.response["sha256"],
-                                    intent=intent,
-                                )
-                                for source, path, intent in checked_sources
-                            ],
-                            pages=page_paths,
-                            control=str(control_path),
-                        ),
-                        source_registry=resources.source_registry,
-                        artifact_store=resources.artifact_store,
-                    )
-                    _git(task_kb, "add", "--", ".")
-                    review = self._contribution_review(
-                        {
-                            "native_proposal": proposal,
-                            "native_base": started["base_revision"],
-                        }
-                    )
+
+                    # §3.3.1, §3.7 rules 2-4: Core's pin serializes staging and the review
+                    # capture with operator edits, and refuses stale before any write.
+                    with draft.pinned(self.project, (started["generation"], revision)):
+                        ingest_candidate(
+                            task_kb,
+                            CandidateRequest(
+                                schema_version=1,
+                                base_revision=started["base_revision"],
+                                sources=[
+                                    CandidateSourceRecord(
+                                        source_id=source.source_id or "",
+                                        original_path=str(path),
+                                        expected_digest=source.response["sha256"],
+                                        intent=intent,
+                                    )
+                                    for source, path, intent in checked_sources
+                                ],
+                                pages=page_paths,
+                                control=str(control_path),
+                            ),
+                            source_registry=resources.source_registry,
+                            artifact_store=resources.artifact_store,
+                        )
+                        _git(task_kb, "add", "--", ".")
+                        review = self._contribution_review(
+                            {
+                                "native_proposal": proposal,
+                                "native_base": started["base_revision"],
+                            }
+                        )
+                        if review["head_revision"] != revision:
+                            raise ValueError("stale: the draft moved before staging")
                     response = {
                         "task_id": operation.operation_id,
                         "status": "pending_submission",
@@ -1390,7 +1397,7 @@ class AnalyticsService:
                         "native_tree": review["candidate_tree"],
                         "native_review": review["review_digest"],
                         "joined_draft": bool(started.get("joined")),
-                        "native_generation": self._draft_generation(),
+                        "native_generation": started["generation"],
                         "review_url": f"{self.external_url}/review/{operation.operation_id}",
                         "review_generation": 0,
                         "conversion": conversion,
