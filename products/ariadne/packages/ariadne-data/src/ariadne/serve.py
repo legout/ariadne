@@ -936,7 +936,10 @@ def build_app(facade: FacadeSource, *, project: str | Path = ".", toolset: str =
                     pages: [{path, content}]} (native knowledge pages), or {kind:
                     sources, entries: [...registry-shaped...], storages?} — a typed
                     source declaration: inert DATA, nothing is opened, and it grants
-                    nothing; the human approves sources outside this surface.
+                    nothing; the human approves sources outside this surface. Or
+                    {kind: source_change, name, changes: {path | connection_env |
+                    storage}} — changes ONE existing source's declaration (never a
+                    rename, retype or grant); the new identity needs source approval.
             """
             result = authoring_api.apply_edit(edit)
             return {key: value for key, value in result.items() if key != "sources"} | (

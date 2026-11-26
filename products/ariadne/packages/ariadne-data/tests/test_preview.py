@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from ariadne import authoring_sources, draft  # noqa: E402
+from ariadne import authoring_sources, draft, proposals  # noqa: E402
 from ariadne.authoring import AuthoringProject  # noqa: E402
 from ariadne.cli import main as cli  # noqa: E402
 from tests.test_git_admission import _policy_edit, admitted_ready  # noqa: E402
@@ -47,6 +47,7 @@ def served(tmp_path):
 
 def _pin(project):
     view = draft.status(project)
+    assert view is not None
     return (view["generation"], view["candidate_revision"])
 
 
@@ -76,6 +77,7 @@ def test_preview_returns_the_draft_result_while_query_serves_the_old_definition(
     assert result["rows"] == [{"event_count": 6}]
     assert result["governed"] is False
     view = draft.status(served)
+    assert view is not None
     assert result["draft_generation"] == view["generation"]
     assert result["draft_revision"] == view["candidate_revision"]
     assert result["served_revision"] == view["served_revision"] is not None
@@ -96,7 +98,9 @@ def test_a_new_source_refuses_before_its_grant_and_previews_after_the_exact_gran
     assert "peek" in json.loads(err)["error"]["message"]
 
     view = draft.status(served)
+    assert view is not None
     resolved, digest = authoring_sources.candidate_sources(served, view["candidate_revision"])
+    assert digest is not None
     authoring_sources.grant_candidate(
         served,
         draft.proposal_of(served, _pin(served)),
@@ -122,6 +126,254 @@ def test_a_changed_identity_is_refused_and_an_older_binding_is_never_substituted
     code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
     assert code == 1 and out == ""
     assert "events" in json.loads(err)["error"]["message"]
+
+
+def _source_change_cli(project, tmp_path, capsys, changes, name="events"):
+    edit = tmp_path / "change.json"
+    edit.write_text(json.dumps({"kind": "source_change", "name": name, "changes": changes}))
+    return _run(["draft", "edit", str(edit), "--json", "--project", str(project)], capsys)
+
+
+def _candidate_registry(project):
+    view = draft.status(project)
+    assert view is not None
+    proposal = draft.proposal_of(project, (view["generation"], view["candidate_revision"]))
+    return yaml.safe_load(proposals.read_artifact(project, proposal, "ariadne.yaml")["content"])
+
+
+@pytest.mark.parametrize("surface", ["cli", "mcp"])
+def test_source_change_stages_only_events_and_refuses_ungranted_preview(
+    served, tmp_path, capsys, monkeypatch, surface
+):
+    from tests.mcp_inproc import call
+
+    target = served / "data" / "b" / "events.parquet"
+    target.parent.mkdir(parents=True)
+    write_parquet(target, [(9, "z")], ["id", "label"])
+    before = yaml.safe_load((served / "ariadne.yaml").read_text())
+    edit = {"kind": "source_change", "name": "events", "changes": {"path": "data/b/events.parquet"}}
+    if surface == "cli":
+        code, out, err = _source_change_cli(served, tmp_path, capsys, edit["changes"])
+        assert code == 0, out + err
+    else:
+        is_error, out = call(served, "authoring_edit_proposal", {"edit": edit})
+        assert not is_error, out
+    after = _candidate_registry(served)
+    expected = yaml.safe_load(yaml.safe_dump(before))
+    next(s for s in expected["sources"] if s["name"] == "events")["path"] = "data/b/events.parquet"
+    assert after == expected
+    opened = []
+    monkeypatch.setattr("ariadne.preview.DuckDBExecution", lambda *a, **k: opened.append(a))
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
+    assert code == 1 and out == "" and "events" in json.loads(err)["error"]["message"]
+    assert not opened
+    code, out, err = _run(["query", "event_count", "--json", "--project", str(served)], capsys)
+    assert code == 0, err
+    assert json.loads(out)["rows"] == [{"event_count": 3}]
+
+
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize(
+    ("name", "changes", "reason"),
+    [
+        ("missing", {"path": "data/b/events.parquet"}, r"(?i)(unknown|no such|not found)"),
+        ("events", {}, r"(?i)(empty|no change)"),
+        ("events", {"path": "data/events.parquet"}, r"(?i)(unchanged|no change)"),
+        *[
+            (
+                "events",
+                {key: value},
+                rf"(?i)({key}).*(disallow|unknown|invalid|not allowed)"
+                rf"|(?i:disallow|unknown|invalid|not allowed).*{key}",
+            )
+            for key, value in [
+                ("type", "parquet"),
+                ("name", "other"),
+                ("approved", True),
+                ("table", "other"),
+                ("read_only", False),
+            ]
+        ],
+        (
+            "events",
+            {"path": "s3://user:secret@example.com/events.parquet"},
+            r"(?i)(credential|secret|password|userinfo)",
+        ),
+        *[
+            ("signed", {"path": url}, r"(?i)credential")
+            for url in [
+                "https://acct.blob.core.windows.net/c/events.parquet"
+                "?sv=2022-11-02&se=2026-12-01&sig=SECRETSIG",
+                "https://b.s3.amazonaws.com/events.parquet?X-Amz-Credential=AKIA"
+                "&X-Amz-Signature=SECRETSIG",
+                "https://storage.googleapis.com/b/events.parquet?GoogleAccessId=a"
+                "&X-Goog-Signature=SECRETSIG",
+                "https://example.com/events.parquet?access_token=SECRETSIG",
+                "https://example.com/events.parquet?token=SECRETSIG",
+                "https://example.com/events.parquet?signature=SECRETSIG",
+            ]
+        ],
+        ("sqlite", {"path": "data/other.db", "storage": None}, r"(?i)storage.*not allowed"),
+    ],
+)
+def test_source_change_refusals_leave_state_untouched(
+    served, tmp_path, capsys, name, changes, reason, active
+):
+    import re
+
+    if active:
+        _edit(served, EDITED)
+    view_before = draft.status(served)
+    registry_before = _candidate_registry(served) if active else None
+    paths = [draft.DRAFT_REL, Path(".ariadne/source_grants.json"), Path(".ariadne/current.json")]
+    before = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
+    extra = {  # a declared source of the type the case changes
+        "sqlite": {"name": "sqlite", "type": "sqlite", "path": "data/x.db"},
+        "signed": {"name": "signed", "type": "parquet", "path": "data/x.parquet", "table": "t"},
+    }.get(name)
+    if extra:
+        doc = yaml.safe_load((served / "ariadne.yaml").read_text(encoding="utf-8"))
+        doc["sources"].append(extra)
+        draft.edit_artifact(
+            served,
+            _pin(served) if active else None,
+            "ariadne.yaml",
+            yaml.safe_dump(doc, sort_keys=False),
+        )
+        view_before = draft.status(served)
+        registry_before = _candidate_registry(served)
+        before = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
+    code, out, err = _source_change_cli(served, tmp_path, capsys, changes, name)
+    assert code == 1 and not out
+    assert re.search(reason, json.loads(err)["error"]["message"]), err
+    assert "SECRETSIG" not in err
+    after = {p: (served / p).read_bytes() if (served / p).exists() else None for p in paths}
+    assert after == before
+    assert draft.status(served) == view_before
+    if active or extra:
+        assert _candidate_registry(served) == registry_before
+
+
+def test_a_changed_source_with_an_unresolvable_profile_refuses_naming_the_source(
+    served, capsys, monkeypatch
+):
+    """Spec 0040 §3.4: the refusal names the owning source and keeps the profile reason."""
+    monkeypatch.delenv("ARCHIVE_ENDPOINT", raising=False)
+    doc = yaml.safe_load((served / "ariadne.yaml").read_text(encoding="utf-8"))
+    doc["storages"] = {
+        "archive": {
+            "type": "s3",
+            "access_key_id_env": "ARCHIVE_KEY_ID",
+            "secret_access_key_env": "ARCHIVE_SECRET",
+            "endpoint_url_env": "ARCHIVE_ENDPOINT",
+            "scopes": ["s3://archive/"],
+        }
+    }
+    for entry in doc["sources"]:
+        if entry["name"] == "events":
+            entry.update(path="s3://archive/events.parquet", storage="archive")
+    draft.edit_artifact(served, None, "ariadne.yaml", yaml.safe_dump(doc, sort_keys=False))
+    code, out, err = _run(["preview", "event_count", "--json", "--project", str(served)], capsys)
+    message = json.loads(err)["error"]["message"]
+    assert code == 1 and out == ""
+    assert "events" in message and "archive" in message and "ARCHIVE_ENDPOINT" in message
+
+
+def test_source_change_approval_keeps_query_on_a_until_calculation_approval(
+    served, tmp_path, capsys, monkeypatch
+):
+    import tests.test_approve as approval_tests
+
+    target = served / "data" / "b" / "events.parquet"
+    target.parent.mkdir(parents=True)
+    write_parquet(target, [(9, "z")], ["id", "label"])
+    current = served / ".ariadne/current.json"
+    original = current.read_bytes()
+    code, out, err = _source_change_cli(served, tmp_path, capsys, {"path": "data/b/events.parquet"})
+    assert code == 0, out + err
+    outcome, shown = approval_tests._run(served, approval_tests.Tty())
+    assert outcome["approved"] == "sources"
+    assert "CHANGED source events" in shown and "events.parquet" in shown and "data/b/" in shown
+    assert current.read_bytes() == original
+    # Open a calculation draft and validate against the new, granted baseline.
+    approval_tests._profile_pair(served, tmp_path, monkeypatch)
+    api = AuthoringProject(served)
+    started = api.start_proposal()
+    api.edit_pages_batch(
+        started["proposal"], started["candidate_revision"], _policy_edit("Rule B.")
+    )
+    _validate(served)
+    base = ["--json", "--project", str(served)]
+    code, out, err = _run(["preview", "event_count", *base], capsys)
+    assert code == 0, err
+    assert json.loads(out)["rows"] == [{"event_count": 1}] and json.loads(out)["governed"] is False
+    code, out, err = _run(["query", "event_count", *base], capsys)
+    assert code == 0, err
+    assert json.loads(out)["rows"] == [{"event_count": 3}]
+    outcome, _ = approval_tests._run(served, approval_tests.Tty())
+    assert outcome["approved"] == "calculation"
+    code, out, err = _run(["query", "event_count", *base], capsys)
+    assert code == 0, err
+    assert json.loads(out)["rows"] == [{"event_count": 1}] and json.loads(out)["governed"] is True
+
+
+@pytest.mark.parametrize("surface", ["add", "sources"])
+def test_source_change_duplicate_add_still_refuses(served, tmp_path, capsys, surface):
+    current = (served / ".ariadne/current.json").read_bytes()
+    base = ["--json", "--project", str(served)]
+    if surface == "add":
+        argv = ["add", "data/b/events.parquet", "--name", "events", *base]
+    else:
+        edit = tmp_path / "add.json"
+        edit.write_text(
+            json.dumps(
+                {
+                    "kind": "sources",
+                    "storages": {},
+                    "entries": [
+                        {"name": "events", "type": "parquet", "path": "data/b/events.parquet"}
+                    ],
+                }
+            )
+        )
+        argv = ["draft", "edit", str(edit), *base]
+    code, out, err = _run(argv, capsys)
+    assert code == 1 and not out
+    message = json.loads(err)["error"]["message"].lower()
+    assert "events" in message and ("duplicate" in message or "already" in message)
+    assert draft.status(served) is None
+    assert (served / ".ariadne/current.json").read_bytes() == current
+
+
+def test_source_change_losing_a_race_refuses_stale(served, tmp_path, capsys, monkeypatch):
+    from tests.mcp_inproc import call
+
+    _edit(served, EDITED)
+    real_status = draft.status
+    winner = []
+
+    def competing_status(project):
+        view = real_status(project)
+        if not winner:
+            winner.append(None)
+            error, result = call(
+                project,
+                "authoring_edit_proposal",
+                {
+                    "edit": {
+                        "kind": "seed_notes",
+                        "content": "# winner\n",
+                    }
+                },
+            )
+            assert not error, result
+            winner[0] = real_status(project)
+        return view
+
+    monkeypatch.setattr(draft, "status", competing_status)
+    code, out, err = _source_change_cli(served, tmp_path, capsys, {"path": "data/b/events.parquet"})
+    assert code == 1 and not out and "stale" in json.loads(err)["error"]["message"].lower()
+    assert real_status(served) == winner[0]
 
 
 def test_a_stale_or_unvalidated_draft_is_refused(served, capsys, monkeypatch):
@@ -173,7 +425,9 @@ def test_an_identity_under_a_pending_source_approval_is_refused_before_it_is_rea
     )
     _edit(served, PEEK, _pin(served))
     view = draft.status(served)
+    assert view is not None
     _, digest = authoring_sources.candidate_sources(served, view["candidate_revision"])
+    assert digest is not None
     authoring_sources.grant_candidate(
         served,
         draft.proposal_of(served, _pin(served)),
@@ -206,6 +460,7 @@ def test_an_mcp_predicate_filter_changes_the_aggregate(served):
     label_a = [{"field": "label", "op": "=", "value": "a"}]  # only id 1
     is_error, out = _mcp_preview(served, filters=label_a)
     assert not is_error, out
+    assert isinstance(out, dict)
     assert out["rows"] == [{"events::events.event_count": 1}]  # unfiltered SUM(id) is 6
 
 
@@ -351,6 +606,8 @@ def _preview_wire(project, **arguments):
 
 
 def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
+    from mcp.types import CallToolResult
+
     from ariadne import query_results
     from ariadne.serve import _refusal_envelope_bytes
 
@@ -361,11 +618,13 @@ def test_an_mcp_preview_over_the_transport_cap_is_refused(served):
     _edit(served, EDITED)
     _validate(served)
     result, size = _preview_wire(served, dimensions=["label"])
+    assert isinstance(result, CallToolResult)
     assert result.is_error and size <= cap, (size, cap)
     assert result.structured_content["error"]["exhausted_bound"] == {"mcp_response_bytes": cap}
     # a planner error echoing a long agent-supplied op is bounded by the same cap
     bad = [{"field": "label", "op": "x" * 5000, "value": "a"}]
     result, size = _preview_wire(served, filters=bad)
+    assert isinstance(result, CallToolResult)
     assert result.is_error and size <= cap, (size, cap)
     assert result.structured_content["error"]["code"] == "result_byte_limit"
 

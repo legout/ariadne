@@ -584,6 +584,72 @@ def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calcu
     assert (project / CURRENT).read_bytes() == served_bytes  # the served state never moved
 
 
+def test_source_change_postgres_variable_requires_calculation_approval(
+    tmp_path, monkeypatch, capsys
+):
+    """Spec 0040 observable row 5: offline Postgres bindings, no remote connection."""
+    from ariadne import admission
+    from ariadne.cli import main as cli
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    project = complete_bundle_project(tmp_path)
+    review, _ = admitted_ready(AuthoringProject(project), project, _policy_edit("Rule A."))
+    assert admit_library(project, review, destination=tmp_path / "published") == 0
+    monkeypatch.setenv("EVENTS_A", "postgresql://owner:pw@db-a.internal:5432/app")
+    monkeypatch.setenv("EVENTS_B", "postgresql://owner:pw@db-b.internal:5432/app")
+    entry = authoring_sources.source_entry("EVENTS_A", name="pg", type="postgres")
+    authoring_sources.add_sources(project, None, [entry])
+
+    class NoRemote:
+        catalog: list = []
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(approve.execution, "DuckDBExecution", NoRemote)
+    _run(project, Tty())
+    record = admission.load_current(project)
+    assert record is not None
+    binding = {
+        "host": ["db-a.internal"],
+        "hostaddr": [],
+        "port": ["5432"],
+        "dbname": "app",
+        "user": "owner",
+    }
+    declared = record.get("source_declaration_digest") or record["source_digest"]
+    shaped = {
+        **record,
+        "sources": [*record["sources"], entry],
+        "storage_bindings": {"postgres:pg": binding},
+    }
+    shaped["source_digest"] = authoring_sources.approval_digest(declared, {"postgres:pg": binding})
+    (project / CURRENT).write_text(json.dumps(shaped))
+    served_before = (project / CURRENT).read_bytes()
+    change = tmp_path / "change.json"
+    change.write_text(
+        json.dumps(
+            {"kind": "source_change", "name": "pg", "changes": {"connection_env": "EVENTS_B"}}
+        )
+    )
+    capsys.readouterr()
+    code = cli(["draft", "edit", str(change), "--json", "--project", str(project)])
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert _run(project, Tty())[0]["approved"] == "sources"
+    monkeypatch.delenv("EVENTS_A")
+    code = cli(["query", "event_count", "--json", "--project", str(project)])
+    captured = capsys.readouterr()
+    assert code == 1 and captured.out == ""
+    message = json.loads(captured.err)["error"]["message"]
+    assert "pg" in message and "calculation approval" in message
+    assert (project / CURRENT).read_bytes() == served_before
+
+
 def test_diff_full_gives_the_complete_escaped_content_the_prompt_may_cut_off(pty_project, capsys):
     from ariadne.cli import main as cli
 

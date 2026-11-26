@@ -260,7 +260,13 @@ staged artifacts: there is no staged route or automatic artifact import.
    declared with `connection_env` naming the environment variable that holds
    the DSN — an inline connection string is refused. Optional named `storages:`
    S3 profiles are credential-free variable names plus scopes. Declaring is inert
-   data: nothing is opened and nothing is granted.
+   data: nothing is opened and nothing is granted. `add` and `kind: sources`
+   append only — an existing name is refused. To change ONE declared source,
+   use `{kind: source_change, name, changes: {path | connection_env | storage}}`
+   (only fields valid for its type; `storage: null` removes the binding). It
+   cannot rename or retype a source, change `table` or `read_only`, or approve
+   anything; an empty or no-op change is refused (unlike the identical-artifact
+   no-op of other edits). The changed identity needs a new source approval.
 2. **STOP — the human approves the sources first.** `ariadne approve` on a
    draft that adds or changes a source identity is a **source approval**: the
    human sees the exact identities, confirms on the terminal, and only then are
@@ -286,7 +292,8 @@ staged artifacts: there is no staged route or automatic artifact import.
    name, content}`, `{kind: graph, content}`, `{kind: seed_notes, content}`,
    `{kind: contract, name, content}`, `{kind: contract_bindings, content}`,
    `{kind: pages, pages: [{path, content}]}` (native knowledge pages, one
-   coherent batch) or `{kind: sources, entries, storages?}`. One COMPLETE
+   coherent batch), `{kind: sources, entries, storages?}` or
+   `{kind: source_change, name, changes}`. One COMPLETE
    artifact per edit; an identical edit is a no-op. Never edit `index.md`,
    `log.md` or computations pages: they are system-generated. Dataset sources
    may SELECT/join only granted registry identities — never raw file paths or

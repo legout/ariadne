@@ -100,8 +100,11 @@ def storage_bindings_from_identity(resolved: list[dict] | None) -> dict:
         name = storage["name"]
         if name in bindings:
             continue
-        profile = sources.profile_from_identity(name, storage)
-        bindings[name] = sources.resolve_binding(profile).record()
+        try:
+            profile = sources.profile_from_identity(name, storage)
+            bindings[name] = sources.resolve_binding(profile).record()
+        except ValueError as exc:  # spec 0040 §3.4: name the owning source
+            raise ValueError(f"source {entry.get('name')!r}: {exc}") from None
     return bindings
 
 
@@ -359,6 +362,84 @@ def add_sources(
     resolved_identity, digest = candidate_sources(project, edited["revision"])
     if resolved_identity is None:  # unreachable: the merge just added entries
         raise ValueError("the registry edit committed no source entries")
+    return {
+        "proposal": edited["proposal"],
+        "revision": edited["revision"],
+        "changed": edited["changed"],
+        "source_digest": digest,
+        "sources": resolved_identity,
+        "draft": view,
+    }
+
+
+# spec 0040 §3.1 "Changing one declared source": the only settable fields, per type.
+_CHANGE_FIELDS = {"postgres": frozenset({"connection_env"})}
+
+
+def change_source(
+    project: str | Path, expected: draft.Expected, name: object, changes: object
+) -> dict:
+    """Change ONE existing source's declaration in the active draft (spec 0040 §3.1):
+    set only the supplied ``path``/``connection_env``/``storage`` fields valid for its
+    type (``storage: null`` removes the binding); everything else stays. Same pin,
+    whole-registry validation and commit as :func:`add_sources`; opens and grants
+    nothing. Refuses an unknown source, an empty or no-op change and disallowed
+    fields, leaving no edit and no newly opened draft."""
+    project = Path(project).resolve()
+    if not isinstance(name, str) or not name:
+        raise ValueError("source_change needs the name of an existing source")
+    if not isinstance(changes, dict):
+        raise ValueError("source_change 'changes' must be a mapping of fields to set")
+    if not changes:
+        raise ValueError(f"source_change for {name!r} is empty: no change requested")
+
+    def op(proposal: str, current: str) -> dict:
+        blob = proposals._read_blob(project, current, "ariadne.yaml")
+        doc = (yaml.safe_load(blob.decode("utf-8")) or {}) if blob is not None else {}
+        if not isinstance(doc, dict):
+            raise ValueError(f"the draft's ariadne.yaml at {current[:12]} is not a mapping")
+        existing = doc.get("sources") or []
+        if not isinstance(existing, list):
+            raise ValueError("the draft's ariadne.yaml 'sources' is not a list")
+        index = next(
+            (i for i, e in enumerate(existing) if isinstance(e, dict) and e.get("name") == name),
+            None,
+        )
+        if index is None:
+            raise ValueError(f"no such source {name!r} in the draft registry — nothing was written")
+        entry = dict(existing[index])
+        kind = str(entry.get("type"))
+        allowed = _CHANGE_FIELDS.get(
+            kind,
+            frozenset({"path", "storage"} if kind in sources.STORAGE_SOURCE_TYPES else {"path"}),
+        )
+        disallowed = sorted(set(changes) - allowed)
+        if disallowed:
+            raise ValueError(
+                f"source_change field(s) {disallowed} not allowed for {entry.get('type')} "
+                f"source {name!r}; allowed: {sorted(allowed)} — nothing was written"
+            )
+        for key, value in changes.items():
+            if key == "storage" and value is None:
+                entry.pop("storage", None)
+            else:
+                entry[key] = value
+        before = _resolved_entries(
+            *sources.validate_registry_doc(doc, "the draft registry", project)
+        )
+        doc["sources"] = [*existing[:index], entry, *existing[index + 1 :]]
+        after = _resolved_entries(*sources.validate_registry_doc(doc, "the source change", project))
+        if after == before:
+            raise ValueError(
+                f"source_change leaves {name!r} unchanged: no change to its resolved "
+                "declaration — nothing was written"
+            )
+        return proposals.edit_proposal(
+            project, proposal, current, "ariadne.yaml", yaml.safe_dump(doc, sort_keys=False)
+        )
+
+    edited, view = draft.mutate(project, expected, op)
+    resolved_identity, digest = candidate_sources(project, edited["revision"])
     return {
         "proposal": edited["proposal"],
         "revision": edited["revision"],

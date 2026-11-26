@@ -365,7 +365,9 @@ class AuthoringProject:
         the slot, so a competing writer between read and write makes the loser refuse
         as stale; with no draft the call is the first write that creates it. Kinds: the
         typed artifact kinds, ``{kind: "sources", entries: [...], storages?}`` (a typed
-        source edit; inert, never a grant) and ``{kind: "pages", pages: [...]}``."""
+        source edit; inert, never a grant), ``{kind: "source_change", name, changes}``
+        (one existing source's declaration, spec 0040 §3.1) and
+        ``{kind: "pages", pages: [...]}``."""
         if not isinstance(edit, dict):
             raise ValueError("an edit is a typed JSON object")
         active = draft.status(self.project)
@@ -375,6 +377,11 @@ class AuthoringProject:
             proposals.check_edit_keys(edit, frozenset({"kind", "entries", "storages"}))
             result = authoring_sources.add_sources(
                 self.project, expected, edit["entries"], edit.get("storages")
+            )
+        elif kind == "source_change":
+            proposals.check_edit_keys(edit, frozenset({"kind", "name", "changes"}))
+            result = authoring_sources.change_source(
+                self.project, expected, edit.get("name"), edit.get("changes")
             )
         elif kind == "pages":
             proposals.check_edit_keys(edit, frozenset({"kind", "pages"}))
@@ -387,8 +394,8 @@ class AuthoringProject:
             result = draft.edit_artifact(self.project, expected, rel, content)
         else:
             raise ValueError(
-                f"an edit is a typed object with kind one of {[*EDIT_KINDS, 'sources', 'pages']}, "
-                f"got kind {kind!r}"
+                "an edit is a typed object with kind one of "
+                f"{[*EDIT_KINDS, 'sources', 'source_change', 'pages']}, got kind {kind!r}"
             )
         return result
 

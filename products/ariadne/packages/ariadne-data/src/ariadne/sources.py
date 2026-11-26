@@ -86,6 +86,13 @@ DSN_RE = re.compile(r"postgres(?:ql)?://")
 _URI_SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*:")
 # scheme://user:password@host (also empty user) — never echo a password.
 _DSN_PASSWORD_RE = re.compile(r"(//[^\s/@:]*:)([^\s/@]+)(@)")
+# A signed/bearer URL query (Azure SAS, AWS/GCS presigned, generic tokens) is an
+# inline credential too (spec 0040 §3.1) — never echo the value.
+_SIGNED_URL_RE = re.compile(
+    r"[?&](?:sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token"
+    r"|x-goog-signature|x-goog-credential|googleaccessid|access_token|token)=",
+    re.IGNORECASE,
+)
 
 SOURCE_TYPES = (
     "sqlite",
@@ -458,6 +465,12 @@ def _source(path: Path, index: int, entry: object, seen: set[str]) -> Source:
                 f"{where}: {key} carries inline URL credentials (ADR-0010): "
                 "remove the user:password userinfo — credentials live in the "
                 "environment, never in the registry"
+            )
+        if isinstance(value, str) and _URI_SCHEME_RE.match(value) and _SIGNED_URL_RE.search(value):
+            raise ValueError(
+                f"{where}: {key} carries an inline URL credential (a signed or token "
+                "query, ADR-0010) — credentials live in the environment, never in the "
+                "registry"
             )
     unknown = sorted(set(entry) - SOURCE_KEYS)
     if unknown:
