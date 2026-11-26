@@ -118,7 +118,7 @@ sources with `governed:false` and state what the answer rests on.
 | `draft status` | Active draft, generation, base served revision, stale or not, validation state. |
 | `draft edit FILE` | Apply one typed edit file (the existing typed edit kinds) to the active draft. |
 | `draft rebase` | §3.3.4 |
-| `draft discard` | Discard the active draft after a confirmation (TTY or `--yes`). Its branch is kept as `ariadne/discarded/<generation>`. |
+| `draft discard [--stale]` | Discard the active draft after a confirmation (TTY or `--yes`); `--stale` retires a draft stranded by a moved or copied project, no confirmation. Its branch is kept as `ariadne/discarded/<generation>`. |
 | `validate` | Validate the active draft at its current generation. |
 | `diff` | Human-readable summary of the draft against the served state (the former review report). |
 | `preview <metric> [--by D…] [--filter F…]` | §3.6 |
@@ -185,7 +185,9 @@ sources with `governed:false` and state what the answer rests on.
      candidate revision **and** to the served revision it was based on.
    - **`draft discard`** retires the slot and keeps the branch under
      `ariadne/discarded/<generation>`. A later write never resurrects a discarded
-     draft.
+     draft. `draft discard --stale` retires (via `retire_stale`, without loading the
+     proposal record, generation kept) an active draft whose record names another project
+     path after a move or copy, and refuses when the record belongs to this project.
 2. **The existing proposal machinery stays underneath.** One proposal per generation;
    proposal IDs never appear as arguments. MCP authoring tools no longer accept
    proposal or base IDs.

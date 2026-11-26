@@ -889,12 +889,13 @@ def consume(project: Path, proposal: str) -> None:
         )
 
 
-def retire_stale(project: str | Path) -> dict:
+def retire_stale(project: str | Path, *, moved_only: bool = False) -> dict:
     """Retire an active draft WITHOUT loading its proposal record (a restored project's
     record names the old project path, so every slot read refuses). Same retired shape
     as ``consume``: the generation is kept, so the next draft is generation+1 and a
     retired draft is never resurrected. Idempotent: no slot or an already retired slot
-    is a no-op. Returns the slot's state."""
+    is a no-op. ``moved_only`` refuses an active slot whose record belongs to this project
+    (nothing stale; plain discard applies). Returns the slot's state."""
     project = Path(project).resolve()
     with proposals._file_lock(project / proposals.LOCKS_REL / "project.lock"):
         # an interrupted source approval resolves first (as recover does, minus the slot
@@ -915,6 +916,18 @@ def retire_stale(project: str | Path) -> dict:
         if not isinstance(slot, dict) or not isinstance(slot.get("generation"), int):
             raise ValueError(f"{path}: malformed draft slot — this needs human resolution")
         if slot.get("state") == "active":
+            if moved_only:
+                record = proposals.PROPOSALS_REL / f"{slot.get('proposal')}.json"
+                try:
+                    text = (project / record).read_text(encoding="utf-8")
+                    owner = json.loads(text).get("project")
+                except (OSError, ValueError, AttributeError):
+                    owner = None  # unreadable record: it cannot belong to this project
+                if owner == str(project):
+                    raise ValueError(
+                        "the active draft's record belongs to this project — nothing is stale; "
+                        "use 'ariadne draft discard' instead"
+                    )
             slot = {
                 "state": "retired",
                 "generation": slot["generation"],
