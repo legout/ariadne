@@ -488,111 +488,124 @@ class AnalyticsService:
             current = self._operation(actor, "prepare_data_source", operation.operation_id)
             if current.status != "pending":
                 return current.response
-            try:
-                conversion = []
-                if upload_facts is not None:
-                    assert upload_path is not None and managed_identity is not None
-                    entries, conversion = self._prepare_upload(
-                        path=upload_path,
-                        facts=upload_facts,
-                        table=table,
-                        sheets=sheets,
-                        identity=managed_identity,
-                    )
-                if len(entries) != 1:
-                    raise AnalyticsError(
-                        "selected-table profiling requires one native source per source handle"
-                    )
+            with self.state.project_lock(self.project):
                 try:
-                    record, _snapshot = admission.resolve_admission(self.project)
-                except ValueError:
-                    record = None
-                except SnapshotUnavailableError:
-                    # SnapshotUnavailableError also wraps corruption, so the
-                    # fresh-authoring selection is permitted ONLY for the
-                    # offline ORIGINAL-publication case: a restored root whose
-                    # structural descriptor binds a LOCAL destination different
-                    # from this configured restored destination. Corruption of
-                    # an ordinary workspace's publication or of a restored
-                    # workspace's CURRENT publication still raises.
-                    if self._offline_original_recovery_permitted():
+                    conversion = []
+                    if upload_facts is not None:
+                        assert upload_path is not None and managed_identity is not None
+                        entries, conversion = self._prepare_upload(
+                            path=upload_path,
+                            facts=upload_facts,
+                            table=table,
+                            sheets=sheets,
+                            identity=managed_identity,
+                        )
+                    if len(entries) != 1:
+                        raise AnalyticsError(
+                            "selected-table profiling requires one native source per source handle"
+                        )
+                    try:
+                        record, _snapshot = admission.resolve_admission(self.project)
+                    except ValueError:
                         record = None
+                    except SnapshotUnavailableError:
+                        # SnapshotUnavailableError also wraps corruption, so the
+                        # fresh-authoring selection is permitted ONLY for the
+                        # offline ORIGINAL-publication case: a restored root whose
+                        # structural descriptor binds a LOCAL destination different
+                        # from this configured restored destination. Corruption of
+                        # an ordinary workspace's publication or of a restored
+                        # workspace's CURRENT publication still raises.
+                        if self._offline_original_recovery_permitted():
+                            record = None
+                        else:
+                            raise
+                    self._pending_holders()  # §3.7 rule 1: busy refuses before reuse/join/create
+                    reused = record is not None and self._declarations_present(
+                        record["commit"], entries, storages
+                    )
+                    approval = {}
+                    if reused:
+                        assert record is not None
+                        started = {
+                            "proposal": record["proposal"],
+                            "base_revision": record["commit"],
+                        }
+                        proposed = {
+                            "revision": record["commit"],
+                            "source_digest": (
+                                record.get("source_declaration_digest") or record["source_digest"]
+                            ),
+                        }
+                        approval = authoring_sources.approval_state(
+                            self.project, record.get("sources") or [], proposed["source_digest"]
+                        )
+                        if not approval.get("approved"):
+                            raise AnalyticsError(
+                                "the admitted declaration needs current native Source Approval"
+                            )
                     else:
-                        raise
-                reused = record is not None and self._declarations_present(
-                    record["commit"], entries, storages
-                )
-                approval = {}
-                if reused:
-                    assert record is not None
-                    started = {"proposal": record["proposal"], "base_revision": record["commit"]}
-                    proposed = {
-                        "revision": record["commit"],
-                        "source_digest": (
-                            record.get("source_declaration_digest") or record["source_digest"]
+                        started = self._joined_draft(entries, storages) or self.api.start_proposal()
+                        if self._declarations_present(
+                            started["candidate_revision"], entries, storages
+                        ):
+                            _resolved, source_digest = authoring_sources.candidate_sources(
+                                self.project, started["candidate_revision"]
+                            )
+                            assert source_digest is not None
+                            proposed = {
+                                "revision": started["candidate_revision"],
+                                "source_digest": source_digest,
+                            }
+                        else:
+                            proposed = self.api.propose_sources(
+                                started["proposal"],
+                                started["candidate_revision"],
+                                entries,
+                                storages,
+                            )
+                    response = {
+                        "task_id": current.operation_id,
+                        "status": "pending_data_grant" if reused else "pending_source_approval",
+                        "stage": "data_grant" if reused else "source_approval",
+                        "project": project,
+                        "source": source,
+                        "native_source": entries[0]["name"],
+                        "table": table,
+                        "business_questions": business_questions,
+                        "native_proposal": started["proposal"],
+                        "native_base": started["base_revision"],
+                        "native_candidate": proposed["revision"],
+                        "source_digest": proposed["source_digest"],
+                        "reused_source_declaration": reused,
+                        "joined_draft": bool(started.get("joined")),
+                        "native_generation": self._draft_generation(),
+                        "conversion": conversion,
+                        "review_url": f"{self.external_url}/review/{current.operation_id}",
+                        "review_generation": 0,
+                        "published": False,
+                        **({"approval_digest": approval["approval_digest"]} if reused else {}),
+                        **(
+                            {"upload_id": upload_id, "native_entries": entries}
+                            if upload_id is not None
+                            else {}
                         ),
                     }
-                    approval = authoring_sources.approval_state(
-                        self.project, record.get("sources") or [], proposed["source_digest"]
+                except ValueError as exc:
+                    response = {
+                        "task_id": current.operation_id,
+                        "status": "failed",
+                        "error": str(exc),
+                        "published": False,
+                    }
+                    self.state.finish_operation(
+                        self.workspace_id, actor, current, "failed", response
                     )
-                    if not approval.get("approved"):
-                        raise AnalyticsError(
-                            "the admitted declaration needs current native Source Approval"
-                        )
-                else:
-                    started = self._joined_draft(entries, storages) or self.api.start_proposal()
-                    if self._declarations_present(started["candidate_revision"], entries, storages):
-                        _resolved, source_digest = authoring_sources.candidate_sources(
-                            self.project, started["candidate_revision"]
-                        )
-                        assert source_digest is not None
-                        proposed = {
-                            "revision": started["candidate_revision"],
-                            "source_digest": source_digest,
-                        }
-                    else:
-                        proposed = self.api.propose_sources(
-                            started["proposal"], started["candidate_revision"], entries, storages
-                        )
-                response = {
-                    "task_id": current.operation_id,
-                    "status": "pending_data_grant" if reused else "pending_source_approval",
-                    "stage": "data_grant" if reused else "source_approval",
-                    "project": project,
-                    "source": source,
-                    "native_source": entries[0]["name"],
-                    "table": table,
-                    "business_questions": business_questions,
-                    "native_proposal": started["proposal"],
-                    "native_base": started["base_revision"],
-                    "native_candidate": proposed["revision"],
-                    "source_digest": proposed["source_digest"],
-                    "reused_source_declaration": reused,
-                    "joined_draft": bool(started.get("joined")),
-                    "conversion": conversion,
-                    "review_url": f"{self.external_url}/review/{current.operation_id}",
-                    "review_generation": 0,
-                    "published": False,
-                    **({"approval_digest": approval["approval_digest"]} if reused else {}),
-                    **(
-                        {"upload_id": upload_id, "native_entries": entries}
-                        if upload_id is not None
-                        else {}
-                    ),
-                }
-            except ValueError as exc:
-                response = {
-                    "task_id": current.operation_id,
-                    "status": "failed",
-                    "error": str(exc),
-                    "published": False,
-                }
-                self.state.finish_operation(self.workspace_id, actor, current, "failed", response)
-                raise AnalyticsError(str(exc)) from exc
-            self.state.finish_operation(
-                self.workspace_id, actor, current, "pending_review", response
-            )
-            return response
+                    raise AnalyticsError(str(exc)) from exc
+                self.state.finish_operation(
+                    self.workspace_id, actor, current, "pending_review", response
+                )
+                return response
 
     def _convert_authorized_upload(self, actor: Actor, operation: Operation) -> dict:
         """Convert a staged XLSX upload only after both exact grants passed.
@@ -912,13 +925,10 @@ class AnalyticsService:
             return self._source_context(actor, operation)
         return self._contribution_context(actor, operation)
 
-    def _joined_draft(
-        self, entries: list[dict] | None = None, storages: dict | None = None
-    ) -> dict | None:
-        """Draft rule v3: no active draft -> None (the caller starts one). Otherwise any
-        pending workspace operation on the active proposal makes it busy (stale). Idle with
-        granted work: a source request (entries given) joins only if its declaration is
-        already in the draft; a contribution (entries None) continues it. Else stale."""
+    def _pending_holders(self) -> tuple[dict, str, list] | None:
+        """Spec 0040 §3.7 rule 1, under project_lock: None without an active draft; stale
+        when any workspace operation pending on the active proposal holds it; else the
+        idle draft, its proposal and its holders' (status, base) rows."""
         active = draft.status(self.project)
         if active is None:
             return None
@@ -933,40 +943,81 @@ class AnalyticsService:
                 "AND json_extract(response_json, '$.native_proposal') = ?",
                 (self.workspace_id, proposal),
             ).fetchall()
-        if not any(status.startswith("pending") for status, _ in rows):
-            for status, base in rows:
-                if status == "data_granted" and (
-                    entries is None
-                    or self._declarations_present(active["candidate_revision"], entries, storages)
-                ):
-                    return {
-                        "proposal": proposal,
-                        "base_revision": base,
-                        "candidate_revision": active["candidate_revision"],
-                        "joined": True,
-                    }
+        if any(status.startswith("pending") for status, _ in rows):
+            raise AnalyticsError("stale: the active draft has a pending request")
+        return active, proposal, rows
+
+    def _joined_draft(
+        self, entries: list[dict] | None = None, storages: dict | None = None
+    ) -> dict | None:
+        """Draft rule v3: no active draft -> None (the caller starts one). Otherwise any
+        pending workspace operation on the active proposal makes it busy (stale). Idle with
+        granted work: a source request (entries given) joins only if its declaration is
+        already in the draft; a contribution (entries None) continues it. Else stale."""
+        held = self._pending_holders()
+        if held is None:
+            return None
+        active, proposal, rows = held
+        for status, base in rows:
+            if status == "data_granted" and (
+                entries is None
+                or self._declarations_present(active["candidate_revision"], entries, storages)
+            ):
+                return {
+                    "proposal": proposal,
+                    "base_revision": base,
+                    "candidate_revision": active["candidate_revision"],
+                    "joined": True,
+                }
         raise AnalyticsError(
             "stale: another draft is active and is pending, or the request adds to granted work"
         )
 
+    def _draft_generation(self) -> int | None:
+        """The active draft's generation, pinned with a draft-backed task (§3.7 rule 4)."""
+        return (draft.status(self.project) or {}).get("generation")
+
     def _release_source_draft(self, response: dict) -> None:
         """Browser-review only: free the one active slot by discarding THIS request's
-        exact draft (the proposal and candidate the reviewer saw). Another task's draft,
-        or this proposal after it moved, is left alone."""
+        exact draft (the generation, proposal and candidate the reviewer saw). Another
+        task's draft, a rebased generation or this proposal after it moved is left alone."""
         active = draft.status(self.project)
-        if active is None or active["candidate_revision"] != response.get("native_candidate"):
+        pinned = (response.get("native_generation"), response.get("native_candidate"))
+        if active is None or (active["generation"], active["candidate_revision"]) != pinned:
             return
-        expected = (active["generation"], active["candidate_revision"])
+        expected = (active["generation"], active["candidate_revision"])  # == pinned
         if draft.proposal_of(self.project, expected) == response.get("native_proposal"):
             draft.discard(self.project, expected)
 
+    def _pinned_discarded(self, response: dict) -> bool:
+        """Evidence that this task's pinned generation was discarded (spec 0034 §10):
+        it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists.
+        Reads the slot without ``draft.status``: its recovery could retire a later slot."""
+        generation = response.get("native_generation")
+        slot = draft._load_slot(self.project.resolve())  # shortcut: Core has no pure reader
+        if generation is None or (
+            slot is not None and slot["state"] == "active" and slot["generation"] == generation
+        ):
+            return False
+        branch = f"refs/heads/{draft.DISCARDED_BRANCH_PREFIX}{generation}"
+        found = subprocess.run(
+            ["git", "-C", str(self.project), "rev-parse", "--verify", "--quiet", branch],
+            check=False,
+            capture_output=True,
+        )
+        return found.returncode == 0
+
+    @staticmethod
+    def _creator(response: dict) -> bool:
+        return response.get("joined_draft") is False and not response.get(
+            "reused_source_declaration"
+        )
+
     def _reject(self, operation: Operation, decision: str) -> dict:
         requested = decision == "request_changes"
-        if (
-            not requested
-            and operation.action == "prepare_data_source"
-            and not operation.response.get("joined_draft")
-        ):
+        # §3.7 rule 4: a terminal reject releases only the creator's exact draft; a
+        # joiner, an admission reuse or a record without create/join identity never discards.
+        if not requested and self._creator(operation.response):
             self._release_source_draft(operation.response)
         response = {
             **operation.response,
@@ -1198,100 +1249,105 @@ class AnalyticsService:
             current = self._operation(actor, "prepare_contribution", operation.operation_id)
             if current.status != "pending":
                 return current.response
-            try:
-                started = self._joined_draft() or self.api.start_proposal()
-                proposal = started["proposal"]
-                revision = started["candidate_revision"]
-                if entries and not self._declarations_present(revision, entries, storages):
-                    revision = self.api.propose_sources(proposal, revision, entries, storages)[
-                        "revision"
-                    ]
-                resolved, source_digest = authoring_sources.candidate_sources(
-                    self.project, revision
-                )
-                self._grant(
-                    actor,
-                    source_task_id,
-                    grant.response["project"],
-                    resolved,
-                    source_digest,
-                )
-                for edit in core_edits:
-                    revision = self.api.edit_proposal(proposal, revision, edit)["revision"]
-                resources = self._resources()
-                _repo_root, subtree = resolve_repository(self.authoring_path)
-                tree = self.project / proposals.WORKTREES_REL / proposal
-                task_kb = tree / subtree
-                control = document_first_control_file(load_control_file(task_kb))
-                control_path = write_control_file(
-                    self.private_root / "controls" / operation.operation_id,
-                    control,
-                )
-                authored = self.private_root / "authored" / operation.operation_id
-                page_paths = []
-                for filename, markdown, _frontmatter in checked_pages:
-                    path = authored / filename
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_bytes(path, markdown.encode())
-                    page_paths.append(str(path))
-                ingest_candidate(
-                    task_kb,
-                    CandidateRequest(
-                        schema_version=1,
-                        base_revision=started["base_revision"],
-                        sources=[
-                            CandidateSourceRecord(
-                                source_id=source.source_id or "",
-                                original_path=str(path),
-                                expected_digest=source.response["sha256"],
-                                intent=intent,
-                            )
-                            for source, path, intent in checked_sources
-                        ],
-                        pages=page_paths,
-                        control=str(control_path),
-                    ),
-                    source_registry=resources.source_registry,
-                    artifact_store=resources.artifact_store,
-                )
-                _git(task_kb, "add", "--", ".")
-                review = self._contribution_review(
-                    {
+            with self.state.project_lock(self.project):
+                try:
+                    started = self._joined_draft() or self.api.start_proposal()
+                    proposal = started["proposal"]
+                    revision = started["candidate_revision"]
+                    if entries and not self._declarations_present(revision, entries, storages):
+                        revision = self.api.propose_sources(proposal, revision, entries, storages)[
+                            "revision"
+                        ]
+                    resolved, source_digest = authoring_sources.candidate_sources(
+                        self.project, revision
+                    )
+                    self._grant(
+                        actor,
+                        source_task_id,
+                        grant.response["project"],
+                        resolved,
+                        source_digest,
+                    )
+                    for edit in core_edits:
+                        revision = self.api.edit_proposal(proposal, revision, edit)["revision"]
+                    resources = self._resources()
+                    _repo_root, subtree = resolve_repository(self.authoring_path)
+                    tree = self.project / proposals.WORKTREES_REL / proposal
+                    task_kb = tree / subtree
+                    control = document_first_control_file(load_control_file(task_kb))
+                    control_path = write_control_file(
+                        self.private_root / "controls" / operation.operation_id,
+                        control,
+                    )
+                    authored = self.private_root / "authored" / operation.operation_id
+                    page_paths = []
+                    for filename, markdown, _frontmatter in checked_pages:
+                        path = authored / filename
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write_bytes(path, markdown.encode())
+                        page_paths.append(str(path))
+                    ingest_candidate(
+                        task_kb,
+                        CandidateRequest(
+                            schema_version=1,
+                            base_revision=started["base_revision"],
+                            sources=[
+                                CandidateSourceRecord(
+                                    source_id=source.source_id or "",
+                                    original_path=str(path),
+                                    expected_digest=source.response["sha256"],
+                                    intent=intent,
+                                )
+                                for source, path, intent in checked_sources
+                            ],
+                            pages=page_paths,
+                            control=str(control_path),
+                        ),
+                        source_registry=resources.source_registry,
+                        artifact_store=resources.artifact_store,
+                    )
+                    _git(task_kb, "add", "--", ".")
+                    review = self._contribution_review(
+                        {
+                            "native_proposal": proposal,
+                            "native_base": started["base_revision"],
+                        }
+                    )
+                    response = {
+                        "task_id": operation.operation_id,
+                        "status": "pending_submission",
+                        "stage": "submission",
+                        "project": grant.response["project"],
+                        "source_task_id": source_task_id,
                         "native_proposal": proposal,
                         "native_base": started["base_revision"],
+                        "native_candidate": review["head_revision"],
+                        "native_tree": review["candidate_tree"],
+                        "native_review": review["review_digest"],
+                        "joined_draft": bool(started.get("joined")),
+                        "native_generation": self._draft_generation(),
+                        "review_url": f"{self.external_url}/review/{operation.operation_id}",
+                        "review_generation": 0,
+                        "conversion": conversion,
+                        "published": False,
                     }
+                except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+                    response = {
+                        "task_id": operation.operation_id,
+                        "status": "failed",
+                        "error": str(exc),
+                        "published": False,
+                    }
+                    self.state.finish_operation(
+                        self.workspace_id, actor, current, "failed", response
+                    )
+                    if isinstance(exc, RetryConflict):
+                        raise
+                    raise AnalyticsError(str(exc)) from exc
+                self.state.finish_operation(
+                    self.workspace_id, actor, current, "pending_review", response
                 )
-                response = {
-                    "task_id": operation.operation_id,
-                    "status": "pending_submission",
-                    "stage": "submission",
-                    "project": grant.response["project"],
-                    "source_task_id": source_task_id,
-                    "native_proposal": proposal,
-                    "native_base": started["base_revision"],
-                    "native_candidate": review["head_revision"],
-                    "native_tree": review["candidate_tree"],
-                    "native_review": review["review_digest"],
-                    "review_url": f"{self.external_url}/review/{operation.operation_id}",
-                    "review_generation": 0,
-                    "conversion": conversion,
-                    "published": False,
-                }
-            except (ValueError, OSError, subprocess.CalledProcessError) as exc:
-                response = {
-                    "task_id": operation.operation_id,
-                    "status": "failed",
-                    "error": str(exc),
-                    "published": False,
-                }
-                self.state.finish_operation(self.workspace_id, actor, current, "failed", response)
-                if isinstance(exc, RetryConflict):
-                    raise
-                raise AnalyticsError(str(exc)) from exc
-            self.state.finish_operation(
-                self.workspace_id, actor, current, "pending_review", response
-            )
-            return response
+                return response
 
     def get(self, actor: Actor, task_id: str) -> dict:
         source = self.state.get_operation(self.workspace_id, actor, "prepare_data_source", task_id)
@@ -1309,6 +1365,36 @@ class AnalyticsService:
             operation.operation_id,
             response.get(candidate_key, ""),
         )
+        rejected = self.state.get_review_approval(
+            self.workspace_id,
+            operation.operation_id,
+            response.get(candidate_key, ""),
+            decision="reject",
+        )
+        if (
+            rejected is not None
+            and rejected.binding.get("stage") == response.get("stage")
+            and self._creator(response)
+            and self._pinned_discarded(response)
+        ):
+            # A reject stopped after its exact discard: finish it, never discard again.
+            updated = {
+                **response,
+                "status": "rejected",
+                "review_decision": "reject",
+                "review_generation": response.get("review_generation", 0) + 1,
+                "published": False,
+            }
+            if not self.state.finish_review_task(
+                self.workspace_id,
+                operation.operation_id,
+                "rejected",
+                updated,
+                expected_response=response,
+            ):
+                return None
+            self.state.finish_review_action(rejected.action_digest, "completed")
+            return updated
         if (
             approval is None
             or approval.status not in {"completed", "failed"}

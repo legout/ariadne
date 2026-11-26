@@ -439,6 +439,20 @@ class WorkspaceState:
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
+    @contextmanager
+    def project_lock(self, project: str | Path) -> Iterator[None]:
+        """Spec 0040 §3.7 rule 3: one blocking interprocess lock per analytics project,
+        shared by every preparer, held only while selecting and recording a draft claim."""
+        name = hashlib.sha256(str(Path(project).resolve()).encode()).hexdigest()
+        lock_path = self.path.parent / "project-locks" / f"{name}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
     def finish_operation(
         self,
         workspace_id: str,
@@ -594,19 +608,19 @@ class WorkspaceState:
         return cursor.rowcount == 1
 
     def get_review_approval(
-        self, workspace_id: str, task_id: str, candidate: str
+        self, workspace_id: str, task_id: str, candidate: str, *, decision: str = "approve"
     ) -> ReviewAction | None:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT action_digest, binding_json, status FROM review_actions "
-                "WHERE workspace_id = ? AND task_id = ? AND decision = 'approve' "
+                "WHERE workspace_id = ? AND task_id = ? AND decision = ? "
                 "ORDER BY updated_at DESC, created_at DESC",
-                (workspace_id, task_id),
+                (workspace_id, task_id, decision),
             ).fetchall()
         for action_digest, raw_binding, status in rows:
             binding = json.loads(raw_binding)
             if binding.get("candidate") == candidate:
-                return ReviewAction(action_digest, "approve", binding, status)
+                return ReviewAction(action_digest, decision, binding, status)
         return None
 
     def review_task_submitter(self, workspace_id: str, task_id: str) -> Actor | None:
