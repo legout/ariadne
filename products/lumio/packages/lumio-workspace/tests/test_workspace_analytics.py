@@ -504,6 +504,11 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "creator_reconnect",
         "concurrent_claim",
         "failed_joined_contribution",
+        "failed_source_claim",
+        "failed_source_cleanup_interrupted",
+        "failed_source_release_interrupted",
+        "failed_source_moved_candidate",
+        "failed_source_joined_draft",
         "failed_stale_grant",
         "failed_invalid_edit",
         "failed_cleanup_interrupted",
@@ -937,6 +942,113 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "policy-upload-reuse",
         original + b"Review exact declaration reuse.\n",
     )
+    source_failures = {
+        "failed_source_claim",
+        "failed_source_cleanup_interrupted",
+        "failed_source_release_interrupted",
+        "failed_source_moved_candidate",
+        "failed_source_joined_draft",
+    }
+    if lifecycle_case in source_failures:
+        assert draft.status(project) is None
+        original_bindings = bindings.read_text(encoding="utf-8")
+        bindings.write_text(
+            original_bindings.replace(
+                '"path": "data/orders.sqlite"', '"path": "data/private.sqlite"'
+            ),
+            encoding="utf-8",
+        )
+        failing = {
+            "retry_key": lifecycle_case,
+            "project": "retail",
+            "source": "orders_sqlite",
+            "table": "entries",
+            "business_questions": ["Conflicting declaration?"],
+        }
+        if lifecycle_case == "failed_source_joined_draft":
+            analytics.api.start_proposal()
+            before = draft.status(project)
+            assert before is not None
+            with pytest.raises(AnalyticsError):
+                analytics.prepare_data_source(contributor, **failing)
+            assert draft.status(project) == before
+            return
+        if lifecycle_case == "failed_source_moved_candidate":
+            real_propose = analytics.api.propose_sources
+            moved = {}
+
+            def operator_edit_before_source(proposal, revision, entries, storages):
+                active = draft.status(project)
+                assert active is not None
+                operator_model = changed_model + "# operator edit during source preparation\n"
+                rel, _ = authoring_edits.resolve_edit(
+                    {"kind": "model", "name": "retail_sales", "content": operator_model},
+                    project=project,
+                    proposal=proposal,
+                )
+                draft.edit_artifact(
+                    project,
+                    (active["generation"], active["candidate_revision"]),
+                    rel,
+                    operator_model,
+                )
+                moved["before"] = active["candidate_revision"]
+                moved["status"] = draft.status(project)
+                return real_propose(proposal, revision, entries, storages)
+
+            monkeypatch.setattr(analytics.api, "propose_sources", operator_edit_before_source)
+            with pytest.raises(AnalyticsError):
+                analytics.prepare_data_source(contributor, **failing)
+            assert moved["status"]["candidate_revision"] != moved["before"]
+            assert draft.status(project) == moved["status"]
+            return
+        if lifecycle_case == "failed_source_release_interrupted":
+            real_discard = draft.discard
+
+            def fail_discard(*args, **kwargs):
+                raise RuntimeError("synthetic crash before the slot release")
+
+            monkeypatch.setattr(draft, "discard", fail_discard)
+            try:
+                analytics.prepare_data_source(contributor, **failing)
+            except (AnalyticsError, RuntimeError):
+                pass
+            monkeypatch.setattr(draft, "discard", real_discard)
+            assert draft.status(project) is not None
+            try:
+                analytics.prepare_data_source(contributor, **failing)
+            except AnalyticsError:
+                pass
+            assert draft.status(project) is None
+        elif lifecycle_case == "failed_source_cleanup_interrupted":
+            real_finish = state.finish_operation
+
+            def fail_failed(workspace_id, actor, operation, status, response):
+                if status == "failed":
+                    raise RuntimeError("synthetic failure-bookkeeping crash")
+                return real_finish(workspace_id, actor, operation, status, response)
+
+            monkeypatch.setattr(state, "finish_operation", fail_failed)
+            with pytest.raises(RuntimeError, match="failure-bookkeeping crash"):
+                analytics.prepare_data_source(contributor, **failing)
+            monkeypatch.setattr(state, "finish_operation", real_finish)
+            assert draft.status(project) is None
+        if lifecycle_case != "failed_source_release_interrupted":
+            with pytest.raises(AnalyticsError):
+                analytics.prepare_data_source(contributor, **failing)
+            assert draft.status(project) is None
+        bindings.write_text(original_bindings, encoding="utf-8")
+        corrected = analytics.prepare_data_source(
+            contributor,
+            retry_key=f"{lifecycle_case}-corrected",
+            project="retail",
+            source="private",
+            table="entries",
+            business_questions=["Corrected source?"],
+        )
+        assert corrected["status"] == "pending_source_approval"
+        return
+
     failed_cases = {
         "failed_stale_grant",
         "failed_invalid_edit",
