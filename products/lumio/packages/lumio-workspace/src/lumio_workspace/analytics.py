@@ -40,7 +40,7 @@ from lumio_wiki.private_profile import (
     resolve_private_profile,
 )
 
-from .contributions import _digest, _git
+from .contributions import _digest, _git, _public
 from .intake import IntakeService, UploadError
 from .publication import PublicationService
 from .review import AnalyticsReviewContext
@@ -77,11 +77,6 @@ def _candidate_page(filename: str, markdown: str) -> tuple[str, dict]:
     # Native integrated validation, not the document-only Entity Type rule,
     # decides whether the declared Policy/Metric/Reference profile is supported.
     return markdown, frontmatter
-
-
-def _public(response: dict) -> dict:
-    """A task response without the internal creator pin (``opened``) of a pending row."""
-    return {key: value for key, value in response.items() if key != "opened"}
 
 
 class AnalyticsService:
@@ -501,6 +496,10 @@ class AnalyticsService:
                 if current.response.get("opened"):
                     # Replay of a preparation that stopped before recording its outcome
                     # (spec 0034 §10): finish the cleanup from its persisted creator pin.
+                    if current.response.get("cleanup") == "failed":
+                        failure = current.response["error"]
+                        self._fail_opened(actor, current, current.response["opened"], failure)
+                        raise AnalyticsError(failure["error"])
                     self._release_opened_draft(current.response["opened"])
                 opened = None  # creator pin of a draft THIS call created
                 try:
@@ -630,11 +629,7 @@ class AnalyticsService:
                         "error": str(exc),
                         "published": False,
                     }
-                    if opened is not None:  # release BEFORE the terminal failure is recorded
-                        self._release_opened_draft(opened)
-                    self.state.finish_operation(
-                        self.workspace_id, actor, current, "failed", response
-                    )
+                    self._fail_opened(actor, current, opened, response)
                     raise AnalyticsError(str(exc)) from exc
                 self.state.finish_operation(
                     self.workspace_id, actor, current, "pending_review", response
@@ -1057,32 +1052,34 @@ class AnalyticsService:
         if draft.proposal_of(self.project, expected) == pin["proposal"]:
             draft.discard(self.project, expected)
 
+    def _fail_opened(
+        self, actor: Actor, current: Operation, opened: dict | None, response: dict
+    ) -> None:
+        """Record a failed preparation (§3.7 rules 2-3, spec 0034 §10): the pending
+        failure cleanup is persisted BEFORE the release, so a stop mid-cleanup is told
+        apart from a stop mid-prepare; then the slot is released; then the failure."""
+        if opened is not None:
+            marker = {"opened": opened, "cleanup": "failed", "error": response}
+            self.state.finish_operation(self.workspace_id, actor, current, "pending", marker)
+            self._release_opened_draft(opened)
+        self.state.finish_operation(self.workspace_id, actor, current, "failed", response)
+
     def _abandon_pinned(self, actor: Actor, action: str, retry_key: str) -> None:
-        """A retry key resent with changed input never runs that input, but the stopped
-        preparation it is bound to is abandoned: finish its cleanup from the stored pin
-        (exact match only) and fail it, so it stops holding the slot for a fresh key."""
+        """A retry key resent with changed input never runs that input. Only a stopped
+        FAILURE cleanup (marker persisted) is finished here; a plain mid-prepare pin is a
+        conflict, not a cancellation (spec 0034 §10): its exact retry still resumes."""
         old = self.state.get_retry_operation(self.workspace_id, actor, action, retry_key)
-        if old is None or old.status != "pending" or not old.response.get("opened"):
+        if old is None or old.status != "pending" or old.response.get("cleanup") != "failed":
             return
         with self.state.operation_lock(old) as acquired:
             if not acquired:  # still in flight in another worker
                 return
             current = self._operation(actor, action, old.operation_id)
-            if current.status != "pending" or not current.response.get("opened"):
+            if current.status != "pending" or current.response.get("cleanup") != "failed":
                 return
             with self.state.project_lock(self.project):
-                self._release_opened_draft(current.response["opened"])
-                self.state.finish_operation(
-                    self.workspace_id,
-                    actor,
-                    current,
-                    "failed",
-                    {
-                        "task_id": current.operation_id,
-                        "status": "failed",
-                        "error": "stale: abandoned, its retry key was resent with changed input",
-                        "published": False,
-                    },
+                self._fail_opened(
+                    actor, current, current.response["opened"], current.response["error"]
                 )
 
     def _pinned_discarded(self, response: dict) -> bool:
@@ -1353,6 +1350,10 @@ class AnalyticsService:
                 if current.response.get("opened"):
                     # Replay of a preparation that stopped before recording its outcome
                     # (spec 0034 §10): finish the cleanup from its persisted creator pin.
+                    if current.response.get("cleanup") == "failed":
+                        failure = current.response["error"]
+                        self._fail_opened(actor, current, current.response["opened"], failure)
+                        raise AnalyticsError(failure["error"])
                     self._release_opened_draft(current.response["opened"])
                 opened = None  # creator pin of a draft THIS call created
 
@@ -1471,11 +1472,7 @@ class AnalyticsService:
                         "error": str(exc),
                         "published": False,
                     }
-                    if opened is not None:  # release BEFORE the terminal failure is recorded
-                        self._release_opened_draft(opened)
-                    self.state.finish_operation(
-                        self.workspace_id, actor, current, "failed", response
-                    )
+                    self._fail_opened(actor, current, opened, response)
                     if isinstance(exc, RetryConflict):
                         raise
                     raise AnalyticsError(str(exc)) from exc

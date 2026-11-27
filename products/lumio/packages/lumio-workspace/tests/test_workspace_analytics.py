@@ -520,6 +520,8 @@ def _xlsx_service(tmp_path: Path, project: Path):
         "failed_ingest_moved",
         "pending_pin_replay",
         "pending_pin_holder",
+        "interrupted_source_conflict",
+        "interrupted_contribution_conflict",
     ],
 )
 def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatch, lifecycle_case):
@@ -943,6 +945,57 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
         "policy-upload-reuse",
         original + b"Review exact declaration reuse.\n",
     )
+    if lifecycle_case in {"interrupted_source_conflict", "interrupted_contribution_conflict"}:
+        # A VALID prepare stops just after recording its creator pin (no failure yet);
+        # a changed request under the same key is a conflict, not a cancellation
+        # (spec 0034 §10, spec 0040 §3.7 rule 2): the exact retry still resumes.
+        assert draft.status(project) is None
+        if lifecycle_case == "interrupted_source_conflict":
+            action, prepare = "prepare_data_source", analytics.prepare_data_source
+            valid = {
+                "retry_key": lifecycle_case,
+                "project": "retail",
+                "source": "private",
+                "table": "entries",
+                "business_questions": ["Interrupted source?"],
+            }
+            changed = {**valid, "business_questions": ["A different question?"]}
+            stopped, expected, target = analytics.api, "pending_source_approval", "propose_sources"
+        else:
+            action, prepare = "prepare_contribution", analytics.prepare_contribution
+            valid = {
+                "retry_key": lifecycle_case,
+                "source_task_id": reused_task,
+                "sources": [{"upload_id": reused_upload["upload_id"], "intent": "update"}],
+                "pages": [{"filename": "cancelled-orders.md", "markdown": WORKSPACE_POLICY}],
+                "core_edits": [{"kind": "model", "name": "retail_sales", "content": changed_model}],
+            }
+            changed = {
+                **valid,
+                "core_edits": [
+                    {"kind": "model", "name": "retail_sales", "content": changed_model + "#x\n"}
+                ],
+            }
+            stopped, expected, target = AuthoringProject, "pending_submission", "edit_proposal"
+        real = getattr(stopped, target)
+
+        def worker_stop(*args, **kwargs):
+            raise RuntimeError("synthetic worker stop mid-prepare")
+
+        monkeypatch.setattr(stopped, target, worker_stop)
+        with pytest.raises(RuntimeError, match="worker stop"):
+            prepare(contributor, **valid)
+        monkeypatch.setattr(stopped, target, real)
+        before = draft.status(project)
+        assert before is not None
+        with pytest.raises(RetryConflict):
+            prepare(contributor, **changed)
+        assert draft.status(project) == before
+        row = state.get_retry_operation(config.workspace_id, contributor, action, lifecycle_case)
+        assert row is not None and row.status == "pending"
+        resumed = prepare(contributor, **valid)
+        assert resumed["status"] == expected
+        return
     source_failures = {
         "failed_source_claim",
         "failed_source_cleanup_interrupted",
