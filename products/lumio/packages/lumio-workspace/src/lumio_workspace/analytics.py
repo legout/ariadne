@@ -489,11 +489,16 @@ class AnalyticsService:
             return operation.response
         with self.state.operation_lock(operation) as acquired:
             if not acquired:
-                return {**operation.response, "task_id": operation.operation_id}
+                return {**_public(operation.response), "task_id": operation.operation_id}
             current = self._operation(actor, "prepare_data_source", operation.operation_id)
             if current.status != "pending":
                 return current.response
             with self.state.project_lock(self.project):
+                if current.response.get("opened"):
+                    # Replay of a preparation that stopped before recording its outcome
+                    # (spec 0034 §10): finish the cleanup from its persisted creator pin.
+                    self._release_opened_draft(current.response["opened"])
+                opened = None  # creator pin of a draft THIS call created
                 try:
                     conversion = []
                     if upload_facts is not None:
@@ -550,7 +555,20 @@ class AnalyticsService:
                                 "the admitted declaration needs current native Source Approval"
                             )
                     else:
-                        started = self._joined_draft(entries, storages) or self.api.start_proposal()
+                        started = self._joined_draft(entries, storages)
+                        if started is None:
+                            started = self._open_draft()
+                            if not started.pop("clean"):
+                                # Another writer moved the opened draft: never stage on it.
+                                raise ValueError("stale: the opened draft moved before the claim")
+                            opened = {
+                                "generation": started["generation"],
+                                "proposal": started["proposal"],
+                                "revision": started["candidate_revision"],
+                            }
+                            self.state.finish_operation(
+                                self.workspace_id, actor, current, "pending", {"opened": opened}
+                            )
                         if self._declarations_present(
                             started["candidate_revision"], entries, storages
                         ):
@@ -569,6 +587,11 @@ class AnalyticsService:
                                 entries,
                                 storages,
                             )
+                            if opened is not None:  # pin the revision THIS prepare wrote
+                                opened["revision"] = proposed["revision"]
+                                self.state.finish_operation(
+                                    self.workspace_id, actor, current, "pending", {"opened": opened}
+                                )
                     response = {
                         "task_id": current.operation_id,
                         "status": "pending_data_grant" if reused else "pending_source_approval",
@@ -603,6 +626,8 @@ class AnalyticsService:
                         "error": str(exc),
                         "published": False,
                     }
+                    if opened is not None:  # release BEFORE the terminal failure is recorded
+                        self._release_opened_draft(opened)
                     self.state.finish_operation(
                         self.workspace_id, actor, current, "failed", response
                     )
@@ -1426,7 +1451,7 @@ class AnalyticsService:
     def get(self, actor: Actor, task_id: str) -> dict:
         source = self.state.get_operation(self.workspace_id, actor, "prepare_data_source", task_id)
         if source is not None:
-            return source.response
+            return _public(source.response)
         return _public(self._operation(actor, "prepare_contribution", task_id).response)
 
     def reconcile(self, operation: Operation) -> dict | None:
