@@ -75,8 +75,11 @@ ariadne approve                      # calculation approval
 ariadne query orders.revenue         # governed:true
 ```
 
-For a change that touches no new source, one `approve` suffices. No step requires an ID,
-revision, digest, namespace or selector file.
+For a change that touches no new source, one `approve` suffices. For a metric without a
+Policy dependency, no step requires an ID, revision, digest, namespace or selector file. A
+Policy-bound metric (one whose page declares `required_policies`) needs a human-authored
+binding in `context_integration.yaml`: `validate` refuses "required Policy Closure member
+... has no authored policy_bindings classification" until it is bound.
 
 **Agent path:** `ariadne context …` and `ariadne sql …` answer any question over approved
 sources with `governed:false` and state what the answer rests on.
@@ -617,7 +620,8 @@ Their safety tests (source containment, caps, deadline, redaction) are migrated 
    - `draft edit model.yaml`, `validate`, `preview`;
    - `approve`, then `query` returns `governed:true`.
 
-   No step takes an ID, revision, digest, namespace or selector.
+   For a metric without a Policy dependency, no step takes an ID, revision, digest,
+   namespace or selector. A Policy-bound metric needs a human-authored binding.
 2. **Source-approval failures.**
    - A source approval that fails its live check after "yes" leaves the served state
      unchanged and creates no grant. `profile` and `authoring_inputs` then refuse that
