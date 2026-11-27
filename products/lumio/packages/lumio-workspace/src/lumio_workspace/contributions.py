@@ -75,6 +75,13 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.decode().strip()
 
 
+def _public(response: dict) -> dict:
+    """A task response without the private bookkeeping of a pending analytics preparation:
+    its creator pin (``opened``) and a pending failure cleanup's ``cleanup``/``error``."""
+    hidden = {"opened", "cleanup", "error"} if "cleanup" in response else {"opened"}
+    return {key: value for key, value in response.items() if key not in hidden}
+
+
 def _digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -923,6 +930,5 @@ class ContributionService:
         return {
             "task_id": task_id,
             "status": operation.status,
-            # the internal creator pin of a pending analytics preparation stays private
-            **{key: value for key, value in operation.response.items() if key != "opened"},
+            **_public(operation.response),
         }

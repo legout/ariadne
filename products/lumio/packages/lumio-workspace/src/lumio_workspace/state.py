@@ -498,6 +498,18 @@ class WorkspaceState:
             _stored_response(row[4]),
         )
 
+    def get_retry_operation(
+        self, workspace_id: str, actor: Actor, action: str, retry_key: str
+    ) -> Operation | None:
+        """The row a retry key is bound to, whatever input it was bound with."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT operation_id FROM operations WHERE workspace_id = ? AND tenant_id = ? "
+                "AND object_id = ? AND action = ? AND retry_key = ?",
+                (workspace_id, actor.tenant_id, actor.object_id, action, retry_key),
+            ).fetchone()
+        return None if row is None else self.get_operation(workspace_id, actor, action, row[0])
+
     def get_review_task(self, workspace_id: str, task_id: str) -> Operation | None:
         """Locate a candidate only after the caller establishes reviewer authority."""
         with self._connect() as connection:
