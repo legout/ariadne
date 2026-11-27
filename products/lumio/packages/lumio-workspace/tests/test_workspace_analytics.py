@@ -31,6 +31,7 @@ from lumio_workspace.analytics import AnalyticsError, AnalyticsService
 from lumio_workspace.intake import IntakeService
 from lumio_workspace.review import ReviewError, ReviewService, render_review
 from lumio_workspace.setup import current_attachment_digest
+from lumio_workspace.state import RetryConflict
 from starlette.testclient import TestClient
 
 NAMESPACE = "urn:demo:retail"
@@ -1015,10 +1016,11 @@ def test_source_grant_and_combined_review_gate_pinned_query(tmp_path, monkeypatc
                 pass
             monkeypatch.setattr(draft, "discard", real_discard)
             assert draft.status(project) is not None
-            try:
+            # The operator corrects the binding BEFORE the agent resends the old request:
+            # the old key must not run the changed work, yet its stored pin is released.
+            bindings.write_text(original_bindings, encoding="utf-8")
+            with pytest.raises(RetryConflict):
                 analytics.prepare_data_source(contributor, **failing)
-            except AnalyticsError:
-                pass
             assert draft.status(project) is None
         elif lifecycle_case == "failed_source_cleanup_interrupted":
             real_finish = state.finish_operation

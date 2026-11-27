@@ -477,14 +477,18 @@ class AnalyticsService:
                     "sheets": sorted(sheets or []),
                 }
             )
-        operation, _ = self.state.start_operation(
-            self.workspace_id,
-            actor,
-            "prepare_data_source",
-            retry_key,
-            input_digest,
-            source_id=source,
-        )
+        try:
+            operation, _ = self.state.start_operation(
+                self.workspace_id,
+                actor,
+                "prepare_data_source",
+                retry_key,
+                input_digest,
+                source_id=source,
+            )
+        except RetryConflict:
+            self._abandon_pinned(actor, "prepare_data_source", retry_key)
+            raise
         if operation.status != "pending":
             return operation.response
         with self.state.operation_lock(operation) as acquired:
@@ -1053,6 +1057,34 @@ class AnalyticsService:
         if draft.proposal_of(self.project, expected) == pin["proposal"]:
             draft.discard(self.project, expected)
 
+    def _abandon_pinned(self, actor: Actor, action: str, retry_key: str) -> None:
+        """A retry key resent with changed input never runs that input, but the stopped
+        preparation it is bound to is abandoned: finish its cleanup from the stored pin
+        (exact match only) and fail it, so it stops holding the slot for a fresh key."""
+        old = self.state.get_retry_operation(self.workspace_id, actor, action, retry_key)
+        if old is None or old.status != "pending" or not old.response.get("opened"):
+            return
+        with self.state.operation_lock(old) as acquired:
+            if not acquired:  # still in flight in another worker
+                return
+            current = self._operation(actor, action, old.operation_id)
+            if current.status != "pending" or not current.response.get("opened"):
+                return
+            with self.state.project_lock(self.project):
+                self._release_opened_draft(current.response["opened"])
+                self.state.finish_operation(
+                    self.workspace_id,
+                    actor,
+                    current,
+                    "failed",
+                    {
+                        "task_id": current.operation_id,
+                        "status": "failed",
+                        "error": "stale: abandoned, its retry key was resent with changed input",
+                        "published": False,
+                    },
+                )
+
     def _pinned_discarded(self, response: dict) -> bool:
         """Evidence that this task's pinned generation was discarded (spec 0034 §10):
         it is not the active slot and its ``ariadne/discarded/<generation>`` branch exists.
@@ -1302,9 +1334,13 @@ class AnalyticsService:
                 ],
             }
         )
-        operation, _ = self.state.start_operation(
-            self.workspace_id, actor, "prepare_contribution", retry_key, input_digest
-        )
+        try:
+            operation, _ = self.state.start_operation(
+                self.workspace_id, actor, "prepare_contribution", retry_key, input_digest
+            )
+        except RetryConflict:
+            self._abandon_pinned(actor, "prepare_contribution", retry_key)
+            raise
         if operation.status != "pending":
             return operation.response
         with self.state.operation_lock(operation) as acquired:
