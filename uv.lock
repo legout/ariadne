@@ -22,6 +22,7 @@ members = [
 dev = [
     { name = "firecrawl-anydoc", specifier = "==0.1.3" },
     { name = "liteparse", specifier = ">=2.4.0" },
+    { name = "lxml", specifier = "<6.2" },
     { name = "markitdown", extras = ["docx"], specifier = ">=0.1.6" },
     { name = "mcp", specifier = "==2.2.0" },
     { name = "obstore", specifier = ">=0.11.0" },
@@ -79,6 +80,7 @@ dependencies = [
 dev = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
+    { name = "lxml" },
     { name = "markitdown", extra = ["docx"] },
     { name = "mcp" },
     { name = "pytest" },
@@ -87,6 +89,7 @@ dev = [
 documents = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
+    { name = "lxml" },
     { name = "markitdown", extra = ["docx"] },
 ]
 mcp = [
@@ -105,6 +108,8 @@ requires-dist = [
     { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
     { name = "lumio-wiki", editable = "products/lumio/packages/lumio-wiki" },
+    { name = "lxml", marker = "extra == 'dev'", specifier = "<6.2" },
+    { name = "lxml", marker = "extra == 'documents'", specifier = "<6.2" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'dev'", specifier = ">=0.1.6" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==2.2.0" },
@@ -1068,6 +1073,7 @@ dependencies = [
 all = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
+    { name = "lxml" },
     { name = "markitdown", extra = ["docx"] },
     { name = "mcp" },
     { name = "obstore" },
@@ -1076,6 +1082,7 @@ all = [
 documents = [
     { name = "firecrawl-anydoc" },
     { name = "liteparse" },
+    { name = "lxml" },
     { name = "markitdown", extra = ["docx"] },
 ]
 llm = [
@@ -1094,6 +1101,8 @@ requires-dist = [
     { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.1.3" },
     { name = "liteparse", marker = "extra == 'all'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
+    { name = "lxml", marker = "extra == 'all'", specifier = "<6.2" },
+    { name = "lxml", marker = "extra == 'documents'", specifier = "<6.2" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'all'", specifier = ">=0.1.6" },
     { name = "markitdown", extras = ["docx"], marker = "extra == 'documents'", specifier = ">=0.1.6" },
     { name = "mcp", marker = "extra == 'all'", specifier = ">=2.2.0" },
