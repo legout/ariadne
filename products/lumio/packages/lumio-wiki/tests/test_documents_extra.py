@@ -627,3 +627,29 @@ class TestNormalizedSectionPageNumber:
             id="hash:page:3", title="Page 3", line_start=10, line_end=20, text="...", page_number=3
         )
         assert section.page_number == 3
+
+
+def test_default_anydoc_converter_never_requests_hosted_ocr(monkeypatch):
+    """#222: anydoc's opt-in hosted OCR uploads the document; it is never enabled."""
+    anydoc = pytest.importorskip("anydoc")
+    from lumio_wiki.source_processor import _default_anydoc_converter
+
+    calls = []
+    monkeypatch.setattr(
+        anydoc, "to_markdown_bytes", lambda *a, **kw: calls.append((a, kw)) or "# ok"
+    )
+    assert _default_anydoc_converter(b"x", "scan.docx") == "# ok"
+    assert calls == [((b"x", None), {})]
+
+
+def test_doctor_states_converter_routing(capsys):
+    import argparse
+
+    from lumio_wiki.cli import _cmd_doctor
+
+    assert _cmd_doctor(argparse.Namespace()) == 0
+    out = capsys.readouterr().out
+    assert (
+        "routing: PDF/images -> LiteParse; Office/OpenDocument/RTF/EPUB/CSV -> AnyDoc; "
+        "HTML -> MarkItDown" in out
+    )
