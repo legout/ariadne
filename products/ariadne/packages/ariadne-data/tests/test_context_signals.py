@@ -176,11 +176,13 @@ def test_term_match_carries_the_envelope_and_serializes_through_the_json_adapter
     json.dumps(match, default=cli_json_default)
 
 
-def _tier(tmp_path, monkeypatch, verified, generated=_ABSENT) -> str:
+def _tier(tmp_path, monkeypatch, verified, generated=_ABSENT, generated_map=None) -> str:
     monkeypatch.setattr(context, "_assessment_now", lambda: datetime(2026, 10, 7, tzinfo=UTC))
     meta = yaml.safe_load(_reference_page().split("---")[1])
     if generated is not _ABSENT:
         meta["generated"] = {"by": "ariadne-author", "at": generated}
+    if generated_map is not None:
+        meta["generated"] = generated_map
     meta["verified"] = verified
     front = yaml.safe_dump(meta, sort_keys=False).strip()
     _write("references/term.md", f"---\n{front}\n---\n\n# Term\n", tmp_path)
@@ -208,6 +210,14 @@ def test_verification_tier_counts_only_events_current_since_generation(tmp_path,
     )
     # (e) events lacking at / unparsable at are ignored
     assert tier([{"by": "human:volker"}, {"by": "human:x", "at": "soon"}], gen) == "unverified"
+    # a declared generated with missing / unparsable / naive at waives nothing
+    fresh = {"by": "human:ann", "at": "2026-06-27T12:00:00Z"}
+    for bad in ({}, {"at": "unknown"}, {"at": "2026-06-26T00:00:00"}):
+        meta_gen = {"by": "ariadne-author", **bad}
+        assert _tier(tmp_path, monkeypatch, [fresh], _ABSENT, meta_gen) == "unverified"
+    # verification timestamps: seconds required, lowercase t/z accepted
+    assert tier([{"by": "human:x", "at": "2026-06-27T12:00Z"}], gen) == "unverified"
+    assert tier([{"by": "human:x", "at": "2026-06-27t12:00:00z"}], gen) == "human-reviewed"
     # YAML-native datetime and date values behave the same as quoted ones
     native = {"by": "human:volker", "at": datetime(2026, 6, 27, tzinfo=UTC)}
     assert tier([native], date(2026, 6, 26)) == "human-reviewed"

@@ -2007,7 +2007,19 @@ def _lifecycle_status(meta: dict) -> str:
     return declared if isinstance(declared, str) and declared else "unknown"
 
 
+_STRICT_TS = re.compile(
+    r"\d{4}-\d{2}-\d{2}(?:[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2}))?"
+)
+
+
 def _utc_instant(value: object) -> datetime | None:
+    """Verification-path timestamp: only RFC 3339 date-time (seconds + offset,
+    any ``T``/``Z`` case) or a date-only value; leniency of the shared parser
+    (e.g. no seconds) stays confined to ``stale_after``."""
+    if isinstance(value, str):
+        if not _STRICT_TS.fullmatch(value):
+            return None
+        value = value.upper()
     parsed = _parse_timestamp(value)
     if parsed is None or isinstance(parsed, datetime):
         return parsed
@@ -2017,7 +2029,8 @@ def _utc_instant(value: object) -> datetime | None:
 def _verification_tier(meta: dict) -> str:
     """Advisory document-verification tier — a claim declared in the page, never
     admission. Only CURRENT events count (OKF v0.3 §5.3): ``at`` >= the page's
-    ``generated.at``, or any event when ``generated`` is absent; an event without
+    ``generated.at``, or any event when ``generated`` is absent (a declared one whose
+    ``at`` is missing, unparsable or naive makes nothing current); an event without
     ``by``/``at`` is ignored and an unparsable ``at`` is never current. None
     current (including an empty list) is ``unverified``; current non-human only
     is ``machine-confirmed``; a current ``human:`` actor is ``human-reviewed``."""
@@ -2026,6 +2039,8 @@ def _verification_tier(meta: dict) -> str:
         return "unverified"
     generated = meta.get("generated")
     floor = _utc_instant(generated.get("at")) if isinstance(generated, dict) else None
+    if isinstance(generated, dict) and floor is None:
+        return "unverified"  # declared generation of unknown time waives nothing
     tier = "unverified"
     for entry in verified:
         if not isinstance(entry, dict):
