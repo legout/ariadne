@@ -2039,7 +2039,7 @@ def _verification_tier(meta: dict) -> str:
         return "unverified"
     generated = meta.get("generated")
     floor = _utc_instant(generated.get("at")) if isinstance(generated, dict) else None
-    if isinstance(generated, dict) and floor is None:
+    if generated is not None and floor is None:
         return "unverified"  # declared generation of unknown time waives nothing
     tier = "unverified"
     for entry in verified:

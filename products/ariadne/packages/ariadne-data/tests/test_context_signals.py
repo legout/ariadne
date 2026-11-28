@@ -215,6 +215,11 @@ def test_verification_tier_counts_only_events_current_since_generation(tmp_path,
     for bad in ({}, {"at": "unknown"}, {"at": "2026-06-26T00:00:00"}):
         meta_gen = {"by": "ariadne-author", **bad}
         assert _tier(tmp_path, monkeypatch, [fresh], _ABSENT, meta_gen) == "unverified"
+    # a declared non-mapping generated (scalar date / string) has no established time
+    for scalar in (date(2026, 6, 27), "2026-06-27"):
+        for ev in ("2026-06-26T00:00:00Z", "2026-06-28T00:00:00Z"):
+            event = {"by": "human:ann", "at": ev}
+            assert _tier(tmp_path, monkeypatch, [event], _ABSENT, scalar) == "unverified"
     # verification timestamps: seconds required, lowercase t/z accepted
     assert tier([{"by": "human:x", "at": "2026-06-27T12:00Z"}], gen) == "unverified"
     assert tier([{"by": "human:x", "at": "2026-06-27t12:00:00z"}], gen) == "human-reviewed"
