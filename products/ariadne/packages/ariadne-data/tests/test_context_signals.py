@@ -176,6 +176,43 @@ def test_term_match_carries_the_envelope_and_serializes_through_the_json_adapter
     json.dumps(match, default=cli_json_default)
 
 
+def _tier(tmp_path, monkeypatch, verified, generated=_ABSENT) -> str:
+    monkeypatch.setattr(context, "_assessment_now", lambda: datetime(2026, 10, 7, tzinfo=UTC))
+    meta = yaml.safe_load(_reference_page().split("---")[1])
+    if generated is not _ABSENT:
+        meta["generated"] = {"by": "ariadne-author", "at": generated}
+    meta["verified"] = verified
+    front = yaml.safe_dump(meta, sort_keys=False).strip()
+    _write("references/term.md", f"---\n{front}\n---\n\n# Term\n", tmp_path)
+    [match] = resolve_term([(tmp_path / "context_layer", False)], "test term")["matches"]
+    return match["context_signals"]["pages"][0]["verification_tier"]
+
+
+def test_verification_tier_counts_only_events_current_since_generation(tmp_path, monkeypatch):
+    """OKF v0.3 §5.3: a confirmation older than generated.at is stale (issue #214)."""
+    human = {"by": "human:volker", "at": "2026-06-25T09:00:00Z"}
+    gen = "2026-06-26T00:00:00Z"
+    tier = lambda *a, **k: _tier(tmp_path, monkeypatch, *a, **k)  # noqa: E731
+    # (a) human review predates regeneration -> not human-reviewed
+    assert tier([human], gen) == "unverified"
+    # (f) current process event + stale human event -> machine-confirmed
+    process = {"by": "process:lint", "at": "2026-06-27T00:00:00Z"}
+    assert tier([human, process], gen) == "machine-confirmed"
+    # (b) a later human event -> human-reviewed
+    assert tier([human, {"by": "human:ann", "at": "2026-06-27"}], gen) == "human-reviewed"
+    # (c) no generated -> any human event counts
+    assert tier([human]) == "human-reviewed"
+    # (d) date-only generated.at is the start of that UTC day
+    assert tier([{"by": "human:volker", "at": "2026-06-26T00:00:00Z"}], "2026-06-26") == (
+        "human-reviewed"
+    )
+    # (e) events lacking at / unparsable at are ignored
+    assert tier([{"by": "human:volker"}, {"by": "human:x", "at": "soon"}], gen) == "unverified"
+    # YAML-native datetime and date values behave the same as quoted ones
+    native = {"by": "human:volker", "at": datetime(2026, 6, 27, tzinfo=UTC)}
+    assert tier([native], date(2026, 6, 26)) == "human-reviewed"
+
+
 def test_revision1_native_context_never_reads_classic_computation(tmp_path):
     """C6: a frozen revision-1 SDK view cannot acquire classic attestation signals."""
     from lumio_wiki.ariadne_context import (

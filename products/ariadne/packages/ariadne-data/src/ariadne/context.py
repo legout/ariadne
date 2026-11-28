@@ -1917,31 +1917,35 @@ def _assessment_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _parse_timestamp(value: object) -> date | datetime | None:
+    """OKF §5 timestamp: an offset-bearing date-time or a date-only day (YAML-native
+    or quoted); anything else, including a naive date-time, is ``None``."""
+    if isinstance(value, datetime):
+        return value if value.utcoffset() is not None else None
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.utcoffset() is not None else None
+
+
 def _freshness_view(meta: dict, now: datetime) -> dict:
     """Interpret page expiry timestamps as instants and legacy dates as UTC days."""
     value = meta.get("stale_after")
-    if isinstance(value, datetime):
-        disclosed = value.isoformat()
-        if value.utcoffset() is None:
-            return {"stale_after": disclosed, "state": "unknown"}
-        expiry = value
-    elif isinstance(value, date):
-        disclosed = value.isoformat()
-        expiry = value
-    elif isinstance(value, str):
-        disclosed = value
-        try:
-            expiry = date.fromisoformat(value)
-        except ValueError:
-            try:
-                expiry = datetime.fromisoformat(value)
-            except ValueError:
-                return {"stale_after": disclosed, "state": "unknown"}
-            if expiry.utcoffset() is None:
-                return {"stale_after": disclosed, "state": "unknown"}
-    else:
+    if not isinstance(value, (str, date)):
         return {"stale_after": None, "state": "unknown"}
-
+    disclosed = value if isinstance(value, str) else value.isoformat()
+    expiry = _parse_timestamp(value)
+    if expiry is None:
+        return {"stale_after": disclosed, "state": "unknown"}
     if isinstance(expiry, datetime):
         state = "stale" if now >= expiry else "current"
     else:
@@ -2003,19 +2007,34 @@ def _lifecycle_status(meta: dict) -> str:
     return declared if isinstance(declared, str) and declared else "unknown"
 
 
+def _utc_instant(value: object) -> datetime | None:
+    parsed = _parse_timestamp(value)
+    if parsed is None or isinstance(parsed, datetime):
+        return parsed
+    return datetime(parsed.year, parsed.month, parsed.day, tzinfo=UTC)
+
+
 def _verification_tier(meta: dict) -> str:
-    """Advisory document-verification tier — a claim declared
-    in the page, never admission: no usable confirmation (including an empty
-    list) is ``unverified``; non-human confirmations only are
-    ``machine-confirmed``; a declared ``human:`` actor yields
-    ``human-reviewed``."""
+    """Advisory document-verification tier — a claim declared in the page, never
+    admission. Only CURRENT events count (OKF v0.3 §5.3): ``at`` >= the page's
+    ``generated.at``, or any event when ``generated`` is absent; an event without
+    ``by``/``at`` is ignored and an unparsable ``at`` is never current. None
+    current (including an empty list) is ``unverified``; current non-human only
+    is ``machine-confirmed``; a current ``human:`` actor is ``human-reviewed``."""
     verified = meta.get("verified")
     if not isinstance(verified, list):
         return "unverified"
+    generated = meta.get("generated")
+    floor = _utc_instant(generated.get("at")) if isinstance(generated, dict) else None
     tier = "unverified"
     for entry in verified:
-        by = entry.get("by") if isinstance(entry, dict) else None
-        if not (isinstance(by, str) and by):
+        if not isinstance(entry, dict):
+            continue
+        by = entry.get("by")
+        at = _utc_instant(entry.get("at"))
+        if not (isinstance(by, str) and by) or at is None:
+            continue
+        if floor is not None and at < floor:
             continue
         if by.startswith("human:"):
             return "human-reviewed"
