@@ -336,6 +336,15 @@ def _resolve_index_dir(args: argparse.Namespace, kb_root: Path) -> Path:
     return Path(raw) if raw else default_index_dir(kb_root)
 
 
+def _add_published_version_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--published-version",
+        default=None,
+        metavar="VERSION",
+        help="Read this exact immutable Published Version instead of current.json.",
+    )
+
+
 def _add_private_profile_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--private-profile",
@@ -523,21 +532,50 @@ def _build_publish_location(uri: str) -> tuple[Any, str]:
     return location, identity
 
 
-def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
-    """Return the replayable effective location for a loaded Knowledge Base."""
+def _kb_location_label(
+    value: str | Path, kb: KnowledgeBase, published_version: str | None = None
+) -> str:
+    """Return the replayable effective location for a loaded Knowledge Base.
+
+    A local publication root is its own replayable location (paired with the
+    resolved version); ``kb.root`` there is the immutable version directory.
+    """
     text = str(value)
-    return text if _is_object_store_uri(text) else str(kb.root)
+    if _is_object_store_uri(text):
+        return text
+    return str(Path(text).resolve()) if published_version is not None else str(kb.root)
+
+
+def _checked_pin(version: str | None) -> str | None:
+    """Validate a ``--published-version`` label once; an empty pin is an error."""
+    if version is None:
+        return None
+    try:
+        return validate_published_version(version)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
 
 
 def _is_local_published_layout(path: str | Path) -> bool:
-    """Recognize publication protocol artifacts, not ordinary version-like folders."""
+    """Recognize publication protocol artifacts, not ordinary version-like folders.
+
+    A root-level ``current.json`` alone is not enough (a worktree may carry an
+    unrelated one): it must decode as a version pointer beside a ``versions/``
+    directory. The named revision need not exist: a damaged root must fail in
+    the snapshot opener, never fall back to a worktree (spec 0008 §5).
+    """
     from lumio_wiki.git_authoring import PRIVATE_OPERATIONS_DIR
     from lumio_wiki.location import CURRENT_POINTER_OBJECT
+    from lumio_wiki.s3_location import S3Pointer
 
     root = Path(path)
-    pointer = root / CURRENT_POINTER_OBJECT
-    if pointer.exists() or pointer.is_symlink():
-        return True
+    try:
+        raw = (root / CURRENT_POINTER_OBJECT).read_bytes()
+        validate_published_version(msgspec.json.decode(raw, type=S3Pointer).version)
+        if (root / "versions").is_dir():
+            return True
+    except (OSError, msgspec.DecodeError, ValueError):
+        pass
     private_state = root / PRIVATE_OPERATIONS_DIR
     if private_state.exists() or private_state.is_symlink():
         return True
@@ -553,12 +591,13 @@ def _is_local_published_layout(path: str | Path) -> bool:
     return False
 
 
-def _open_local_published_snapshot(path: str | Path):
+def _open_local_published_snapshot(path: str | Path, version: str | None = None):
     """Resolve one local Published Snapshot and surface corruption as CLI error."""
     from lumio_wiki.location import PublishedFilesystemLocation
 
+    version = _checked_pin(version)
     try:
-        return PublishedFilesystemLocation(path).resolve()
+        return PublishedFilesystemLocation(path, version=version).resolve()
     except KnowledgeBaseError as exc:
         raise CliError(f"could not open published Knowledge Base at {path}: {exc}", 1) from exc
 
@@ -569,34 +608,39 @@ def _open_read_snapshot(
     """Open a local KB or one immutable S3/local Published Snapshot."""
     value = str(path)
     if _is_object_store_uri(value):
-        if published_version is not None:
-            try:
-                validate_published_version(published_version)
-            except ValueError as exc:
-                raise CliError(str(exc)) from None
-        snapshot = _resolve_s3_snapshot(value, version=published_version)
+        snapshot = _resolve_s3_snapshot(value, version=_checked_pin(published_version))
+        return snapshot.knowledge_base, snapshot.published_version
+    if _is_local_published_layout(path):
+        snapshot = _open_local_published_snapshot(path, published_version)
         return snapshot.knowledge_base, snapshot.published_version
     if published_version is not None:
-        raise CliError("--published-version is available only for an S3 Knowledge Base")
-    if _is_local_published_layout(path):
-        snapshot = _open_local_published_snapshot(path)
-        return snapshot.knowledge_base, snapshot.published_version
+        raise CliError(
+            "--published-version is available only for an S3 Knowledge Base "
+            "or a local publication root"
+        )
     kb, _report = _load_kb(path)
     return kb, None
 
 
-def _open_read_kb(path: str | Path) -> KnowledgeBase:
+def _open_read_kb(path: str | Path, published_version: str | None = None) -> KnowledgeBase:
     """Open a Knowledge Base for read commands from a local path or S3 URI."""
-    return _open_read_snapshot(path)[0]
+    return _open_read_snapshot(path, published_version=published_version)[0]
 
 
-def _validate_location(path: str | Path):
+def _validate_location(path: str | Path, published_version: str | None = None):
     """Validate a local path or resolve+validate an S3 URI into a report."""
     value = str(path)
     if _is_object_store_uri(value):
-        return _resolve_s3_snapshot(value).validation_report
+        return _resolve_s3_snapshot(
+            value, version=_checked_pin(published_version)
+        ).validation_report
     if _is_local_published_layout(path):
-        return _open_local_published_snapshot(path).validation_report
+        return _open_local_published_snapshot(path, published_version).validation_report
+    if published_version is not None:
+        raise CliError(
+            "--published-version is available only for an S3 Knowledge Base "
+            "or a local publication root"
+        )
     return validate(path)
 
 
@@ -2877,7 +2921,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    report = _validate_location(args.path)
+    report = _validate_location(args.path, getattr(args, "published_version", None))
     print(report)
     return 0 if report.is_valid else 1
 
@@ -2983,11 +3027,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
     reader_base = _reader_base_url()
     requested_version = getattr(args, "published_version", None)
     if _is_object_store_uri(value):
-        if requested_version is not None:
-            try:
-                validate_published_version(requested_version)
-            except ValueError as exc:
-                raise CliError(str(exc)) from None
+        requested_version = _checked_pin(requested_version)
         # Resolve the active S3 pointer exactly once and retain the
         # selected Published Version identity and fingerprint.
         snapshot = _resolve_s3_snapshot(value, version=requested_version)
@@ -2998,10 +3038,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
             kb_location=value,
             published_version=snapshot.published_version,
         )
-    if requested_version is not None:
-        raise CliError("--published-version is available only for an S3 Knowledge Base")
-
-    kb = _open_read_kb(args.path)
+    kb, local_version = _open_read_snapshot(args.path, published_version=requested_version)
+    kb_location = _kb_location_label(args.path, kb, local_version)
     mode = _resolve_search_mode(args)
     as_json = getattr(args, "json", False)
 
@@ -3010,8 +3048,15 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if mode == "lexical":
         results = kb.search_pages(args.query, limit=args.limit)
         if as_json:
-            return _search_json(args, results, kind="page", kb_location=str(kb.root))
-        _print_page_search_results(results, reader_base_url=reader_base, kb_location=str(kb.root))
+            return _search_json(
+                args, results, kind="page", kb_location=kb_location, published_version=local_version
+            )
+        _print_page_search_results(
+            results,
+            reader_base_url=reader_base,
+            kb_location=kb_location,
+            published_version=local_version,
+        )
         return 0
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder.
@@ -3038,8 +3083,16 @@ def _cmd_search(args: argparse.Namespace) -> int:
         embedder=embedder,
     )
     if as_json:
-        return _search_json(args, results, kind="evidence", kb_location=str(kb.root))
-    _print_evidence_results(results, kb=kb, reader_base_url=reader_base, kb_location=str(kb.root))
+        return _search_json(
+            args, results, kind="evidence", kb_location=kb_location, published_version=local_version
+        )
+    _print_evidence_results(
+        results,
+        kb=kb,
+        reader_base_url=reader_base,
+        kb_location=kb_location,
+        published_version=local_version,
+    )
     return 0
 
 
@@ -3165,7 +3218,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
         args.path,
         published_version=getattr(args, "published_version", None),
     )
-    location = _kb_location_label(args.path, kb)
+    location = _kb_location_label(args.path, kb, published_version)
     has_selector = any(
         getattr(args, name, None) is not None
         for name in ("section", "line_start", "line_end", "max_lines", "max_bytes")
@@ -3312,7 +3365,7 @@ def _entity_id_suffix(kb: KnowledgeBase, title: str) -> str:
 
 
 def _cmd_related(args: argparse.Namespace) -> int:
-    kb = _open_read_kb(args.path)
+    kb = _open_read_kb(args.path, getattr(args, "published_version", None))
     titles = kb.related_pages(
         args.title,
         direction=args.direction,
@@ -3346,7 +3399,7 @@ def _cmd_related(args: argparse.Namespace) -> int:
 
 
 def _cmd_paths(args: argparse.Namespace) -> int:
-    kb = _open_read_kb(args.path)
+    kb = _open_read_kb(args.path, getattr(args, "published_version", None))
     path = kb.shortest_path(
         args.source,
         args.target,
@@ -5700,14 +5753,29 @@ def _cmd_import_graph(args: argparse.Namespace) -> int:
 
 
 def _cmd_health(args: argparse.Namespace) -> int:
-    try:
-        kb, report = load_knowledge_base(args.path)
-    except (KnowledgeBaseError, ControlFileError) as exc:
-        print(f"validation: {validate(args.path)}")
-        print(f"load_error: {exc}", file=sys.stderr)
-        return 1
-    index_dir = _resolve_index_dir(args, kb.root)
-    index_dir.mkdir(parents=True, exist_ok=True)
+    version = getattr(args, "published_version", None)
+    published = _is_local_published_layout(args.path)
+    if published:
+        snapshot = _open_local_published_snapshot(args.path, version)
+        kb, report = snapshot.knowledge_base, snapshot.validation_report
+        if getattr(args, "rebuild", False):
+            raise CliError("--rebuild cannot write into an immutable Published Version")
+    else:
+        if version is not None:
+            raise CliError("--published-version is available only for a local publication root")
+        try:
+            kb, report = load_knowledge_base(args.path)
+        except (KnowledgeBaseError, ControlFileError) as exc:
+            print(f"validation: {validate(args.path)}")
+            print(f"load_error: {exc}", file=sys.stderr)
+            return 1
+    if published:
+        # The selected version's own derived graph, never the worktree index.
+        explicit = getattr(args, "index_dir", None)
+        index_dir = Path(explicit) if explicit else kb.root / "derived"
+    else:
+        index_dir = _resolve_index_dir(args, kb.root)
+        index_dir.mkdir(parents=True, exist_ok=True)
     if getattr(args, "rebuild", False):
         kb.materialize_graph(index_dir)
         print("graph_rebuilt:       ok")
@@ -5728,7 +5796,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
     print(f"graph_edges:         {graph_health.edge_count}")
     if graph_health.materialized_size_bytes is not None:
         print(f"graph_artifact_bytes: {graph_health.materialized_size_bytes}")
-    if not graph_health.graph_fresh:
+    if not graph_health.graph_fresh and not published:
         print(
             f"graph_recovery:      run 'lumio-wiki health {args.path} --rebuild' "
             f"to materialize the Discovery Graph"
@@ -5919,7 +5987,9 @@ def _lancedb_status_fields(
     return fields
 
 
-def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
+def _collect_status(
+    kb_argument: str | None = None, published_version: str | None = None
+) -> dict[str, Any]:
     """Collect the effective configuration + runtime state as a flat dict.
 
     The dict keys are the rendered output keys verbatim: one
@@ -5964,7 +6034,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
     fingerprint_obj = None
     kb_root: Path | None = None
     if is_s3:
-        snapshot = _resolve_s3_snapshot(location)
+        snapshot = _resolve_s3_snapshot(location, version=_checked_pin(published_version))
         kb_location = snapshot.location
         descriptor = snapshot.remote_derived_index
         status["published_version"] = descriptor.version if descriptor else None
@@ -5985,15 +6055,28 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
         status["graph_edges"] = state.edge_count
         status["graph_note"] = graph_note
     else:
-        kb, report = _load_kb(location)
+        if _is_local_published_layout(location):
+            snapshot = _open_local_published_snapshot(location, published_version)
+            kb, report = snapshot.knowledge_base, snapshot.validation_report
+            fingerprint_obj = snapshot.fingerprint
+            status["published_version"] = snapshot.published_version
+            index_dir = kb.root / "derived"
+        else:
+            if published_version is not None:
+                raise CliError(
+                    "--published-version is available only for an S3 Knowledge Base "
+                    "or a local publication root"
+                )
+            kb, report = _load_kb(location)
+            index_dir = default_index_dir(kb.root)
+            fingerprint_obj = fingerprint_sources(kb.root)
         kb_root = Path(kb.root)
-        fingerprint_obj = fingerprint_sources(kb.root)
         status["fingerprint"] = fingerprint_obj.digest
         status["validation_valid"] = report.is_valid
         status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
         status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
         status["review_due"] = len(due_review_pages(kb.pages))
-        graph_health = kb.graph_health(default_index_dir(kb.root))
+        graph_health = kb.graph_health(index_dir)
         status["graph_source"] = "artifact" if graph_health.graph_fresh else "memory"
         status["graph_fresh"] = graph_health.graph_fresh
         status["graph_materialized"] = graph_health.materialized
@@ -6025,7 +6108,7 @@ def _collect_status(kb_argument: str | None = None) -> dict[str, Any]:
             f"instead — publish a new exact Git revision with expected-current to "
             f"refresh the published graph artifact"
         )
-    elif not is_s3 and not status["graph_fresh"]:
+    elif not is_s3 and status["published_version"] is None and not status["graph_fresh"]:
         status["next_action"] = (
             f"run 'lumio-wiki health {location} --rebuild' to materialize the Discovery Graph"
         )
@@ -6088,7 +6171,7 @@ def _render_status(status: dict[str, Any]) -> str:
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
-    status = _collect_status(getattr(args, "kb", None))
+    status = _collect_status(getattr(args, "kb", None), getattr(args, "published_version", None))
     if getattr(args, "json", False):
         print(json.dumps(status, indent=2, sort_keys=True))
     else:
@@ -8072,7 +8155,7 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     from lumio_wiki.mcp_server import run_server
 
     try:
-        return run_server(str(args.path))
+        return run_server(str(args.path), getattr(args, "published_version", None))
     except KnowledgeBaseError as exc:
         raise CliError(str(exc)) from exc
 
@@ -8302,6 +8385,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Load and validate every page, Control File, link, and reserved artifact.",
     )
     _add_kb_argument(validate_parser)
+    _add_published_version_argument(validate_parser)
     validate_parser.set_defaults(func=_cmd_validate)
 
     # search
@@ -8427,6 +8511,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print a truthful diagnostic line (scope/direction/bounds/outcome).",
     )
+    _add_published_version_argument(related_parser)
     related_parser.set_defaults(func=_cmd_related)
 
     # paths
@@ -8456,6 +8541,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print a truthful diagnostic line (scope/direction/bounds/found/hops).",
     )
+    _add_published_version_argument(paths_parser)
     paths_parser.set_defaults(func=_cmd_paths)
 
     # entity (deterministic entity resolution)
@@ -9354,6 +9440,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_kb_argument(health_parser)
     _add_index_dir_argument(health_parser)
+    _add_published_version_argument(health_parser)
     health_parser.add_argument(
         "--rebuild",
         action="store_true",
@@ -9394,6 +9481,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the stable machine-readable JSON form instead of the human summary.",
     )
+    _add_published_version_argument(status_parser)
     status_parser.set_defaults(func=_cmd_status)
 
     # eval — retrieval gold-set evaluation harness.
@@ -10216,6 +10304,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_kb_argument(mcp_parser)
+    _add_published_version_argument(mcp_parser)
     mcp_parser.set_defaults(func=_cmd_mcp)
 
     # skill (nested)
