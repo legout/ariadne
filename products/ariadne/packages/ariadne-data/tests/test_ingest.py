@@ -46,9 +46,9 @@ def make_doc(tmp_path: Path, suffix: str = ".md", text: str | None = None) -> Pa
     ("suffix", "requirement"),
     [
         (".pdf", "liteparse"),
-        (".docx", "markitdown[docx]"),
-        (".pptx", "markitdown[docx]"),
-        (".xlsx", "markitdown[docx]"),
+        (".docx", "firecrawl-anydoc"),
+        (".pptx", "firecrawl-anydoc"),
+        (".xlsx", "firecrawl-anydoc"),
         (".html", "markitdown[docx]"),
         (".doc", "firecrawl-anydoc"),
         (".rtf", "firecrawl-anydoc"),
@@ -58,6 +58,11 @@ def make_doc(tmp_path: Path, suffix: str = ".md", text: str | None = None) -> Pa
         (".ods", "firecrawl-anydoc"),
         (".odp", "firecrawl-anydoc"),
         (".xls", "firecrawl-anydoc"),
+        (".docm", "firecrawl-anydoc"),
+        (".pptm", "firecrawl-anydoc"),
+        (".ppsx", "firecrawl-anydoc"),
+        (".xlsm", "firecrawl-anydoc"),
+        (".xlsb", "firecrawl-anydoc"),
     ],
 )
 def test_dispatch_table_maps_suffix_to_requirement(suffix, requirement):
@@ -102,7 +107,18 @@ def _minimal_docx(path: Path) -> Path:
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        "<w:body><w:p><w:r><w:t>Renewal policy from the handbook</w:t></w:r></w:p></w:body>"
+        "<w:body>"
+        '<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Renewal policy</w:t></w:r></w:p>'
+        "<w:p><w:r><w:t>Renewal policy from the handbook</w:t></w:r></w:p>"
+        '<w:p><w:pPr><w:pStyle w:val="ListBullet"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/>'
+        "</w:numPr></w:pPr><w:r><w:t>Churned rows excluded</w:t></w:r></w:p>"
+        "<w:tbl>"
+        "<w:tr><w:tc><w:p><w:r><w:t>Status</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>Treatment</w:t></w:r></w:p></w:tc></w:tr>"
+        "<w:tr><w:tc><w:p><w:r><w:t>Status</w:t></w:r></w:p></w:tc>"
+        "<w:tc><w:p><w:r><w:t>zaehlt</w:t></w:r></w:p></w:tc></w:tr>"
+        "</w:tbl>"
+        "</w:body>"
         "</w:document>"
     )
     with zipfile.ZipFile(path, "w") as zf:
@@ -112,7 +128,32 @@ def _minimal_docx(path: Path) -> Path:
             '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
             '<Default Extension="xml" ContentType="application/xml"/>'
             '<Override PartName="/word/document.xml" ContentType="application/vnd.'
-            'openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+            'openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '<Override PartName="/word/styles.xml" ContentType="application/vnd.'
+            'openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+            '<Override PartName="/word/numbering.xml" ContentType="application/vnd.'
+            'openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>',
+        )
+        w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        zf.writestr(
+            "word/_rels/document.xml.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/styles" Target="styles.xml"/>'
+            f'<Relationship Id="rId2" Type="{rel}/numbering" Target="numbering.xml"/>'
+            "</Relationships>",
+        )
+        zf.writestr(
+            "word/styles.xml",
+            f'<w:styles {w}><w:style w:type="paragraph" w:styleId="Heading1">'
+            '<w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>'
+            "</w:styles>",
+        )
+        zf.writestr(
+            "word/numbering.xml",
+            f'<w:numbering {w}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0">'
+            '<w:numFmt w:val="bullet"/><w:lvlText w:val="-"/></w:lvl></w:abstractNum>'
+            '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>',
         )
         zf.writestr(
             "_rels/.rels",
@@ -126,12 +167,89 @@ def _minimal_docx(path: Path) -> Path:
     return path
 
 
-def test_docx_conversion_via_markitdown(tmp_path):
-    pytest.importorskip("markitdown")
+def test_docx_conversion_via_anydoc(tmp_path):
+    pytest.importorskip("anydoc")
     from ariadne.ingest import _convert
 
     text = _convert(_minimal_docx(tmp_path / "handbook.docx"))
     assert "Renewal policy from the handbook" in text
+    assert any(line.startswith("# ") and "Renewal policy" in line for line in text.splitlines())
+    assert "Churned rows excluded" in text
+    assert "| Status | zaehlt |" in text
+
+
+def test_xlsx_conversion_via_anydoc(tmp_path):
+    pytest.importorskip("anydoc")
+    from ariadne.ingest import _convert
+
+    path = tmp_path / "book.xlsx"
+    ct = "application/vnd.openxmlformats-officedocument.spreadsheetml"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+
+    def sheet(rows):
+        body = "".join(
+            "<row>" + "".join(f'<c t="inlineStr"><is><t>{v}</t></is></c>' for v in row) + "</row>"
+            for row in rows
+        )
+        return f"<worksheet {ns}><sheetData>{body}</sheetData></worksheet>"
+
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            f'<Override PartName="/xl/workbook.xml" ContentType="{ct}.sheet.main+xml"/>'
+            f'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="{ct}.worksheet+xml"/>'
+            f'<Override PartName="/xl/worksheets/sheet2.xml" ContentType="{ct}.worksheet+xml"/>'
+            "</Types>",
+        )
+        zf.writestr(
+            "_rels/.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>",
+        )
+        zf.writestr(
+            "xl/workbook.xml",
+            f'<workbook {ns} xmlns:r="{rel}"><sheets>'
+            '<sheet name="Accounts" sheetId="1" r:id="rId1"/>'
+            '<sheet name="Notes" sheetId="2" r:id="rId2"/></sheets></workbook>',
+        )
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/>'
+            f'<Relationship Id="rId2" Type="{rel}/worksheet" Target="worksheets/sheet2.xml"/>'
+            "</Relationships>",
+        )
+        zf.writestr(
+            "xl/worksheets/sheet1.xml",
+            sheet([["Account", "Status"], ["Acme", "ACTIVE"], ["Globex", "CHURNED"]]),
+        )
+        zf.writestr("xl/worksheets/sheet2.xml", sheet([["Remark"], ["second sheet"]]))
+    text = _convert(path)
+    assert "## Accounts" in text and "## Notes" in text
+    assert "| Account | Status |" in text and "| Globex | CHURNED |" in text
+    assert "second sheet" in text
+
+
+def test_anydoc_never_requests_hosted_ocr(tmp_path, monkeypatch):
+    anydoc = pytest.importorskip("anydoc")
+    from ariadne.ingest import _ConversionError, _convert
+
+    calls = []
+
+    def fake(path, **kwargs):
+        calls.append(kwargs)
+        raise type("NeedsOcrError", (Exception,), {})("scanned")
+
+    monkeypatch.setattr(anydoc, "to_markdown", fake)
+    doc = tmp_path / "scan.docx"
+    doc.write_bytes(b"x")
+    with pytest.raises(_ConversionError, match=r"scan\.docx.*needs OCR"):
+        _convert(doc)
+    assert calls == [{}]
 
 
 def test_html_conversion_via_markitdown(tmp_path):

@@ -20,7 +20,7 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
-    { name = "firecrawl-anydoc", specifier = "==0.1.3" },
+    { name = "firecrawl-anydoc", specifier = "==0.2.5" },
     { name = "liteparse", specifier = ">=2.4.0" },
     { name = "lxml", specifier = "<6.2" },
     { name = "markitdown", extras = ["docx"], specifier = ">=0.1.6" },
@@ -102,8 +102,8 @@ spreadsheets = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = ">=2.0,<3" },
-    { name = "firecrawl-anydoc", marker = "extra == 'dev'", specifier = "==0.1.3" },
-    { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.1.3" },
+    { name = "firecrawl-anydoc", marker = "extra == 'dev'", specifier = "==0.2.5" },
+    { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.2.5" },
     { name = "jsonschema", specifier = ">=4.18" },
     { name = "liteparse", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
@@ -621,17 +621,17 @@ wheels = [
 
 [[package]]
 name = "firecrawl-anydoc"
-version = "0.1.3"
+version = "0.2.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a7/32/b3541611e080d42a3de26158e31165c61ad72e8dd0f53e68855b3220b91b/firecrawl_anydoc-0.1.3.tar.gz", hash = "sha256:e474b1fa1af5cc27549d81a27072cc5b6b7dbfe5aa262777e345a9817b181f44", size = 183093, upload-time = "2026-08-04T19:58:47.232Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/f3/50b6c33b1b90a8e838848e45939d157456f08695554c58fd25b01ed27a68/firecrawl_anydoc-0.2.5.tar.gz", hash = "sha256:7d8ea818c8c781b08fb47695ca5a7956fc666b28b1b0352d2e3d669991afde5a", size = 272523, upload-time = "2026-11-18T19:50:33.567Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/13/21c9a74e4880c2f1fc279cb2162ff99cbf517956a3d8bbfc3967a4bbbadc/firecrawl_anydoc-0.1.3-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:21230921d27d7e37d2ffd4a8b936c13420e097aa342fd69faeb5600260153535", size = 3510117, upload-time = "2026-08-04T19:58:37.396Z" },
-    { url = "https://files.pythonhosted.org/packages/97/c7/c1c8bb05659030340bd98f9a180b1dce23c8a3f98a7a8f7920246cea0223/firecrawl_anydoc-0.1.3-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:fd05f1eba6152667f94511802d89d2259c0b2d02990717bced917b7b2c2f6eb6", size = 3299887, upload-time = "2026-08-04T19:58:38.807Z" },
-    { url = "https://files.pythonhosted.org/packages/b8/00/6851b21cefbdcf62401f0c926eda45f3374bb12c172f39b4ca5956822433/firecrawl_anydoc-0.1.3-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:60001691c55dd9fb5a4a75118749324a4996ce07349046c50b97d8dbcad5935a", size = 3373411, upload-time = "2026-08-04T19:58:40.154Z" },
-    { url = "https://files.pythonhosted.org/packages/84/0c/95e80e7c47c30a98a5563ac956a84908a6a65e0723a76da7fd6ecaef6406/firecrawl_anydoc-0.1.3-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aeac246432a6bb0d7c2137f0d4d7b73d4cce903398426001e29cc8db8c4c718d", size = 3604935, upload-time = "2026-08-04T19:58:41.828Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/ae/af8e6b82120526312f23206445d0afbd76e8637064ed45d823e10ae48024/firecrawl_anydoc-0.1.3-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:64fe9313d9a0495545a9794b2cc988b4dc1b281753e1c23017aa7f0e6c12f0f3", size = 3555227, upload-time = "2026-08-04T19:58:43.281Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/6d/53244a665ef13d3c03b45d891ff61e8e320fa4edae0d837301d7323ee893/firecrawl_anydoc-0.1.3-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:9bb09167b9500159124f8ba4c780be4d349e9e842a4683e88c2aaf39bd8096ca", size = 3845456, upload-time = "2026-08-04T19:58:44.603Z" },
-    { url = "https://files.pythonhosted.org/packages/05/18/556c5aeac352e125f9b4d766f5732fb6d4c16f9dc5b88e67eaa2cdc6640e/firecrawl_anydoc-0.1.3-cp310-abi3-win_amd64.whl", hash = "sha256:bf008a2fdfda84fcd625328ad71701b464e0ed222372913d36746e9a7b92e7e7", size = 3631477, upload-time = "2026-08-04T19:58:45.909Z" },
+    { url = "https://files.pythonhosted.org/packages/29/d7/ecb1c5f9188341f8bbc92a29e5b7f12da3ac150e7300aacb0b93fc5b41bb/firecrawl_anydoc-0.2.5-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:736d0191e3a9aee4994876781e10993976364ea45776a4c66188423e34ac3e59", size = 3454821, upload-time = "2026-11-18T19:50:21.861Z" },
+    { url = "https://files.pythonhosted.org/packages/90/5d/9abb122a360f1cda580605ffdeb9ccf13cd321a1a418ead3e20c82fdc726/firecrawl_anydoc-0.2.5-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:ae64ddc76da8a715949fd0bac229a5b72b5ffcf4ff171f1ee2e79b6dfeb98b55", size = 3273171, upload-time = "2026-11-18T19:50:23.699Z" },
+    { url = "https://files.pythonhosted.org/packages/40/60/6e57a1d5109acfacca0144de7fe33fdf01c32f0e9fb5df3d299ad34711e5/firecrawl_anydoc-0.2.5-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2c08f107d45887f6c0fb011261219c6084f874cd8abbb51b4994e5e0f275a4f2", size = 3297470, upload-time = "2026-11-18T19:50:25.217Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/32/9f375976759b61f4d7a3682e3fa65f2da87c94e605c86e1aae3648a01cd6/firecrawl_anydoc-0.2.5-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:30e1c466f81851e0807c6e87b1e0e17d5e53ec8f4c4c6f166ef2e619f601bfe7", size = 3530452, upload-time = "2026-11-18T19:50:27.268Z" },
+    { url = "https://files.pythonhosted.org/packages/04/03/befca830120e8e976e8b5372898625c51ee42dab0891382e1edc6f31cc6a/firecrawl_anydoc-0.2.5-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:2abf1ed7fcf0e6172a02c48b9d10c95e9c305a866b06dae722748763b071d70e", size = 3476923, upload-time = "2026-11-18T19:50:28.743Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/e0/fd52c3d4edcfd04f2b59ab28d297793fc56c00d4aa61f722c9c00fd17356/firecrawl_anydoc-0.2.5-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:97550c91815530f481b5867465b1a86387711ae0c85fc822d77e9f5879f2421f", size = 3766302, upload-time = "2026-11-18T19:50:30.377Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/0a/076843657e46c8f4039ea397ea7b8907a04af41f3d0668bb437f9056c119/firecrawl_anydoc-0.2.5-cp310-abi3-win_amd64.whl", hash = "sha256:1b4db5b51ffc7e9d115841c421107ba51039379b12e69c1b66572cb6213aced1", size = 3493410, upload-time = "2026-11-18T19:50:32.166Z" },
 ]
 
 [[package]]
@@ -1097,8 +1097,8 @@ s3 = [
 
 [package.metadata]
 requires-dist = [
-    { name = "firecrawl-anydoc", marker = "extra == 'all'", specifier = "==0.1.3" },
-    { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.1.3" },
+    { name = "firecrawl-anydoc", marker = "extra == 'all'", specifier = "==0.2.5" },
+    { name = "firecrawl-anydoc", marker = "extra == 'documents'", specifier = "==0.2.5" },
     { name = "liteparse", marker = "extra == 'all'", specifier = ">=2.4.0" },
     { name = "liteparse", marker = "extra == 'documents'", specifier = ">=2.4.0" },
     { name = "lxml", marker = "extra == 'all'", specifier = "<6.2" },

@@ -11,8 +11,8 @@ converter seam for the bounded Seed-Notes document parts
 
     .md .txt                                  native read (no dependencies)
     .pdf                                      liteparse
-    .docx .pptx .xlsx .html                   markitdown[docx]
-    .doc .rtf .epub .csv .odt .ods .odp .xls  firecrawl-anydoc (imports as ``anydoc``)
+    .html                                     markitdown[docx]
+    Office/OpenDocument/RTF/EPUB/CSV          firecrawl-anydoc (imports as ``anydoc``)
 """
 
 from __future__ import annotations
@@ -69,24 +69,39 @@ def _convert_markitdown(path: Path) -> str:
 def _convert_anydoc(path: Path) -> str:
     import anydoc  # pyright: ignore[reportMissingImports] — optional [documents] extra
 
-    return anydoc.to_markdown(str(path))
+    # No ``ocr=`` argument, ever: anydoc's hosted OCR uploads the document (#222).
+    try:
+        return anydoc.to_markdown(str(path))
+    except Exception as exc:
+        if type(exc).__name__ == "NeedsOcrError":
+            raise _ConversionError(
+                f"{path}: needs OCR (a scanned document); hosted OCR is never used. "
+                "Nothing was written."
+            ) from exc
+        raise
 
 
 # suffix -> (converter, pip requirement to name in the missing-extra error)
 _CONVERTERS: dict[str, tuple] = {
     ".pdf": (_convert_pdf, "liteparse"),
-    ".docx": (_convert_markitdown, "markitdown[docx]"),
-    ".pptx": (_convert_markitdown, "markitdown[docx]"),
-    ".xlsx": (_convert_markitdown, "markitdown[docx]"),
     ".html": (_convert_markitdown, "markitdown[docx]"),
     ".doc": (_convert_anydoc, "firecrawl-anydoc"),
+    ".docx": (_convert_anydoc, "firecrawl-anydoc"),
+    ".docm": (_convert_anydoc, "firecrawl-anydoc"),
+    ".ppt": (_convert_anydoc, "firecrawl-anydoc"),
+    ".pptx": (_convert_anydoc, "firecrawl-anydoc"),
+    ".pptm": (_convert_anydoc, "firecrawl-anydoc"),
+    ".ppsx": (_convert_anydoc, "firecrawl-anydoc"),
+    ".xls": (_convert_anydoc, "firecrawl-anydoc"),
+    ".xlsx": (_convert_anydoc, "firecrawl-anydoc"),
+    ".xlsm": (_convert_anydoc, "firecrawl-anydoc"),
+    ".xlsb": (_convert_anydoc, "firecrawl-anydoc"),
     ".rtf": (_convert_anydoc, "firecrawl-anydoc"),
     ".epub": (_convert_anydoc, "firecrawl-anydoc"),
     ".csv": (_convert_anydoc, "firecrawl-anydoc"),
     ".odt": (_convert_anydoc, "firecrawl-anydoc"),
     ".ods": (_convert_anydoc, "firecrawl-anydoc"),
     ".odp": (_convert_anydoc, "firecrawl-anydoc"),
-    ".xls": (_convert_anydoc, "firecrawl-anydoc"),
 }
 
 _INSTALL_HINT = (
