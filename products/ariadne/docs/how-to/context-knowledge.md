@@ -12,20 +12,15 @@ retains the older Core 0.6.0 / SDK 0.4.0 example, not the current setup route.
 
 ## Refresh a table schema
 
-Schema facts are generated from an approved source; do not hand-edit the generated Schema or Observations sections. In an active Git proposal, identify the exact asset and refresh it:
+Schema facts are generated from an approved source; do not hand-edit the generated Schema or Observations sections. In the active draft, identify the exact asset and refresh it with the `authoring_refresh_schema` MCP tool (there is no CLI command; the draft needs a source grant):
 
-```bash
-ariadne-authoring refresh-schema --project . --proposal ID \
-    --expected-revision REV --file assets.json
-```
-
-`assets.json` contains the exact source, catalog, schema, and table identity:
+Pass the exact source, catalog, schema, and table identity:
 
 ```json
 [{"source":"sales","catalog":null,"schema":"sales","table":"orders"}]
 ```
 
-Use the current proposal revision. A refresh edits a candidate; it does not validate, review, or admit it. An identical refresh is a no-op. Review generated facts and retain authored column meanings; a changed or removed column is not treated as a guessed rename.
+A refresh edits a candidate; it does not validate, review, or admit it. An identical refresh is a no-op. Review generated facts and retain authored column meanings; a changed or removed column is not treated as a guessed rename.
 
 In an integrated project whose selector opted into support revision 2, the
 same refresh writes the generated technical pages as producer-native
@@ -43,20 +38,7 @@ them.
 
 ## Resolve a business term
 
-Query the admitted project when answering an analyst question, or the selected proposal while authoring:
-
-```bash
-ariadne resolve-term "global order number" --project .
-ariadne-authoring resolve-term --project . --proposal ID "order number"
-```
-
-For an exact physical-field lookup, pass the resource and column as JSON:
-
-```bash
-ariadne resolve-term --project . --file - <<'JSON'
-{"resource":"ariadne://table/...","column":"store_id"}
-JSON
-```
+Use the `resolve_term` MCP tool (analyst) on the admitted project, or `authoring_resolve_term` while authoring; `ariadne search "global order number"` also surfaces terms. For an exact physical-field lookup pass the resource and column, for example `{"resource":"ariadne://table/...","column":"store_id"}`.
 
 Read the returned scope, exact field bindings, ambiguity, and claim status. A match is guidance only: it does not authorize a join, transform, or SQL rewrite. An unconfirmed mapping remains a lead, even when its page is admitted.
 
@@ -64,10 +46,7 @@ Read the returned scope, exact field bindings, ambiguity, and claim status. A ma
 
 Use bounded mapping inspection only when an owner-approved source is available and a specific mapping hypothesis needs evidence:
 
-```bash
-ariadne-authoring inspect-mapping --project . --proposal ID \
-    --expected-revision REV --file candidate.json
-```
+Call the `authoring_inspect_mapping` MCP tool with the candidate request.
 
 The request describes typed field bindings and predicates, not SQL. Review the returned receipt and its actual scope and outcome; incomplete or inconclusive evidence does not establish a relationship. Raw identifier examples require the operator's separate permission. The [reference](../reference/context-knowledge.md#mapping-inspection) documents request fields and fixed ceilings.
 
@@ -75,12 +54,10 @@ An Authoring agent may save an evidence-backed **hypothesis** through the typed 
 
 ## Confirm an asserted mapping
 
-Only a human can confirm an eligible assertion, and only during admission of the reviewed candidate. Inspect the review report for the exact assertion and digest, then select it explicitly:
+Only a human can confirm an eligible assertion, and only during the calculation approval. Inspect `ariadne diff` for the exact assertion, then select it explicitly:
 
 ```bash
-ariadne-admit --project . --proposal ID --revision REV \
-    --reviewed-digest DIGEST --confirm \
-    --confirm-mapping order-number:global-order-concatenation
+ariadne approve --confirm-mapping order-number:global-order-concatenation
 ```
 
 Omitting the selection does not confirm a new assertion. Changed, stale, or conflicting assertions cannot inherit confirmation. Neither a proposal edit nor a successful inspection performs confirmation.

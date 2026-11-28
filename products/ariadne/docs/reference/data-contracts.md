@@ -35,7 +35,7 @@ id: order-number-contract
 version: producer-release-A
 ```
 
-`ariadne-validate ARTIFACT_DIR` is source-free static checking. Success is partial
+Historical: `ariadne-validate ARTIFACT_DIR` (removed by spec 0040; `ariadne validate` now validates the active draft) was source-free static checking. Success is partial
 structural evidence; approved-source observations are `not_run`, not compliant.
 
 ## Separate Git artifacts and exact bindings
@@ -161,7 +161,7 @@ profile limitations, revision and matching observation as-of/eligibility. An
 unbound document has no binding/observation. Before admission the group is
 unavailable. Candidate/worktree bytes never replace admitted metadata.
 
-`list_datasets` / `ariadne list-datasets` retains the approved **live catalog**,
+`list_datasets` / `ariadne datasets` retains the approved **live catalog**,
 actual columns and ordinary approval/admission refusals. Matching contract
 annotations use only the pinned snapshot, with no additional source read or
 second inspection. Neither operation regenerates evidence or claims current

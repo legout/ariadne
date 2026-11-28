@@ -1,78 +1,55 @@
 # How to author a Git-managed project
 
-Use this guide to prepare, review, and admit a Git-backed proposal. It is a task guide: for exact command/surface mappings see the [Git migration reference](../reference/git-authoring-migration.md), and for the governance model see [How Ariadne works](../explanations/how-ariadne-works.md).
+Use this guide to author, review and approve a change in a Git-managed project with the one `ariadne` CLI. For the exact command set see the [CLI reference](../reference/cli.md); for the model see [How Ariadne works](../explanations/how-ariadne-works.md). A new project starts with the [getting-started tutorial](../tutorials/getting-started.md).
 
-For a new project, the [getting-started tutorial](../tutorials/getting-started.md) covers scaffolding and first setup. This guide starts from an initialized data-project repository with a local Git identity.
+A project has one active draft. The first edit opens it; a competing writer is refused as stale.
 
-## Create and admit a proposal
+## Declare and approve sources
 
-Declare the source registry in `ariadne.yaml` and put any operator-approved documents under an allowed project path. A new project also needs the operator-authored `context_integration.yaml` selector ([Select the integrated route](../tutorials/getting-started.md#select-the-integrated-route)); without it schema refresh refuses. Start a proposal:
-
-```bash
-ariadne-authoring start --project .
-```
-
-The command returns a proposal ID and candidate revision. Use those current values in the following commands; do not guess or reuse stale revisions.
-
-### Propose and approve sources
-
-Submit source declarations as inert entries, then have the human operator inspect and approve the resolved source identity:
+Declare sources in the draft (inert; nothing is opened or granted):
 
 ```bash
-ariadne-authoring propose-sources --project . --proposal ID \
-    --expected-revision REV --file sources.yaml
-ariadne-authoring approve-sources --project . --proposal ID \
-    --revision REV --source-digest DIGEST
+ariadne add data/orders.parquet --name orders
 ```
 
-The proposed file is registry-shaped: optional named `storages:` S3 profile declarations (available in Core 0.6.0) travel alongside the `sources:` entries, reference already-declared profiles by name, and stay credential-free — only variable *names* and scopes are proposed, nothing is opened and no environment value is read during proposal creation. See [Multiple S3 storages](multiple-s3-storages.md).
+Optional named `storages:` S3 profiles (see [Multiple S3 storages](multiple-s3-storages.md)) are credential-free variable names and scopes. To change one declared source use a typed `source_change` edit through `ariadne draft edit FILE`.
 
-**The second command is human-only.** Use the exact ID, revision, digest, and approval command reported for the proposal. Source approval happens before a declared source is opened for authoring inputs. For named profiles the approval additionally records the resolved effective endpoint binding (endpoint/region, never credentials): a changed endpoint needs its own approval and fresh evidence, while key rotation does not.
+**`ariadne approve` is human-only** and runs on an interactive terminal. On a draft that adds or changes a source it is a *source approval*: it shows the exact identities and, after your `yes`, records the grant. Keep sources in their own draft.
 
 ### Managed shared-workspace exception
 
-An explicitly configured shared workspace may execute only the exact operation shown in its separately authenticated browser review. For a source task, Source Approval and the requester's data authorization are two distinct reviews. For an integrated contribution, submission review and overall admission are distinct stages; knowledge-only consent cannot approve a Core calculation change or activate the release.
+An explicitly configured shared workspace may execute only the exact operation shown in its separately authenticated browser review. Source Approval and the requester's data authorization are distinct reviews; submission review and overall admission are distinct stages. This does not make `ariadne approve` agent-operated, and neither prompt assent nor an API token is publication authority. See [Shared workspace data](shared-workspace-data.md).
 
-This exception does not make the local `approve-sources` or `ariadne-admit` commands agent-operated, and neither prompt assent nor an API token is publication authority. The managed adapter checks the caller's grant for the complete effective source set before catalog construction and keeps native admission and pinned query context authoritative. See [Shared workspace data](shared-workspace-data.md) for the configuration and request/profile/review/query sequence.
+## Draft, validate, review
 
-### Draft and validate artifacts
-
-The agent or operator reads approved inputs, makes typed artifact edits, validates the current revision, and reviews the result:
+Documents go under `data/docs/` and are read by the `authoring_inputs` MCP tool (see the packaged skill, "Onboard a document"). Apply typed edits and validate:
 
 ```bash
-ariadne-authoring inputs --project . --proposal ID
-ariadne-authoring edit --project . --proposal ID \
-    --expected-revision REV --file edit.json
-ariadne-authoring validate --project . --proposal ID \
-    --expected-revision REV
-ariadne-authoring review --project . --proposal ID
+ariadne draft edit edit.json
+ariadne draft status
+ariadne validate
+ariadne diff
+ariadne preview my_metric          # governed: false
 ```
 
-After each edit or validation, use the returned current revision. If the review identifies a problem, make a revision-checked edit and validate/review that final revision again. Reading a review report is not sign-off.
+If the served revision moved past the draft's base, the draft is stale: run `ariadne draft rebase` (human) or `ariadne draft discard --stale`.
 
-### Admit the reviewed revision
-
-The operator inspects the final review, then admits the exact reviewed digest:
+## Approve the calculation
 
 ```bash
-ariadne-admit --project . --proposal ID --revision REV \
-    --reviewed-digest DIGEST
-ariadne-admit --project . --proposal ID --revision REV \
-    --reviewed-digest DIGEST --confirm
+ariadne approve
 ```
 
-The first invocation previews the decision; the second performs it. Admission is human-only and binds the reviewed, validated revision. A Git commit, successful validation, or agent-authored approval field is not a substitute.
-
-Check the managed project and query the pinned admitted snapshot:
+The human reads the exact validated revision and answers `yes`. A Git commit, successful validation or an agent-authored field is not a substitute. Then:
 
 ```bash
-ariadne status --project .
-ariadne list-metrics --project .
-ariadne get-metric my_metric --project .
+ariadne status
+ariadne metrics
+ariadne query my_metric
 ```
+
+After approval the admitted pages live in the publication directory (default `~/.local/share/ariadne/published/<uuid>/versions/<revision>/`) and the approved Git revision; the working tree's `knowledge/` holds only the scaffold. Read them with `ariadne page PATH`.
 
 ## Scope and existing projects
 
-This workflow is for authoring a new Git-managed project. Core does not import legacy staged artifacts, pending review state, or original documents; it provides no Promotion or legacy-table enrichment path. If you have an existing project, preserve its files and decide explicitly with its owner what to reauthor into a new proposal. Setup never resets or silently adopts them.
-
-Do not query a plain artifact root: governed query and discovery require a valid human-admitted Git snapshot. See the [Git-only route reference](../reference/git-authoring-migration.md) for the supported boundaries and the [CLI reference](../reference/cli.md) for commands and MCP startup options.
+This workflow is for a new Git-managed project. Core does not import legacy staged artifacts or pending review state. Preserve existing files and decide with the owner what to reauthor into a new draft. See the [Git-only route reference](../reference/git-authoring-migration.md).

@@ -8,22 +8,22 @@ Core exposes one durable authoring route: revision-checked Git proposals followe
 
 ## Project route
 
-Create a fresh project scaffold with `ariadne-init DIR`, initialize and configure Git yourself, then use `ariadne-authoring start --project DIR`. Initialization, Git configuration, source permission and admission remain separate operator decisions. Core does not import staged artifacts or old local state; existing files are never silently reset or adopted.
+Create a fresh project scaffold with `ariadne init DIR`, initialize and configure Git yourself, then open the one active draft with the first `ariadne add` or `ariadne draft edit`. Initialization, Git configuration, source permission and admission remain separate operator decisions. Core does not import staged artifacts or old local state; existing files are never silently reset or adopted.
 
 Public query and discovery entry points are project-bound:
 
 - `ariadne COMMAND --project DIR` and `QueryRuntime.open_project(DIR)` require a valid Git admission for governed queries.
 - `DiscoveryRuntime.open_project(DIR)` exposes only admitted context; without admission it returns no project content.
 - Plain artifact roots and the former `--served`, `--sources` and `--db` query selectors are not serving routes. Direct runtime construction is not a supported public API.
-- `ariadne status --project DIR` is read-only. `ariadne setup --project DIR` may scaffold and report handoffs but never runs `git init/config`, approves sources or admits a revision.
+- `ariadne status --project DIR` is read-only. `ariadne init` scaffolds but never runs `git init/config`, approves sources or admits a revision (the former `ariadne setup` and the per-purpose executables were removed by spec 0040).
 
 ## Durable authored content
 
-`ariadne-authoring start` creates an isolated proposal. Typed artifact edits and source declarations require the proposal's current revision; stale edits refuse. Source declarations are inert until a human approves the exact resolved source identity. Approved inputs may then be measured, and candidate artifacts are validated and reviewed against exact revisions. `ariadne-admit --confirm` is the human-only gate for the reviewed, validated revision. A commit, validation result, metadata field or Git source declaration is not admission or source permission.
+The first `ariadne add` or `ariadne draft edit` opens the one active draft. Typed edits and source declarations go through `ariadne draft edit`/`ariadne add`; a stale draft refuses. Source declarations are inert until a human approves the exact resolved source identity. Approved inputs may then be measured, and candidate artifacts are validated and reviewed against exact revisions. `ariadne approve` is the human-only gate for the reviewed, validated revision. A commit, validation result, metadata field or Git source declaration is not admission or source permission.
 
 Examples and onboarded document pages are native knowledge pages in the same candidate and admitted snapshot as Policies, models and other authored content. Example saving is explicit and creates an unreviewed candidate draft; there is no separate Example review store. Document originals remain operator-controlled and external to the artifact snapshot; Core retains the authored page and exact source identity/digest, not an upload or archive copy.
 
-Ad-hoc `define-metric` results are ephemeral (`governed: false`, `persistence: {status: not_saved}`). To retain a definition, use an explicit revision-checked model/page edit in a Git proposal. Document onboarding likewise lands native knowledge pages in a selected proposal revision through the Lumio intake (spec0035); it never writes a staging tree or admits the result.
+Ad-hoc `define_metric` (MCP) results are ephemeral (`governed: false`, `persistence: {status: not_saved}`). To retain a definition, use an explicit revision-checked model/page edit in a Git proposal. Document onboarding likewise lands native knowledge pages in a selected proposal revision through the Lumio intake (spec0035); it never writes a staging tree or admits the result.
 
 ## Data Contracts and local bindings
 
@@ -48,9 +48,9 @@ producer rewrite from observations, new approval tool or #76 identity is implied
 
 The local operator remains responsible for:
 
-- approving the exact source identity with `ariadne-authoring approve-sources`;
-- admitting a reviewed and validated revision with `ariadne-admit --confirm` (including any explicit mapping confirmation);
-- recording a permitted local rebase/merge with `ariadne-authoring reconcile` when the admitted baseline advances.
+- approving the exact source identity (source approval) with `ariadne approve`;
+- approving a validated revision (calculation approval) with `ariadne approve` (including any explicit `--confirm-mapping SEL`);
+- `ariadne draft rebase` and `ariadne draft discard`.
 
 These commands are not registered as MCP tools. Core does not expose staged-bundle submission, legacy import/enrichment, Promotion, or a separate Example-review command.
 

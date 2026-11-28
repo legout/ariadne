@@ -315,8 +315,7 @@ staged artifacts: there is no staged route or automatic artifact import.
    scope; propose Policy/OSI edits only once that meaning is established (all
    compile/grain/live gates still apply — never a local-number-only or raw
    fact-to-fact join from an alias or sample). Hypotheses and receipts live in the draft and the evidence area, not
-   chat memory. The context-knowledge workflow is documented in
-   `docs/how-to/context-knowledge.md`.
+   chat memory.
 7. **validate, look at the diff, then STOP for the human.** `ariadne validate`
    finalizes the generated artifacts and validates the EXACT final revision
    against the granted source identities (bounded repair rounds, never reset by
@@ -331,6 +330,41 @@ staged artifacts: there is no staged route or automatic artifact import.
    anything confirmed, and a hypothesis stays unconfirmed even when approved.
    `ariadne preview <metric>` (from the draft, `governed: false`) is a read-only
    look at a draft metric; it is never governed and never an Answer Example.
+
+## Onboard a document
+
+A PDF, DOCX or Markdown file with business rules becomes evidence in the
+draft, cited by a page. There is no CLI command for the read; it is the
+`authoring_inputs` MCP tool (`ariadne serve --toolset authoring`).
+
+1. **Place it** under `<project>/data/docs/` (the default input root; names
+   are relative to it, e.g. `documents=["rules.md"]`). Nothing outside the
+   configured roots is read. PDF/DOCX and other converter formats need the
+   wheel extra `ariadne-data[documents]`; Markdown/text do not.
+2. **Open a draft.** `authoring_inputs` refuses without an active draft: make
+   the first edit (e.g. `ariadne add ...` or a typed edit) and, for a source
+   that needs it, wait for the human's source approval.
+3. **Read it** with `authoring_inputs(documents=[...])`: you get the resource
+   path, a sha256 digest and bounded text parts (read big files part by part).
+4. **Cite it** in a typed `pages` edit: name the resource and digest in the
+   page's declared source record. Ask the owner where the text does not
+   establish a rule; stop after `ariadne validate` for the human's
+   `ariadne approve`.
+5. **What stays out of Git.** The init scaffold ignores `data/*` (except
+   `data/seed_notes.md`), so the original is neither versioned nor published;
+   keep the digest in the page and the original wherever the operator retains
+   it.
+
+**Admitted pages.** After the human's calculation approval the admitted pages
+live in the publication directory (default
+`~/.local/share/ariadne/published/<uuid>/versions/<revision>/`) and in the
+approved Git revision, not in the working tree's `knowledge/` (scaffold only).
+Read them with `ariadne page PATH --project .` or `ariadne search`.
+
+**Lumio boundary.** Ariadne uses the Lumio Knowledge Base as context for
+metrics. Graph traversal (related/paths), ingest and publishing of a general
+knowledge base belong to the `lumio-wiki` skill and CLI; use that skill for
+them rather than reimplementing them here.
 
 ## Data Contracts — limited consumer profile
 

@@ -88,7 +88,7 @@ SQL-quality execution supports only an approved native DuckDB source, not every
 source type above. Native DuckDB’s trusted-backing boundary is unchanged.
 
 `discover` / `ariadne search` reads pinned admitted metadata without opening
-sources. `list_datasets` / `ariadne list-datasets` still constructs the approved
+sources. `list_datasets` / `ariadne datasets` still constructs the approved
 live catalog, returns actual columns and retains ordinary admission/approval
 refusals. Its matching contract annotation comes from the pinned snapshot and
 adds no source read or second contract inspection; it is not a health check.

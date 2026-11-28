@@ -100,12 +100,12 @@ The integrity-bound receipt reports the tested scope and outcome (`complete` or 
 
 | Capability | Local CLI | MCP surface | Ariadne Agent | Authority |
 | --- | --- | --- | --- | --- |
-| Refresh schema | `ariadne-authoring refresh-schema` | `authoring_refresh_schema` | `refresh_schema` (Authoring) | Agent, approved sources only |
-| Resolve admitted term | `ariadne resolve-term` | `resolve_term` | `resolve_term` (Analyst) | Read-only |
-| Resolve candidate term | `ariadne-authoring resolve-term` | `authoring_resolve_term` | `resolve_term` (Authoring) | Read-only |
-| Inspect mapping | `ariadne-authoring inspect-mapping` | `authoring_inspect_mapping` | `inspect_mapping` (Authoring) | Bounded evidence only |
-| Approve sources | `ariadne-authoring approve-sources` | — | — | Human only |
-| Confirm assertion / admit | `ariadne-admit` | — | — | Human only |
+| Refresh schema | — (MCP only) | `authoring_refresh_schema` | `refresh_schema` (Authoring) | Agent, approved sources only |
+| Resolve admitted term | — (MCP only) | `resolve_term` | `resolve_term` (Analyst) | Read-only |
+| Resolve candidate term | — (MCP only) | `authoring_resolve_term` | `resolve_term` (Authoring) | Read-only |
+| Inspect mapping | — (MCP only) | `authoring_inspect_mapping` | `inspect_mapping` (Authoring) | Bounded evidence only |
+| Approve sources | `ariadne approve` (source approval) | — | — | Human only |
+| Confirm assertion / admit | `ariadne approve` (calculation approval) | — | — | Human only |
 
 The Analyst role resolves terms and queries; it does not edit, inspect, approve, or admit. The Authoring role works inside its selected proposal and may inspect and save hypotheses, but cannot approve sources, admit, enrich legacy pages, or mutate Git. MCP/native registrations do not widen these roles. Core exposes no legacy import
 or enrichment command; existing content must be explicitly reauthored through
