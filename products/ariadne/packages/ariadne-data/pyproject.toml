@@ -42,6 +42,7 @@ spreadsheets = [
 documents = [
     "liteparse>=2.4.0",  # PDF
     "markitdown[docx]>=0.1.6",  # docx/pptx/xlsx
+    "lxml<6.2",  # #220: lxml 6.2.0 breaks markitdown 0.1.9 DOCX conversion (2026-11-28); remove when fixed upstream
     "firecrawl-anydoc==0.1.3",  # html
 ]
 dev = [
@@ -50,6 +51,7 @@ dev = [
     "mcp==2.2.0",  # dev gains the mcp extra so the test suite covers the adapter
     "liteparse>=2.4.0",
     "markitdown[docx]>=0.1.6",
+    "lxml<6.2",  # #220: lxml 6.2.0 breaks markitdown 0.1.9 DOCX conversion (2026-11-28); remove when fixed upstream
     "firecrawl-anydoc==0.1.3",
 ]
 
