@@ -417,7 +417,7 @@ def _reject_invalid_snapshot(snapshot: KnowledgeBaseSnapshot) -> None:
         )
 
 
-def run_server(argument: str) -> int:
+def run_server(argument: str, published_version: str | None = None) -> int:
     """Bind ONE Knowledge Base Location, prove it resolves, serve MCP over stdio.
 
     Filesystem arguments construct a :class:`FilesystemLocation`; ``s3://``
@@ -427,13 +427,20 @@ def run_server(argument: str) -> int:
     and missing credentials fail with bounded, credential-free errors before
     the server starts, and the supplied URI is never echoed.
     """
-    from lumio_wiki.cli import _is_object_store_uri, _resolve_s3_snapshot
-    from lumio_wiki.location import FilesystemLocation
+    from lumio_wiki.cli import (
+        _is_local_published_layout,
+        _is_object_store_uri,
+        _resolve_s3_snapshot,
+    )
+    from lumio_wiki.location import FilesystemLocation, PublishedFilesystemLocation
 
     if _is_object_store_uri(argument):
         # One construction + resolution; failures carry the redacted location.
         snapshot = _resolve_s3_snapshot(argument)
         location = snapshot.location
+    elif _is_local_published_layout(argument):
+        location = PublishedFilesystemLocation(argument, version=published_version)
+        snapshot = open_knowledge_base(location)
     else:
         location = FilesystemLocation(argument)
         snapshot = open_knowledge_base(location)
