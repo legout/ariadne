@@ -32,7 +32,7 @@ ariadne diff
 ariadne preview my_metric          # governed: false
 ```
 
-If the served revision moved past the draft's base, the draft is stale: run `ariadne draft rebase` (human) or `ariadne draft discard --stale`.
+If the served revision moved past the draft's base, the draft is stale: run `ariadne draft rebase` (human) or `ariadne draft discard` (confirmation or `--yes`). `--stale` is only for a draft stranded by a moved or copied project; it refuses for this project's own draft.
 
 ## Approve the calculation
 

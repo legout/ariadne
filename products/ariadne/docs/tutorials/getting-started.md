@@ -9,9 +9,14 @@ This tutorial takes you from an empty directory to a governed query. One `ariadn
 - The data owner's agreement on source access and on the business definitions
 
 ```bash
-uv tool install ariadne-data      # or: ariadne-data[documents] for PDF/DOCX
-ariadne --help
+# Install a pinned Git revision (use a commit SHA or `main`); it brings the matching lumio-wiki.
+# For PDF/DOCX documents use "ariadne-data[documents] @ git+..." instead.
+uv tool install --python 3.14 \
+  "ariadne-data @ git+https://github.com/legout/ariadne@main#subdirectory=products/ariadne/packages/ariadne-data"
+ariadne init --help
 ```
+
+The PyPI `ariadne-data` 0.8.0 release predates this command set (it has no `ariadne init`), so do not use `uv tool install ariadne-data` until a newer release is published. `ariadne init --help` succeeding is the check that you have the right version.
 
 ## 1. Create the project
 
@@ -32,6 +37,10 @@ ariadne init .
 Put a data file under `data/` and declare it in the one active draft:
 
 ```bash
+mkdir -p data
+uv run --no-project --with duckdb python -c "
+import duckdb
+duckdb.sql(\"COPY (SELECT * FROM (VALUES (1,'a'),(2,'b'),(3,'c')) t(id,label)) TO 'data/events.parquet' (FORMAT PARQUET)\")"
 ariadne add data/events.parquet --name events
 ```
 
@@ -45,16 +54,70 @@ It shows the exact source identities, reads nothing, and asks `[yes/no]`. Only t
 
 ## 3. Author the semantic layer and context
 
-Write `data/seed_notes.md` with the owner: business domain, row grain, dates, units, exclusions. Then apply typed edits, one JSON file each (`{"kind": "model", "name": ..., "content": ...}`, `{"kind": "seed_notes", ...}`, `{"kind": "pages", "pages": [{"path": ..., "content": ...}]}`):
+Write the owner's domain notes, then apply typed edits, one JSON file each (`{"kind": "model", ...}`, `{"kind": "seed_notes", ...}`, `{"kind": "pages", "pages": [{"path": ..., "content": ...}]}`). This script writes the three files for the three-row `events` source: an OSI model (dataset `events`, primary key `id`, dimension `label`, metric `event_count` = `COUNT(*)`), the seed notes, and the smallest page set the validator accepts (table, reference, policy and metric):
 
 ```bash
+python3 - <<'PY'
+import json
+
+TABLE = "ariadne://table/WyJldmVudHMiLG51bGwsImV2ZW50cyIsImV2ZW50cyJd"  # source `events`, table events
+MODEL = """version: 0.3.0.dev0
+name: events
+description: Three events
+datasets:
+- name: events
+  source: events.events
+  primary_key: [id]
+  fields:
+  - {name: id, expression: {sql: id}}
+  - {name: label, expression: {sql: label}, dimension: {}}
+  metrics:
+  - name: event_count
+    expression: {sql: COUNT(*)}
+    description: Count all events
+"""
+NOTES = "# Events\n\nOne row per unique event id; count every event once.\n"
+
+def page(kind, title, resource, body, profile="", native=""):
+    # a table page anchors the source table; the others cite a document path
+    cite = "" if kind == "table" else f"        resource: {resource}\n"
+    core = f"  core_ref:\n    kind: resource\n    id: {resource}\n" if kind == "table" else ""
+    slug = title.replace("_", "-").replace(" ", "-").lower()
+    return (f'---\nid: "entity:{slug}"\ntitle: "{title}"\nentity_types:\n  - {kind}\n'
+            f'tags:\n  - {kind}\nsummary: "{body}"\nlifecycle: "approved"\nvisibility: "public"\n'
+            f"sources:\n  - id: rule\n    title: Owner rule\n"
+            f"ariadne_profile:\n  version: 1\n  kind: {kind}\n{profile}{core}"
+            f"  native:\n    type: {kind}\n    title: {title}\n    description: {body}\n"
+            f"    tags:\n      - {kind}\n    status: draft\n"
+            f"    sources:\n      - id: rule\n        title: Owner rule\n{cite}{native}---\n\n# {title}\n\n{body}\n")
+
+NO_POLICIES = "  required_policies: []\n"
+PAGES = {
+    "knowledge/tables/events.md": page("table", "events", TABLE, "One row per event."),
+    "knowledge/references/event-rule.md": page("reference", "Event rule", "data/seed_notes.md", "All events count."),
+    "knowledge/policies/all-events-count.md": page("policy", "All events count", "data/seed_notes.md",
+                                                   "Count every event once.", NO_POLICIES),
+    "knowledge/metrics/event-count.md": page(
+        "metric", "event_count", "references/event-rule.md", "Count all events.",
+        "  metric_ref:\n    model: events\n    metric: events.event_count\n" + NO_POLICIES,
+        "    governed_by: references/event-rule.md\n    dimensions:\n      - label\n"
+        "    grain:\n      primary_key:\n        - id\n      cardinality_enforcement: strict_1_to_1\n"),
+}
+open("data/seed_notes.md", "w").write(NOTES)
+for name, edit in {
+    "edit-model.json": {"kind": "model", "name": "events", "content": MODEL},
+    "edit-notes.json": {"kind": "seed_notes", "content": NOTES},
+    "edit-pages.json": {"kind": "pages", "pages": [{"path": p, "content": c} for p, c in PAGES.items()]},
+}.items():
+    json.dump(edit, open(name, "w"))
+PY
 ariadne draft edit edit-model.json
 ariadne draft edit edit-notes.json
 ariadne draft edit edit-pages.json
 ariadne draft status
 ```
 
-The exact shapes (an OSI model plus table, reference, policy and metric knowledge pages) are in `products/ariadne/packages/ariadne-data/tests/setup_wheel_walkthrough.py`, which runs this whole sequence end to end. A coding agent can do these edits through the packaged skill (`ariadne skill install`) and the MCP authoring tools (`ariadne serve --toolset authoring`); it never approves.
+A coding agent can make these edits through the packaged skill (`ariadne skill install`) and the MCP authoring tools (`ariadne serve --toolset authoring`); it never approves.
 
 ## 4. Validate, inspect, preview
 
@@ -64,7 +127,7 @@ ariadne diff
 ariadne preview event_count        # from the draft: governed: false
 ```
 
-`validate` checks the exact final revision against the granted sources. A stale draft (the served revision moved on) needs `ariadne draft rebase`; `ariadne draft discard` drops it (`--stale` only discards a stale draft).
+`validate` checks the exact final revision against the granted sources. A stale draft (the served revision moved on) needs `ariadne draft rebase`; plain `ariadne draft discard` drops it (after a confirmation, or with `--yes`). `ariadne draft discard --stale` is something else: it retires a draft stranded by a moved or copied project (its record names another project path), without confirmation, and refuses when the draft belongs to this project.
 
 ## 5. Approve the calculation and query
 

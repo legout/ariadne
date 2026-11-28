@@ -11,7 +11,7 @@ One executable, `ariadne`. Commands run from a project root; pass `--project DIR
 | `ariadne draft status` | The active draft's generation and stale state. |
 | `ariadne draft edit FILE` | Apply one typed edit file (`model`, `graph`, `seed_notes`, `contract`, `pages`, `sources`, `source_change`). |
 | `ariadne draft rebase` | Rebase a stale draft onto the served state. Human decision. |
-| `ariadne draft discard [--stale]` | Discard the draft. Human decision. |
+| `ariadne draft discard [--yes] [--stale]` | Discard the draft after confirmation (`--yes` skips it). `--stale` instead retires a draft stranded by a moved or copied project (its record names another project path), without confirmation; it refuses when the draft belongs to this project. Human decision. |
 | `ariadne validate` | Validate the exact final revision against the granted sources. |
 | `ariadne diff [--full]` | The draft against the served state. |
 | `ariadne preview METRIC [--by DIM] [--filter F]` | Run a metric from the draft; `governed: false`. |
