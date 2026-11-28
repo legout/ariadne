@@ -549,6 +549,32 @@ def test_ac4_keys_and_model_metrics_name_fields_and_dataset_metrics(tmp_path):
         load_graph(_staging(tmp_path / "mixed", {"sales.yml": mixed}) / "semantic_layer")
 
 
+def test_a_key_names_each_field_once(tmp_path):
+    # Ossie 0.3 (apache/ossie#705): primary_key and each unique_keys entry name a
+    # field once; two unique_keys definitions over the same fields are accepted
+    # silently (no warning channel).
+    def refused(name, change, match):
+        doc = _edit(DOMAIN_YML, change)
+        with pytest.raises(GraphError, match=match):
+            load_graph(_staging(tmp_path / name, {"sales.yml": doc}) / "semantic_layer")
+
+    refused(
+        "pk",
+        lambda d: _dataset(d, "orders").update(primary_key=["order_id", "order_id"]),
+        r"sales\.yml.*primary_key.*order_id",
+    )
+    refused(
+        "uk",
+        lambda d: _dataset(d, "orders").update(unique_keys=[["order_id", "order_id"]]),
+        r"sales\.yml.*unique_keys.*order_id",
+    )
+    twice = _edit(
+        DOMAIN_YML,
+        lambda d: _dataset(d, "orders").update(unique_keys=[["order_id"], ["order_id"]]),
+    )
+    load_graph(_staging(tmp_path / "dup", {"sales.yml": twice}) / "semantic_layer")
+
+
 def test_ac6_ariadne_one_to_one_extension_sets_edge_cardinality(tmp_path):
     # AC6: a relationship carrying ARIADNE {cardinality: one_to_one} is a one-to-one
     # edge; the same relationship without it keeps the Ossie many-to-one default.
