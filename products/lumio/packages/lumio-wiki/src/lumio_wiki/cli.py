@@ -6918,6 +6918,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             print(f"extra[{name}]: installed")
         else:
             print(f"extra[{name}]: not installed  ({extra_hint[name]})")
+    print(
+        "routing: PDF/images -> LiteParse; Office/OpenDocument/RTF/EPUB/CSV -> AnyDoc; "
+        "HTML -> MarkItDown"
+    )
     skill_path = resolve_skill_path()
     print(f"skill_md:      {skill_path}")
     print(f"skill_exists:  {skill_path.is_file()}")

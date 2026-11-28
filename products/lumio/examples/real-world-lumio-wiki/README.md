@@ -54,7 +54,7 @@ python tools/validate_sources.py
 bash tools/run_maintenance.sh
 ```
 
-`bootstrap.sh` installs the current repository's `lumio-wiki[documents]` package into this folder's isolated virtual environment. It does **not** install `lumio-lancedb` or the full `lumio` application. The `documents` extra remains part of the `lumio-wiki` distribution and is needed for PDF, DOCX, PPTX, XLSX, and HTML conversion. Issue #154 / ADR-0018 routes office formats through AnyDoc (`firecrawl-anydoc==0.1.3`); the base `lumio-wiki` wheel stays AnyDoc-free and the extra is the only place AnyDoc is imported.
+`bootstrap.sh` installs the current repository's `lumio-wiki[documents]` package into this folder's isolated virtual environment. It does **not** install `lumio-lancedb` or the full `lumio` application. The `documents` extra remains part of the `lumio-wiki` distribution and is needed for PDF, DOCX, PPTX, XLSX, and HTML conversion. Issue #154 / ADR-0018 routes office formats through AnyDoc (`firecrawl-anydoc==0.2.5`); the base `lumio-wiki` wheel stays AnyDoc-free and the extra is the only place AnyDoc is imported.
 
 ## Start the coding-agent trial
 

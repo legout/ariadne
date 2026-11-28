@@ -72,13 +72,12 @@ def _convert_anydoc(path: Path) -> str:
     # No ``ocr=`` argument, ever: anydoc's hosted OCR uploads the document (#222).
     try:
         return anydoc.to_markdown(str(path))
-    except Exception as exc:
-        if type(exc).__name__ == "NeedsOcrError":
-            raise _ConversionError(
-                f"{path}: needs OCR (a scanned document); hosted OCR is never used. "
-                "Nothing was written."
-            ) from exc
-        raise
+    except anydoc.NeedsOcrError as exc:
+        raise _ConversionError(
+            f"{path}: {exc}. Hosted OCR is never used. Either give the file its "
+            "correct .pdf extension so it goes to LiteParse, or supply locally "
+            "OCRed text. Nothing was written."
+        ) from exc
 
 
 # suffix -> (converter, pip requirement to name in the missing-extra error)

@@ -174,7 +174,9 @@ def test_docx_conversion_via_anydoc(tmp_path):
     text = _convert(_minimal_docx(tmp_path / "handbook.docx"))
     assert "Renewal policy from the handbook" in text
     assert any(line.startswith("# ") and "Renewal policy" in line for line in text.splitlines())
-    assert "Churned rows excluded" in text
+    assert any(
+        line.startswith("- ") and "Churned rows excluded" in line for line in text.splitlines()
+    )
     assert "| Status | zaehlt |" in text
 
 
@@ -230,8 +232,29 @@ def test_xlsx_conversion_via_anydoc(tmp_path):
         zf.writestr("xl/worksheets/sheet2.xml", sheet([["Remark"], ["second sheet"]]))
     text = _convert(path)
     assert "## Accounts" in text and "## Notes" in text
-    assert "| Account | Status |" in text and "| Globex | CHURNED |" in text
+    lines = text.splitlines()
+    sep = next(i for i, ln in enumerate(lines) if ln.startswith("| ---"))
+    assert lines[sep - 1] == "| Account | Status |"  # header directly above the separator
+    assert "| Globex | CHURNED |" in text
     assert "second sheet" in text
+
+
+def test_pptx_conversion_via_anydoc():
+    pytest.importorskip("anydoc")
+    from ariadne.ingest import _convert
+
+    # Tracked Lumio fixture read by path (no import across the product boundary).
+    fixture = (
+        Path(__file__).resolve().parents[5]
+        / "products/lumio/experiments/anydoc/fixtures/anydoc-fixtures/pres.pptx"
+    )
+    text = _convert(fixture)
+    assert "Deck Title Slide" in text
+    assert any(
+        ln.startswith("|") and all(w in ln for w in ("Region", "Total")) for ln in text.splitlines()
+    )
+    assert any(ln.startswith("|") and "North" in ln and "42" in ln for ln in text.splitlines())
+    assert "Speaker note for the intro slide." in text
 
 
 def test_anydoc_never_requests_hosted_ocr(tmp_path, monkeypatch):
@@ -242,13 +265,16 @@ def test_anydoc_never_requests_hosted_ocr(tmp_path, monkeypatch):
 
     def fake(path, **kwargs):
         calls.append(kwargs)
-        raise type("NeedsOcrError", (Exception,), {})("scanned")
+        raise anydoc.NeedsOcrError("page 1 of 1 needs OCR")
 
     monkeypatch.setattr(anydoc, "to_markdown", fake)
     doc = tmp_path / "scan.docx"
     doc.write_bytes(b"x")
-    with pytest.raises(_ConversionError, match=r"scan\.docx.*needs OCR"):
+    with pytest.raises(_ConversionError) as err:
         _convert(doc)
+    msg = str(err.value)
+    assert "scan.docx" in msg and "page 1 of 1 needs OCR" in msg
+    assert ".pdf extension" in msg and "locally" in msg and "never used" in msg
     assert calls == [{}]
 
 
