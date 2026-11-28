@@ -2,6 +2,8 @@
 
 **Owner-approved Context foundation amendment — 2026-11-09:** [Shared ADR-0029](../../../../project/adr/0029-lumio-owned-context-layer.md) records the accepted direction; [shared spec0035](../../../../project/specs/2026-11-09-0035-lumio-owned-context-layer.md) captures its behavior (written revision 1 awaiting review). Retire the independently maintained Ariadne bundle, its indexing/bookkeeping and classic page paths. Technical fact generation and semantic/evidence safeguards remain Core-owned, with knowledge lifecycle operations supplied by Lumio. Earlier approvals are retained in their original scope; this notice grants no implementation, integration or publication authority.
 
+**Clarification (2026-11-28):** since shared ADR-0029 / spec 0035 the context is stored as Lumio Compiled Pages; 'adopts the OKF v0.2 bundle structure' no longer describes storage. OKF is an exchange boundary (lumio_wiki/okf.py profiles; OKF v0.3 follow-up #215). See [the research note](../../../../project/research/2026-11-28-okf-v0.3-and-ossie-core-spec.md).
+
 Status: accepted (owner, 2026-09-15 shape-design round for spec revision 6).
 
 **Consumer clarification (owner, 2026-10-06):** [specification 0011](../specs/2026-10-06-0011-context-trust-signals.md) adds advisory interpretation/disclosure of existing lifecycle and verification evidence. Freshness, document verification and human admission remain separate; Ariadne's independent numerical-validation convention is not OKF per-run Execution Attestation. This reader-only extension preserves producer output, expiry durations, computation fields and pre-review Git finalization; it does not implement an executor/receipt ABI or weaken existing producer requirements.
