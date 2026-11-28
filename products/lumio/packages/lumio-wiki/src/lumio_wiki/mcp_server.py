@@ -42,6 +42,8 @@ from lumio_wiki.knowledge_base import (
     generate_navigation_indexes,
 )
 from lumio_wiki.location import (
+    FILESYSTEM_LOCATION_KIND,
+    LOCAL_PUBLISHED_LOCATION_KIND,
     KnowledgeBaseLocation,
     KnowledgeBaseSnapshot,
     open_knowledge_base,
@@ -236,7 +238,12 @@ def _graph_disclosure(snapshot: KnowledgeBaseSnapshot) -> tuple[dict[str, Any], 
 
     from lumio_wiki.cli import default_index_dir
 
-    derived_dir = default_index_dir(snapshot.root)
+    # A published version's graph lives in its own immutable ``derived/``.
+    derived_dir = (
+        snapshot.root / "derived"
+        if snapshot.location.kind == LOCAL_PUBLISHED_LOCATION_KIND
+        else default_index_dir(snapshot.root)
+    )
     if derived_dir.is_dir():
         report = snapshot.knowledge_base.graph_health(derived_dir)
         if report.materialized and report.graph_fresh:
@@ -313,7 +320,14 @@ def status_rows(snapshot: KnowledgeBaseSnapshot) -> dict[str, Any]:
     remote retrieval adapter; a remote derived index is disclosed separately.
     """
     return {
-        "location": {"kind": snapshot.location.kind},
+        # v1 contract (plan 06): only ``filesystem`` or ``s3``.
+        "location": {
+            "kind": (
+                FILESYSTEM_LOCATION_KIND
+                if snapshot.location.kind == LOCAL_PUBLISHED_LOCATION_KIND
+                else snapshot.location.kind
+            )
+        },
         "fingerprint": snapshot.fingerprint.digest,
         "pages": len(snapshot.pages),
         "valid": snapshot.validation_report.is_valid,
@@ -428,20 +442,28 @@ def run_server(argument: str, published_version: str | None = None) -> int:
     the server starts, and the supplied URI is never echoed.
     """
     from lumio_wiki.cli import (
+        CliError,
+        _checked_pin,
         _is_local_published_layout,
         _is_object_store_uri,
         _resolve_s3_snapshot,
     )
     from lumio_wiki.location import FilesystemLocation, PublishedFilesystemLocation
 
+    published_version = _checked_pin(published_version)
     if _is_object_store_uri(argument):
         # One construction + resolution; failures carry the redacted location.
-        snapshot = _resolve_s3_snapshot(argument)
+        snapshot = _resolve_s3_snapshot(argument, version=published_version)
         location = snapshot.location
     elif _is_local_published_layout(argument):
         location = PublishedFilesystemLocation(argument, version=published_version)
         snapshot = open_knowledge_base(location)
     else:
+        if published_version is not None:
+            raise CliError(
+                "--published-version is available only for an S3 Knowledge Base "
+                "or a local publication root"
+            )
         location = FilesystemLocation(argument)
         snapshot = open_knowledge_base(location)
     _reject_invalid_snapshot(snapshot)

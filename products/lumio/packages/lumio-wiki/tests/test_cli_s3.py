@@ -825,3 +825,16 @@ def test_lance_storage_options_read_project_env_file(tmp_path, monkeypatch):
 
     monkeypatch.setenv("LUMIO_S3_ENDPOINT", "https://exported.example")
     assert cli._lance_storage_options_from_env()["endpoint"] == "https://exported.example"
+
+
+def test_s3_status_forwards_the_published_version_pin(monkeypatch):
+    seen = []
+
+    def _stop(uri, *, version=None):
+        seen.append(version)
+        raise cli.CliError("stop")
+
+    monkeypatch.setattr(cli, "_resolve_s3_snapshot", _stop)
+    assert cli.main(["status", "s3://bucket/kb", "--published-version", "v7"]) == 2
+    assert cli.main(["mcp", "s3://bucket/kb", "--published-version", "v7"]) == 2
+    assert seen == ["v7", "v7"]

@@ -532,21 +532,49 @@ def _build_publish_location(uri: str) -> tuple[Any, str]:
     return location, identity
 
 
-def _kb_location_label(value: str | Path, kb: KnowledgeBase) -> str:
-    """Return the replayable effective location for a loaded Knowledge Base."""
+def _kb_location_label(
+    value: str | Path, kb: KnowledgeBase, published_version: str | None = None
+) -> str:
+    """Return the replayable effective location for a loaded Knowledge Base.
+
+    A local publication root is its own replayable location (paired with the
+    resolved version); ``kb.root`` there is the immutable version directory.
+    """
     text = str(value)
-    return text if _is_object_store_uri(text) else str(kb.root)
+    if _is_object_store_uri(text):
+        return text
+    return str(Path(text).resolve()) if published_version is not None else str(kb.root)
+
+
+def _checked_pin(version: str | None) -> str | None:
+    """Validate a ``--published-version`` label once; an empty pin is an error."""
+    if version is None:
+        return None
+    try:
+        return validate_published_version(version)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
 
 
 def _is_local_published_layout(path: str | Path) -> bool:
-    """Recognize publication protocol artifacts, not ordinary version-like folders."""
+    """Recognize publication protocol artifacts, not ordinary version-like folders.
+
+    A root-level ``current.json`` alone is not enough (a worktree may carry an
+    unrelated one): it must decode as a version pointer naming an existing
+    ``versions/<rev>/`` directory.
+    """
     from lumio_wiki.git_authoring import PRIVATE_OPERATIONS_DIR
     from lumio_wiki.location import CURRENT_POINTER_OBJECT
+    from lumio_wiki.s3_location import S3Pointer
 
     root = Path(path)
-    pointer = root / CURRENT_POINTER_OBJECT
-    if pointer.exists() or pointer.is_symlink():
-        return True
+    try:
+        raw = (root / CURRENT_POINTER_OBJECT).read_bytes()
+        label = validate_published_version(msgspec.json.decode(raw, type=S3Pointer).version)
+        if (root / "versions" / label).is_dir():
+            return True
+    except (OSError, msgspec.DecodeError, ValueError):
+        pass
     private_state = root / PRIVATE_OPERATIONS_DIR
     if private_state.exists() or private_state.is_symlink():
         return True
@@ -566,11 +594,7 @@ def _open_local_published_snapshot(path: str | Path, version: str | None = None)
     """Resolve one local Published Snapshot and surface corruption as CLI error."""
     from lumio_wiki.location import PublishedFilesystemLocation
 
-    if version is not None:
-        try:
-            validate_published_version(version)
-        except ValueError as exc:
-            raise CliError(str(exc)) from None
+    version = _checked_pin(version)
     try:
         return PublishedFilesystemLocation(path, version=version).resolve()
     except KnowledgeBaseError as exc:
@@ -583,12 +607,7 @@ def _open_read_snapshot(
     """Open a local KB or one immutable S3/local Published Snapshot."""
     value = str(path)
     if _is_object_store_uri(value):
-        if published_version is not None:
-            try:
-                validate_published_version(published_version)
-            except ValueError as exc:
-                raise CliError(str(exc)) from None
-        snapshot = _resolve_s3_snapshot(value, version=published_version)
+        snapshot = _resolve_s3_snapshot(value, version=_checked_pin(published_version))
         return snapshot.knowledge_base, snapshot.published_version
     if _is_local_published_layout(path):
         snapshot = _open_local_published_snapshot(path, published_version)
@@ -611,7 +630,9 @@ def _validate_location(path: str | Path, published_version: str | None = None):
     """Validate a local path or resolve+validate an S3 URI into a report."""
     value = str(path)
     if _is_object_store_uri(value):
-        return _resolve_s3_snapshot(value, version=published_version).validation_report
+        return _resolve_s3_snapshot(
+            value, version=_checked_pin(published_version)
+        ).validation_report
     if _is_local_published_layout(path):
         return _open_local_published_snapshot(path, published_version).validation_report
     if published_version is not None:
@@ -3005,11 +3026,7 @@ def _cmd_search(args: argparse.Namespace) -> int:
     reader_base = _reader_base_url()
     requested_version = getattr(args, "published_version", None)
     if _is_object_store_uri(value):
-        if requested_version is not None:
-            try:
-                validate_published_version(requested_version)
-            except ValueError as exc:
-                raise CliError(str(exc)) from None
+        requested_version = _checked_pin(requested_version)
         # Resolve the active S3 pointer exactly once and retain the
         # selected Published Version identity and fingerprint.
         snapshot = _resolve_s3_snapshot(value, version=requested_version)
@@ -3020,7 +3037,8 @@ def _cmd_search(args: argparse.Namespace) -> int:
             kb_location=value,
             published_version=snapshot.published_version,
         )
-    kb = _open_read_kb(args.path, requested_version)
+    kb, local_version = _open_read_snapshot(args.path, published_version=requested_version)
+    kb_location = _kb_location_label(args.path, kb, local_version)
     mode = _resolve_search_mode(args)
     as_json = getattr(args, "json", False)
 
@@ -3029,8 +3047,15 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if mode == "lexical":
         results = kb.search_pages(args.query, limit=args.limit)
         if as_json:
-            return _search_json(args, results, kind="page", kb_location=str(kb.root))
-        _print_page_search_results(results, reader_base_url=reader_base, kb_location=str(kb.root))
+            return _search_json(
+                args, results, kind="page", kb_location=kb_location, published_version=local_version
+            )
+        _print_page_search_results(
+            results,
+            reader_base_url=reader_base,
+            kb_location=kb_location,
+            published_version=local_version,
+        )
         return 0
 
     # semantic / hybrid — needs lumio-lancedb + an Embedder.
@@ -3057,8 +3082,16 @@ def _cmd_search(args: argparse.Namespace) -> int:
         embedder=embedder,
     )
     if as_json:
-        return _search_json(args, results, kind="evidence", kb_location=str(kb.root))
-    _print_evidence_results(results, kb=kb, reader_base_url=reader_base, kb_location=str(kb.root))
+        return _search_json(
+            args, results, kind="evidence", kb_location=kb_location, published_version=local_version
+        )
+    _print_evidence_results(
+        results,
+        kb=kb,
+        reader_base_url=reader_base,
+        kb_location=kb_location,
+        published_version=local_version,
+    )
     return 0
 
 
@@ -3184,7 +3217,7 @@ def _cmd_page(args: argparse.Namespace) -> int:
         args.path,
         published_version=getattr(args, "published_version", None),
     )
-    location = _kb_location_label(args.path, kb)
+    location = _kb_location_label(args.path, kb, published_version)
     has_selector = any(
         getattr(args, name, None) is not None
         for name in ("section", "line_start", "line_end", "max_lines", "max_bytes")
@@ -5735,8 +5768,12 @@ def _cmd_health(args: argparse.Namespace) -> int:
             print(f"validation: {validate(args.path)}")
             print(f"load_error: {exc}", file=sys.stderr)
             return 1
-    index_dir = _resolve_index_dir(args, kb.root)
-    if not published:
+    if published:
+        # The selected version's own derived graph, never the worktree index.
+        explicit = getattr(args, "index_dir", None)
+        index_dir = Path(explicit) if explicit else kb.root / "derived"
+    else:
+        index_dir = _resolve_index_dir(args, kb.root)
         index_dir.mkdir(parents=True, exist_ok=True)
     if getattr(args, "rebuild", False):
         kb.materialize_graph(index_dir)
@@ -5758,7 +5795,7 @@ def _cmd_health(args: argparse.Namespace) -> int:
     print(f"graph_edges:         {graph_health.edge_count}")
     if graph_health.materialized_size_bytes is not None:
         print(f"graph_artifact_bytes: {graph_health.materialized_size_bytes}")
-    if not graph_health.graph_fresh:
+    if not graph_health.graph_fresh and not published:
         print(
             f"graph_recovery:      run 'lumio-wiki health {args.path} --rebuild' "
             f"to materialize the Discovery Graph"
@@ -5996,7 +6033,7 @@ def _collect_status(
     fingerprint_obj = None
     kb_root: Path | None = None
     if is_s3:
-        snapshot = _resolve_s3_snapshot(location)
+        snapshot = _resolve_s3_snapshot(location, version=_checked_pin(published_version))
         kb_location = snapshot.location
         descriptor = snapshot.remote_derived_index
         status["published_version"] = descriptor.version if descriptor else None
@@ -6022,8 +6059,15 @@ def _collect_status(
             kb, report = snapshot.knowledge_base, snapshot.validation_report
             fingerprint_obj = snapshot.fingerprint
             status["published_version"] = snapshot.published_version
+            index_dir = kb.root / "derived"
         else:
+            if published_version is not None:
+                raise CliError(
+                    "--published-version is available only for an S3 Knowledge Base "
+                    "or a local publication root"
+                )
             kb, report = _load_kb(location)
+            index_dir = default_index_dir(kb.root)
             fingerprint_obj = fingerprint_sources(kb.root)
         kb_root = Path(kb.root)
         status["fingerprint"] = fingerprint_obj.digest
@@ -6031,7 +6075,7 @@ def _collect_status(
         status["validation_errors"] = sum(1 for i in report.issues if i.severity == "error")
         status["validation_warnings"] = sum(1 for i in report.issues if i.severity == "warning")
         status["review_due"] = len(due_review_pages(kb.pages))
-        graph_health = kb.graph_health(default_index_dir(kb.root))
+        graph_health = kb.graph_health(index_dir)
         status["graph_source"] = "artifact" if graph_health.graph_fresh else "memory"
         status["graph_fresh"] = graph_health.graph_fresh
         status["graph_materialized"] = graph_health.materialized
