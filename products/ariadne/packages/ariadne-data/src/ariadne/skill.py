@@ -111,6 +111,7 @@ def _install(scope: str, agent: str | None) -> int:
 
 def _status() -> int:
     packaged = _dir_hash(ASSETS)
+    drifted = False
     for target in _managed_targets():
         if not target.exists() and not target.is_symlink():
             print(f"absent  {target}")
@@ -119,6 +120,12 @@ def _status() -> int:
         state = "ok" if _dir_hash(actual) == packaged else "drift"
         note = " (symlink)" if target.is_symlink() else ""
         print(f"{state}{note}  {target}")
+        drifted = drifted or state == "drift"
+    if drifted:
+        print(
+            "drift: refresh with `ariadne skill install` (add --scope project and/or "
+            "--agent pi|claude|hermes to match the drifted target)"
+        )
     return 0
 
 

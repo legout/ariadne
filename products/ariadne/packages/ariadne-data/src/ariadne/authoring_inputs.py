@@ -432,7 +432,11 @@ def _document_bytes(reference: str, project: Path) -> tuple[str, str, bytes]:
             f"({', '.join(str(r) for r in roots)}) — reads stay inside them (spec §2)"
         )
     if not resolved.is_file():
-        raise ValueError(f"{reference}: no readable document at {resolved}")
+        raise ValueError(
+            f"{reference}: no readable document at {resolved} — name the file relative to "
+            f"an input root and place it there ({', '.join(str(r) for r in roots)}; "
+            "default <project>/data/docs/)"
+        )
     return str(resolved), resolved.name, resolved.read_bytes()
 
 
