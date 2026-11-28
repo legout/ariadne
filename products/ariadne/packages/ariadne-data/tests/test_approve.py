@@ -40,6 +40,16 @@ class Tty(io.StringIO):
         return super().readline(*args)
 
 
+def _verify_against_original(monkeypatch, original):
+    """The fixtures hand-shape the served record's sources/bindings (a live Postgres
+    admission cannot run offline), which the Bound Release was not built over; verify the
+    release against the original record so only the binding behaviour is under test."""
+    from ariadne import lumio_context
+
+    real = lumio_context.verify_release
+    monkeypatch.setattr(lumio_context, "verify_release", lambda _rec, snap: real(original, snap))
+
+
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
@@ -610,6 +620,7 @@ def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calcu
         declared, {"postgres:pg": binding_a}
     )
     (project / CURRENT).write_text(json.dumps(shaped), encoding="utf-8")
+    _verify_against_original(monkeypatch, record)
     served_bytes = (project / CURRENT).read_bytes()
 
     # the environment now points the same variable at B; the operator declares and grants it
@@ -634,16 +645,11 @@ def test_a_changed_endpoint_is_granted_then_reads_refuse_by_name_until_the_calcu
     request = tmp_path / "detail.json"
     request.write_text('{"dataset": "events", "fields": ["id"]}', encoding="utf-8")
     capsys.readouterr()
-    for argv in (
-        ["query", "event_count", "--json", "--project", str(project)],
-        ["detail", "--project", str(project), "--file", str(request)],
-    ):
-        code = cli(argv)
-        captured = capsys.readouterr()
-        message = json.loads(captured.err)["error"]["message"]
-        assert code == 1 and captured.out == "", argv
-        assert "pg" in message and "calculation approval" in message, message
-        assert "ariadne approve" in message, message
+    # #205: only reads of the changed source refuse; event_count reads `events` and answers
+    # from the served binding (never from B). The refusal-by-name for a read of the
+    # unresolvable source is asserted in the per-source test below.
+    code = cli(["query", "event_count", "--json", "--project", str(project)])
+    assert code == 0 and json.loads(capsys.readouterr().out)["governed"] is True
     assert (project / CURRENT).read_bytes() == served_bytes  # the served state never moved
 
 
@@ -692,6 +698,7 @@ def test_source_change_postgres_variable_requires_calculation_approval(
     }
     shaped["source_digest"] = authoring_sources.approval_digest(declared, {"postgres:pg": binding})
     (project / CURRENT).write_text(json.dumps(shaped))
+    _verify_against_original(monkeypatch, record)
     served_before = (project / CURRENT).read_bytes()
     change = tmp_path / "change.json"
     change.write_text(
@@ -707,9 +714,7 @@ def test_source_change_postgres_variable_requires_calculation_approval(
     monkeypatch.delenv("EVENTS_A")
     code = cli(["query", "event_count", "--json", "--project", str(project)])
     captured = capsys.readouterr()
-    assert code == 1 and captured.out == ""
-    message = json.loads(captured.err)["error"]["message"]
-    assert "pg" in message and "calculation approval" in message
+    assert code == 0 and json.loads(captured.out)["governed"] is True  # #205: reads `events`
     assert (project / CURRENT).read_bytes() == served_before
 
 
@@ -845,6 +850,7 @@ def test_a_retired_old_variable_still_renders_the_served_binding_and_asks_for_co
         declared, {"postgres:pg": binding_a}
     )
     (project / CURRENT).write_text(json.dumps(shaped), encoding="utf-8")
+    _verify_against_original(monkeypatch, record)
     monkeypatch.delenv(old_env, raising=False)  # the old variable is retired
     monkeypatch.setenv(new_env, "postgresql://owner:pw-b@db-b.internal:5432/app")
 
@@ -2091,3 +2097,46 @@ def test_ctrl_c_at_the_approve_consent_prompt_cancels_without_recovery_advice(
         cli(["approve", "--project", str(project)])
     assert "draft status" not in err.getvalue() and "recovery" not in err.getvalue()
     assert not (project / GRANTS).exists() and not draft.source_txn_pending(project)
+
+
+@pytest.mark.parametrize("unresolvable", ["pg", "events"])
+def test_an_unresolvable_source_refuses_only_the_reads_that_touch_it(
+    tmp_path, monkeypatch, unresolvable
+):
+    """Issue #205 (0040 §3.4.2.7): with two admitted sources of which one cannot resolve
+    (its connection variable is unset), source-free reads and metrics of the OTHER source
+    answer; a metric reading the unresolvable source refuses naming it, never falling back."""
+    import asyncio
+
+    from ariadne import admission
+    from ariadne.query import QueryRuntime
+    from tests.test_git_admission import _policy_edit, admitted_ready
+    from tests.test_git_authoring import admit_library
+
+    project = complete_bundle_project(tmp_path)
+    review, _ = admitted_ready(AuthoringProject(project), project, _policy_edit("Served rule."))
+    assert admit_library(project, review, destination=tmp_path / "published") == 0
+    record = admission.load_current(project)
+    assert record is not None
+    env = "ARIADNE_TEST_PG_DSN_205"
+    binding = {"host": ["db-a"], "hostaddr": [], "port": ["5432"], "dbname": "app", "user": "o"}
+    pg = {"name": unresolvable, "type": "postgres", "connection_env": env, "read_only": True}
+    keep = [e for e in record["sources"] if e["name"] != unresolvable]
+    declared = record.get("source_declaration_digest") or record["source_digest"]
+    key = f"postgres:{unresolvable}"
+    shaped = {**record, "sources": [*keep, pg], "storage_bindings": {key: binding}}
+    shaped["source_digest"] = authoring_sources.approval_digest(declared, {key: binding})
+    (project / CURRENT).write_text(json.dumps(shaped), encoding="utf-8")
+    _verify_against_original(monkeypatch, record)
+    monkeypatch.delenv(env, raising=False)
+
+    runtime = QueryRuntime.open_project(project)
+    assert asyncio.run(runtime.list_context_pages())
+    assert asyncio.run(runtime.list_metrics())
+    assert asyncio.run(runtime.search_context("event"))
+    if unresolvable == "pg":
+        assert asyncio.run(runtime.get_metric("event_count"))["governed"] is True
+    else:
+        with pytest.raises(ValueError, match="events"):
+            asyncio.run(runtime.get_metric("event_count"))
+    runtime.con.close()
