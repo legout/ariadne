@@ -89,7 +89,10 @@ _CONVERTERS: dict[str, tuple] = {
     ".xls": (_convert_anydoc, "firecrawl-anydoc"),
 }
 
-_INSTALL_HINT = 'install the [documents] extra: uv pip install -e ".[documents]"'
+_INSTALL_HINT = (
+    "install the wheel extra: uv tool install 'ariadne-data[documents]' "
+    "(or uv pip install 'ariadne-data[documents]' in the environment that runs ariadne)"
+)
 
 
 class _ConversionError(Exception):

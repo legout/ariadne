@@ -15,13 +15,13 @@ and no computation outside the deterministic compile gate.
 Inside the data project (with `ariadne-data` providing the CLI):
 
 ```bash
-ariadne-skill install --scope project --agent pi
+ariadne skill install --scope project --agent pi
 ```
 
 The install is an idempotent refresh; it copies the packaged skill to
 `.pi/skills/ariadne` under the selected project (`--scope user` installs it
-shared-scope instead). `ariadne-skill status` reports per-target drift
-against the packaged skill. Pi loads the skill on its next start.
+shared-scope instead). `ariadne skill status` reports per-target drift
+against the packaged skill; fix drift with `ariadne skill install`. Pi loads the skill on its next start.
 
 ## 2. Start every question with discovery
 
@@ -29,9 +29,8 @@ From the project root (or pass `--project DIR`):
 
 ```bash
 ariadne status --project .          # offline readiness; never opens sources
-ariadne list-metrics --project .    # if a governed metric answers it, query it governed
-ariadne search-context "cancelled orders" --project .
-ariadne resolve-term "order number" --project .   # ambiguity and claim status included
+ariadne metrics --project .         # if a governed metric answers it, query it governed
+ariadne search "cancelled orders" --project .   # metrics, pages, terms, examples
 ```
 
 Discovery groups metrics, pages, terms and examples without opening
@@ -42,10 +41,9 @@ identifier never grants join authority.
 
 ```bash
 # governed: carries governed: true, compiled SQL, and the full Policy context
-ariadne get-metric gross_margin --dimension region --start 2024-01-01 --project .
+ariadne query gross_margin --by region --project .
 
-# ad hoc: explicitly ungoverned, never saved
-ariadne define-metric --file request.json --project .
+# ad hoc: the define_metric MCP tool; explicitly ungoverned, never saved
 ```
 
 An ad-hoc `define_metric` result carries `governed: false` and
@@ -53,24 +51,20 @@ An ad-hoc `define_metric` result carries `governed: false` and
 governed number. To keep a definition, move it through a reviewed proposal
 (next step); there is no silent save.
 
-## 4. Author through proposals, stop at human admission
+## 4. Author through the draft, stop at human approval
 
 ```bash
-ariadne-authoring start --project .              # revision-checked proposal
-ariadne-authoring edit --project . --proposal ID \
-    --expected-revision CURRENT --file edit.json # typed edit; returns the new revision
-ariadne-authoring validate --project . --proposal ID \
-    --expected-revision CURRENT                   # the revision from the preceding edit
-ariadne-authoring review --project . --proposal ID   # read-only; return its exact payload
+ariadne draft edit edit.json    # typed edit; the first edit opens the one draft
+ariadne validate                # exact final revision against granted sources
+ariadne diff                    # draft against the served state
 ```
 
-`--expected-revision` is required and always names the current candidate
-revision returned by the preceding edit or validation. The full sequence —
-approved inputs, the finalize commit, human admission — is the
-[Git-backed authoring guide](git-authoring.md).
+The full sequence is the [Git-backed authoring guide](git-authoring.md).
+To onboard a document, place it under `data/docs/` and read it with the
+`authoring_inputs` MCP tool (packaged skill, "Onboard a document").
 
-The agent makes the candidate and reports the review payload and digest.
-**Admission is a human Git decision** — the agent stops there, never runs
+The agent makes the draft and reports the `validate` and `diff` results.
+**`ariadne approve` is a human decision** — the agent stops there, never runs
 `git commit`/`push` or arbitrary shell commands against the data project,
 and never edits served layers or `.ariadne/` state by hand. The one
 documented exception is native `git add` of intended paths inside the
@@ -79,8 +73,8 @@ decisions remain human and separately authorized.
 
 ## 5. Honest boundaries
 
-- `ariadne setup` is operator-facing; agents pass operator commands and
-  blockers to the human instead of running them.
+- `ariadne init` and `ariadne approve` are operator-facing; agents pass
+  operator commands and blockers to the human instead of running them.
 - Missing or corrupt admission refuses; there is no candidate-worktree or
   mutable-root fallback, and no server is started just to answer a question.
 - Observed `value_evidence` and the optional Context Routing Map are

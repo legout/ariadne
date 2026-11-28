@@ -185,6 +185,7 @@ def test_status_reports_ok_then_detects_tampering(project, capsys):
     assert main(["status"]) == 0
     out = capsys.readouterr().out
     assert "drift" in out  # the tampered target is named as drifted
+    assert "ariadne skill install" in out  # and the fix command is named
     drift_line = next(line for line in out.splitlines() if "drift" in line)
     assert str(proj / ".agents") in drift_line
     # other targets still report absent (never installed in this isolated env)
@@ -342,4 +343,5 @@ def test_skill_teaches_context_knowledge_and_typed_page_edits():
     # the standing warning + the how-to pointer
     assert "Aliases, observations and measurements never authorize joins" in normalized
     assert "never authorizes a join" in normalized
-    assert "docs/how-to/context-knowledge.md" in normalized
+    assert "docs/how-to/context-knowledge.md" not in normalized  # not shipped: no dangling pointer
+    assert "`lumio-wiki` skill" in normalized  # graph/ingest/publish boundary

@@ -116,10 +116,10 @@ credential-forwarding rules of that image.
 Profiles and sources are inert declarations — declaring them opens nothing.
 
 1. An agent or operator proposes the `storages` block together with source
-   entries (`ariadne-authoring propose-sources --file sources.yaml`, the
+   entries (`ariadne add ... --storage NAME` or a typed `sources` edit through `ariadne draft edit`, the
    same registry-shaped file). Proposal creation reads no variables and
    makes no network calls.
-2. A **human** runs `ariadne-authoring approve-sources` with the exact
+2. A **human** runs `ariadne approve` with the exact
    reported revision and source digest. On the operator host the approval
    resolves the profile's endpoint/region variables — never key or token
    values — and records the effective, non-secret binding.

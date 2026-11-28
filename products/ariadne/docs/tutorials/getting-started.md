@@ -1,127 +1,165 @@
-# Getting started with Ariadne 0.8.0
+# Getting started with Ariadne
 
-This tutorial takes a data owner from an empty project directory to a fresh query against a human-admitted Git catalog. Ariadne can prepare the work, but it does not make the owner's source-approval, review, or admission decisions.
-
-This is the current local route: one native Lumio Knowledge Base and the OSI
-semantic layer in your project, without a server or cloud. The
-[historical joint example](../../../../integration/docs/tutorials/lumio-ariadne-local.md)
-preserves the older Core 0.6.0 / SDK 0.4.0 numerical journey, not this setup contract.
+This tutorial takes you from an empty directory to a governed query. One `ariadne` executable does everything; no server, model key or cloud is needed. Ariadne prepares the work, but source approval and calculation approval are yours: `ariadne approve` only runs on an interactive terminal.
 
 ## Prerequisites
 
-- Python 3.14 or newer (spec 0026: 3.12/3.13 support ended with the MCP 2.2.0 migration)
-- [uv](https://docs.astral.sh/uv/)
-- The data owner's agreement on source access, business definitions, and which metrics should be governed
-- Git for the default Git-managed authoring route
-
-Install the core CLI:
+- Python 3.14 or newer and [uv](https://docs.astral.sh/uv/)
+- Git
+- The data owner's agreement on source access and on the business definitions
 
 ```bash
-uv tool install ariadne-data==0.8.0
+# Install a pinned Git revision (use a commit SHA or `main`); it brings the matching lumio-wiki.
+# For PDF/DOCX documents use "ariadne-data[documents] @ git+..." instead.
+uv tool install --python 3.14 \
+  "ariadne-data @ git+https://github.com/legout/ariadne@main#subdirectory=products/ariadne/packages/ariadne-data"
+ariadne init --help
 ```
 
-No server or LLM credential is required for local CLI queries. Optional transports and packages are listed in the [CLI reference](../reference/cli.md#optional-transports-and-packages).
+The PyPI `ariadne-data` 0.8.0 release predates this command set (it has no `ariadne init`), so do not use `uv tool install ariadne-data` until a newer release is published. `ariadne init --help` succeeding is the check that you have the right version.
 
-## Create a project
+## 1. Create the project
 
-Native authoring needs Git first. Create the project directory, make it its
-own repository and set a repository-local identity (setup never initializes or
-configures Git itself):
+Make the directory its own Git repository with a local identity, then scaffold it (`init` never configures Git itself):
 
 ```bash
 mkdir retail && cd retail
 git init
 git config user.name "Your Name"
 git config user.email "you@example.org"
+ariadne init .
 ```
 
-Then run the setup wizard with the explicit selections that initialize one
-native Knowledge Base: a `--namespace` you choose once as its stable identity,
-and a machine-local `--private-profile` path outside the repository:
+`ariadne init --yes` never prompts and refuses without a Git identity. Under `.gitignore`, `data/*` is ignored except `data/seed_notes.md`: source files and documents under `data/` are not versioned.
+
+## 2. Declare a source and approve it
+
+Put a data file under `data/` and declare it in the one active draft:
 
 ```bash
-ariadne setup --project . --namespace "urn:uuid:your-retail-namespace" --private-profile "$HOME/.ariadne-profiles/retail.json" --agents --agent pi
+mkdir -p data
+uv run --no-project --with duckdb python -c "
+import duckdb
+duckdb.sql(\"COPY (SELECT * FROM (VALUES (1,'a'),(2,'b'),(3,'c')) t(id,label)) TO 'data/events.parquet' (FORMAT PARQUET)\")"
+ariadne add data/events.parquet --name events
 ```
 
-Setup can also detect candidate data files by filename; detection is only a hint, not source approval or a schema/content scan. Without the selections (or while Git prerequisites are missing) setup only reports the actionable operator prerequisites and writes nothing except an explicitly selected skill installation.
-
-Put data files under the project (for example, `data/`) and work with the owner to write `data/seed_notes.md`: describe the business domain, row grain, date conventions, units, exclusions, known caveats, and desired metrics. Do not infer business meaning from filenames or value frequency.
-
-Resume the wizard at any time; an existing native Knowledge Base is validated,
-never reinitialized (re-supplying the same selections validates them, and a
-conflicting namespace or profile refuses):
+Declaring is inert: nothing is opened or granted. Now the human runs the **source approval**, on a terminal:
 
 ```bash
-ariadne setup --project . --namespace "urn:uuid:your-retail-namespace" --private-profile "$HOME/.ariadne-profiles/retail.json" --agents --agent pi
+ariadne approve
 ```
 
-`--agents` installs the packaged Ariadne skill; `--agent` selects the host integration. Skill installation is separate from source approval and catalog admission.
+It shows the exact source identities, reads nothing, and asks `[yes/no]`. Only then is a source grant recorded.
 
-## Select the integrated route
+## 3. Author the semantic layer and context
 
-Setup does not choose the project's capability revision for you. Before the
-first proposal, the operator writes `context_integration.yaml` at the project
-root. Use your setup namespace; start with no Policy bindings, because no
-metric exists yet:
-
-```yaml
-version: 1
-mode: integrated
-subtree: knowledge
-namespace: urn:uuid:your-retail-namespace
-profile: ariadne-context/1
-support_revision: 2
-policy_bindings:
-  version: 1
-  bindings: []
-```
-
-Revision 2 is the minimum for schema refresh (native Table/Dataset pages) and
-generated Computation pages; without this file `refresh-schema` refuses.
-Use `support_revision: 4` when you will save Answer Examples. The first
-`ariadne-authoring start` commits it with the other setup files. When you add
-a governed metric, list each required Policy under `bindings` in the same
-proposal, for example:
-
-```yaml
-  bindings:
-    - subject: {kind: metric, identity: sales::revenue}
-      policy: {namespace: urn:uuid:your-retail-namespace, entity_id: entity:revenue-policy}
-      operations: [get_metric, query_metrics]
-      enforcement: null
-```
-
-See the [Bound Release reference](../../../../integration/docs/reference/lumio-bound-releases.md#the-integrated-selector) for every key.
-
-## Approve sources and author the catalog
-
-The wizard reports the project route, detected files, and next steps. For Git-managed projects, the operator reviews the proposed source identities and explicitly approves the exact proposal/digest before any source is opened for profiling. Credentials stay in the environment and are referenced by variable name in the registry.
-
-A typical project then follows this sequence:
-
-1. The human approves the resolved source list using the exact command and digest reported by Ariadne.
-2. Ariadne's authoring workflow reads approved sources and supplied business notes, then drafts typed OSI and context artifacts in an isolated proposal.
-3. Validate the final proposal revision and inspect the review report.
-4. The human admits the exact reviewed and validated revision. Use the `ariadne-admit` command and digest from the review; do not substitute a commit or an agent's own approval flag.
-5. Check readiness and query the admitted snapshot:
+Write the owner's domain notes, then apply typed edits, one JSON file each (`{"kind": "model", ...}`, `{"kind": "seed_notes", ...}`, `{"kind": "pages", "pages": [{"path": ..., "content": ...}]}`). This script writes the three files for the three-row `events` source: an OSI model (dataset `events`, primary key `id`, dimension `label`, metric `event_count` = `COUNT(*)`), the seed notes, and the smallest page set the validator accepts (table, reference, policy and metric):
 
 ```bash
-ariadne status --project .
-ariadne list-metrics --project .
-ariadne get-metric YOUR_METRIC --project .
+python3 - <<'PY'
+import json
+
+TABLE = "ariadne://table/WyJldmVudHMiLG51bGwsImV2ZW50cyIsImV2ZW50cyJd"  # source `events`, table events
+MODEL = """version: 0.3.0.dev0
+name: events
+description: Three events
+datasets:
+- name: events
+  source: events.events
+  primary_key: [id]
+  fields:
+  - {name: id, expression: {sql: id}}
+  - {name: label, expression: {sql: label}, dimension: {}}
+  metrics:
+  - name: event_count
+    expression: {sql: COUNT(*)}
+    description: Count all events
+"""
+NOTES = "# Events\n\nOne row per unique event id; count every event once.\n"
+
+def page(kind, title, resource, body, profile="", native=""):
+    # a table page anchors the source table; the others cite a document path
+    cite = "" if kind == "table" else f"        resource: {resource}\n"
+    core = f"  core_ref:\n    kind: resource\n    id: {resource}\n" if kind == "table" else ""
+    slug = title.replace("_", "-").replace(" ", "-").lower()
+    return (f'---\nid: "entity:{slug}"\ntitle: "{title}"\nentity_types:\n  - {kind}\n'
+            f'tags:\n  - {kind}\nsummary: "{body}"\nlifecycle: "approved"\nvisibility: "public"\n'
+            f"sources:\n  - id: rule\n    title: Owner rule\n"
+            f"ariadne_profile:\n  version: 1\n  kind: {kind}\n{profile}{core}"
+            f"  native:\n    type: {kind}\n    title: {title}\n    description: {body}\n"
+            f"    tags:\n      - {kind}\n    status: draft\n"
+            f"    sources:\n      - id: rule\n        title: Owner rule\n{cite}{native}---\n\n# {title}\n\n{body}\n")
+
+NO_POLICIES = "  required_policies: []\n"
+PAGES = {
+    "knowledge/tables/events.md": page("table", "events", TABLE, "One row per event."),
+    "knowledge/references/event-rule.md": page("reference", "Event rule", "data/seed_notes.md", "All events count."),
+    "knowledge/policies/all-events-count.md": page("policy", "All events count", "data/seed_notes.md",
+                                                   "Count every event once.", NO_POLICIES),
+    "knowledge/metrics/event-count.md": page(
+        "metric", "event_count", "references/event-rule.md", "Count all events.",
+        "  metric_ref:\n    model: events\n    metric: events.event_count\n" + NO_POLICIES,
+        "    governed_by: references/event-rule.md\n    dimensions:\n      - label\n"
+        "    grain:\n      primary_key:\n        - id\n      cardinality_enforcement: strict_1_to_1\n"),
+}
+open("data/seed_notes.md", "w").write(NOTES)
+for name, edit in {
+    "edit-model.json": {"kind": "model", "name": "events", "content": MODEL},
+    "edit-notes.json": {"kind": "seed_notes", "content": NOTES},
+    "edit-pages.json": {"kind": "pages", "pages": [{"path": p, "content": c} for p, c in PAGES.items()]},
+}.items():
+    json.dump(edit, open(name, "w"))
+PY
+ariadne draft edit edit-model.json
+ariadne draft edit edit-notes.json
+ariadne draft edit edit-pages.json
+ariadne draft status
 ```
 
-The query is fresh: saved answer examples are method references, not cached answers. Keep the returned context and policy caveats with the number. `governed: true` identifies the human-admitted route; it does not independently attest the numeric value.
+A coding agent can make these edits through the packaged skill (`ariadne skill install`) and the MCP authoring tools (`ariadne serve --toolset authoring`); it never approves.
 
-For the exact proposal commands and operator-only steps, see [Git-backed authoring](../how-to/git-authoring.md). Setup can stop at a human gate; rerunning it resumes the same project rather than approving or admitting on the operator's behalf.
+## 4. Validate, inspect, preview
 
-## Scope and existing artifacts
+```bash
+ariadne validate
+ariadne diff
+ariadne preview event_count        # from the draft: governed: false
+```
 
-This workflow targets a new Git-managed project. Core does not import legacy staged artifacts or pending review state, and it does not expose a Promotion route. Preserve existing project files; if content should move into a new project, decide explicitly what to reauthor through a revision-checked proposal. Setup never resets or silently adopts existing files.
+`validate` checks the exact final revision against the granted sources. A stale draft (the served revision moved on) needs `ariadne draft rebase`; plain `ariadne draft discard` drops it (after a confirmation, or with `--yes`). `ariadne draft discard --stale` is something else: it retires a draft stranded by a moved or copied project (its record names another project path), without confirmation, and refuses when the draft belongs to this project.
+
+## 5. Approve the calculation and query
+
+The human runs the **calculation approval**:
+
+```bash
+ariadne approve
+```
+
+Then:
+
+```bash
+ariadne status
+ariadne metrics
+ariadne query event_count
+ariadne query event_count --by label
+```
+
+The answer carries `governed: true`, the compiled SQL and the full Policy context; keep those caveats with the number. `governed: true` is not independent numeric attestation.
+
+## Where the admitted pages live
+
+After the calculation approval, the admitted knowledge pages are in the publication directory (default `~/.local/share/ariadne/published/<uuid>/versions/<revision>/`, set in the machine-local private settings) and in the approved Git revision. The working tree's `knowledge/` keeps only the scaffold files. Read admitted pages with `ariadne page PATH` or `ariadne search TEXT`, not by looking in the working tree.
+
+## Onboarding a document
+
+Place a PDF or Markdown file under `data/docs/`, open a draft (any edit), and let the agent call the `authoring_inputs(documents=["rules.md"])` MCP tool. It returns the resource, a sha256 digest and bounded text; there is no CLI command for it. PDF/DOCX need `ariadne-data[documents]`. The original is not versioned (`data/*` is ignored): cite resource and digest in a page. Graph traversal, ingest and publishing of a general knowledge base belong to the `lumio-wiki` skill and CLI.
 
 ## Next steps
 
-- [How Ariadne works](../explanations/how-ariadne-works.md) — understand the query and governance model.
-- [CLI reference](../reference/cli.md) — discover commands and project selectors.
-- [Data source reference](../reference/data-sources.md) — configure local and remote sources.
-- [Docker MCP](../how-to/docker-mcp.md) — optionally run an MCP endpoint in a container.
+- [CLI reference](../reference/cli.md)
+- [How Ariadne works](../explanations/how-ariadne-works.md)
+- [Git-backed authoring](../how-to/git-authoring.md)
+- [Data source reference](../reference/data-sources.md)
+- [Docker MCP](../how-to/docker-mcp.md)
