@@ -125,6 +125,24 @@ def test_worktree_with_a_stray_current_json_still_loads(tmp_path, capsys):
     assert "mode:                categorized" in capsys.readouterr().out
 
 
+def test_pointer_with_empty_versions_dir_fails_instead_of_reading_as_a_worktree(
+    tmp_path, capsys, monkeypatch
+):
+    from lumio_wiki import mcp_server
+
+    root = tmp_path / "damaged"
+    (root / "versions").mkdir(parents=True)
+    (root / "current.json").write_bytes(msgspec.json.encode(S3Pointer(version="rev1")))
+    capsys.readouterr()
+    assert cli.main(["validate", str(root)]) != 0
+    assert cli.main(["health", str(root)]) != 0
+    captured = capsys.readouterr()
+    assert "valid" not in captured.out.replace("invalid", "")
+    monkeypatch.setattr(mcp_server, "build_server", lambda location: pytest.fail("bound"))
+    assert cli.main(["mcp", str(root)]) != 0
+    assert "valid" not in capsys.readouterr().out.replace("invalid", "")
+
+
 def test_page_open_command_replays_a_historical_version(tmp_path, capsys):
     import json
     import shlex

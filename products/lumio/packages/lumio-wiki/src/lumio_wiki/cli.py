@@ -560,8 +560,9 @@ def _is_local_published_layout(path: str | Path) -> bool:
     """Recognize publication protocol artifacts, not ordinary version-like folders.
 
     A root-level ``current.json`` alone is not enough (a worktree may carry an
-    unrelated one): it must decode as a version pointer naming an existing
-    ``versions/<rev>/`` directory.
+    unrelated one): it must decode as a version pointer beside a ``versions/``
+    directory. The named revision need not exist: a damaged root must fail in
+    the snapshot opener, never fall back to a worktree (spec 0008 §5).
     """
     from lumio_wiki.git_authoring import PRIVATE_OPERATIONS_DIR
     from lumio_wiki.location import CURRENT_POINTER_OBJECT
@@ -570,8 +571,8 @@ def _is_local_published_layout(path: str | Path) -> bool:
     root = Path(path)
     try:
         raw = (root / CURRENT_POINTER_OBJECT).read_bytes()
-        label = validate_published_version(msgspec.json.decode(raw, type=S3Pointer).version)
-        if (root / "versions" / label).is_dir():
+        validate_published_version(msgspec.json.decode(raw, type=S3Pointer).version)
+        if (root / "versions").is_dir():
             return True
     except (OSError, msgspec.DecodeError, ValueError):
         pass
