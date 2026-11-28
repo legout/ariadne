@@ -54,7 +54,11 @@ Each assessed page identifies its bundle-relative `path` and exposes lifecycle `
 
 For a readable concept, absent lifecycle status uses OKF's `stable` default. Preserve applicable declared statuses, including existing Ariadne draft/review states; malformed lifecycle metadata is unknown, not implicitly stable. Reserved navigation/history files without concept frontmatter do not become business definitions or acquire invented verification evidence.
 
-Verification tiers are `unverified`, `machine-confirmed` and `human-reviewed`, derived conservatively from usable document verification declarations. No usable confirmation, including an empty list, yields `unverified`; non-human confirmations only yield `machine-confirmed`; a declared human confirmation yields `human-reviewed`. This is advisory disclosure of document claims, not authentication or admission evidence.
+Verification tiers are `unverified`, `machine-confirmed` and `human-reviewed`, derived conservatively from usable document verification declarations. No usable confirmation, including an empty list, yields `unverified`; non-human confirmations only yield `machine-confirmed`; a declared human confirmation yields `human-reviewed`. Only **current** verification events count: an event is current when its `at` is not earlier than the page's `generated.at` (or when `generated` is absent); an event lacking `by` or `at`, or with an unparsable `at`, is ignored. Timestamps here are RFC 3339 date-times with seconds and an offset (`Z`/`z` and `T`/`t` allowed; no-seconds forms like `12:00Z` do not count), or date-only values read as the start of that day in UTC. A `generated` that is absent or null makes every well-formed event current; a `generated` that is declared but whose `at` is missing, unparsable or timezone-naive makes no event current (`unverified`) — an undeterminable generation time never waives the comparison.
+
+> Amended 2026-11-28 (#214), citing OKF v0.3 §5.3: a confirmation older than regeneration no longer vouches for the page. Example: reviewed `human:x` at T1, regenerated at T2 > T1 → `unverified` (or `machine-confirmed` if a current non-human event exists), not `human-reviewed`.
+
+This is advisory disclosure of document claims, not authentication or admission evidence.
 
 Admission route/revision evidence remains separate. An admitted page lacking `verified` still has its genuine admission provenance; never derive admission from a `human:` actor string or synthesize a document-verification entry from admission.
 

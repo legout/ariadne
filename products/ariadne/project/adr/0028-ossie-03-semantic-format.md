@@ -23,6 +23,8 @@ semantics live in `nonportable_extensions` with `vendor_name: ARIADNE`:
 - conformed dimensions;
 - metric fill and window rules.
 
+**Note (2026-11-28):** the vendored schema is behind apache/ossie HEAD 4d70c2a (keys name each field once, PR #705; AGG(source.measure), PR #726). Follow-ups: #211 (schema refresh + key uniqueness), #212 (case-insensitive names, owner decision), #213 (AGG(source.measure) scope, owner decision). No decision in this ADR is changed.
+
 The cross-model `semantic_layer/graph.yml` remains as a documented non-portable
 Ariadne file (owner: "graph.yml behalten").
 
