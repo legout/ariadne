@@ -315,8 +315,22 @@ def _lower_dataset_metric(
     sql = expression_sql(entry["expression"], context)
     tree = parse_sql(sql, context)
     refuse_relations(tree, context)
+    for call in agg_calls(tree):
+        column = call.this
+        if isinstance(column, exp.Column) and (column.table or "").lower() == "source":
+            # #213: Ossie 0.3 (apache/ossie#726) allows AGG(source.measure) over a measure
+            # relation; Ariadne does not support those sources (ADR-0028, a deliberate limit).
+            raise OssieError(
+                f"{context}: Ariadne does not support measure relation sources, so "
+                f"AGG({column.table}.{column.name}) is refused: the source is not a measure "
+                "relation, its columns are plain columns; aggregate them directly, e.g. "
+                f"SUM(source.{column.name}) (ADR-0028)"
+            )
     if agg_calls(tree):
-        raise OssieError(f"{context}: AGG is only valid in a model-scoped metric")
+        raise OssieError(
+            f"{context}: AGG is only valid in a model-scoped metric; a dataset-scoped "
+            "metric cannot aggregate a field or a metric with AGG"
+        )
     source_is_field = "source" in dataset.fields
     for column in list(tree.find_all(exp.Column)):
         if column.table:

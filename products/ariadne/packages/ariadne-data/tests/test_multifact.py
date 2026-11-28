@@ -659,6 +659,19 @@ def test_f2_dataset_scoped_metric_may_not_reference_another_dataset(tmp_path):
     assert any("model-scoped metric" in error for error in result.errors)
 
 
+def test_agg_of_source_measure_in_a_dataset_scoped_metric_names_the_limit(tmp_path):
+    # #213 / ADR-0028: AGG(source.<measure>) in a dataset-scoped metric is refused by name:
+    # Ariadne does not support measure-relation sources, so the source's plain columns
+    # are aggregated directly instead.
+    bad = DOMAIN_YML.replace("sql: SUM(amount)", "sql: AGG(source.total_revenue)", 1)
+    staging = _staging(tmp_path / "st", {"sales.yml": bad})
+    with pytest.raises(GraphError, match=r"measure relation.*AGG\(source\.total_revenue\)"):
+        load_graph(staging / "semantic_layer")
+    result = validate(staging)
+    assert not result.ok
+    assert any("measure relation" in error and "ADR-0028" in error for error in result.errors)
+
+
 def test_f3_mixed_stage_derived_metric_with_bare_field_fails(tmp_path):
     # F3: a model-scoped metric mixing AGG terms with a row-grain field is refused —
     # Ossie 0.3 allows a composition of AGG(dataset.metric) terms only (spec rev 1
