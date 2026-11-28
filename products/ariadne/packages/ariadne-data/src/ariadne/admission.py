@@ -1443,28 +1443,37 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
                 "claimed effective source digest — a mutated binding never serves; "
                 "this needs human resolution and re-admission, never a fallback"
             )
+    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
+
+    lumio_context.verify_release(record, snapshot)
+    return record, snapshot
+
+
+def unavailable_sources(record: dict) -> dict[str, str]:
+    """Per-source refusal messages for admitted sources whose CURRENT effective
+    binding cannot be resolved or differs from the pinned one (spec 0025 §4,
+    spec 0040 §3.4.2.7). Source-free reads resolve nothing; the query runtime
+    opens only the sources that are NOT listed here and refuses any read of a
+    listed source — it is never read from another binding."""
+    stored = record.get("storage_bindings") or {}
+    out: dict[str, str] = {}
+    for entry in record.get("sources") or []:
+        keys = _entry_keys(entry)
+        if not keys:
+            continue
         try:
-            current = authoring_sources.storage_bindings_from_identity(record.get("sources"))
+            current = authoring_sources.storage_bindings_from_identity([entry])
         except ValueError as exc:
-            # spec 0040 §3.4: the served binding no longer resolves (e.g. a retired
-            # variable); this release is never read from a newer granted binding
-            raise ValueError(
+            out[entry["name"]] = (
                 f"{exc} — the served release cannot resolve its admitted binding and is "
                 "never read from another one. If you granted a changed source with "
                 "'ariadne approve', a calculation approval is still pending: run "
                 "'ariadne approve' again on a new draft to serve the current binding"
-            ) from None
-        if current != bindings:
-            changed = sorted(
-                {
-                    entry["name"]
-                    for entry in record.get("sources") or []
-                    if authoring_sources.storage_bindings_from_identity([entry])
-                    != {k: v for k, v in bindings.items() if k in _entry_keys(entry)}
-                }
             )
-            raise ValueError(
-                f"source(s) {', '.join(changed) or 'unknown'}: the environment resolves a "
+            continue
+        if current != {k: v for k, v in stored.items() if k in keys}:
+            out[entry["name"]] = (
+                f"source(s) {entry['name']}: the environment resolves a "
                 "different effective storage binding than the admitted one (spec 0025 §4) — "
                 "the served release stays pinned to its exact endpoint and is not read "
                 "from the new one. If you granted the changed source with 'ariadne approve', "
@@ -1472,10 +1481,7 @@ def validate_admission_record(project: str | Path, record: dict) -> tuple[dict, 
                 "new draft to serve the current binding; or restore the previous "
                 "environment value to keep reading the served one"
             )
-    from ariadne import lumio_context  # pyright: ignore[reportAttributeAccessIssue]
-
-    lumio_context.verify_release(record, snapshot)
-    return record, snapshot
+    return out
 
 
 def _entry_keys(entry: dict) -> set[str]:

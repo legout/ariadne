@@ -57,6 +57,7 @@ unrenderable served models -> fail fast at query runtime initialization.
 import re
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         query_limits: dict | None = None,
         response_measure=None,
         deadline_budget: DeadlineBudget | None = None,
+        unavailable_sources: dict[str, str] | None = None,
     ):
         """The public ``QueryRuntime.open_project`` factory supplies the
         already-resolved approved ``registry``, pinned Git-review
@@ -168,6 +170,9 @@ class _QueryRuntimeSession(_DiscoverySession):
         construction (CLI invocation / lazy MCP factory) shares between source
         setup and its first operation — long-lived
         eager runtimes omit it and every operation starts a fresh budget."""
+        # admitted sources whose binding cannot be read now: never opened; a read
+        # of one refuses with its message (spec 0040 §3.4.2.7), the rest serve
+        self._unavailable = unavailable_sources or {}
         self._load_catalog(semantic_dir, context_dir, admission_record)
         models = Path(semantic_dir) / "models"
         try:
@@ -347,6 +352,16 @@ class _QueryRuntimeSession(_DiscoverySession):
         starts a fresh one."""
         self._request_budget = None
 
+    def _bind(self, sql: str) -> None:
+        """EXPLAIN-bind compiled SQL, refusing first when it reads a source whose
+        admitted binding is unavailable (named, never read from another binding)."""
+        if self._unavailable:
+            for table in sqlglot.parse_one(sql).find_all(exp.Table):
+                for part in (table.catalog, table.db):
+                    if part in self._unavailable:
+                        raise ValueError(self._unavailable[part])
+        self._execution.bind(sql)
+
     @contextmanager
     def _phase(self, budget: DeadlineBudget):
         """One guarded operation phase: the shared budget arms
@@ -361,6 +376,9 @@ class _QueryRuntimeSession(_DiscoverySession):
         except QueryResultError:
             raise  # a refusal is a refusal; never relabeled by the clock
         except Exception as exc:
+            for name, message in self._unavailable.items():
+                if re.search(rf"\b{re.escape(name)}\b", str(exc)):
+                    raise ValueError(message) from None
             if budget.expired():
                 raise query_results.deadline_refusal(budget.seconds) from exc
             raise
@@ -450,7 +468,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # structurally, so a column missing from the source only surfaces at
             # bind time. EXPLAIN binds the plan without executing it — while still
             # only ever feeding compiler output to duckdb.
-            self._execution.bind(sql)
+            self._bind(sql)
             # Grain guard on the model's dataset source: a fan-out
             # baked into a served model would aggregate at joined-row grain
             # (Datus-ai/Datus-agent#1426) — identical rejection contract to
@@ -985,7 +1003,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # real executed-check proof, before result SQL
             self._attest_bound_checks(plan, graph)
             assert_single_statement(plan.sql)
-            self._execution.bind(plan.sql)
+            self._bind(plan.sql)
             bounded = self._collect(plan.sql, budget)
         if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
@@ -1093,7 +1111,7 @@ class _QueryRuntimeSession(_DiscoverySession):
         with self._phase(budget):
             plan = plan_detail(graph, request, self.con)
             assert_single_statement(plan.sql)
-            self._execution.bind(plan.sql)
+            self._bind(plan.sql)
             bounded = self._collect(plan.sql, budget)
         if budget.expired():  # no complete answer after expiry
             raise query_results.deadline_refusal(budget.seconds)
@@ -1171,7 +1189,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # Choke point shared with the EXPLAIN bind: the planner's
             # compiled output only, exactly one statement before any duckdb call.
             assert_single_statement(plan.executed_sql)
-            self._execution.bind(plan.executed_sql)
+            self._bind(plan.executed_sql)
             try:
                 # the executed statement is the planner's compiled output and
                 # nothing else
@@ -1371,7 +1389,7 @@ class _QueryRuntimeSession(_DiscoverySession):
             # binds the plan without executing it, keeping §8.9's "no execution"
             # honest for that shape — while still only ever feeding compiler
             # output to duckdb.
-            self._execution.bind(sql)
+            self._bind(sql)
             # sql is the render compile step's output and nothing else:
             # the definition reached execution exclusively through the compiler
             # above.
@@ -1464,13 +1482,19 @@ class QueryRuntime:
                 raise ValueError("discovery does not pin an admission for this project")
             discovery._recheck_pinned()
             record, snapshot = discovery._managed, discovery.context_dir.parent
+        unavailable = admission.unavailable_sources(record)
+        registry = admission.approved_registry(record)
+        registry = replace(
+            registry, sources=[s for s in registry.sources if s.name not in unavailable]
+        )
         return _QueryRuntimeSession(
             snapshot / "semantic_layer",
             snapshot / "context_layer",
             None,
-            registry=admission.approved_registry(record),
+            registry=registry,
             admission_record=record,
             project_root=root,
+            unavailable_sources=unavailable,
             query_limits=query_results.load_host_query_limits(root),
             deadline_budget=deadline_budget,
         )
